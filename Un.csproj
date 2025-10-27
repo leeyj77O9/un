@@ -11,13 +11,4 @@
     <None Remove="IO\w42w4eky.udl~" />
   </ItemGroup>
 
-  <ItemGroup>
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="FFmpegCore" Version="5.2.0" />
-    <PackageReference Include="SkiaSharp" Version="3.116.1" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="3.116.1" />
-  </ItemGroup>
-
 </Project>
