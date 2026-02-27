@@ -4,6 +4,5 @@
     "editor.codeLens": false,
     "terminal.integrated.fontFamily": "Cascadia Mono, Consolas, 'Courier New', monospace",
     "terminal.integrated.fontSize": 14,
-    "terminal.integrated.lineHeight": 1
-    
+    "terminal.integrated.lineHeight": 1,
 }

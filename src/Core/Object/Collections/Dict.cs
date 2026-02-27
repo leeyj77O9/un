@@ -20,9 +20,9 @@ public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value,
 
     public override Obj GetItem(Obj key) => Value.TryGetValue(key, out var value) ? value : new Err($"key '{key.ToStr().As<Str>().Value}' not found in dictionary");
 
-    public override void SetItem(Obj key, Obj value)
+    public override Obj SetItem(Obj key, Obj value)
     {
-        Value[key] = value;
+        return Value[key] = value;
     }
 
     public override Obj In(Obj obj) => obj switch

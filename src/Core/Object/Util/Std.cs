@@ -216,14 +216,14 @@ public class Std : IPack
                 Name = "range",
                 ReturnType = "list[int]",
                 Args = [
-                    new Arg("stop") {
-                        Type = "int",
-                        IsEssential = true
-                    },
                     new Arg("start") {
                         Type = "int",
                         IsOptional = true,
                         DefaultValue = new Int(0),
+                    },
+                    new Arg("stop") {
+                        Type = "int",
+                        IsEssential = true
                     },
                     new Arg("step") {
                         Type = "int",
@@ -378,7 +378,7 @@ public class Std : IPack
                     var tuple = args["value"].ToTuple().As<Tup>();
 
                     if (tuple.Count == 0)
-                        throw new Panic("expected more than one argument");
+                        return new Err("expected more than one argument");
 
                     if (tuple.Count == 1)
                     {
@@ -413,7 +413,7 @@ public class Std : IPack
                     var tuple = args["value"].ToTuple().As<Tup>();
 
                     if (tuple.Count == 0)
-                        throw new Panic("expected more than one argument");
+                        return new Err("expected more than one argument");
 
                     if (tuple.Count == 1)
                     {
@@ -455,11 +455,14 @@ public class Std : IPack
                     {
                         Int i => i.Value,
                         Float f => f.Value,
-                        _ => throw new Panic("expected number type")
+                        _ => double.NaN,
                     };
 
+                    if (v == double.NaN)
+                        return new Err("expected number type");
+
                     if (!args["digit"].As<Int>(out var digit) || digit.Value > 15 || digit.Value < 0)
-                        throw new Panic("digit is must be int and greater then 0 and less then 15");
+                        return new Err("digit is must be int and greater then 0 and less then 15");
 
                     int d = (int)digit.Value;
 
@@ -483,7 +486,7 @@ public class Std : IPack
                 {
                     Int i => new Int(Math.Abs(i.Value)),
                     Float f => new Float(Math.Abs(f.Value)),
-                    _ => throw new Panic("expected number type"),
+                    _ => new Float(double.NaN),
                 }
             }
         },
@@ -505,7 +508,7 @@ public class Std : IPack
                         double d when d == (long)d => new Int((long)d),
                         double d => new Float(d),
                     },
-                    _ => throw new Panic("expected number type"),
+                    _ => new Float(double.NaN),
                 }
             }
         },
@@ -523,7 +526,7 @@ public class Std : IPack
                 {
                     Int i => new Float(Math.Sqrt(i.Value)),
                     Float f => new Float(Math.Sqrt(f.Value)),
-                    _ => throw new Panic("expected number type"),
+                    _ => new Float(double.NaN),
                 }
             }
         },
@@ -545,7 +548,7 @@ public class Std : IPack
                         double d when d == (long)d => new Int((long)d),
                         double d => new Float(d),
                     },
-                    _ => throw new Panic("expected number type"),
+                    _ => new Float(double.NaN),
                 }
             }
         },

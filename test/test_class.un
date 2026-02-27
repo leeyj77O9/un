@@ -1,4 +1,4 @@
-struct number(x, y, z)
+class number(x, y, z)
 
 class point: number
 

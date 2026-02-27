@@ -10,7 +10,7 @@ public static class Convert
     {
         List list = [];
 
-        foreach (var value in node.Children.Split(TokenType.Comma).Select(x => Executor.On(x, context)))
+        foreach (var value in node.Children.Split(TokenType.Comma).Select(x => Operator.On(x, context)))
         {
             if (value.As<Spreads>(out var spread))
                 foreach (var item in spread)
@@ -34,12 +34,12 @@ public static class Convert
 
             if (pair.Count == 1)
             {
-                value = Executor.On(pair[0], context);
+                value = Operator.On(pair[0], context);
             }
             else if (pair.Count == 2)
             {
                 name = pair[0].Split(TokenType.Colon)[0][0].Value;
-                value = Executor.On(pair[1], context);
+                value = Operator.On(pair[1], context);
             }
 
             names.Add(name);
@@ -52,12 +52,12 @@ public static class Convert
         return new Tup([.. list], [.. names]);
     }
 
-    public static Tup ToIndex(Node node, Context context) => new([.. node.Children.Split(TokenType.Colon).Select(x => Executor.On(x, context))], []);
+    public static Tup ToIndex(Node node, Context context) => new([.. node.Children.Split(TokenType.Colon).Select(x => Operator.On(x, context))], []);
 
     public static Tup ToPair(Node node, Context context)
     {
         var temp = node.Children.Split(TokenType.Colon).ToList();
-        return new([new Str(temp[0][0].Value), Executor.On(temp[1], context)], []);
+        return new([new Str(temp[0][0].Value), Operator.On(temp[1], context)], []);
     }
 
     public static Dict ToDict(Node node, Context context) => new(node.Children.Split(TokenType.Comma).Select(x => ToPair(new("pair", TokenType.Pair) { Children = x }, context)).Select(y => (y[0], y[1])).ToDictionary());
@@ -97,7 +97,7 @@ public static class Convert
 
                     expr += c;
                 }
-                values.Append(Executor.On(lexer.Lex(tokenizer.Tokenize(new("", [expr]))), context));
+                values.Append(Operator.On(lexer.Lex(tokenizer.Tokenize(new("", [expr]))), context));
                 raw.Add("");
                 j++;
             }

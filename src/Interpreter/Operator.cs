@@ -5,7 +5,7 @@ using Un.Object.Function;
 
 namespace Un;
 
-public static class Executor
+public static class Operator
 {
     public static Obj On(List<Node> nodes, Context context)
     {
@@ -66,7 +66,7 @@ public static class Executor
                     values.Push(value switch
                     {
                         Err e => throw new Error(e.Message, context),
-                        Tup t => t.Count == 1 && (t.Name.Length == 0 || string.IsNullOrEmpty(t.Name[0])) ? t[0] : t,
+                        Tup t => t.IsSingle() ? t[0] : t,
                         _ => value,
                     });
                 }
@@ -81,10 +81,10 @@ public static class Executor
                         var name = key as string ?? "";
                         var tuple = result.Annotations[name] as Tup ?? [];
                         var deco = context.Scope[name].As<Fn>();
-                        result = deco.Invoke(new([result, .. tuple], new string[tuple.Count + 1]), context);
+                        result = deco.Call(new([result, .. tuple], new string[tuple.Count + 1]));
                     }
 
-                    result = result.As<Fn>(out var fn) ? fn.Invoke(args, context) : result.IsType() ? result.Init(args) : result;
+                    result = result.As<Fn>(out var fn) ? fn.Call(args) : result.Init(args);
 
                     values.Push(result.Unwrap(context));
                 }

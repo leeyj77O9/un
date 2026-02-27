@@ -158,7 +158,7 @@ public class Lexer()
                 {
                     Children = call == -1 ? lexed : lexed[..call]
                 });
-                nodes.AddRange(call == -1 ? [] : lexed[..call]);
+                nodes.AddRange(call == -1 ? [] : lexed[call..]);
                 index = this.tokens.Count;
 
             }
@@ -171,7 +171,8 @@ public class Lexer()
 
         bool IsVariable() => nodes.Count > 0 && nodes[^1].Type.IsVariable();
 
-        bool IsUnary() => nodes.Count == 0 || nodes[^1].Type.IsUnaryOperator() && (nodes[^1].Type.IsOperator() || nodes[^1].Type == TokenType.Comma);
+        bool IsUnary() => nodes.Count == 0 || !nodes[^1].Type.IsUnaryOperator() && 
+                        (nodes[^1].Type.IsOperator() && nodes[^1].Type != TokenType.Call || nodes[^1].Type == TokenType.Comma);
     }
 
     #region Node Reader

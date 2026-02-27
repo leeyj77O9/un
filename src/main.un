@@ -1,0 +1,10 @@
+x = 10
+
+fn test() 
+	x = 20
+	-> x
+
+
+write(test() == 20)
+write(x == 10)
+write(x)

@@ -45,17 +45,22 @@ class Heap
     fn pop()
         n = len(self.data)
         if n == 0
-            -> 0
+            panic("heap is empty")
         top = self.data[0]
         self.data[0] = self.data[n-1]
         self.data.pop()
         self.down(0)
+
+        if top == none
+            panic("heap is empty")
         -> top
 
 h = Heap()
+
 h.push(5)
 h.push(3)
 h.push(7)
+
 write(h.pop())
 write(h.pop())
 write(h.pop())

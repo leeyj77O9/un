@@ -18,13 +18,13 @@ namespace Un;
 
 public static class Global
 {
-    public static object SyncRoot = new();
-
     public static string PATH { get; private set; } = "";
 
     public static readonly int BASEHASH = Math.Abs(DateTime.Now.Millisecond * 6929891 + DateTime.Now.Second * 1025957);
     public static readonly int HASHPRIME = 11;
-    public static int MAXRECURSIONDEPTH = 1000;
+    public static ulong MAXRECURSIONDEPTH = 1000;
+
+    public static int CallDepth = 0;
 
     private static Scope scope = new(new ConcurrentDictionary<string, Obj>(), null!);
     private static ConcurrentDictionary<string, Obj> classes = new();

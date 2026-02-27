@@ -62,9 +62,9 @@ public class Json(Obj obj) : Ref<Obj>(obj, "json")
 
     public override Obj GetItem(Obj key) => Value.GetItem(key);
 
-    public override void SetItem(Obj key, Obj value)
+    public override Obj SetItem(Obj key, Obj value)
     {
-        Value.SetItem(key, value);
+        return Value.SetItem(key, value);
     }
 
     public override Str ToStr() => new(Stringfy(Value));

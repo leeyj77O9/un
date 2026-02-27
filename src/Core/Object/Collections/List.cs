@@ -70,15 +70,15 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         _ => new Err("invalid index type")
     };
 
-    public override void SetItem(Obj key, Obj value)
+    public override Obj SetItem(Obj key, Obj value)
     {
         if (key is not Int i)
-            throw new Panic("invalid index type");
+            return new Err("invalid index type");
 
         if (OutOfRange((int)i.Value))
-            throw new Panic("list index out of range");
+            return new Err("list index out of range");
 
-        this[(int)i.Value] = value;
+        return this[(int)i.Value] = value;
     }
 
     public override Obj In(Obj obj) => obj switch

@@ -8,22 +8,21 @@ public class PFn(List<Node> nodes) : Fn
 
     public override Obj Call(Tup args)
     {
-        if (Depth == Global.MAXRECURSIONDEPTH)
-            return new Err("maximum recursion depth");
+        if (Global.CallDepth++ > (int)Global.MAXRECURSIONDEPTH)
+            throw new Panic("maximum recursion depth exceeded");
 
         var scope = new Scope(new Map(), Closure ?? Scope.Empty);
         Bind(scope, args);
-        lock (Global.SyncRoot) { Depth++; }
 
-        var parser = new Parser(new(scope, new("lambda", [nodes.ToCode()]), []));
+        var parser = new Parser(new(scope, new("lambda", ["lambda"]), []));
         var returned = parser.Parse(nodes);
 
-        lock (Global.SyncRoot) { Depth--; }
+        Global.CallDepth--;
 
         return returned ?? None;
     }
     
-    public override Obj Clone() => new PFn([..nodes])
+    public override Obj Clone() => new PFn(nodes)
     {
         Name = Name,
         Args = [..Args],

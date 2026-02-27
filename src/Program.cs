@@ -4,15 +4,30 @@ Runner? runner = null;
 
 try
 {
-    if (args.Length < 2)
+    if (args.Length == 1 && args[0] == "--test")
     {
-        //throw new Panic("not enough arguments");
-        args = ["/workspaces/Un/src/", "main.un"];
+        foreach (var file in Directory.GetFiles("test/", "*.un"))
+        {
+            Console.WriteLine($"Running test: {file}");
+            Global.Init("");
+            runner = Runner.Load(file, Global.GetGlobalScope());
+            runner.Run();
+            Console.WriteLine($"Test {file} passed.");
+        }
     }
-    
-    Global.Init(args[0]);
-    runner = Runner.Load(args[1], Global.GetGlobalScope());
-    runner.Run();
+    else if (args.Length == 2)
+    {
+        Global.Init(args[0]);
+        runner = Runner.Load(args[1], Global.GetGlobalScope());
+        runner.Run();
+    }
+    else
+    {    
+        Global.Init("/workspaces/Un/src/");
+        runner = Runner.Load("main.un", Global.GetGlobalScope());
+        runner.Run();    
+        //throw new Panic("not enough arguments");
+    }
 }
 catch (Exception e)
 {
@@ -46,7 +61,7 @@ catch (Exception e)
         if (blockStack.Length > 10)
         {
             Console.ForegroundColor = ConsoleColor.Gray;
-            Console.WriteLine("\t... (truncated)");
+            Console.WriteLine($"\t... (truncated [{blockStack.Length - 11}+])");
             Console.ResetColor();
         }
     }

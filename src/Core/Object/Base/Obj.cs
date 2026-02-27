@@ -1,6 +1,5 @@
 using Un.Object.Collections;
 using Un.Object.Primitive;
-using System.Collections.Specialized;
 
 namespace Un.Object;
 
@@ -21,12 +20,12 @@ public class Obj(string type) : IComparable<Obj>
 
     public virtual Obj Init(Tup args)
     {
-        if (TryMethod("__init__", out _, args)) { }
+        if (TryMethod("__init__", out _, args))
+            return this;
         else if (Super is not null && !Super.IsNone())
-            Super.Init(args);
+            return Super.Init(args);
         else
             return new Err($"unsupported operand type(s) for __init__: '{Type}'");
-        return this;
     }
 
     public virtual Obj Add(Obj other)
@@ -171,9 +170,18 @@ public class Obj(string type) : IComparable<Obj>
 
     public virtual Obj Call(Tup args)
     {
+        if (Global.CallDepth > (long)Global.MAXRECURSIONDEPTH)
+            throw new Panic("maximum recursion depth exceeded");
+
+        Global.CallDepth++;
         if (TryMethod("__call__", out Obj? value, args))
+        {
+            Global.CallDepth--;
             return value;
-        return Super is not null && !Super.IsNone() ? Super.Call(args) : new Err($"unsupported operand type(s) for (): '{Type}'");
+        }
+        value = Super is not null && !Super.IsNone() ? Super.Call(args) : new Err($"unsupported operand type(s) for (): '{Type}'");
+        Global.CallDepth--;
+        return value;
     }
 
     public virtual Obj Len()
@@ -226,14 +234,14 @@ public class Obj(string type) : IComparable<Obj>
     }
 
 
-    public virtual void SetItem(Obj key, Obj value)
+    public virtual Obj SetItem(Obj key, Obj value)
     {
         if (TryMethod("__setitem__", out _, new([key, value], ["key", "value"])))
-            return;
+            return value;
         else if (Super is not null && !Super.IsNone())
-            Super.SetItem(key, value);
+            return Super.SetItem(key, value);
         else
-            throw new Panic($"unsupported operand type(s) for [] = 'value': '{Type}'");
+            return new Err($"unsupported operand type(s) for [] = 'value': '{Type}'");
     }
 
     public virtual Obj GetItem(Obj key)

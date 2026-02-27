@@ -7,6 +7,7 @@ public class Context(Scope scope, UnFile file, List<Block> blockStack)
     public Scope Scope { get; set; } = scope;
     public UnFile File { get; set; } = file;
     public List<Block> BlockStack = blockStack;
+    public ulong Depth { get; set; } = 0;
     public OMap Annotations { get; set; } = [];
     public Stack<List<Node>> Defers { get; set; } = [];
     public Stack<Obj> Usings { get; set; } = [];

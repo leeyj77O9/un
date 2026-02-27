@@ -9,15 +9,18 @@ public class Stru(string type, string[] names) : Obj(type)
 
     public override Obj Init(Tup args)
     {
+        if (Super is Stru st)
+            names = [..st.names, ..names];
+    
         if (args.Count != names.Length) return new Err("invalid initialize");
 
         for (int i = 0; i < names.Length; i++)
             Members[names[i]] = args[i];
-
+        
         return this;
     }
 
-    public override Str ToStr() => new($"{Type}({string.Join(", ", names.Select(name => $"{name}: {Members[name]}"))})");
+    public override Str ToStr() => new($"{Type}({string.Join(", ", names.Select(name => $"{name}: {Members[name].ToStr().As<Str>().Value}"))})");
 
     public override Obj Add(Obj other) => other switch
     {
@@ -34,6 +37,7 @@ public class Stru(string type, string[] names) : Obj(type)
     public override Stru Clone() => new(Type, names)
     {
         Annotations = Annotations,
+        Super = Super,
         Members = Members.New(),
     };
 

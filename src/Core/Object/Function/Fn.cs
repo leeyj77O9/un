@@ -5,30 +5,11 @@ namespace Un.Object.Function;
 
 public class Fn() : Obj("fn")
 {
-    public static int Depth = 0;
-
     public string? Name { get; set; }
     public List<Arg> Args { get; set; } = [];
     public string ReturnType { get; set; } = "any";  
     public Scope? Closure { get; set; }
 
-    protected Context? context;
-
-    public Obj Invoke(Tup args, Context context)
-    {
-        if (Depth > Global.MAXRECURSIONDEPTH)
-            throw new Panic("maximum recursion depth exceeded.");
-
-        this.context = context;
-
-        context.EnterBlock("fn");
-
-        var result = Call(args);
-
-        context.ExitBlock();
-
-        return result;
-    }
     protected void Bind(Scope scope, Tup args)
     {
         scope["self"] = Self;
@@ -122,8 +103,6 @@ public class Fn() : Obj("fn")
                 scope[arg.Name] = arg.DefaultValue!;
             }
         }
-
-
 
         if (unnamedIndex < unnamed.Count)
         {
@@ -228,7 +207,7 @@ public class Fn() : Obj("fn")
                     IsOptional = isOptional,
                     IsPositional = isPositional,
                     IsKeyword = isKeyword,
-                    DefaultValue = hasDefault ? Executor.On(buf, context) : Null,
+                    DefaultValue = hasDefault ? Operator.On(buf, context) : Null,
                 });
 
                 (argType, name) = ("", "");
@@ -264,7 +243,7 @@ public class Fn() : Obj("fn")
                 IsOptional = isOptional,
                 IsPositional = isPositional,
                 IsKeyword = isKeyword,
-                DefaultValue = hasDefault ? Executor.On(buf, context) : Null,
+                DefaultValue = hasDefault ? Operator.On(buf, context) : Null,
             });
 
         return result;

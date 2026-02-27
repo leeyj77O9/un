@@ -13,6 +13,8 @@ public class Timer() : Ref<Stopwatch>(new(), "timer")
         _ => base.Init(args),
     };
 
+    public override Timer Clone() => new();
+
     public override Attributes GetOriginal() => new()
     {
         { "start", new NFn()

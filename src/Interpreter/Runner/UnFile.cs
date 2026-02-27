@@ -109,10 +109,7 @@ public class UnFile
         foreach (var line in rawcode)
         {
             if (string.IsNullOrWhiteSpace(line))
-            {
-                Code.Add((0, ""));
                 continue;
-            }
 
             var nesting = GetNesting(line);
 

@@ -31,13 +31,6 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
 
     public override Obj GetItem(Obj key) => Value.TryGetValue(key, out var value) ? value : new Err($"key {key.ToStr().As<Str>().Value} not found in set");
 
-    public override void SetItem(Obj key, Obj value)
-    {
-        if (Value.Contains(key))
-            throw new Panic($"key {key.ToStr().As<Str>().Value} already exists in set");
-        Value.Add(key);
-    }
-
     public override Obj Copy() => this;
 
     public override Obj Clone() => new Set([.. Value]);

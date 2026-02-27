@@ -56,16 +56,12 @@ public class Parser(Context context)
 
         string[] path = [..modules[..^(isPart ? 1 : 0)].Select(x => x.Value)];
 
-        lock (Global.SyncRoot)
-        {
-            if (!Global.IsClass(path[^1]))
+        if (!Global.IsClass(path[^1]))
                 Global.Import(path: path,
                               nickname: isSpread ? "*" : isNickname ? splited[1][0].Value : "",
                               parts: isPart ? [.. modules[^1].Children.Where(x => x.Type != TokenType.Comma).Select(x => x.Value)] : []);
-            else
-                Global.Include(name: path[^1]);
-        }
-
+        else
+            Global.Include(name: path[^1]);
         return Obj.None;
     }
     private Obj ParseClass()
@@ -73,7 +69,8 @@ public class Parser(Context context)
         var name = nodes[1].Value;
         var colon = nodes.FindIndex(x => x.Type == TokenType.Colon);
         var isInherit = (colon == 2 && nodes.Count >= 4) || (colon == 3 && nodes.Count >= 5);
-        var fields = colon < 3 ? [] : nodes[2].Children;
+        var hasFields = colon == 3 || (colon == -1 && nodes.Count > 2 && nodes[2].Type == TokenType.Call);
+        var fields = hasFields ? nodes[2].Children : [];
         var body = context.File.GetBody();
         var members = new Map();
         var types = new HashSet<string>();
@@ -116,23 +113,24 @@ public class Parser(Context context)
                 else throw new Error("invalid class syntax", context);
         }
 
-        lock (Global.SyncRoot)
+        if (IsEmpty(body) && colon < 4)
         {
-            Global.SetClass(name, IsEmpty(body) && colon < 3 ?
-            new Stru(name, [..fields.Split(TokenType.Comma).Select(x => x[0].Value)])
+            
+            Global.SetClass(name, new Stru(name, [..fields.Split(TokenType.Comma).Select(x => x[0].Value)])
             {
                 Annotations = context.Annotations,
+                Super = isInherit ? Global.GetClass(superType) : Obj.None,
                 Members = members
-            }
-            :
-            new Obj(name)
+            });
+        }
+        else
+            Global.SetClass(name, new Obj(name)
             {
                 Annotations = context.Annotations,
                 Super = isInherit ? Global.GetClass(superType) : Obj.None,
                 Types = types,
                 Members = members
             });
-        }
 
         context.Annotations = [];
 
@@ -161,17 +159,14 @@ public class Parser(Context context)
                     constants.Add(member.Trim(), new Int(i++));
         }
 
-        lock (Global.SyncRoot)
+        Global.SetClass(name, new Enu(name, 0)
         {
-            Global.SetClass(name, new Enu(name, 0)
-            {
-                Members = constants
-            });
-        }
+            Members = constants
+        });
 
         return Obj.None;
     }
-    private Obj ParseReturn() => ReturnValue = Executor.On(nodes[1..], context);
+    private Obj ParseReturn() => ReturnValue = Operator.On(nodes[1..], context);
     private Obj ParseBreak() => ReturnValue = new Obj("break");
     private Obj ParseSkip() => ReturnValue = new Obj("skip");
     private Obj ParseExpreession()
@@ -179,7 +174,7 @@ public class Parser(Context context)
         for (int i = 0; i < nodes.Count; i++)
             if (nodes[i].Type.IsAssignmentOperator())
                 return ParseAssignment(i);
-        return Executor.On(nodes, context);
+        return Operator.On(nodes, context);
     }
     private Obj ParseAssignment(int assign)
     {
@@ -221,7 +216,7 @@ public class Parser(Context context)
                 switch (names[i].Type)
                 {
                     case TokenType.Indexer:
-                        var index = Executor.On(names[i].Children, context).Unwrap(context);
+                        var index = Operator.On(names[i].Children, context).Unwrap(context);
                         variable.SetItem(index, AssignValue(type, variable.GetItem(index).Unwrap(context), objs[count]));
                         break;
                     case TokenType.Property:
@@ -248,7 +243,7 @@ public class Parser(Context context)
             else
                 variable = names[i].Type switch
                 {
-                    TokenType.Indexer => variable.GetItem(Executor.On(names[i].Children, context).Unwrap(context)).Unwrap(context),
+                    TokenType.Indexer => variable.GetItem(Operator.On(names[i].Children, context).Unwrap(context)).Unwrap(context),
                     TokenType.Property => variable.GetAttr(names[i].Value).Unwrap(context),
                     TokenType.Identifier => Scope.Get(names[i].Value, out var obj) ? obj : throw new Error($"variable {names[i].Value} not found.", context),
                     _ => throw new Error($"invalid assignment {names[i].Type}.", context)
@@ -286,7 +281,7 @@ public class Parser(Context context)
     {
         var inIdx = nodes.FindIndex(x => x.Type == TokenType.In);
         var vars = nodes[..inIdx][1..].Split(TokenType.Comma).Select(x => x[0]).ToList();
-        var iter = Executor.On(nodes[(inIdx + 1)..], context).Iter().As<Iters>().Value;
+        var iter = Operator.On(nodes[(inIdx + 1)..], context).Iter().As<Iters>().Value;
         var innerScope = new Scope(new Map(), Scope);
         var innerContext = new Context(innerScope, new("for", context.File.GetBody()), []);
         var runner = Runner.Load(innerContext, context);
@@ -337,7 +332,7 @@ public class Parser(Context context)
         var innerContext = new Context(innerScope, new("while", body), []);
         innerContext.EnterBlock("loop");
 
-        while (Executor.On(expr, innerContext).As<Bool>("while keyword only boolearn").Value)
+        while (Operator.On(expr, innerContext).As<Bool>("while keyword only boolearn").Value)
         {
             ReturnValue = Runner.Load(innerContext, context).Run();
 
@@ -356,9 +351,8 @@ public class Parser(Context context)
     }
     private Obj ParseIf()
     {
-        Bool condition = nodes[0].Type == TokenType.Else ? Bool.True : Executor.On(nodes[1..], context).ToBool().As<Bool>();
+        Bool condition = nodes[0].Type == TokenType.Else ? Bool.True : Operator.On(nodes[1..], context).ToBool().As<Bool>();
         var innerScope = new Scope(new Map(), Scope);
-
 
         if (condition.Value)
         {
