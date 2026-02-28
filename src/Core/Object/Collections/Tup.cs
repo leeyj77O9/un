@@ -92,9 +92,9 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
         return Bool.False;
     }
 
-    public override Obj Len() => new Int(Count);
+    public override Obj Len() => Int.From(Count);
 
-    public override Bool ToBool() => new(Count != 0);
+    public override Bool ToBool() => Bool.From(Count != 0);
 
     public override Str ToStr() => new($"({string.Join(", ", Value.Select(v => v.ToStr().As<Str>().Value))})");
 

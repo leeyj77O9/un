@@ -18,7 +18,7 @@ public class NFn : Fn
         if (Global.CallDepth++ > (int)Global.MAXRECURSIONDEPTH)
             throw new Panic("maximum recursion depth exceeded");
 
-        var scope = new Scope(new Map(), Closure ?? Scope.Empty);
+        var scope = new Scope(Closure ?? Scope.Empty);
         Bind(scope, args);
         
         Global.CallDepth--;

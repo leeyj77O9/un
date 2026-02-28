@@ -33,7 +33,7 @@ public class Tokenizer()
             else if (IsLetter(peek)) token = GetIdentifierToken();
             else if (IsOperator(peek)) token = GetOperatorToken();
             else if (IsBracket(peek)) token = GetBracketTokens(Read());
-            else token = new Token($"{peek}", TokenType.Error);
+            else token = new Token(peek.ToString(), TokenType.Error);
 
             if (token.Type == TokenType.Error)
                 throw new Panic("unexpected token: " + token.Value);
@@ -47,32 +47,40 @@ public class Tokenizer()
     #region Reader
     private char Peek() => code.Peek();
     private char Read() => code.Read();
-    private string ReadInt()
+    private Buffer ReadInt()
     {
-        string buffer = "";
-        while (!code.EOF && !code.EOL && char.IsAsciiDigit(Peek()))
-            buffer += Read();
+        Buffer buffer = new();
+        while (!code.EOF && !code.EOL && (char.IsAsciiDigit(Peek()) || Peek() == '_'))
+        {
+            var c = Read();
+            if (c != '_')
+                buffer.Add(c);
+        }
         return buffer;
     }
-    private bool TryReadInt(out string buffer)
-    {
-        buffer = "";
-        while (!code.EOF && !code.EOL && char.IsAsciiDigit(Peek()))
-            buffer += Read();
-        return buffer != "";
+    private bool TryReadInt(out Buffer buffer)
+    {       
+        buffer = new();
+        while (!code.EOF && !code.EOL && (char.IsAsciiDigit(Peek()) || Peek() == '_'))
+        {
+            var c = Read();
+            if (c != '_')
+                buffer.Add(c);
+        }
+        return buffer.Length != 0;
     }
-    private string ReadRange(params char[] chars)
+    private Buffer ReadRange(params char[] chars)
     {
-        string buffer = "";
+        Buffer buffer = new();
         while (!code.EOF && !code.EOL && Now(chars))
-            buffer += Read();
+            buffer.Add(Read());
         return buffer;
     }
-    private string ReadRange(Func<char, bool> func)
+    private Buffer ReadRange(Func<char, bool> func)
     {
-        string buffer = "";
+        Buffer buffer = new();
         while (!code.EOF && !code.EOL && func(Peek()))
-            buffer += Read();
+            buffer.Add(Read());
         return buffer;
     }
 
@@ -88,7 +96,8 @@ public class Tokenizer()
     #region Get Token
     private Token GetStringToken()
     {
-        List<char> buffer = [Read()];
+        Buffer buffer = new();
+        buffer.Add(Read());
         var next = Read();
         var isMultiLine = false;
 
@@ -98,10 +107,22 @@ public class Tokenizer()
             buffer.Add(next);
             buffer.Add(Read());
         }
+        else if (next == '\\')
+            buffer.Add(Read() switch
+            {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\\' => '\\',
+                '\'' => '\'',
+                '"' => '"',
+                '`' => '`',
+                _ => throw new Panic("unexpected escape character: " + buffer[^1])
+            });
         else buffer.Add(next);
         
         if (!isMultiLine && buffer[0] == buffer[^1])
-            return new Token(string.Join("", buffer[1..^1]), TokenType.String);
+            return new Token(new string(buffer.chars, 1, buffer.Length - 2), TokenType.String);
 
         while (!code.EOF)
         {
@@ -125,12 +146,12 @@ public class Tokenizer()
             if (buffer[0] == buffer[^1])
             {
                 if (!isMultiLine)
-                    return new Token(string.Join("", buffer[1..^1]), TokenType.String);
+                    return new Token(new string(buffer.chars, 1, buffer.Length - 2), TokenType.String);
                 next = Read();
                 if (!IsEnd() && buffer[0] == next && next == Peek())
                 {
                     Read();
-                    return new Token(string.Join("", buffer[3..^1]), TokenType.String);
+                    return new Token(new string(buffer.chars, 3, buffer.Length - 7), TokenType.String);
                 }
             }
         }
@@ -147,69 +168,70 @@ public class Tokenizer()
     }
     private Token GetNumberToken()
     {
-        string buffer = ReadInt();
+        Buffer buffer = ReadInt();
         var type = TokenType.Integer;
 
         if (code.EOF)
-            return new Token(buffer, type);
+            return new Token(buffer.ToString(), type);
         else if (IsFormation())
         {
             var peek = Peek();
 
-            buffer += Read();
-            buffer += peek switch
+            buffer.Add(Read());
+            buffer.Add(peek switch
             {
                 'x' or 'X' => ReadRange(char.IsAsciiHexDigit),
                 'o' or 'O' => ReadRange('0', '1', '2', '3', '4', '5', '6', '7'),
                 'b' or 'B' => ReadRange('0', '1'),
                 _ => throw new Panic("unexpected token: " + peek)
-            };
+            });
             
-            return new Token($"{System.Convert.ToInt64(buffer, buffer[..2] switch
+            return new Token(System.Convert.ToInt64(buffer.ToString(), buffer[1] switch
             {
-                "0x" => 16,
-                "0o" => 8,
-                "0b" => 2,
+                'x' => 16,
+                'o' => 8,
+                'b' => 2,
                 _ => 10
-            })}", type);
+            }).ToString(), type);
         }
         else if (Now('.'))
         {
-            buffer += Read();
+            buffer.Add(Read());
             if (!TryReadInt(out var number))
             {
                 code.Move(code.Index - 1, code.Line);
-                return new Token(buffer[..^1], TokenType.Integer);
+                return new Token(new string(buffer.chars, 0, buffer.Length - 1), TokenType.Integer);
             }
-            buffer += number;
+            buffer.Add(number);
             type = TokenType.Float;
         }                       
 
-        if (!code.EOF && !code.EOL &&Now('e', 'E'))
+        if (!code.EOF && !code.EOL && Now('e', 'E'))
         {
-            buffer += Read();
-            if (!code.EOF && !code.EOL &&Now('+', '-'))
-                buffer += Read();
+            buffer.Add(Read());
+            if (!code.EOF && !code.EOL && Now('+', '-'))
+                buffer.Add(Read());
 
             if (!TryReadInt(out var number))
                 return new Token("unexpected token: " + Peek(), TokenType.Error);
 
-            buffer += number;
+            buffer.Add(number);
             type = TokenType.Float;
         }         
 
-        return new Token(buffer, type);        
+        return new Token(buffer.ToString(), type);        
 
-        bool IsFormation() => buffer == "0" && !code.EOF && !code.EOL &&Now('x', 'X', 'b', 'B', 'o', 'O');
+        bool IsFormation() => buffer[0] == '0' && !code.EOF && !code.EOL &&Now('x', 'X', 'b', 'B', 'o', 'O');
     }
     private Token GetIdentifierToken()
     {
-        string buffer = new(Read(), 1);
+        Buffer buffer = new();
+        buffer.Add(Read());
 
         while (!code.EOF && !code.EOL &&(IsLetter(Peek()) || IsNumber(Peek())))
-            buffer += Read();
-        
-        return new Token(buffer, buffer switch
+            buffer.Add(Read());
+
+        return new Token(buffer.ToString(), buffer.ToString() switch
         {
             "true" => TokenType.Boolean,
             "false" => TokenType.Boolean,
@@ -250,17 +272,17 @@ public class Tokenizer()
             case '?':
                 if (Now('.'))
                     return new Token($"{chr}{Read()}", TokenType.QuestionDot);
-                return new Token($"{chr}", TokenType.Question);
+                return new Token(chr.ToString(), TokenType.Question);
             case '|':
                 if (Now('='))
                     return new Token($"{chr}{Read()}", TokenType.BOrAssign);
-                return new Token($"{chr}", TokenType.BOr);       
+                return new Token(chr.ToString(), TokenType.BOr);       
             case '-':
                 if (Now('>'))
                     return new Token($"{chr}{Read()}", TokenType.Return);
                 if (Now('='))
                     return new Token($"{chr}{Read()}", TokenType.MinusAssign);
-                return new Token($"{chr}", TokenType.Minus);
+                return new Token(chr.ToString(), TokenType.Minus);
             case '=':
             case '+':
             case '%':
@@ -280,7 +302,7 @@ public class Tokenizer()
                         '=' => TokenType.Equal,
                         _ => TokenType.Error
                     });
-                return new Token($"{chr}", chr switch
+                return new Token(chr.ToString(), chr switch
                     {
                         '+' => TokenType.Plus,
                         '-' => TokenType.Minus,
@@ -329,7 +351,7 @@ public class Tokenizer()
                             '*' => TokenType.AsteriskAssign,
                             _ => TokenType.Error
                         });
-                return new Token($"{chr}", chr switch
+                return new Token(chr.ToString(), chr switch
                         {
                             '/' => TokenType.Slash,
                             '<' => TokenType.LessThan,
@@ -348,7 +370,7 @@ public class Tokenizer()
             case ',':
             case '.':
             case '@':
-                return new Token($"{chr}", chr switch
+                return new Token(chr.ToString(), chr switch
                 {
                     '(' => TokenType.LParen,
                     ')' => TokenType.RParen,
@@ -366,11 +388,11 @@ public class Tokenizer()
                 break;
         }    
         
-        return new Token($"{chr}", TokenType.Error);
+        return new Token(chr.ToString(), TokenType.Error);
     }
     private Token GetBracketTokens(char bracket)
     {        
-        tokens.Add(new Token($"{bracket}", bracket switch
+        tokens.Add(new Token(bracket.ToString(), bracket switch
         {
             '(' => TokenType.LParen,
             '{' => TokenType.LBrace,
@@ -406,7 +428,7 @@ public class Tokenizer()
             else if (IsLetter(peek)) token = GetIdentifierToken();
             else if (IsOperator(peek)) token = GetOperatorToken();
             else if (IsBracket(peek)) token = GetBracketTokens(Read());
-            else token = new Token($"{peek}", TokenType.Error);
+            else token = new Token(peek.ToString(), TokenType.Error);
 
             if (token.Type == TokenType.Error)
                 return token;
@@ -423,7 +445,7 @@ public class Tokenizer()
 
         var end = Read();
 
-        return new Token($"{end}", end switch
+        return new Token(end.ToString(), end switch
         {
             ')' => TokenType.RParen,
             ']' => TokenType.RBrack,

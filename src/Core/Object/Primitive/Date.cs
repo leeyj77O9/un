@@ -49,49 +49,49 @@ public class Date(DateTime value) : Val<DateTime>(value, "date")
             {
                 Name = "year",
                 ReturnType = "int",
-                Func = _ => new Int(Value.Year)
+                Func = _ => Int.From(Value.Year)
             }
         },
         { "month", new NFn()
             {
                 Name = "month",
                 ReturnType = "int",
-                Func = _ => new Int(Value.Month)
+                Func = _ => Int.From(Value.Month)
             }
         },
         { "day", new NFn()
             {
                 Name = "day",
                 ReturnType = "int",
-                Func = _ => new Int(Value.Day)
+                Func = _ => Int.From(Value.Day)
             }
         },
         { "hour", new NFn()
             {
                 Name = "hour",
                 ReturnType = "int",
-                Func = _ => new Int(Value.Hour)
+                Func = _ => Int.From(Value.Hour)
             }
         },
         { "minute", new NFn()
             {
                 Name = "minute",
                 ReturnType = "int",
-                Func = _ => new Int(Value.Minute)
+                Func = _ => Int.From(Value.Minute)
             }
         },
         { "second", new NFn()
             {
                 Name = "second",
                 ReturnType = "int",
-                Func = _ => new Int(Value.Second)
+                Func = _ => Int.From(Value.Second)
             }
         },
         { "ms", new NFn()
             {
                 Name = "ms",
                 ReturnType = "int",
-                Func = _ => new Int(Value.Millisecond)
+                Func = _ => Int.From(Value.Millisecond)
             }
         },
     };

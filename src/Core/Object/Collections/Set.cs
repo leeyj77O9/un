@@ -27,7 +27,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
         _ => new Err($"unsupported operand type(s) for ^: 'set' and '{other.Type}'")
     };
 
-    public override Int Len() => new(Value.Count);
+    public override Int Len() => Int.From(Value.Count);
 
     public override Obj GetItem(Obj key) => Value.TryGetValue(key, out var value) ? value : new Err($"key {key.ToStr().As<Str>().Value} not found in set");
 
@@ -49,7 +49,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
                 {
                     if (!args["self"].As<Set>(out var self))
                         return new Err("invalid argument: self");
-                    return new Bool(self.Value.Add(args["value"]));
+                    return Bool.From(self.Value.Add(args["value"]));
                 }
             }
         },
@@ -61,7 +61,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
                 {
                     if (!args["self"].As<Set>(out var self))
                         return new Err("invalid argument: self");
-                    return new Bool(self.Value.Remove(args["value"]));
+                    return Bool.From(self.Value.Remove(args["value"]));
                 }
             }
         },
@@ -73,7 +73,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
                 {
                     if (!args["self"].As<Set>(out var self))
                         return new Err("invalid argument: self");
-                    return new Bool(self.Value.Contains(args["value"]));
+                    return Bool.From(self.Value.Contains(args["value"]));
                 }
             }
         },

@@ -83,15 +83,15 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
 
     public override Obj In(Obj obj) => obj switch
     {
-        List list => new Bool(Overlap(list)),
-        Tup tup => new Bool(Overlap(tup.ToList())),
+        List list => Bool.From(Overlap(list)),
+        Tup tup => Bool.From(Overlap(tup.ToList())),
 
         _ => new Err($"cannot check if '{obj.Type}' is in '{Type}'"),
     };
 
-    public override Obj Len() => new Int(Count);
+    public override Obj Len() => Int.From(Count);
 
-    public override Bool ToBool() => new(Count != 0);
+    public override Bool ToBool() => Bool.From(Count != 0);
 
     public override List ToList()
     {
@@ -178,7 +178,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
     {
         for (int i = 0; i < Count; i++)
             if (this[i].Eq(obj).As<Bool>().Value)
-                return RemoveAt(new(i));
+                return RemoveAt(Int.From(i));
         return Bool.False;
     }
 
@@ -197,11 +197,11 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
     {
         for (int i = 0; i < Count; i++)
             if (this[i].Eq(obj).As<Bool>().Value)
-                return new(i);
-        return new(-1);
+                return Int.From(i);
+        return Int.From(-1);
     }
 
-    public Bool Contains(Obj obj) => new(IndexOf(obj).Value != -1);
+    public Bool Contains(Obj obj) => Bool.From(IndexOf(obj).Value != -1);
 
     public void Order(Fn fn)
     {
@@ -218,7 +218,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         Array.Reverse(Value, 0, Count);
     }
 
-    public Int BinarySearch(Obj obj) => new(Array.BinarySearch(Value, 0, Count, obj));
+    public Int BinarySearch(Obj obj) => Int.From(Array.BinarySearch(Value, 0, Count, obj));
 
     public Int LowerBound(Obj obj)
     {
@@ -229,7 +229,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
             if (this[m].Lt(obj).As<Bool>().Value) l = m + 1;
             else r = m;
         }
-        return new(r);
+        return Int.From(r);
     }
 
     public Int UpperBound(Obj obj)
@@ -241,7 +241,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
             if (this[m].LtOrEq(obj).As<Bool>().Value) l = m + 1;
             else r = m;
         }
-        return new(r);
+        return Int.From(r);
     }
 
     public void HPush(Obj obj)
@@ -520,7 +520,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "pop", new NFn
             {
                 Name = "pop",
-                Args = [new Arg("index") { IsOptional = true, DefaultValue = new Int(0) }],
+                Args = [new Arg("index") { IsOptional = true, DefaultValue = Int.From(0) }],
                 Func = args =>
                 {
                     if (!args["self"].As<List>(out var self))

@@ -3,6 +3,7 @@ namespace Un;
 public class Node(string value, TokenType type)
 {
     public string Value { get; set; } = value;
+    public int Index { get; set; }
     public TokenType Type { get; set; } = type;
     public List<Node> Children { get; set; } = [];
 

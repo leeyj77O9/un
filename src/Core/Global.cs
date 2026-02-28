@@ -4,7 +4,6 @@ global using IMap = System.Collections.Generic.IDictionary<string, Un.Object.Obj
 global using OMap = System.Collections.Specialized.OrderedDictionary;
 
 using Un.Object;
-using Un.Object.IO;
 using Un.Object.Flow;
 using Un.Object.Util;
 using Un.Object.Iter;
@@ -12,7 +11,6 @@ using Un.Object.Function;
 using Un.Object.Primitive;
 using Un.Object.Collections;
 using System.Collections.Concurrent;
-using System.Collections.Specialized;
 
 namespace Un;
 
@@ -26,18 +24,8 @@ public static class Global
 
     public static int CallDepth = 0;
 
-    private static Scope scope = new(new ConcurrentDictionary<string, Obj>(), null!);
+    private static Scope scope = new(null!);
     private static ConcurrentDictionary<string, Obj> classes = new();
-
-    static Global()
-    {
-        classes["time"] = new Time();
-        classes["timer"] = new Object.Util.Timer(); 
-        classes["flow"] = new Flow();
-        classes["json"] = new Json(Obj.None);
-        classes["counter"] = new Counter();
-        classes["reverse"] = new Reverse([]);
-    }
 
     public static Attributes Package { get; private set; } = [];
 
@@ -58,6 +46,12 @@ public static class Global
         InitTypeByName<Dict>();
         InitTypeByName<Iters>("iter");
         InitTypeByName<Future>();
+        InitTypeByName<Time>();
+        InitTypeByName<Object.Util.Timer>();
+        InitTypeByName<Flow>();
+        InitTypeByName<Json>();
+        InitTypeByName<Counter>();
+        InitTypeByName<Reverse>();
 
         scope.Set("__name__", new Str("__main__"));
 
@@ -108,7 +102,7 @@ public static class Global
 
     public static void Import(string[] path, string nickname, string[] parts)
     {
-        var fullPath = Path.Combine(Global.PATH, Path.Join(path));
+        var fullPath = Path.Combine(PATH, Path.Join(path));
         bool isSpread = nickname == "*";
         bool isNickname = !string.IsNullOrEmpty(nickname);
 
@@ -166,34 +160,41 @@ public static class Global
         Map Merge()
         {
             var topMap = new Map();
+
+            void LoadFile(string filePath)
+            {
+                var inner = new Scope(GetGlobalScope());
+
+                Runner.Load(filePath, inner).Run();
+
+                var symbols = inner.GetSymbolTable();
+                var slots = inner.GetSlots();
+
+                foreach (var (key, index) in symbols)
+                {
+                    var value = slots[index];
+                    if (value is Obj obj)
+                        topMap.Add(key, obj);
+                }
+            }
+
             if (Directory.Exists(fullPath))
             {
                 foreach (var file in Directory.GetFiles(fullPath, "*.un"))
                 {
-                    var map = new Map();
-                    var inner = new Scope(map, GetGlobalScope());
-
-                    Runner.Load(file, inner).Run();
-
-                    foreach (var (key, value) in map)
-                        if (value is Obj obj)
-                            topMap.Add(key, obj);
+                    LoadFile(file);
                 }
-            }
-            else if (File.Exists(fullPath.EndsWith(".un") ? fullPath : fullPath + ".un"))
-            {
-                var map = new Map();
-                var inner = new Scope(map, GetGlobalScope());
-
-                Runner.Load(fullPath.EndsWith(".un") ? fullPath : fullPath + ".un", inner).Run();
-
-                foreach (var (key, value) in map)
-                    if (value is Obj obj)
-                        topMap.Add(key, obj);
             }
             else
             {
-                throw new Panic($"file or directory '{fullPath}' not found");
+                var filePath = fullPath.EndsWith(".un")
+                    ? fullPath
+                    : fullPath + ".un";
+
+                if (!File.Exists(filePath))
+                    throw new Panic($"file or directory '{fullPath}' not found");
+
+                LoadFile(filePath);
             }
 
             return topMap;

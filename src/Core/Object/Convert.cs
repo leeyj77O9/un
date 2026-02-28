@@ -115,13 +115,13 @@ public static class Convert
         var (value, type, _) = node;
 
         if (type == TokenType.Integer)
-            return new Int(System.Convert.ToInt64(value));
+            return Int.From(System.Convert.ToInt64(value));
         else if (type == TokenType.None)
             return Obj.None;
         else if (type == TokenType.Float)
             return new Float(System.Convert.ToDouble(value));
         else if (type == TokenType.Boolean && bool.TryParse(value, out var boolValue))
-            return new Bool(boolValue);
+            return Bool.From(boolValue);
         else if (type == TokenType.String)
             return new Str(value);
         else if (DateTime.TryParse(value, out var dateValue))
@@ -153,7 +153,7 @@ public static class Convert
             mixed += values[i].ToStr().As<Str>().Value;
         }
 
-        return new Str(mixed += raw[^1]);
+        return new Str(mixed + raw[^1]);
     }
 
     public static List<List<Node>> Split(this List<Node> nodes, TokenType type)

@@ -41,7 +41,7 @@ public class Stru(string type, string[] names) : Obj(type)
         Members = Members.New(),
     };
 
-    public override Obj Len() => new Int(names.Length);
+    public override Obj Len() => Int.From(names.Length);
 
     public override Obj Spread()
     {

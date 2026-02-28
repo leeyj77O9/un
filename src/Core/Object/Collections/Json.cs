@@ -4,14 +4,11 @@ using Un.Object.Primitive;
 
 namespace Un.Object.Collections;
 
-public class Json(Obj obj) : Ref<Obj>(obj, "json")
+public class Json : Ref<Obj>
 {
     private static readonly Tokenizer tokenizer = new();
     private static readonly Lexer lexer = new();
-    private static readonly Scope scope = new(new Map()
-    {
-        ["null"] = None,
-    }, Global.GetGlobalScope());
+    private static readonly Scope scope = new(Global.GetGlobalScope());
     private static UnFile buf = new("json", []);
 
     public int Count => Value switch
@@ -20,6 +17,17 @@ public class Json(Obj obj) : Ref<Obj>(obj, "json")
         List list => list.Count,
         _ => 1
     };
+
+    public Json() : base(None, "json")
+    {
+        scope.Set("null", None);
+    }
+
+    public Json(Obj obj) : base(obj, "json")
+    {
+        scope.Set("null", None);
+    }
+
 
     public override Obj Init(Tup args)
     {
@@ -58,7 +66,7 @@ public class Json(Obj obj) : Ref<Obj>(obj, "json")
         return new Err($"invalid json: expected string, dict, or list, got {args[0].Type}");
     }
 
-    public override Int Len() => new(Count);
+    public override Int Len() => Int.From(Count);
 
     public override Obj GetItem(Obj key) => Value.GetItem(key);
 

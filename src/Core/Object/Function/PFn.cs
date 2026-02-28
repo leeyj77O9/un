@@ -11,7 +11,7 @@ public class PFn(List<Node> nodes) : Fn
         if (Global.CallDepth++ > (int)Global.MAXRECURSIONDEPTH)
             throw new Panic("maximum recursion depth exceeded");
 
-        var scope = new Scope(new Map(), Closure ?? Scope.Empty);
+        var scope = new Scope(Closure ?? Scope.Empty);
         Bind(scope, args);
 
         var parser = new Parser(new(scope, new("lambda", ["lambda"]), []));

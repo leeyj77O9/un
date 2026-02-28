@@ -83,7 +83,7 @@ public class Obj(string type) : IComparable<Obj>
         return Bool.False;
     }
 
-    public virtual Obj Not() => new Bool(!ToBool().As<Bool>().Value);
+    public virtual Obj Not() => Bool.From(!ToBool().As<Bool>().Value);
 
     public virtual Obj BAnd(Obj other)
     {
@@ -138,7 +138,7 @@ public class Obj(string type) : IComparable<Obj>
         return Super is not null && !Super.IsNone() ? Super.Eq(other) : new Err($"unsupported operand type(s) for ==: '{Type}' and '{other.Type}'");
     }
 
-    public virtual Obj NEq(Obj other) => new Bool(!Eq(other).As<Bool>().Value);
+    public virtual Obj NEq(Obj other) => Bool.From(!Eq(other).As<Bool>().Value);
 
     public virtual Obj Lt(Obj other)
     {
@@ -147,11 +147,11 @@ public class Obj(string type) : IComparable<Obj>
         return Super is not null && !Super.IsNone() ? Super.Lt(other) : new Err($"unsupported operand type(s) for <: '{Type}' and '{other.Type}'");
     }
 
-    public virtual Obj Gt(Obj other) => new Bool(!Lt(other).As<Bool>().Value && !Eq(other).As<Bool>().Value);
+    public virtual Obj Gt(Obj other) => Bool.From(!Lt(other).As<Bool>().Value && !Eq(other).As<Bool>().Value);
 
-    public virtual Obj LtOrEq(Obj other) => new Bool(Lt(other).As<Bool>().Value || Eq(other).As<Bool>().Value);
+    public virtual Obj LtOrEq(Obj other) => Bool.From(Lt(other).As<Bool>().Value || Eq(other).As<Bool>().Value);
 
-    public virtual Obj GtOrEq(Obj other) => new Bool(!Lt(other).As<Bool>().Value);
+    public virtual Obj GtOrEq(Obj other) => Bool.From(!Lt(other).As<Bool>().Value);
 
     public virtual Obj Slicer(Int to, Int from, Int step)
     {
@@ -161,7 +161,7 @@ public class Obj(string type) : IComparable<Obj>
 
         do
         {
-            list.Append(GetItem(new Int(a)));
+            list.Append(GetItem(Int.From(a)));
             a += step.Value;
         } while (a < b);
 

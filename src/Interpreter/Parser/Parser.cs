@@ -1,8 +1,8 @@
 using Un.Object;
-using Un.Object.Iter;
-using Un.Object.Primitive;
 using Un.Object.Collections;
 using Un.Object.Function;
+using Un.Object.Iter;
+using Un.Object.Primitive;
 
 namespace Un;
 
@@ -72,27 +72,31 @@ public class Parser(Context context)
         var hasFields = colon == 3 || (colon == -1 && nodes.Count > 2 && nodes[2].Type == TokenType.Call);
         var fields = hasFields ? nodes[2].Children : [];
         var body = context.File.GetBody();
-        var members = new Map();
+
         var types = new HashSet<string>();
         var superType = "";
+
+        var innerScope = new Scope(context.Scope);
 
         foreach (var value in Fn.GetArgs(fields, context))
         {
             if (value.IsEssential)
-                members.Add(value.Name, Obj.None);
+                innerScope.Declare(value.Name, Obj.None);
             else if (value.IsOptional)
-                members.Add(value.Name, value.DefaultValue ?? throw new Panic("invalid classs syntax"));
+                innerScope.Declare(value.Name, value.DefaultValue
+                    ?? throw new Panic("invalid class syntax"));
         }
 
-        var innerContext = new Context(new(members), new UnFile(name, body), []);
+ 
+        var innerContext = new Context(innerScope, new UnFile(name, body), []);
 
         Runner.Load(innerContext, context).Run();
 
         if (isInherit)
         {
             var inherits = nodes.Split(TokenType.Colon);
-
-            if (inherits.Count != 2) throw new Error("invalid class syntax", context);
+            if (inherits.Count != 2)
+                throw new Error("invalid class syntax", context);
 
             var supers = inherits[1].Split(TokenType.Comma);
             superType = supers[0][^1].Value;
@@ -100,23 +104,40 @@ public class Parser(Context context)
             types.Add(superType);
 
             foreach (var super in supers.Skip(1))
+            {
                 if (super[^1] is { Type: TokenType.Identifier })
                 {
                     var superName = super[^1].Value;
+
                     if (!Global.TryGetClass(superName, out Obj? superObj))
                         throw new Error($"superclass {superName} is not defined", context);
 
                     types.Add(superName);
+
                     foreach (var (key, value) in superObj?.Members ?? [])
-                        members.TryAdd(key, value);
+                    {
+                        if (!innerScope.ContainsKeyInTop(key))
+                            innerScope.Declare(key, value);
+                    }
                 }
-                else throw new Error("invalid class syntax", context);
+                else
+                    throw new Error("invalid class syntax", context);
+            }
+        }
+
+        var members = new Map();
+
+        foreach (var (key, index) in innerScope.GetSymbolTable())
+        {
+            var value = innerScope.GetSlots()[index];
+            members.Add(key, value);
         }
 
         if (IsEmpty(body) && colon < 4)
         {
-            
-            Global.SetClass(name, new Stru(name, [..fields.Split(TokenType.Comma).Select(x => x[0].Value)])
+            Global.SetClass(name, new Stru(
+                name,
+                [.. fields.Split(TokenType.Comma).Select(x => x[0].Value)])
             {
                 Annotations = context.Annotations,
                 Super = isInherit ? Global.GetClass(superType) : Obj.None,
@@ -124,6 +145,7 @@ public class Parser(Context context)
             });
         }
         else
+        {
             Global.SetClass(name, new Obj(name)
             {
                 Annotations = context.Annotations,
@@ -131,6 +153,7 @@ public class Parser(Context context)
                 Types = types,
                 Members = members
             });
+        }
 
         context.Annotations = [];
 
@@ -156,7 +179,7 @@ public class Parser(Context context)
             var splited = line.Split(",");
             foreach (var member in splited)
                 if (!string.IsNullOrWhiteSpace(member.Trim()))
-                    constants.Add(member.Trim(), new Int(i++));
+                    constants.Add(member.Trim(), Int.From(i++));
         }
 
         Global.SetClass(name, new Enu(name, 0)
@@ -282,7 +305,7 @@ public class Parser(Context context)
         var inIdx = nodes.FindIndex(x => x.Type == TokenType.In);
         var vars = nodes[..inIdx][1..].Split(TokenType.Comma).Select(x => x[0]).ToList();
         var iter = Operator.On(nodes[(inIdx + 1)..], context).Iter().As<Iters>().Value;
-        var innerScope = new Scope(new Map(), Scope);
+        var innerScope = new Scope(Scope);
         var innerContext = new Context(innerScope, new("for", context.File.GetBody()), []);
         var runner = Runner.Load(innerContext, context);
 
@@ -328,7 +351,7 @@ public class Parser(Context context)
     {
         var expr = nodes[1..];
         var body = context.File.GetBody();
-        var innerScope = new Scope(new Map(), Scope);
+        var innerScope = new Scope(Scope);
         var innerContext = new Context(innerScope, new("while", body), []);
         innerContext.EnterBlock("loop");
 
@@ -343,7 +366,10 @@ public class Parser(Context context)
             }
             else if (ReturnValue?.Type == "skip")
                 ReturnValue = null!;
+
+            innerContext.File.Move(0, 0);
         }
+
         
         innerContext.ExitBlock();
 
@@ -352,7 +378,7 @@ public class Parser(Context context)
     private Obj ParseIf()
     {
         Bool condition = nodes[0].Type == TokenType.Else ? Bool.True : Operator.On(nodes[1..], context).ToBool().As<Bool>();
-        var innerScope = new Scope(new Map(), Scope);
+        var innerScope = new Scope(Scope);
 
         if (condition.Value)
         {
@@ -381,7 +407,7 @@ public class Parser(Context context)
     private Obj ParseTry()
     {
         var body = context.File.GetBody();
-        var innerScope = new Scope(new Map(), Scope);
+        var innerScope = new Scope(Scope);
         var innerContext = new Context(innerScope, new("try", body), []);
 
         innerContext.EnterBlock("try");

@@ -1,68 +1,108 @@
-﻿using Un;
+﻿using System.Diagnostics;
+using Un;
 
 Runner? runner = null;
 
+#if DEBUG
 try
 {
-    if (args.Length == 1 && args[0] == "--test")
-    {
-        foreach (var file in Directory.GetFiles("test/", "*.un"))
-        {
-            Console.WriteLine($"Running test: {file}");
-            Global.Init("");
-            runner = Runner.Load(file, Global.GetGlobalScope());
-            runner.Run();
-            Console.WriteLine($"Test {file} passed.");
-        }
-    }
-    else if (args.Length == 2)
-    {
-        Global.Init(args[0]);
-        runner = Runner.Load(args[1], Global.GetGlobalScope());
-        runner.Run();
-    }
-    else
-    {    
-        Global.Init("/workspaces/Un/src/");
-        runner = Runner.Load("main.un", Global.GetGlobalScope());
-        runner.Run();    
-        //throw new Panic("not enough arguments");
-    }
+    Global.Init("C:/Project/un/");
+    runner = Runner.Load("src/main.un", Global.GetGlobalScope());
+    runner.Run();
 }
 catch (Exception e)
 {
+    Environment.ExitCode = 1;
+    PrintError(e);
+}
+#endif
+#if RELEASE
+if (args.Length == 0)
+{
+    PrintHelp();
+    return;
+}
+
+
+var cmd = args[0];
+
+switch (cmd)
+{
+    case "run":
+        Run();
+        break;
+    case "help":
+        PrintHelp();
+        break;
+    default:
+        Console.WriteLine($"Unknown command: {cmd}");
+        PrintHelp();
+        break;
+}
+#endif
+
+void PrintHelp()
+{
+    Console.WriteLine("Help:");
+    Console.WriteLine("  un run <file.un>");
+}
+
+void PrintError(Exception e)
+{
     Console.ForegroundColor = ConsoleColor.Red;
-    Console.WriteLine(e.ToString());
+    Console.WriteLine(e);
     Console.ResetColor();
 
-    if (runner is not null && runner.Context.BlockStackTrace.Length > 1)
+    if (runner is null) return;
+
+    var stack = runner.Context.BlockStackTrace;
+    if (stack.Length <= 1) return;
+
+    Console.ForegroundColor = ConsoleColor.Yellow;
+    Console.WriteLine("    trace:");
+    Console.ResetColor();
+
+    var blocksToPrint = stack.Length > 11
+        ? stack.Skip(1).Take(10).Reverse()
+        : stack.Skip(1).Reverse();
+
+    foreach (var block in blocksToPrint)
     {
-        // trace 제목 노란색
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("    trace:");
+        Console.Write("\t");
+
+        Console.ForegroundColor = ConsoleColor.Blue;
+        Console.Write(block.Code.Trim());
         Console.ResetColor();
 
-        var blockStack = runner.Context.BlockStackTrace;
+        Console.WriteLine($" :[{block.Line + 1}] ({block.Type})");
+    }
 
-        var blocksToPrint = blockStack.Length > 11
-            ? blockStack.Skip(1).Take(10).Reverse()
-            : blockStack.Skip(1).Reverse();
+    if (stack.Length > 10)
+    {
+        Console.ForegroundColor = ConsoleColor.Gray;
+        Console.WriteLine($"\t... (truncated [{stack.Length - 11}+])");
+        Console.ResetColor();
+    }
+}
 
-        foreach (var block in blocksToPrint)
-        {
-            // 코드 줄: 기본색, 코드 텍스트 강조 파랑
-            Console.Write("\t");
-            Console.ForegroundColor = ConsoleColor.Blue;
-            Console.Write(block.Code.Trim());
-            Console.ResetColor();
-            Console.WriteLine($" :[{block.Line + 1}] ({block.Type})");
-        }
+void Run()
+{
+    if (args.Length < 2)
+    {
+        Console.WriteLine("Usage: un run <file>");
+        return;
+    }
 
-        if (blockStack.Length > 10)
-        {
-            Console.ForegroundColor = ConsoleColor.Gray;
-            Console.WriteLine($"\t... (truncated [{blockStack.Length - 11}+])");
-            Console.ResetColor();
-        }
+    try
+    {
+        Global.Init(Environment.CurrentDirectory);
+        runner = Runner.Load(args[1], Global.GetGlobalScope());
+        runner.Run();
+    }
+    catch (Exception e)
+    {
+        Environment.ExitCode = 1;
+
+        PrintError(e);
     }
 }

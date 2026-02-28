@@ -54,7 +54,7 @@ public class Timer() : Ref<Stopwatch>(new(), "timer")
             {
                 Name = "ms",
                 ReturnType = "int",
-                Func = _ => new Int(Value.ElapsedMilliseconds)
+                Func = _ => Int.From(Value.ElapsedMilliseconds)
             }
         },
     };

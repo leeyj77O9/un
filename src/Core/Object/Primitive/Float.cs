@@ -51,8 +51,8 @@ public class Float(double value) : Val<double>(value, "float")
 
     public override Obj IDiv(Obj other) => other switch
     {
-        Int i => i.Value == 0 ? new Err($"{Type} division by zero") : new Int((long)Value / i.Value),
-        Float f => f.Value == 0 ? new Err($"{Type} division by zero") : new Int((long)(Value / f.Value)),
+        Int i => i.Value == 0 ? new Err($"{Type} division by zero") : Int.From((long)Value / i.Value),
+        Float f => f.Value == 0 ? new Err($"{Type} division by zero") : Int.From((long)(Value / f.Value)),
         _ => new Err($"unsupported operand type(s) for //: 'float' and '{other.Type}'")
     };
 
@@ -69,52 +69,52 @@ public class Float(double value) : Val<double>(value, "float")
 
     public override Obj Eq(Obj other) => other switch
     {
-        Int i => new Bool(Value == i.Value),
-        Float f => new Bool(Value == f.Value),
+        Int i => Bool.From(Value == i.Value),
+        Float f => Bool.From(Value == f.Value),
         Obj o when o.IsNone() => Bool.False,
         _ => new Err($"unsupported operand type(s) for ==: 'float' and '{other.Type}'")
     };
 
     public override Obj NEq(Obj other) => other switch
     {
-        Int i => new Bool(Value != i.Value),
-        Float f => new Bool(Value != f.Value),
+        Int i => Bool.From(Value != i.Value),
+        Float f => Bool.From(Value != f.Value),
         Obj o when o.IsNone() => Bool.True,
         _ => new Err($"unsupported operand type(s) for !=: 'float' and '{other.Type}'")
     };
 
     public override Obj Lt(Obj other) => other switch
     {
-        Int i => new Bool(Value < i.Value),
-        Float f => new Bool(Value < f.Value),
+        Int i => Bool.From(Value < i.Value),
+        Float f => Bool.From(Value < f.Value),
         _ => new Err($"unsupported operand type(s) for <: 'float' and '{other.Type}'")
     };
 
     public override Obj Gt(Obj other) => other switch
     {
-        Int i => new Bool(Value > i.Value),
-        Float f => new Bool(Value > f.Value),
+        Int i => Bool.From(Value > i.Value),
+        Float f => Bool.From(Value > f.Value),
         _ => new Err($"unsupported operand type(s) for >: 'float' and '{other.Type}'")
     };
 
     public override Obj LtOrEq(Obj other) => other switch
     {
-        Int i => new Bool(Value <= i.Value),
-        Float f => new Bool(Value <= f.Value),
+        Int i => Bool.From(Value <= i.Value),
+        Float f => Bool.From(Value <= f.Value),
         _ => new Err($"unsupported operand type(s) for <=: 'float' and '{other.Type}'")
     };
 
     public override Obj GtOrEq(Obj other) => other switch
     {
-        Int i => new Bool(Value >= i.Value),
-        Float f => new Bool(Value >= f.Value),
+        Int i => Bool.From(Value >= i.Value),
+        Float f => Bool.From(Value >= f.Value)        ,
         _ => new Err($"unsupported operand type(s) for >=: 'float' and '{other.Type}'")
     };
 
-    public override Int ToInt() => new((long)Value);
+    public override Int ToInt() => Int.From((long)Value);
     public override Float ToFloat() => new(Value);
     public override Str ToStr() => new(Value.ToString());
-    public override Bool ToBool() => new(Value != 0);
+    public override Bool ToBool() => Bool.From(Value != 0);
 
     public override Obj Copy() => new Float(Value)
     {

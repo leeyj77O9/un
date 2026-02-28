@@ -16,7 +16,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
 
     public IEnumerator<Obj> Enumerator { get; private set; } = null!;
 
-    public override Obj Len() => new Int(Value.Count());
+    public override Obj Len() => Int.From(Value.Count());
 
     public override Obj Iter() => this;
 
@@ -100,7 +100,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
                     if (args["self"] is not Iters self)
                         return new Err("invalid argument: 'self'");
 
-                    return new Int(self.Value.Count());
+                    return Int.From(self.Value.Count());
                 }
             }
         },
@@ -206,7 +206,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
                         return res.As<Bool>(out var v) && v.Value;
                     });
 
-                    return new Bool(result);
+                    return Bool.From(result);
                 }
             }
         },
@@ -228,7 +228,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
                         return res.As<Bool>(out var v) && v.Value;
                     });
 
-                    return new Bool(result);
+                    return Bool.From(result);
                 }
             }
         }

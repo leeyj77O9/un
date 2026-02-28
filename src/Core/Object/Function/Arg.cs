@@ -1,7 +1,9 @@
 namespace Un.Object.Function;
 
-public class Arg(string name)
+public struct Arg(string name)
 {
+    public readonly static Arg Null = new("null");
+
     public string Name { get; set; } = name;
     public string Type { get; set; } = "any";
 
@@ -21,4 +23,6 @@ public class Arg(string name)
         IsKeyword = IsKeyword,
         DefaultValue = DefaultValue,
     };
+
+    public readonly bool IsNull() => Name == "null";
 }

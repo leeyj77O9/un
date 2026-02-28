@@ -16,7 +16,7 @@ public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value,
         _ => new Err($"invaild '{Type}' initialize"),
     };
 
-    public override Int Len() => new(Value.Count);
+    public override Int Len() => Int.From(Value.Count);
 
     public override Obj GetItem(Obj key) => Value.TryGetValue(key, out var value) ? value : new Err($"key '{key.ToStr().As<Str>().Value}' not found in dictionary");
 
@@ -27,7 +27,7 @@ public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value,
 
     public override Obj In(Obj obj) => obj switch
     {
-        Dict dict => new Bool(Overlap(dict)),
+        Dict dict => Bool.From(Overlap(dict)),
         _ => new Err($"cannot check if '{obj.Type}' is in '{Type}'"),
     };
 
@@ -85,7 +85,7 @@ public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value,
                     if (!args["self"].As<Dict>(out var self))
                         return new Err("invalid argument");
 
-                    return new Bool(self.Value.Remove(args["key"]));
+                    return Bool.From(self.Value.Remove(args["key"]));
                 }
             }
         },
@@ -116,7 +116,7 @@ public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value,
                     if (!args["self"].As<Dict>(out var self))
                         return new Err("invalid argument");
 
-                    return new Bool(self.Value.ContainsKey(args["key"]));
+                    return Bool.From(self.Value.ContainsKey(args["key"]));
                 }
             }
         },
@@ -131,7 +131,7 @@ public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value,
                     if (!args["self"].As<Dict>(out var self))
                         return new Err("invalid argument");
 
-                    return new Bool(self.Value.ContainsValue(args["value"]));
+                    return Bool.From(self.Value.ContainsValue(args["value"]));
                 }
             }
         },

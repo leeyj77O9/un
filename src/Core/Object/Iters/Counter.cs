@@ -8,7 +8,9 @@ public class Counter : Iters
 {
     protected long current = 0;
 
-    public Counter(long start = 0)
+    public Counter() : this(0) { }
+
+    public Counter(long start)
     {
         Type = "counter";
         current = start;
@@ -21,7 +23,7 @@ public class Counter : Iters
         _ => new Err($"invaild '{Type}' initialize"),
     };
 
-    public override Obj Len() => new Int(long.MaxValue);
+    public override Obj Len() => Int.From(long.MaxValue);
 
     public override Obj Iter() => this;
 
@@ -42,6 +44,6 @@ public class Counter : Iters
     {
         long i = start;
         while (true)
-            yield return new Int(i++);
+            yield return Int.From(i++);
     }
 }

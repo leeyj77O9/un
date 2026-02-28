@@ -39,8 +39,8 @@ public class Fn() : Obj("fn")
 
         int unnamedIndex = 0;
         var argNames = new HashSet<string>();
-        Arg positionalArg = null!;
-        Arg keywordArg = null!;
+        Arg positionalArg = Arg.Null;
+        Arg keywordArg = Arg.Null;
 
         bool positionalReached = false;
 
@@ -106,7 +106,7 @@ public class Fn() : Obj("fn")
 
         if (unnamedIndex < unnamed.Count)
         {
-            if (positionalArg != null)
+            if (!positionalArg.IsNull())
             {
                 var rest = unnamed.Skip(unnamedIndex);
                 scope[positionalArg.Name] = new Tup([.. rest], new string[rest.Count()]);
@@ -117,12 +117,12 @@ public class Fn() : Obj("fn")
             }
         }
 
-        if (positionalArg != null && !scope.ContainsKeyInTop(positionalArg.Name))
+        if (!positionalArg.IsNull() && !scope.ContainsKeyInTop(positionalArg.Name))
             scope[positionalArg.Name] = new Tup([], []);
 
         if (extraNamed.Count > 0)
         {
-            if (keywordArg != null)
+            if (!keywordArg.IsNull())
             {
                 var dict = new Dict();
                 foreach (var (k, v) in extraNamed)

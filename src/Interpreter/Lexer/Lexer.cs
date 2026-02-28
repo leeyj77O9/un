@@ -245,7 +245,7 @@ public class Lexer()
         int start = index-1, end = index-1, depth = 0;
         var closer = opener.GetCloser();
 
-        while (end < this.tokens.Count)
+        while (end < tokens.Count)
         {
             var (_, type) = Peek(end);
             if (type.IsRightBracket())

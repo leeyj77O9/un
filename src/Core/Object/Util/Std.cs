@@ -160,7 +160,7 @@ public class Std : IPack
                    new Arg("code") {
                     Type = "int",
                     IsOptional = true,
-                    DefaultValue = new Int(0)
+                    DefaultValue = Int.From(0)
                 }],
                 Func = (args) =>
                 {
@@ -191,7 +191,7 @@ public class Std : IPack
                 }, new Arg("size") {
                     Type = "tuple[int]",
                     IsPositional = true,
-                    DefaultValue = new Tup([new Int(1)], [])
+                    DefaultValue = new Tup([Int.From(1)], [])
                 }],
                 Func = (args) =>
                 {
@@ -219,7 +219,7 @@ public class Std : IPack
                     new Arg("start") {
                         Type = "int",
                         IsOptional = true,
-                        DefaultValue = new Int(0),
+                        DefaultValue = Int.From(0),
                     },
                     new Arg("stop") {
                         Type = "int",
@@ -228,7 +228,7 @@ public class Std : IPack
                     new Arg("step") {
                         Type = "int",
                         IsOptional = true,
-                        DefaultValue = new Int(1),
+                        DefaultValue = Int.From(1),
                     }
                 ],
                 Func = (args) =>
@@ -261,7 +261,7 @@ public class Std : IPack
                     List enumerate = [];
 
                     for (int i = 0; i < len; i++)
-                        enumerate.Append(new Tup([new Int(i), iter.Next()], ["index", "value"]));
+                        enumerate.Append(new Tup([Int.From(i), iter.Next()], ["index", "value"]));
 
                     return enumerate;
                 }
@@ -290,7 +290,7 @@ public class Std : IPack
                     {
                         List tuple = [];
                         foreach (var array in source.Value)
-                            tuple.Append(array.Len().As<Int>().Value <= i ? Obj.None : array.GetItem(new Int(i)));
+                            tuple.Append(array.Len().As<Int>().Value <= i ? Obj.None : array.GetItem(Int.From(i)));
                         list.Append(new Tup([..tuple], [.. new string(' ', tuple.Count).Split()]));
                     }
 
@@ -307,7 +307,7 @@ public class Std : IPack
                         IsEssential = true,
                     }
                 ],
-                Func = (args) => new Int(args["value"].GetHashCode())
+                Func = (args) => Int.From(args["value"].GetHashCode())
             }
         },
         { "open", new NFn()
@@ -349,7 +349,7 @@ public class Std : IPack
                         else if (tuple[0].As<Tup>(out var t))
                             tuple = t;
                         else if (tuple[0].As<Iter.Range>(out var r))
-                            return new Int(r.Value.Sum(x => x.As<Int>().Value));
+                            return Int.From(r.Value.Sum(x => x.As<Int>().Value));
                         else if (tuple[0].As<Iters>(out var it))
                             tuple = it.ToTuple();
                         else
@@ -446,7 +446,7 @@ public class Std : IPack
                     new Arg("digit") {
                         Type = "int",
                         IsOptional = true,
-                        DefaultValue = new Int(0),
+                        DefaultValue = Int.From(0),
                     }
                 ],
                 Func = (args) =>
@@ -468,7 +468,7 @@ public class Std : IPack
 
                     v = Math.Round(v, d);
 
-                    return d == 0 || double.IsInteger(v) ? new Int((long)v) : new Float(v);
+                    return d == 0 || double.IsInteger(v) ? Int.From((long) v) : new Float(v);
                 }
             }
         },
@@ -484,7 +484,7 @@ public class Std : IPack
                 ],
                 Func = (args) => args["value"] switch
                 {
-                    Int i => new Int(Math.Abs(i.Value)),
+                    Int i => Int.From(Math.Abs(i.Value)),
                     Float f => new Float(Math.Abs(f.Value)),
                     _ => new Float(double.NaN),
                 }
@@ -502,10 +502,10 @@ public class Std : IPack
                 ],
                 Func = (args) => args["value"] switch
                 {
-                    Int i => new Int(i.Value),
+                    Int i => Int.From(i.Value),
                     Float f => Math.Ceiling(f.Value) switch
                     {
-                        double d when d == (long)d => new Int((long)d),
+                        double d when d == (long)d => Int.From((long) d),
                         double d => new Float(d),
                     },
                     _ => new Float(double.NaN),
@@ -542,10 +542,10 @@ public class Std : IPack
                 ],
                 Func = (args) => args["value"] switch
                 {
-                    Int i => new Int(i.Value),
+                    Int i => Int.From(i.Value),
                     Float f => Math.Floor(f.Value) switch
                     {
-                        double d when d == (long)d => new Int((long)d),
+                        double d when d == (long)d => Int.From((long) d),
                         double d => new Float(d),
                     },
                     _ => new Float(double.NaN),
@@ -765,7 +765,7 @@ public class Std : IPack
                         AutoFlush = false
                     };
 
-                    return new Tup([returned, new Int(sw.ElapsedMilliseconds)], ["value", "time"]);
+                    return new Tup([returned, Int.From(sw.ElapsedMilliseconds)], ["value", "time"]);
                 }
             }
 

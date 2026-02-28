@@ -50,7 +50,7 @@ public class Lock : Obj
                 {
                     bool success = Monitor.TryEnter(syncRoot);
                     isHeld.Value = success;
-                    return new Bool(success);
+                    return Bool.From(success);
                 }
             }
         },

@@ -11,7 +11,7 @@ public class GFn(Fn func) : Fn
     public override Obj Clone() => new GFn(func)
     {
         Name = Name,
-        Args = [..Args.Select(arg => arg.New() ?? throw new Panic("failed to clone argument"))],
+        Args = [..Args.Select(arg => arg.New().IsNull() ? throw new Panic("failed to clone argument") : arg.New())],
         ReturnType = ReturnType,
         Self = Self,
         Super = Super?.Clone()!,

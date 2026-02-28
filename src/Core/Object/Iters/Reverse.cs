@@ -5,6 +5,11 @@ namespace Un.Object.Iter;
 
 public class Reverse : Iters
 {
+    public Reverse() : base()
+    {
+        Type = "reverse";
+    }
+
     public Reverse(IEnumerable<Obj> values) : base(values)
     {
         Type = "reverse";

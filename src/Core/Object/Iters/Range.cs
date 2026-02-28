@@ -23,8 +23,8 @@ public class Range : Iters
     public override Obj Len()
     {
         if ((step > 0 && start >= stop) || (step < 0 && start <= stop))
-            return new Int(0);
-        return new Int((stop - start + step - (step > 0 ? 1 : -1)) / step);
+            return Int.From(0);
+        return Int.From((stop - start + step - (step > 0 ? 1 : -1)) / step);
     }
 
     public override Obj Iter() => this;
@@ -53,9 +53,9 @@ public class Range : Iters
         if (step == 0) throw new Panic("step cannot be zero");
         if (step > 0)
             for (long i = start; i < stop; i += step)
-                yield return new Int(i);
+                yield return Int.From(i);
         else
             for (long i = start; i > stop; i += step)
-                yield return new Int(i);
+                yield return Int.From(i);
     }
 }

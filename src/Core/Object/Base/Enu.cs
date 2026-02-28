@@ -16,19 +16,19 @@ public class Enu(string type, int n) : Obj(type)
 
     public override Str ToStr() => new(Type);
 
-    public override Int ToInt() => new(N);
+    public override Int ToInt() => Int.From(N);
 
     public override Obj Eq(Obj other) => other switch
     {
-        Int i => new Bool(N == i.Value),
-        Enu e => Type == other.Type ? new Bool(N == e.N) : base.Eq(e),
+        Int i => Bool.From(N == i.Value),
+        Enu e => Type == other.Type ? Bool.From(N == e.N) : base.Eq(e),
         _ => new Err($"unsupported operand type(s) for ==: '{Type}' and '{other.Type}'")
     };
 
     public override Obj Lt(Obj other) => other switch
     {
-        Int i => new Bool(N < i.Value),
-        Enu e => Type == other.Type ? new Bool(N < e.N) : base.Eq(e),
+        Int i => Bool.From(N < i.Value),
+        Enu e => Type == other.Type ? Bool.From(N < e.N) : base.Eq(e),
         _ => new Err($"unsupported operand type(s) for <: '{Type}' and '{other.Type}'")
     };
 }

@@ -15,7 +15,7 @@ public class Flow : Obj, IPack
         { "spawn", new NFn()
             {
                 Name = "spawn",
-                Args = [ new Arg("worker") { Type = "int", IsOptional = true, DefaultValue = new Int(4) } ],
+                Args = [ new Arg("worker") { Type = "int", IsOptional = true, DefaultValue = Int.From(4) } ],
                 ReturnType = "pool",
                 Func = args => new Pool(args["worker"].As<Int>($"expected 'worker' argument to be of type 'int'").Value)
             }
