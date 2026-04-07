@@ -57,7 +57,7 @@ public static class Convert
     public static Tup ToPair(Node node, Context context)
     {
         var temp = node.Children.Split(TokenType.Colon).ToList();
-        return new([new Str(temp[0][0].Value), Operator.On(temp[1], context)], []);
+        return new([Operator.On(temp[0], context), Operator.On(temp[1], context)], []);
     }
 
     public static Dict ToDict(Node node, Context context) => new(node.Children.Split(TokenType.Comma).Select(x => ToPair(new("pair", TokenType.Pair) { Children = x }, context)).Select(y => (y[0], y[1])).ToDictionary());
@@ -107,7 +107,7 @@ public static class Convert
         }
 
         return node.Children.Count == 0 ? Mix(raw, values)
-            : context.Scope[$"{node.Children[0].Value}"].Call(new Tup([new Tup([.. raw.Select(x => new Str(x))], [""]), .. values.Value[..values.Count]], ["", .. new string(' ', values.Count).Split()]));
+            : context.Scope[$"{node.Children[0].Value}"].Call(new Tup([new Tup([.. raw.Select(Str.From)], [""]), .. values.Value[..values.Count]], ["", .. new string(' ', values.Count).Split()]));
     }
 
     public static Obj Auto(Node node, Context context)
@@ -123,7 +123,7 @@ public static class Convert
         else if (type == TokenType.Boolean && bool.TryParse(value, out var boolValue))
             return Bool.From(boolValue);
         else if (type == TokenType.String)
-            return new Str(value);
+            return Str.From(value);
         else if (DateTime.TryParse(value, out var dateValue))
             return new Date(dateValue);
         else if (type == TokenType.List)
@@ -143,17 +143,17 @@ public static class Convert
 
     private static Str Mix(List<string> raw, List values)
     {
-        if (raw.Count == 1) return new Str(raw[0]);
+        if (raw.Count == 1) return Str.From(raw[0]);
 
         string mixed = "";
 
         for (int i = 0; i < raw.Count - 1; i++)
         {
             mixed += raw[i];
-            mixed += values[i].ToStr().As<Str>().Value;
+            mixed += values[i].ToStr().As<Str>(out var str) ? str.Value : values[i].Repr().As<Str>().Value;
         }
 
-        return new Str(mixed + raw[^1]);
+        return Str.From(mixed + raw[^1]);
     }
 
     public static List<List<Node>> Split(this List<Node> nodes, TokenType type)

@@ -59,7 +59,7 @@ public class Tokenizer()
         return buffer;
     }
     private bool TryReadInt(out Buffer buffer)
-    {       
+    {
         buffer = new();
         while (!code.EOF && !code.EOL && (char.IsAsciiDigit(Peek()) || Peek() == '_'))
         {
@@ -84,12 +84,12 @@ public class Tokenizer()
         return buffer;
     }
 
-    private bool Now(params char[] chars) 
+    private bool Now(params char[] chars)
     {
         foreach (var chr in chars)
             if (!code.EOF && !code.EOL && Peek() == chr)
                 return true;
-        return false;            
+        return false;
     }
     #endregion
 
@@ -120,7 +120,7 @@ public class Tokenizer()
                 _ => throw new Panic("unexpected escape character: " + buffer[^1])
             });
         else buffer.Add(next);
-        
+
         if (!isMultiLine && buffer[0] == buffer[^1])
             return new Token(new string(buffer.chars, 1, buffer.Length - 2), TokenType.String);
 
@@ -157,7 +157,7 @@ public class Tokenizer()
         }
 
         return new Token("unclosed string literal", TokenType.Error);
-    } 
+    }
     private Token GetFStringToken()
     {
         Token str = GetStringToken();
@@ -185,7 +185,7 @@ public class Tokenizer()
                 'b' or 'B' => ReadRange('0', '1'),
                 _ => throw new Panic("unexpected token: " + peek)
             });
-            
+
             return new Token(System.Convert.ToInt64(buffer.ToString(), buffer[1] switch
             {
                 'x' => 16,
@@ -204,7 +204,7 @@ public class Tokenizer()
             }
             buffer.Add(number);
             type = TokenType.Float;
-        }                       
+        }
 
         if (!code.EOF && !code.EOL && Now('e', 'E'))
         {
@@ -217,18 +217,18 @@ public class Tokenizer()
 
             buffer.Add(number);
             type = TokenType.Float;
-        }         
+        }
 
-        return new Token(buffer.ToString(), type);        
+        return new Token(buffer.ToString(), type);
 
-        bool IsFormation() => buffer[0] == '0' && !code.EOF && !code.EOL &&Now('x', 'X', 'b', 'B', 'o', 'O');
+        bool IsFormation() => buffer[0] == '0' && !code.EOF && !code.EOL && Now('x', 'X', 'b', 'B', 'o', 'O');
     }
     private Token GetIdentifierToken()
     {
         Buffer buffer = new();
         buffer.Add(Read());
 
-        while (!code.EOF && !code.EOL &&(IsLetter(Peek()) || IsNumber(Peek())))
+        while (!code.EOF && !code.EOL && (IsLetter(Peek()) || IsNumber(Peek())))
             buffer.Add(Read());
 
         return new Token(buffer.ToString(), buffer.ToString() switch
@@ -276,7 +276,7 @@ public class Tokenizer()
             case '|':
                 if (Now('='))
                     return new Token($"{chr}{Read()}", TokenType.BOrAssign);
-                return new Token(chr.ToString(), TokenType.BOr);       
+                return new Token(chr.ToString(), TokenType.BOr);
             case '-':
                 if (Now('>'))
                     return new Token($"{chr}{Read()}", TokenType.Return);
@@ -297,26 +297,26 @@ public class Tokenizer()
                         '%' => TokenType.PercentAssign,
                         '^' => TokenType.BXorAssign,
                         '&' => TokenType.BAndAssign,
-                        '|' => TokenType.BOrAssign,                        
+                        '|' => TokenType.BOrAssign,
                         '!' => TokenType.Unequal,
                         '=' => TokenType.Equal,
                         _ => TokenType.Error
                     });
                 return new Token(chr.ToString(), chr switch
-                    {
-                        '+' => TokenType.Plus,
-                        '-' => TokenType.Minus,
-                        '%' => TokenType.Percent,
-                        '^' => TokenType.BXor,
-                        '&' => TokenType.BAnd,
-                        '|' => TokenType.BOr,
-                        '!' => TokenType.BNot,
-                        '=' => TokenType.Assign,
-                        _ => TokenType.Error
-                    });
+                {
+                    '+' => TokenType.Plus,
+                    '-' => TokenType.Minus,
+                    '%' => TokenType.Percent,
+                    '^' => TokenType.BXor,
+                    '&' => TokenType.BAnd,
+                    '|' => TokenType.BOr,
+                    '!' => TokenType.BNot,
+                    '=' => TokenType.Assign,
+                    _ => TokenType.Error
+                });
             case '/':
             case '<':
-            case '>':            
+            case '>':
             case '*':
                 if (Now(chr))
                 {
@@ -343,23 +343,23 @@ public class Tokenizer()
                 }
                 if (Now('='))
                     return new Token($"{chr}{Read()}", chr switch
-                        {
-                            '/' => TokenType.SlashAssign,
-                            '<' => TokenType.LessOrEqual,
-                            '>' => TokenType.GreaterOrEqual,
-                            '?' => TokenType.QuestionAssign,
-                            '*' => TokenType.AsteriskAssign,
-                            _ => TokenType.Error
-                        });
+                    {
+                        '/' => TokenType.SlashAssign,
+                        '<' => TokenType.LessOrEqual,
+                        '>' => TokenType.GreaterOrEqual,
+                        '?' => TokenType.QuestionAssign,
+                        '*' => TokenType.AsteriskAssign,
+                        _ => TokenType.Error
+                    });
                 return new Token(chr.ToString(), chr switch
-                        {
-                            '/' => TokenType.Slash,
-                            '<' => TokenType.LessThan,
-                            '>' => TokenType.GreaterThan,
-                            '?' => TokenType.Question,
-                            '*' => TokenType.Asterisk,
-                            _ => TokenType.Error
-                        });
+                {
+                    '/' => TokenType.Slash,
+                    '<' => TokenType.LessThan,
+                    '>' => TokenType.GreaterThan,
+                    '?' => TokenType.Question,
+                    '*' => TokenType.Asterisk,
+                    _ => TokenType.Error
+                });
             case '(':
             case ')':
             case '{':
@@ -383,15 +383,15 @@ public class Tokenizer()
                     '.' => TokenType.Dot,
                     '@' => TokenType.At,
                     _ => TokenType.Error
-                }); 
+                });
             default:
                 break;
-        }    
-        
+        }
+
         return new Token(chr.ToString(), TokenType.Error);
     }
     private Token GetBracketTokens(char bracket)
-    {        
+    {
         tokens.Add(new Token(bracket.ToString(), bracket switch
         {
             '(' => TokenType.LParen,
@@ -412,7 +412,7 @@ public class Tokenizer()
         {
             Token token;
             var peek = Peek();
-            
+
             if (peek == closer)
                 break;
 
@@ -469,7 +469,7 @@ public class Tokenizer()
     };
     private bool IsOperator(char c) => c switch
     {
-        '!' or '@' or '%' or '^' or '&' or '*' or '-' or '+' or '=' or  ':' or '*' or
+        '!' or '@' or '%' or '^' or '&' or '*' or '-' or '+' or '=' or ':' or '*' or
         '~' or '&' or '|' or '<' or '>' or '?' or ',' or '.' or '/' or '}' or ')' or ']' => true,
         _ => false
     };

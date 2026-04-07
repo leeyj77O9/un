@@ -7,12 +7,12 @@ public class Future(Task<Obj> state) : Obj("future")
 {
     public Future() : this(new Task<Obj>(() => None)) { }
 
-    private Task<Obj> state { get; set; } = state;
+    private Task<Obj> State { get; set; } = state;
 
     public void Run()
     {
-        state.Start();
+        State.Start();
     }
 
-    public Obj Wait() => state.Result;
+    public Obj Wait() => State.Result;
 }

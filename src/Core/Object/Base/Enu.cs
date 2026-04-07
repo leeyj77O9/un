@@ -14,7 +14,7 @@ public class Enu(string type, int n) : Obj(type)
         _ => new Err($"'{Type}' takes at most 1 argument, {args.Count} given")
     };
 
-    public override Str ToStr() => new(Type);
+    public override Str ToStr() => Str.From(Type);
 
     public override Int ToInt() => Int.From(N);
 

@@ -115,7 +115,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         return newList;
     }
 
-    public override Str ToStr() => new($"[{string.Join(", ", Value[..Count].Select(v => v.ToStr().As<Str>().Value))}]");
+    public override Str ToStr() => Str.From($"[{string.Join(", ", Value[..Count].Select(v => v.ToStr().As<Str>().Value))}]");
 
     public override Spreads Spread() => new(Value[..Count]);
 

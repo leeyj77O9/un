@@ -21,7 +21,6 @@ public class LFn : Fn
 
         var scope = new Scope(Closure ?? Scope.Empty);
         Bind(scope, args);
-        file.Move(0, 0);
 
         var context = new Context(scope, file, []);
         Obj? returned = null;
@@ -79,7 +78,7 @@ public class LFn : Fn
         Args = [..Args],
         ReturnType = ReturnType,
         Closure = Closure,
-        file = file,
+        file = file.Clone(),
         Self = Self,
         Super = Super?.Clone()!,
     };

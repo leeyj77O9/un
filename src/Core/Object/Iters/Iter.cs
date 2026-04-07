@@ -24,7 +24,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
 
     public override Tup ToTuple() => new([.. Value], new string[Value.Count()]);
 
-    public override Str ToStr() => new(string.Join(", ", Value.Select(x => x.ToStr().As<Str>().Value)));
+    public override Str ToStr() => Str.From(string.Join(", ", Value.Select(x => x.ToStr().As<Str>().Value)));
 
     public override Obj Next()
     {

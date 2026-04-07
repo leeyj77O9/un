@@ -4,9 +4,14 @@ using Un.Object.Iter;
 
 namespace Un.Object.Primitive;
 
-public class Str(string value) : Ref<string>(value, "str")
-{
+public class Str : Ref<string>
+{   
+    public static Str Empty = new();
+    private static Dictionary<string, Str> pool = [];
+
     public Str() : this("") { }
+    
+    private Str(string value) : base(value, "str") { }
 
     public override Obj Init(Tup args) => args switch
     {
@@ -82,6 +87,19 @@ public class Str(string value) : Ref<string>(value, "str")
     public override string ToString() => Value.ToString();
 
     public override Int Hash() => Int.From(GetHashCode());
+
+    public static Str From(string value)
+    {
+        if (value == null) return Empty;
+
+        if (pool.TryGetValue(value, out var cached))
+            return cached;
+
+        var result = new Str(value);
+        pool[value] = result;
+
+        return result;
+    }
 
     public override Attributes GetOriginal() => new()
     {

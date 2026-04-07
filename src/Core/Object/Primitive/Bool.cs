@@ -23,7 +23,7 @@ public class Bool : Val<bool>
 
     public override Bool Eq(Obj other) => other is Bool b && Value == b.Value ? True : False;
 
-    public override Str ToStr() => new(Value ? "true" : "false");
+    public override Str ToStr() => Str.From(Value ? "true" : "false");
 
     public override Obj Copy() => new Bool(Value)
     {

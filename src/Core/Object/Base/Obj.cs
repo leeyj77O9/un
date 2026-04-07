@@ -200,7 +200,7 @@ public class Obj(string type) : IComparable<Obj>
 
     public virtual void SetAttr(string name, Obj value)
     {
-        if (TryMethod("__setattr__", out _, new([new Str(name), value], ["key", "value"])))
+        if (TryMethod("__setattr__", out _, new([Str.From(name), value], ["key", "value"])))
             return;
         if (Super is not null && !Super.IsNone())
             Super.SetAttr(name, value);
@@ -210,7 +210,7 @@ public class Obj(string type) : IComparable<Obj>
 
     public virtual Obj GetAttr(string name)
     {
-        if (TryMethod("__getattr__", out Obj? value, new([new Str(name)], [])))
+        if (TryMethod("__getattr__", out Obj? value, new([Str.From(name)], [])))
             goto Found;
         if (Members.TryGetValue(name, out value))
             goto Found;
@@ -307,7 +307,7 @@ public class Obj(string type) : IComparable<Obj>
 
     public virtual Obj ToStr()
     {
-        if (IsNone()) return new Str("none");
+        if (IsNone()) return Str.From("none");
         if (TryMethod("__str__", out Obj? value, []))
             return value;
         return Super is not null && !Super.IsNone() ? Super.ToStr() : new Err($"unsupported operand type(s) for str(): '{Type}'");
@@ -317,7 +317,7 @@ public class Obj(string type) : IComparable<Obj>
     {
         if (TryMethod("__repr__", out Obj? value, []))
             return value;
-        return Super is not null && !Super.IsNone() && Super.Repr().As<Str>().Value != Super.Type ? Super.Repr(): new Str(Type);
+        return Super is not null && !Super.IsNone() && Super.Repr().As<Str>().Value != Super.Type ? Super.Repr(): Str.From(Type);
     }
 
     public virtual Obj ToBool()
@@ -445,15 +445,15 @@ public class Obj(string type) : IComparable<Obj>
         throw new Panic(message);
     }
 
-    public Obj As<T, U>(string message) where T : Obj where U : Obj
-    {
-        if (this is T obj1)
-            return obj1;
-        if (this is U obj2)
-            return obj2;
+    //public Obj As<T, U>(string message) where T : Obj where U : Obj
+    //{
+    //    if (this is T obj1)
+    //        return obj1;
+    //    if (this is U obj2)
+    //        return obj2;
 
-       return new Err(message);
-    }
+    //   return new Err(message);
+    //}
 
     public Obj Unwrap(Context context)
     {

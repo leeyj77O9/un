@@ -14,6 +14,8 @@ public class UnFile
     public bool EOF => Line >= Code.Count;
     public bool EOL => EOF || Index >= Code[Line].code.Length;
 
+    private UnFile() { }
+
     public UnFile(string name, string[] code)
     {
         Path ??= name;
@@ -134,4 +136,14 @@ public class UnFile
 
         return Math.Max(tab, space / 4);
     }
+
+    public UnFile Clone() => new()
+    {
+        Name = Name,
+        FullName = FullName,
+        Code = [.. Code],
+        Path = Path,
+        Index = 0,
+        Line = 0,
+    };
 }

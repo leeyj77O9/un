@@ -20,7 +20,7 @@ public class Stru(string type, string[] names) : Obj(type)
         return this;
     }
 
-    public override Str ToStr() => new($"{Type}({string.Join(", ", names.Select(name => $"{name}: {Members[name].ToStr().As<Str>().Value}"))})");
+    public override Str ToStr() => Str.From($"{Type}({string.Join(", ", names.Select(name => $"{name}: {Members[name].ToStr().As<Str>().Value}"))})");
 
     public override Obj Add(Obj other) => other switch
     {

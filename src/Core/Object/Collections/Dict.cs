@@ -11,7 +11,7 @@ public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value,
     public override Obj Init(Tup args) => args switch
     {
         { Count: 0 } => new Dict(),
-        { Count: 1 } when args[0] is Tup t => new Dict(t.Name.Select(name => ((Obj)new Str(name), t.Members[name])).ToDictionary()),
+        { Count: 1 } when args[0] is Tup t => new Dict(t.Name.Select(name => ((Obj)Str.From(name), t.Members[name])).ToDictionary()),
         { Count: 1 } when args[0] is Stru st => Init(new([st.ToTuple()])),
         _ => new Err($"invaild '{Type}' initialize"),
     };
@@ -20,22 +20,19 @@ public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value,
 
     public override Obj GetItem(Obj key) => Value.TryGetValue(key, out var value) ? value : new Err($"key '{key.ToStr().As<Str>().Value}' not found in dictionary");
 
-    public override Obj SetItem(Obj key, Obj value)
-    {
-        return Value[key] = value;
-    }
+    public override Obj SetItem(Obj key, Obj value) => Value[key] = value;
 
     public override Obj In(Obj obj) => obj switch
     {
         Dict dict => Bool.From(Overlap(dict)),
-        _ => new Err($"cannot check if '{obj.Type}' is in '{Type}'"),
+        _ => Bool.From(Value.ContainsKey(obj)),
     };
 
     public override Obj Copy() => this;
 
     public override Obj Clone() => new Dict(new Dictionary<Obj, Obj>(Value));
 
-    public override Str ToStr() => new($"{{{string.Join(", ", Value.Select(x => $"{x.Key.ToStr().As<Str>().Value}: {x.Value.ToStr().As<Str>().Value}"))}}}");
+    public override Str ToStr() => Str.From($"{{{string.Join(", ", Value.Select(x => $"{(x.Key.ToStr().As<Str>(out var s) ? s : x.Key.Repr().As<Str>().Value)}: {(x.Value.ToStr().As<Str>(out s) ? s : x.Value.Repr().As<Str>().Value)}"))}}}");
 
     public override List ToList() => new([.. Value.Keys.Zip(Value.Values).Select(x => new Tup([x.First, x.Second], ["key", "value"]))]);
 

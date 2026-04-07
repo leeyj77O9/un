@@ -74,14 +74,16 @@ public static class Operator
                 {
                     var value = values.Pop();
                     var args = Convert.ToTuple(node, context).Unwrap<Tup>(context);
-                    var result = value.IsType() ? Global.GetClass(value.Type[2..^2]).Clone() : value.As<Fn>();
+                    var result = value.IsType() ? Global.GetClass(value.Type[2..^2]).Clone() : value.As<Fn>().Clone();
 
                     foreach (var key in result.Annotations.Keys)
                     {
                         var name = key as string ?? "";
-                        var tuple = result.Annotations[name] as Tup ?? [];
-                        var deco = context.Scope[name].As<Fn>();
-                        result = deco.Call(new([result, .. tuple], new string[tuple.Count + 1]));
+                        if (context.Scope[name].As<Fn>(out var deco))
+                        {
+                            var tuple = result.Annotations[name] as Tup ?? [];
+                            result = deco.Call(new([result, .. tuple], new string[tuple.Count + 1]));
+                        }
                     }
 
                     result = result.As<Fn>(out var fn) ? fn.Call(args) : result.Init(args);

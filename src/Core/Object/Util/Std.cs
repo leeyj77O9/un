@@ -30,16 +30,31 @@ public class Std : IPack
                 }, new Arg("sep") {
                     Type = "str",
                     IsOptional = true,
-                    DefaultValue = new Str(" ")
+                    DefaultValue = Str.From(" ")
                 }, new Arg("end"){
                     Type = "str",
                     IsOptional = true,
-                    DefaultValue = new Str("\n")
+                    DefaultValue = Str.From("\n")
                 }, new Arg("stream"){
                     Type = "stream",
                     IsOptional = true,
                     DefaultValue = so
                 }],
+                Annotations = { 
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Writes the given values to the specified stream (default is standard output) with an optional separator and end string."),
+                            Str.From("value: variable argumnet of values to write"),
+                            Str.From("sep: string inserted between values, default is a space"),
+                            Str.From("end: string appended after the last value, default is a newline"),
+                            Str.From("stream: the stream to write to, default is standard output"),
+                            Str.From("returns: none")
+                        ],
+                        [
+                            "description", "value", "sep", "end", "stream", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     if (!args["stream"].As<IO.Stream>(out var stream))
@@ -74,12 +89,25 @@ public class Std : IPack
                    new Arg("prompt") {
                     Type = "str",
                     IsOptional = true,
-                    DefaultValue = new Str("")
+                    DefaultValue = Str.Empty,
                 }, new Arg("stream") {
                     Type = "stream",
                     IsOptional = true,
                     DefaultValue = sr
                 }],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Reads a line of input from the specified stream (default is standard input) with an optional prompt."),
+                            Str.From("prompt: an optional string to display as a prompt before reading input"),
+                            Str.From("stream: the stream to write to, default is standard output"),
+                            Str.From("returns: the line of input read as a string")
+                        ],
+                        [
+                            "description", "promt", "stream", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     if (!args["stream"].As<IO.Stream>(out var stream))
@@ -93,7 +121,7 @@ public class Std : IPack
 
                     cw.Write(args["prompt"].ToStr().As<Str>(out var str) ? str.Value : args["prompt"].Repr().As<Str>().Value);
                     cw.Flush();
-                    return new Str(cr.ReadLine() ?? "");
+                    return Str.From(cr.ReadLine() ?? "");
                 }
             }
         },
@@ -108,12 +136,26 @@ public class Std : IPack
                 }, new Arg("sep") {
                     Type = "str",
                     IsOptional = true,
-                    DefaultValue = new Str(" ")
+                    DefaultValue = Str.From(" ")
                 }, new Arg("end"){
                     Type = "str",
                     IsOptional = true,
-                    DefaultValue = new Str("\n")
+                    DefaultValue = Str.From("\n")
                 }],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Writes the given values to the specified standard error stream with an optional separator and end string."),
+                            Str.From("value: variable argumnet of values to write"),
+                            Str.From("sep: string inserted between values, default is a space"),
+                            Str.From("end: string appended after the last value, default is a newline"),
+                            Str.From("returns: none")
+                        ],
+                        [
+                            "description", "value", "sep", "end", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     var items = args["value"].ToTuple().As<Tup>().Value;
@@ -138,6 +180,18 @@ public class Std : IPack
                    new Arg("value") {
                     IsEssential = true,
                 }],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the length of the given value."),
+                            Str.From("value: the value to get the length of"),
+                            Str.From("returns: the length of the value as an integer")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => args["value"].Len()
             }
         },
@@ -145,6 +199,17 @@ public class Std : IPack
             {
                 Name = "clear",
                 ReturnType = "none",
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Clears the console screen."),
+                            Str.From("returns: none")
+                        ],
+                        [
+                            "description", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     Console.Clear();
@@ -162,6 +227,18 @@ public class Std : IPack
                     IsOptional = true,
                     DefaultValue = Int.From(0)
                 }],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Exits the program with the specified exit code."),
+                            Str.From("code: the exit code to use when exiting the program, default is 0"),
+                            Str.From("returns: none")
+                        ],
+                        [
+                            "description", "code", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     Environment.Exit((int)args["code"].ToInt().As<Int>().Value);
@@ -177,7 +254,19 @@ public class Std : IPack
                    new Arg("value") {
                     IsEssential = true,
                 }],
-                Func = (args) => new Str(args["value"].Type)
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the type of the given value as a string."),
+                            Str.From("value: the value to get the type of"),
+                            Str.From("returns: the type of the value as a string")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
+                Func = (args) => Str.From(args["value"].Type)
             }
         },
         { "array", new NFn()
@@ -193,6 +282,19 @@ public class Std : IPack
                     IsPositional = true,
                     DefaultValue = new Tup([Int.From(1)], [])
                 }],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Creates a multi-dimensional list (array) with the specified default value and size."),
+                            Str.From("default: the default value to fill the array with"),
+                            Str.From("size: a tuple of integers specifying the size of each dimension of the array, default is (1,) for a one-dimensional array of size 1"),
+                            Str.From("returns: a multi-dimensional list (array) filled with the default value")
+                        ],
+                        [
+                            "description", "default", "size", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     return Create(args["size"].ToList().As<List>());
@@ -214,7 +316,7 @@ public class Std : IPack
         { "range", new NFn()
             {
                 Name = "range",
-                ReturnType = "list[int]",
+                ReturnType = "range",
                 Args = [
                     new Arg("start") {
                         Type = "int",
@@ -231,6 +333,20 @@ public class Std : IPack
                         DefaultValue = Int.From(1),
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Generates a sequence of integers from start (inclusive) to stop (exclusive) with a specified step."),
+                            Str.From("start: the starting value of the sequence, default is 0"),
+                            Str.From("stop: the end value of the sequence (exclusive)"),
+                            Str.From("step: the increment value between each integer in the sequence, default is 1"),
+                            Str.From("returns: a list of integers in the specified range")
+                        ],
+                        [
+                            "description", "start", "stop", "step", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     long stop = args["stop"].ToInt().As<Int>().Value,
@@ -244,26 +360,31 @@ public class Std : IPack
         { "enumerate", new NFn()
             {
                 Name = "enumerate",
-                ReturnType = "list[(int, T)]",
+                ReturnType = "iter<(int, T)>",
                 Args = [
                     new Arg("array") {
                         Type = "list[T] | tuple[T]",
                         IsEssential = true
                     },
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns a list of tuples, where each tuple contains an index and the corresponding value from the input array."),
+                            Str.From("array: a list or tuple to enumerate"),
+                            Str.From("returns: a list of tuples, where each tuple contains an index and the corresponding value from the input array")
+                        ],
+                        [
+                            "description", "array", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     if (!args["array"].As<List, Tup>(out var array))
                         return new Err("expected 'array' argument to be of type 'list' or 'tuple'");
-                    var iter = array.Iter().As<Iters>();
-                    var len = iter.Len().As<Int>().Value;
 
-                    List enumerate = [];
-
-                    for (int i = 0; i < len; i++)
-                        enumerate.Append(new Tup([Int.From(i), iter.Next()], ["index", "value"]));
-
-                    return enumerate;
+                    return new Iters(array.Iter().As<Iters>().Value.Select((x, i) => new Tup([Int.From(i), x], ["index", "value"])));
                 }
             }
         },
@@ -277,6 +398,18 @@ public class Std : IPack
                         IsPositional = true
                     },
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns a list of tuples, where the i-th tuple contains the i-th element from each of the input arrays. The length of the returned list is equal to the length of the longest input array."),
+                            Str.From("arrays: a variable number of lists or tuples to zip together"),
+                            Str.From("returns: a list of tuples, where the i-th tuple contains the i-th element from each of the input arrays")
+                        ],
+                        [
+                            "description", "arrays", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     if (!args["arrays"].ToList().As<List, Tup>(out var arrays))
@@ -295,6 +428,8 @@ public class Std : IPack
                     }
 
                     return list;
+
+                    return new Iters();
                 }
             }
         },
@@ -307,6 +442,18 @@ public class Std : IPack
                         IsEssential = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the hash code of the given value as an integer."),
+                            Str.From("value: the value to get the hash code of"),
+                            Str.From("returns: the hash code of the value as an integer")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => Int.From(args["value"].GetHashCode())
             }
         },
@@ -319,6 +466,18 @@ public class Std : IPack
                         IsEssential = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Opens a file and returns a stream object for it."),
+                            Str.From("value: the path to the file to open as a string"),
+                            Str.From("returns: a stream object for the opened file")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => args["value"] switch
                 {
                     Str s => File.Exists(s.Value) ? new IO.Stream(File.Open(s.Value, FileMode.Open)) : throw new Panic($"file {s.Value} dose not exist"),
@@ -336,6 +495,18 @@ public class Std : IPack
                         IsPositional = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the sum of the given values."),
+                            Str.From("value: a variable argument of values to sum, can be a tuple of values or a single list/tuple/range/iters containing the values"),
+                            Str.From("returns: the sum of the given values")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => {
                     var tuple = args["value"].ToTuple().As<Tup>();
 
@@ -374,6 +545,18 @@ public class Std : IPack
                         IsPositional = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the maximum value among the given values."),
+                            Str.From("value: a variable argument of values to compare, can be a tuple of values or a single list/tuple/range/iters containing the values"),
+                            Str.From("returns: the maximum value among the given values")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => {
                     var tuple = args["value"].ToTuple().As<Tup>();
 
@@ -409,6 +592,18 @@ public class Std : IPack
                         IsPositional = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the minimum value among the given values."),
+                            Str.From("value: a variable argument of values to compare, can be a tuple of values or a single list/tuple/range/iters containing the values"),
+                            Str.From("returns: the minimum value among the given values")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => {
                     var tuple = args["value"].ToTuple().As<Tup>();
 
@@ -449,6 +644,19 @@ public class Std : IPack
                         DefaultValue = Int.From(0),
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Rounds a number to a specified number of decimal places."),
+                            Str.From("value: the number to round, can be an integer or a float"),
+                            Str.From("digit: the number of decimal places to round to, default is 0"),
+                            Str.From("returns: the rounded number, as an integer if digit is 0 or the result is an integer, otherwise as a float")
+                        ],
+                        [
+                            "description", "value", "digit", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     double v = args["value"] switch
@@ -482,6 +690,18 @@ public class Std : IPack
                         IsEssential = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the absolute value of a number."),
+                            Str.From("value: the number to get the absolute value of, can be an integer or a float"),
+                            Str.From("returns: the absolute value of the given number, as an integer if the input is an integer and the result is an integer, otherwise as a float")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => args["value"] switch
                 {
                     Int i => Int.From(Math.Abs(i.Value)),
@@ -500,6 +720,18 @@ public class Std : IPack
                         IsEssential = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the smallest integer greater than or equal to a number."),
+                            Str.From("value: the number to round up, can be an integer or a float"),
+                            Str.From("returns: the smallest integer greater than or equal to the given number, as an integer if the input is an integer and the result is an integer, otherwise as a float")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => args["value"] switch
                 {
                     Int i => Int.From(i.Value),
@@ -522,6 +754,18 @@ public class Std : IPack
                         IsEssential = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the square root of a number."),
+                            Str.From("value: the number to get the square root of, can be an integer or a float"),
+                            Str.From("returns: the square root of the given number, as an integer if the input is an integer and the result is an integer, otherwise as a float")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => args["value"] switch
                 {
                     Int i => new Float(Math.Sqrt(i.Value)),
@@ -540,6 +784,18 @@ public class Std : IPack
                         IsEssential = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the largest integer less than or equal to a number."),
+                            Str.From("value: the number to round down, can be an integer or a float"),
+                            Str.From("returns: the largest integer less than or equal to the given number, as an integer if the input is an integer and the result is an integer, otherwise as a float")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
                 Func = (args) => args["value"] switch
                 {
                     Int i => Int.From(i.Value),
@@ -565,6 +821,19 @@ public class Std : IPack
                         IsPositional = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns a memoized version of the given function, which caches the results of previous calls with the same arguments to improve performance on subsequent calls."),
+                            Str.From("func: the function to memoize"),
+                            Str.From("args: a variable argument of values to pass to the function when calling it, can be a tuple of values or a single list/tuple containing the values"),
+                            Str.From("returns: a memoized version of the given function")
+                        ],
+                        [
+                            "description", "func", "args", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     var fn = args["func"].As<Fn>();
@@ -596,6 +865,18 @@ public class Std : IPack
                         IsEssential = true
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Pauses the execution of the program for a specified amount of time."),
+                            Str.From("time: the amount of time to sleep, can be an integer representing milliseconds or a float representing seconds"),
+                            Str.From("returns: none")
+                        ],
+                        [
+                            "description", "time", "return"
+                        ]
+                    )
+                },
                 Func = args =>
                 {
                     var milliseconds = args["time"] switch
@@ -635,6 +916,20 @@ public class Std : IPack
                         IsPositional = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Delays the execution of a function by a specified amount of time and returns the result of the function call."),
+                            Str.From("time: the amount of time to delay, can be an integer representing milliseconds or a float representing seconds"),
+                            Str.From("fn: the function to call after the delay"),
+                            Str.From("args: a variable argument of values to pass to the function when calling it, can be a tuple of values or a single list/tuple containing the values"),
+                            Str.From("returns: the result of the function call after the delay")
+                        ],
+                        [
+                            "description", "time", "fn", "args", "return"
+                        ]
+                    )
+                },
                 Func = args =>
                 {
                     if (!args["fn"].As<Fn>(out var fn))
@@ -670,9 +965,22 @@ public class Std : IPack
                     new Arg("name") {
                         Type = "str",
                         IsOptional = true,
-                        DefaultValue = new Str("panic")
+                        DefaultValue = Str.From("panic")
                     },
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Raises a panic with a specified message and name, which can be caught and handled by the program."),
+                            Str.From("message: the message to include in the panic, as a string"),
+                            Str.From("name: the name of the panic, as a string, default is 'panic'"),
+                            Str.From("returns: none")
+                        ],
+                        [
+                            "description", "message", "name", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     throw new Panic(args["message"].ToStr().As<Str>().Value, args["name"].ToStr().As<Str>().Value);
@@ -693,6 +1001,19 @@ public class Std : IPack
                         IsEssential = true
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns the value of a specified annotation on a given value, or none if the annotation does not exist."),
+                            Str.From("value: the value to get the annotation from, can be of any type"),
+                            Str.From("name: the name of the annotation to get, as a string"),
+                            Str.From("returns: the value of the specified annotation on the given value, or none if the annotation does not exist")
+                        ],
+                        [
+                            "description", "value", "name", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     var name = args["name"].ToStr().As<Str>().Value;
@@ -707,7 +1028,17 @@ public class Std : IPack
             {
                 Name = "random",
                 ReturnType = "float",
-                Args = [],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns a random floating-point number in the range [0.0, 1.0)."),
+                            Str.From("returns: a random floating-point number in the range [0.0, 1.0)")
+                        ],
+                        [
+                            "description", "return"
+                        ]
+                    )
+                },
                 Func = (args) => new Float(random.NextDouble())
             }
         },
@@ -715,7 +1046,17 @@ public class Std : IPack
             {
                 Name = "breakpoint",
                 ReturnType = "none",
-                Args = [],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Pauses the execution of the program and waits for user input to continue, allowing for debugging and inspection of the program state at the point where the breakpoint is hit."),
+                            Str.From("returns: none")
+                        ],
+                        [
+                            "description", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     Console.WriteLine("breakpoint hit. Press Enter to continue...");
@@ -728,7 +1069,17 @@ public class Std : IPack
             {
                 Name = "gc",
                 ReturnType = "none",
-                Args = [],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Forces the garbage collector to run and free up memory that is no longer in use by the program."),
+                            Str.From("returns: none")
+                        ],
+                        [
+                            "description", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     GC.Collect();
@@ -739,7 +1090,7 @@ public class Std : IPack
         { "bench", new NFn()
             {
                 Name = "bench",
-                ReturnType = "float",
+                ReturnType = "int",
                 Args = [
                     new Arg("fn") {
                         Type = "func",
@@ -750,6 +1101,19 @@ public class Std : IPack
                         IsPositional = true,
                     }
                 ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Benchmarks the execution time of a function with the given arguments and returns the result along with the time taken to execute the function."),
+                            Str.From("fn: the function to benchmark"),
+                            Str.From("args: a variable argument of values to pass to the function when calling it, can be a tuple of values or a single list/tuple containing the values"),
+                            Str.From("returns: a tuple containing the result of the function call and the time taken to execute the function in milliseconds")
+                        ],
+                        [
+                            "description", "fn", "args", "return"
+                        ]
+                    )
+                },
                 Func = (args) =>
                 {
                     if (!args["fn"].As<Fn>(out var fn))
@@ -768,7 +1132,54 @@ public class Std : IPack
                     return new Tup([returned, Int.From(sw.ElapsedMilliseconds)], ["value", "time"]);
                 }
             }
-
+        },
+        { "attr", new NFn()
+            {
+                Name = "attr",
+                ReturnType = "list[str]",
+                Args = [
+                    new Arg("value") {
+                        Type = "any",
+                        IsEssential = true
+                    },
+                ],
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns a list of attribute names for a given value, which can be used to inspect the properties and methods of the value."),
+                            Str.From("value: the value to get the attribute names from, can be of any type"),
+                            Str.From("returns: a list of attribute names for the given value")
+                        ],
+                        [
+                            "description", "value", "return"
+                        ]
+                    )
+                },
+                Func = (args) => new List([..args["value"].Members.Keys.Select(Str.From)])
+            }
+        },
+        { "global", new NFn()
+            {
+                Name = "global",
+                ReturnType = "dict[str, any]",
+                Annotations = {
+                    ["doc"] = new Tup(
+                        [
+                            Str.From("Returns a dictionary containing all global variables and their values in the current execution context, which can be used to inspect and manipulate the global state of the program."),
+                            Str.From("returns: a dictionary containing all global variables and their values in the current execution context")
+                        ],
+                        [
+                            "description", "return"
+                        ])
+                },
+                Func = (args) =>
+                {
+                    var dict = new Dict();
+                    foreach (var kv in Global.GetGlobalScope().GetSymbolTable().Keys)
+                        dict.Value[Str.From(kv)] = Global.GetGlobalVariable(kv);
+                    return dict;
+                }
+            } 
         }
     };
 }

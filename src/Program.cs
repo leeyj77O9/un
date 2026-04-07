@@ -1,12 +1,11 @@
-﻿using System.Diagnostics;
-using Un;
+﻿using Un;
 
 Runner? runner = null;
 
 #if DEBUG
 try
 {
-    Global.Init("C:/Project/un/");
+    Global.Init("C:/dev/un/");
     runner = Runner.Load("src/main.un", Global.GetGlobalScope());
     runner.Run();
 }
@@ -22,7 +21,6 @@ if (args.Length == 0)
     PrintHelp();
     return;
 }
-
 
 var cmd = args[0];
 

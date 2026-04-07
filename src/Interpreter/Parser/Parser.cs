@@ -218,16 +218,17 @@ public class Parser(Context context)
             }, context).Value);
         else if (IsDeconstruct())
             objs.AddRange(IsDeconstructableToken() ?
-                Convert.ToTuple(values[0], context).Value
-            :
+                Convert.ToTuple(values[0], context).Value :
                 Scope.Get(values[0].Value).Spread().As<Spreads>());
+        else if (Operator.On(values, context).Spread().As<Spreads>(out var spreads))        
+            objs.AddRange(spreads);        
         else
             throw new Error($"invalid assignment {nodes[assign - 1].Type}.", context);
 
         if (context.Annotations.Count != 0)
             foreach (var obj in objs)
                 foreach (var key in context.Annotations.Keys)
-                        obj.Annotations[key] = context.Annotations[key];
+                    obj.Annotations[key] = context.Annotations[key];
 
         int count = 0;
         var type = nodes[assign].Type;
@@ -325,7 +326,7 @@ public class Parser(Context context)
             var values = current switch
             {
                 List l when vars.Count != 1 => l,
-                Tup t when vars.Count != 1 => [.. t],
+                Tup t when vars.Count != 1 => new List(t.Value),
                 _ => new([current])
             };
 

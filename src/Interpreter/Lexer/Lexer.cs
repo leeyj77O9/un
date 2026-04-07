@@ -1,5 +1,9 @@
 namespace Un;
 
+using Un.Object;
+using Un.Object.Collections;
+using Un.Object.Function;
+using Un.Object.Primitive;
 using TokenInfo = (Token token, TokenType type);
 
 public class Lexer()
@@ -207,18 +211,15 @@ public class Lexer()
 
         for (int i = start; i < end; i++)
         {
-            (_, var type) = Peek(i);
-            depth = type == TokenType.LBrack ? depth + 1 :
-                    type == TokenType.RBrack ? depth - 1 :
-                    depth;
-            if (depth == 1 && type == TokenType.Colon)
-                colon++;
+            var (_, t) = Peek(i);
+            if (t == TokenType.LBrack) depth++;
+            else if (t == TokenType.RBrack) depth--;
         }
 
         if (colon > 2)
             throw new Panic("too many colons in slicer");
 
-        return colon > 0 && colon < 3;
+        return colon is > 0 and < 3;
     }
     private bool IsSet(int start, int end)
     {

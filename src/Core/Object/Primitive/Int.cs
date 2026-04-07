@@ -22,7 +22,7 @@ public class Int : Val<long>
     {
         Int i => From(Value + i.Value),
         Float f => new Float(Value + f.Value),
-        Str s => new Str(Value.ToString() + s.Value),
+        Str s => Str.From(Value.ToString() + s.Value),
         _ => new Err($"unsupported operand type(s) for +: 'int' and '{other.Type}'")
     };
 
@@ -154,7 +154,7 @@ public class Int : Val<long>
 
     public override Float ToFloat() => new(Value);
 
-    public override Str ToStr() => new(Value.ToString());
+    public override Str ToStr() => Str.From(Value.ToString());
 
     public override Bool ToBool() => Bool.From(Value != 0);
 

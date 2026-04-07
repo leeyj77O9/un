@@ -60,7 +60,7 @@ public enum TokenType
     Identifier,
 
     Integer, Float, String, FString, Boolean,
-    List, Dict, Set, Tuple,
+    List, Dict, Set, Tuple, Iter,
 
     Pair, Annotation,
 

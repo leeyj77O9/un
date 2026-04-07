@@ -79,6 +79,7 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
     public override Obj GetItem(Obj key) => key switch
     {
         Int i => OutOfRange((int)i.Value) ? new Err("tuple index out of range") : this[(int)i.Value],
+        Str s => Members.TryGetValue(s.Value, out Obj? value) ? value : new Err($"tuple has no attribute '{s.Value}'"),
         _ => new Err("invalid index type")
     };
 
@@ -96,7 +97,7 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
 
     public override Bool ToBool() => Bool.From(Count != 0);
 
-    public override Str ToStr() => new($"({string.Join(", ", Value.Select(v => v.ToStr().As<Str>().Value))})");
+    public override Str ToStr() => Str.From($"({string.Join(", ", Value.Select(v => v.ToStr().As<Str>().Value))})");
 
     public override List ToList() => new([..Value]);
 

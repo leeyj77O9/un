@@ -126,7 +126,7 @@ public class Fn() : Obj("fn")
             {
                 var dict = new Dict();
                 foreach (var (k, v) in extraNamed)
-                    dict.Value.Add(new Str(k), v);
+                    dict.Value.Add(Str.From(k), v);
                 scope[keywordArg.Name] = dict;
             }
             else
@@ -136,6 +136,8 @@ public class Fn() : Obj("fn")
             }
         }
     }
+
+    public override Obj Repr() => Str.From($"fn({string.Join(", ", Args.Select(x => x.Type))}) -> {ReturnType}");
 
     public override int GetHashCode()
     {

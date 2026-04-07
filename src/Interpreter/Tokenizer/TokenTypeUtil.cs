@@ -28,6 +28,9 @@ public static class TokenTypeUtil
         TokenType.DoubleQuestion or TokenType.Question or TokenType.Indexer or TokenType.Slicer or TokenType.Spread or
         TokenType.Positive or TokenType.Negative or TokenType.QuestionDot or TokenType.In or TokenType.Is or TokenType.Go or
         TokenType.Wait or TokenType.Call or TokenType.Property or TokenType.NullableProperty => true,
+
+        // 콤마
+        TokenType.Comma => true,
         _ => false,
     };
 
@@ -143,21 +146,23 @@ public static class TokenTypeUtil
         TokenType.In or TokenType.Is or TokenType.Equal or TokenType.Unequal or TokenType.LessThan or TokenType.LessOrEqual or
         TokenType.GreaterThan or TokenType.GreaterOrEqual => 11,
 
+        TokenType.Comma => 12,
+
         TokenType.Assign or TokenType.PlusAssign or TokenType.MinusAssign or TokenType.AsteriskAssign or TokenType.SlashAssign or
         TokenType.DoubleSlashAssign or TokenType.DoubleAsteriskAssign or TokenType.PercentAssign or TokenType.BAndAssign or
-        TokenType.BOrAssign or TokenType.BXorAssign or TokenType.LeftShiftAssign or TokenType.RightShiftAssign => 12,
+        TokenType.BOrAssign or TokenType.BXorAssign or TokenType.LeftShiftAssign or TokenType.RightShiftAssign => 13,
 
-        TokenType.Not => 13,
+        TokenType.Not => 14,
 
-        TokenType.And => 14,
+        TokenType.And => 15,
 
-        TokenType.Xor => 15,
+        TokenType.Xor => 16,
 
-        TokenType.Or => 16,
+        TokenType.Or => 17,
 
-        TokenType.DoubleQuestion => 17,
+        TokenType.DoubleQuestion => 18,
 
-        TokenType.RParen => 19,
+        TokenType.RParen => 30,
         _ => 0,
     };
 }

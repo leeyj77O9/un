@@ -70,12 +70,9 @@ public class Json : Ref<Obj>
 
     public override Obj GetItem(Obj key) => Value.GetItem(key);
 
-    public override Obj SetItem(Obj key, Obj value)
-    {
-        return Value.SetItem(key, value);
-    }
+    public override Obj SetItem(Obj key, Obj value) => Value.SetItem(key, value);
 
-    public override Str ToStr() => new(Stringfy(Value));
+    public override Str ToStr() => Str.From(Stringfy(Value));
 
     public override Obj Clone() => new Json(Value.Clone());
 

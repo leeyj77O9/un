@@ -21,8 +21,8 @@ public class Node(string value, TokenType type)
         {
             buffer += "\n";
             for (var i = 0; i < Children.Count - 1; i++)
-                buffer += new string(' ', depth) + $"├{Children[i].ToString(depth + 1)}\n";
-            buffer += new string(' ', depth) + $"└{Children[^1].ToString(depth + 1)}";
+                buffer += new string(' ', depth) + $" {Children[i].ToString(depth + 1)}\n";
+            buffer += new string(' ', depth) + $" {Children[^1].ToString(depth + 1)}";
         }
         return buffer;
     }
@@ -34,8 +34,8 @@ public class Node(string value, TokenType type)
         {
             buffer += "\n";
             for (var i = 0; i < Children.Count - 1; i++)            
-                buffer += $" ├{Children[i].ToString(1)}\n";
-            buffer += $" └{Children[^1].ToString(1)}";
+                buffer += $" {Children[i].ToString(1)}\n";
+            buffer += $" {Children[^1].ToString(1)}";
         }
         return buffer;
     }

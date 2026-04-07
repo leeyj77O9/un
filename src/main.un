@@ -1,9 +1,15 @@
-i = 0
-t = timer()
+fn fib(n)
+    if n == 0
+        -> [0, 1]
+   
+    a, b = fib(n // 2)
 
-t.start()
-while i < 333333
-	i = i + 1
-t.stop()
+    c = a * (2*b - a)      
+    d = a*a + b*b         
 
-write(`time taken: {t.ms()}ms`)
+    if n % 2 == 0:
+        -> [c, d]
+    else:
+        -> [d, c + d]
+
+write(fib(1000))

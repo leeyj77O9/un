@@ -21,7 +21,7 @@ public class Date(DateTime value) : Val<DateTime>(value, "date")
     public override Obj Add(Obj other) => other switch
     {
         Date d => new Date(Value.AddDays(d.Value.Day)),
-        Str s => new Str(Value.ToString("yyyy-MM-dd") + s.Value),
+        Str s => Str.From(Value.ToString("yyyy-MM-dd") + s.Value),
         _ => new Err($"unsupported operand type(s) for +: 'date' and '{other.Type}'")
     };
 
@@ -31,7 +31,7 @@ public class Date(DateTime value) : Val<DateTime>(value, "date")
         _ => new Err($"unsupported operand type(s) for -: 'date' and '{other.Type}'")
     };
 
-    public override Str ToStr() => new(Value.ToString("yyyy-MM-dd HH:mm:ss.fff"));
+    public override Str ToStr() => Str.From(Value.ToString("yyyy-MM-dd HH:mm:ss.fff"));
 
     public override Obj Copy() => new Date(Value)
     {

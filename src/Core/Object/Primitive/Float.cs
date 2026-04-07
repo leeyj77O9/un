@@ -17,7 +17,7 @@ public class Float(double value) : Val<double>(value, "float")
     {
         Int i => new Float(Value + i.Value),
         Float f => new Float(Value + f.Value),
-        Str s => new Str(Value.ToString() + s.Value),
+        Str s => Str.From(Value.ToString() + s.Value),
         _ => new Err($"unsupported operand type(s) for +: 'float' and '{other.Type}'")
     };
 
@@ -113,7 +113,7 @@ public class Float(double value) : Val<double>(value, "float")
 
     public override Int ToInt() => Int.From((long)Value);
     public override Float ToFloat() => new(Value);
-    public override Str ToStr() => new(Value.ToString());
+    public override Str ToStr() => Str.From(Value.ToString());
     public override Bool ToBool() => Bool.From(Value != 0);
 
     public override Obj Copy() => new Float(Value)

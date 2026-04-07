@@ -7,5 +7,5 @@ public class Err(string message) : Obj
 {
     public string Message => message;
 
-    public override Obj ToStr() => new Str($"Error: {message}");
+    public override Obj ToStr() => Str.From($"Error: {message}");
 }

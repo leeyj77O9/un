@@ -1,6 +1,5 @@
 global using Attributes = System.Collections.Generic.Dictionary<string, Un.Object.Obj>;
 global using Map = System.Collections.Generic.Dictionary<string, Un.Object.Obj>;
-global using IMap = System.Collections.Generic.IDictionary<string, Un.Object.Obj>;
 global using OMap = System.Collections.Specialized.OrderedDictionary;
 
 using Un.Object;
@@ -24,8 +23,8 @@ public static class Global
 
     public static int CallDepth = 0;
 
-    private static Scope scope = new(null!);
-    private static ConcurrentDictionary<string, Obj> classes = new();
+    private static Scope scope = new();
+    private static Scope classes = new();
 
     public static Attributes Package { get; private set; } = [];
 
@@ -53,7 +52,7 @@ public static class Global
         InitTypeByName<Counter>();
         InitTypeByName<Reverse>();
 
-        scope.Set("__name__", new Str("__main__"));
+        scope.Set("__name__", Str.From("__main__"));
 
         foreach (var (key, value) in std.GetOriginalMembers())
             scope.Set(key, value);
@@ -89,7 +88,7 @@ public static class Global
     {
         var t = new T();
 
-        classes.TryAdd(name ?? typeof(T).Name.ToLower(), new T
+        classes.Set(name ?? typeof(T).Name.ToLower(), new T
         {
             Members = t.GetOriginal()
         });
@@ -205,7 +204,7 @@ public static class Global
 
     public static Obj GetClass(string name)
     {
-        if (classes.TryGetValue(name, out var obj))
+        if (classes.Get(name, out var obj))
             return obj;
 
         throw new Panic($"class '{name}' not found");
@@ -213,7 +212,7 @@ public static class Global
 
     public static bool TryGetClass(string name, out Obj? obj)
     {
-        if (classes.TryGetValue(name, out obj))
+        if (classes.Get(name, out obj))
             return true;
 
         obj = null;
@@ -228,7 +227,7 @@ public static class Global
 
     public static bool TryGetOriginalValue(string type, string name, out Obj? value)
     {
-        if (classes.TryGetValue(type, out var original))
+        if (classes.Get(type, out var original))
             return original.Members.TryGetValue(name, out value);
 
         value = null!;
