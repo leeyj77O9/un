@@ -1,4 +1,5 @@
 using Un.Object;
+using Un.Object.Type;
 
 namespace Un;
 
@@ -42,7 +43,7 @@ public class Runner(Context context, Context? parentContext = null!)
             Defer();
         }
 
-        if ((returned?.Type == "skip" || returned?.Type == "break") && Context.CurrentBlock?.Type != "loop")
+        if ((returned?.Type == UnType.Skip || returned?.Type == UnType.Break) && Context.CurrentBlock?.Type != "loop")
             throw new Panic($"'{returned?.Type}' keyword can only be used inside a loop");
 
         return returned!;

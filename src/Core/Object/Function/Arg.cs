@@ -1,3 +1,5 @@
+using Un.Object.Type;
+
 namespace Un.Object.Function;
 
 public struct Arg(string name)
@@ -5,7 +7,7 @@ public struct Arg(string name)
     public readonly static Arg Null = new("null");
 
     public string Name { get; set; } = name;
-    public string Type { get; set; } = "any";
+    public BaseType Type { get; set; } = UnType.Any;
 
     public bool IsEssential { get; set; }
     public bool IsOptional { get; set; }

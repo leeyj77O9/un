@@ -1,13 +1,14 @@
 using Un.Object.Primitive;
 using Un.Object.Collections;
+using Un.Object.Type;
 
 namespace Un.Object.Function;
 
-public class Fn() : Obj("fn")
+public class Fn() : Obj(UnType.Func)
 {
     public string? Name { get; set; }
     public List<Arg> Args { get; set; } = [];
-    public string ReturnType { get; set; } = "any";  
+    public BaseType ReturnType { get; set; } = UnType.Any;  
     public Scope? Closure { get; set; }
 
     protected void Bind(Scope scope, Tup args)
@@ -204,7 +205,7 @@ public class Fn() : Obj("fn")
             {
                 result.Add(new Arg(name)
                 {
-                    Type = argType,
+                    Type = UnType.Create(argType),
                     IsEssential = !isOptional && !isPositional && !isKeyword,
                     IsOptional = isOptional,
                     IsPositional = isPositional,
@@ -240,7 +241,7 @@ public class Fn() : Obj("fn")
         if (!string.IsNullOrEmpty(name))
             result.Add(new Arg(name)
             {
-                Type = argType,
+                Type = UnType.Create(argType),
                 IsEssential = !isOptional && !isPositional && !isKeyword,
                 IsOptional = isOptional,
                 IsPositional = isPositional,

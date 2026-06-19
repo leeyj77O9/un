@@ -1,10 +1,11 @@
 using Un.Object.Primitive;
 using Un.Object.Collections;
 using Un.Object.Function;
+using Un.Object.Type;
 
 namespace Un.Object.Iter;
 
-public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter")
+public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, UnType.Iter)
 {
     public Iters() : this([]) { }
 
@@ -49,6 +50,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
         { "take", new NFn()
             {
                 Name = "take",
+                ReturnType = UnType.Iter,
                 Args = [ new Arg("n") { IsEssential = true } ],
                 Func = args =>
                 {
@@ -65,6 +67,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
         { "skip", new NFn()
             {
                 Name = "skip",
+                ReturnType = UnType.Iter,
                 Args = [ new Arg("n") { IsEssential = true } ],
                 Func = args =>
                 {
@@ -81,6 +84,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
         { "to_list", new NFn()
             {
                 Name = "to_list",
+                ReturnType = UnType.List,
                 Args = [],
                 Func = args =>
                 {
@@ -94,6 +98,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
         { "count", new NFn()
             {
                 Name = "count",
+                ReturnType = UnType.Int,
                 Args = [],
                 Func = args =>
                 {
@@ -107,6 +112,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
         { "map", new NFn()
             {
                 Name = "map",
+                ReturnType = UnType.Iter,
                 Args = [ new Arg("fn") { IsEssential = true } ],
                 Func = args =>
                 {
@@ -127,6 +133,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
         { "filter", new NFn()
             {
                 Name = "filter",
+                ReturnType = UnType.Iter,
                 Args = [ new Arg("fn") { IsEssential = true } ],
                 Func = args =>
                 {
@@ -213,6 +220,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, "iter"
         { "all", new NFn()
             {
                 Name = "all",
+                ReturnType = UnType.Bool,
                 Args = [ new Arg("fn") { IsEssential = true } ],
                 Func = args =>
                 {

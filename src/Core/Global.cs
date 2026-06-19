@@ -9,7 +9,7 @@ using Un.Object.Iter;
 using Un.Object.Function;
 using Un.Object.Primitive;
 using Un.Object.Collections;
-using System.Collections.Concurrent;
+using Un.Object.Type;
 
 namespace Un;
 
@@ -64,7 +64,7 @@ public static class Global
     public static void InitTypeFromInstance<T>(T obj)
         where T : Obj, new()
     {
-        var name = obj.Type;
+        var name = obj.Type.Name;
 
         classes[name].Members = obj.GetOriginal();
 
@@ -76,7 +76,7 @@ public static class Global
             var group = pack.GetOriginalMethods();
 
             if (group.Count != 0)
-                scope.Set(name, new Obj(name)
+                scope.Set(name, new Obj(UnType.Create(name))
                 {
                     Members = group,
                 });
@@ -123,7 +123,7 @@ public static class Global
                 if (scope.ContainsKey(nickname))
                     throw new Panic($"'{nickname}' already exists in the global scope");
 
-                var obj = new Obj(nickname)
+                var obj = new Obj(UnType.Create(nickname))
                 {
                     Members = map
                 };
@@ -133,7 +133,7 @@ public static class Global
         else
         {
             var scope = GetGlobalScope();
-            Obj top = scope.Get(path[0], out var existing) ? existing : new Obj(path[0]);
+            Obj top = scope.Get(path[0], out var existing) ? existing : new Obj(UnType.Create(path[0]));
             
             if (existing == null)
                 scope.Set(path[0], top);            
@@ -144,7 +144,7 @@ public static class Global
                     top = existingObj;
                 else
                 {
-                    Obj obj = new(path[i]);
+                    Obj obj = new(UnType.Create(path[i]));
                     top.Members[path[i]] = obj;
                     top = obj;
                 }

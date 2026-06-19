@@ -1,9 +1,10 @@
 using Un.Object.Collections;
 using Un.Object.Function;
+using Un.Object.Type;
 
 namespace Un.Object.Primitive;
 
-public class Date(DateTime value) : Val<DateTime>(value, "date")
+public class Date(DateTime value) : Val<DateTime>(value, UnType.Date)
 {
     public Date() : this(DateTime.Now) { }
 
@@ -48,49 +49,49 @@ public class Date(DateTime value) : Val<DateTime>(value, "date")
         { "year", new NFn()
             {
                 Name = "year",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Func = _ => Int.From(Value.Year)
             }
         },
         { "month", new NFn()
             {
                 Name = "month",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Func = _ => Int.From(Value.Month)
             }
         },
         { "day", new NFn()
             {
                 Name = "day",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Func = _ => Int.From(Value.Day)
             }
         },
         { "hour", new NFn()
             {
                 Name = "hour",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Func = _ => Int.From(Value.Hour)
             }
         },
         { "minute", new NFn()
             {
                 Name = "minute",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Func = _ => Int.From(Value.Minute)
             }
         },
         { "second", new NFn()
             {
                 Name = "second",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Func = _ => Int.From(Value.Second)
             }
         },
         { "ms", new NFn()
             {
                 Name = "ms",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Func = _ => Int.From(Value.Millisecond)
             }
         },

@@ -1,6 +1,7 @@
 using Un.Object.Function;
 using Un.Object.Collections;
 using Un.Object.Iter;
+using Un.Object.Type;
 
 namespace Un.Object.Primitive;
 
@@ -11,7 +12,7 @@ public class Str : Ref<string>
 
     public Str() : this("") { }
     
-    private Str(string value) : base(value, "str") { }
+    private Str(string value) : base(value, UnType.Str) { }
 
     public override Obj Init(Tup args) => args switch
     {
@@ -106,6 +107,7 @@ public class Str : Ref<string>
         { "is_empty", new NFn
             {
                 Name = "is_empty",
+                ReturnType = UnType.Bool,
                 Args = [],
                 Func = args =>
                 {
@@ -119,6 +121,7 @@ public class Str : Ref<string>
         { "index_of", new NFn
             {
                 Name = "index_of",
+                ReturnType = UnType.Int,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -134,6 +137,7 @@ public class Str : Ref<string>
         { "contains", new NFn
             {
                 Name = "contains",
+                ReturnType = UnType.Bool,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -149,6 +153,7 @@ public class Str : Ref<string>
         { "starts_with", new NFn
             {
                 Name = "starts_with",
+                ReturnType = UnType.Bool,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -164,6 +169,7 @@ public class Str : Ref<string>
         { "ends_with", new NFn
             {
                 Name = "ends_with",
+                ReturnType = UnType.Bool,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -179,6 +185,7 @@ public class Str : Ref<string>
         { "to_upper", new NFn
             {
                 Name = "to_upper",
+                ReturnType = UnType.Str,
                 Args = [],
                 Func = args =>
                 {
@@ -192,6 +199,7 @@ public class Str : Ref<string>
         { "to_lower", new NFn
             {
                 Name = "to_lower",
+                ReturnType = UnType.Str,
                 Args = [],
                 Func = args =>
                 {
@@ -205,6 +213,7 @@ public class Str : Ref<string>
         { "split", new NFn
             {
                 Name = "split",
+                ReturnType = UnType.List,
                 Args = [new Arg("sep") { IsOptional = true, DefaultValue = new Str(" ")}],
                 Func = args =>
                 {
@@ -221,6 +230,7 @@ public class Str : Ref<string>
         { "trim", new NFn
             {
                 Name = "trim",
+                ReturnType = UnType.Str,
                 Args = [ new Arg("chars") { IsOptional = true, DefaultValue = new Str("") }],
                 Func = args =>
                 {
@@ -236,6 +246,7 @@ public class Str : Ref<string>
         { "join", new NFn
             {
                 Name = "join",
+                ReturnType = UnType.Str,
                 Args = [new Arg("values") {IsEssential = true}],
                 Func = args =>
                 {
@@ -250,6 +261,7 @@ public class Str : Ref<string>
         { "is_number", new NFn
             {
                 Name = "is_number",
+                ReturnType = UnType.Bool,
                 Args = [],
                 Func = args =>
                 {
@@ -264,6 +276,7 @@ public class Str : Ref<string>
         { "is_alphabet", new NFn
             {
                 Name = "is_alphabet",
+                ReturnType = UnType.Bool,
                 Args = [],
                 Func = args =>
                 {
@@ -278,6 +291,7 @@ public class Str : Ref<string>
         { "center", new NFn
             {
                 Name = "center",
+                ReturnType = UnType.Str,
                 Args = [
                     new Arg("width") { IsEssential = true },
                     new Arg("fill") { IsOptional = true, DefaultValue = new Str(" ") }
@@ -302,6 +316,7 @@ public class Str : Ref<string>
         { "left", new NFn
             {
                 Name = "left",
+                ReturnType = UnType.Str,
                 Args = [
                     new Arg("width") { IsEssential = true },
                     new Arg("fill") { IsOptional = true, DefaultValue = new Str(" ") }
@@ -324,6 +339,7 @@ public class Str : Ref<string>
         { "right", new NFn
             {
                 Name = "right",
+                ReturnType = UnType.Str,
                 Args = [
                     new Arg("width") { IsEssential = true },
                     new Arg("fill") { IsOptional = true, DefaultValue = new Str(" ") }
@@ -346,6 +362,7 @@ public class Str : Ref<string>
         { "replace", new NFn
             {
                 Name = "replace",
+                ReturnType = UnType.Str,
                 Args = [
                     new Arg("old") { IsEssential = true },
                     new Arg("new") { IsEssential = true }
@@ -366,6 +383,7 @@ public class Str : Ref<string>
         { "find", new NFn
             {
                 Name = "find",
+                ReturnType = UnType.Int,
                 Args = [
                     new Arg("substr") { IsEssential = true }
                 ],

@@ -1,9 +1,10 @@
 using Un.Object.Collections;
 using Un.Object.Primitive;
+using Un.Object.Type;
 
 namespace Un.Object;
 
-public class Stru(string type, string[] names) : Obj(type)
+public class Stru(UnType type, string[] names) : Obj(type)
 {
     private string[] names = names;
 

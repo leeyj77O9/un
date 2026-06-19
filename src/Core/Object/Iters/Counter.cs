@@ -1,6 +1,6 @@
 using Un.Object.Primitive;
 using Un.Object.Collections;
-using System.Collections;
+using Un.Object.Type;
 
 namespace Un.Object.Iter;
 
@@ -12,7 +12,7 @@ public class Counter : Iters
 
     public Counter(long start)
     {
-        Type = "counter";
+        Type = UnType.Create("counter");
         current = start;
         Value = Default(start);
     }

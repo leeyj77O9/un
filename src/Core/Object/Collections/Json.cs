@@ -1,6 +1,5 @@
-using System.Collections;
-using Un.Object.Function;
 using Un.Object.Primitive;
+using Un.Object.Type;
 
 namespace Un.Object.Collections;
 
@@ -18,12 +17,12 @@ public class Json : Ref<Obj>
         _ => 1
     };
 
-    public Json() : base(None, "json")
+    public Json() : base(None, UnType.Create("json"))
     {
         scope.Set("null", None);
     }
 
-    public Json(Obj obj) : base(obj, "json")
+    public Json(Obj obj) : base(obj, UnType.Create("json"))
     {
         scope.Set("null", None);
     }

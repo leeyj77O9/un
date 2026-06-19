@@ -2,12 +2,13 @@ using System.Collections;
 using Un.Object.Function;
 using Un.Object.Primitive;
 using Un.Object.Iter;
+using Un.Object.Type;
 
 namespace Un.Object.Collections;
 
 public class List : Ref<Obj[]>, IEnumerable<Obj>
 {
-    public List(Obj[] value) : base(value, "list")
+    public List(Obj[] value) : base(value, UnType.List)
     {
         Count = value.Length;
     }
@@ -328,9 +329,9 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "add", new NFn
             {
                 Name = "add",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args = [new Arg("values") {
-                    Type = "tuple[any]",    
+                    Type = CollectionType.Create(UnType.Tuple, UnType.Any),
                     IsPositional = true }],
                 Func = args =>
                 {
@@ -349,14 +350,14 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "insert", new NFn
             {
                 Name = "insert",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args =
                 [
                     new Arg("value") {
                         IsEssential = true
                     },
                     new Arg("index") {
-                        Type = "int",
+                        Type = UnType.Int,
                         IsEssential = true
                     }
                 ],
@@ -375,7 +376,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "extend", new NFn
             {
                 Name = "extend",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args = [new Arg("value") {
                     IsEssential = true
                 }],
@@ -392,14 +393,14 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "extend_insert", new NFn
             {
                 Name = "extend_insert",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args =
                 [
                     new Arg("value") {
                         IsEssential = true
                     },
                     new Arg("index") {
-                        Type = "int",
+                        Type = UnType.Int,
                         IsEssential = true
                     }
                 ],
@@ -418,7 +419,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "remove", new NFn
             {
                 Name = "remove",
-                ReturnType = "bool",
+                ReturnType = UnType.Bool,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -432,9 +433,9 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "remove_at", new NFn
             {
                 Name = "remove_at",
-                ReturnType = "bool",
+                ReturnType = UnType.Bool,
                 Args = [new Arg("index") {
-                    Type = "int",
+                    Type = UnType.Int,
                     IsEssential = true
                 }],
                 Func = args =>
@@ -535,7 +536,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "hpush", new NFn
             {
                 Name = "hpush",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -563,7 +564,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "binary_search", new NFn
             {
                 Name = "binary_search",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -577,7 +578,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "lower_bound", new NFn
             {
                 Name = "lower_bound",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -591,7 +592,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         { "upper_bound", new NFn
             {
                 Name = "upper_bound",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {

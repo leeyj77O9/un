@@ -1,5 +1,6 @@
 using Un.Object.Collections;
 using Un.Object.Function;
+using Un.Object.Type;
 
 namespace Un.Object.Primitive;
 
@@ -9,7 +10,7 @@ public class Int : Val<long>
 
     public Int() : this(0) {}
 
-    private Int(long value) : base(value, "int") { }
+    private Int(long value) : base(value, UnType.Int) { }
 
     public override Obj Init(Tup args) => args switch
     {

@@ -1,10 +1,11 @@
 using Un.Object.Primitive;
 using Un.Object.Function;
 using Un.Object.Iter;
+using Un.Object.Type;
 
 namespace Un.Object.Collections;
 
-public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value, "dict")
+public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value, UnType.Dict)
 {
     public Dict() : this([]) { }
 

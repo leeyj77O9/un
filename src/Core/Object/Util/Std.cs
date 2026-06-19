@@ -2,6 +2,7 @@ using Un.Object.Function;
 using Un.Object.Primitive;
 using Un.Object.Collections;
 using Un.Object.Iter;
+using Un.Object.Type;
 
 namespace Un.Object.Util;
 
@@ -22,21 +23,21 @@ public class Std : IPack
         { "write", new NFn()
             {
                 Name = "write",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args = [
                    new Arg("value") {
-                    Type = "tuple[any]",
+                    Type = CollectionType.Create(UnType.Tuple, UnType.Any),
                     IsPositional = true,
                 }, new Arg("sep") {
-                    Type = "str",
+                    Type = UnType.Str,
                     IsOptional = true,
                     DefaultValue = Str.From(" ")
                 }, new Arg("end"){
-                    Type = "str",
+                    Type = UnType.Str,
                     IsOptional = true,
                     DefaultValue = Str.From("\n")
                 }, new Arg("stream"){
-                    Type = "stream",
+                    Type = UnType.Create("stream"),
                     IsOptional = true,
                     DefaultValue = so
                 }],
@@ -84,14 +85,14 @@ public class Std : IPack
         { "read", new NFn()
             {
                 Name = "read",
-                ReturnType = "str",
+                ReturnType = UnType.Str,
                 Args = [
                    new Arg("prompt") {
-                    Type = "str",
+                    Type = UnType.Str,
                     IsOptional = true,
                     DefaultValue = Str.Empty,
                 }, new Arg("stream") {
-                    Type = "stream",
+                    Type = UnType.Create("stream"),
                     IsOptional = true,
                     DefaultValue = sr
                 }],
@@ -128,17 +129,17 @@ public class Std : IPack
         { "log", new NFn()
             {
                 Name = "log",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args = [
                    new Arg("value") {
-                    Type = "tuple[any]",
+                    Type = CollectionType.Create(UnType.Tuple, UnType.Any),
                     IsPositional = true,
                 }, new Arg("sep") {
-                    Type = "str",
+                    Type = UnType.Str,
                     IsOptional = true,
                     DefaultValue = Str.From(" ")
                 }, new Arg("end"){
-                    Type = "str",
+                    Type = UnType.Str,
                     IsOptional = true,
                     DefaultValue = Str.From("\n")
                 }],
@@ -198,7 +199,7 @@ public class Std : IPack
         { "clear", new NFn()
             {
                 Name = "clear",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Annotations = {
                     ["doc"] = new Tup(
                         [
@@ -220,12 +221,12 @@ public class Std : IPack
         { "exit", new NFn()
             {
                 Name = "exit",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args = [
-                   new Arg("code") {
-                    Type = "int",
-                    IsOptional = true,
-                    DefaultValue = Int.From(0)
+                    new Arg("code") {
+                        Type = UnType.Int,
+                        IsOptional = true,
+                        DefaultValue = Int.From(0)
                 }],
                 Annotations = {
                     ["doc"] = new Tup(
@@ -249,7 +250,7 @@ public class Std : IPack
         { "type", new NFn()
             {
                 Name = "type",
-                ReturnType = "str",
+                ReturnType = UnType.Str,
                 Args = [
                    new Arg("value") {
                     IsEssential = true,
@@ -266,19 +267,19 @@ public class Std : IPack
                         ]
                     )
                 },
-                Func = (args) => Str.From(args["value"].Type)
+                Func = (args) => Str.From(args["value"].Type.Name)
             }
         },
         { "array", new NFn()
             {
                 Name = "array",
-                ReturnType = "list[T]",
+                ReturnType = CollectionType.Create(UnType.List, UnType.TGeneric),
                 Args = [
                    new Arg("default") {
-                    Type = "T",
+                    Type = UnType.TGeneric,
                     IsEssential = true,
                 }, new Arg("size") {
-                    Type = "tuple[int]",
+                    Type = CollectionType.Create(UnType.Tuple, UnType.Int),
                     IsPositional = true,
                     DefaultValue = new Tup([Int.From(1)], [])
                 }],
@@ -316,19 +317,19 @@ public class Std : IPack
         { "range", new NFn()
             {
                 Name = "range",
-                ReturnType = "range",
+                ReturnType = UnType.Create("range"),
                 Args = [
                     new Arg("start") {
-                        Type = "int",
+                        Type = UnType.Int,
                         IsOptional = true,
                         DefaultValue = Int.From(0),
                     },
                     new Arg("stop") {
-                        Type = "int",
+                        Type = UnType.Int,
                         IsEssential = true
                     },
                     new Arg("step") {
-                        Type = "int",
+                        Type = UnType.Int,
                         IsOptional = true,
                         DefaultValue = Int.From(1),
                     }
@@ -360,10 +361,10 @@ public class Std : IPack
         { "enumerate", new NFn()
             {
                 Name = "enumerate",
-                ReturnType = "iter<(int, T)>",
+                ReturnType = CollectionType.Create(UnType.Iter, CollectionType.Create(UnType.Tuple, UnionType.Create(UnType.Int, UnType.TGeneric))),
                 Args = [
                     new Arg("array") {
-                        Type = "list[T] | tuple[T]",
+                        Type = UnionType.Create(CollectionType.Create(UnType.List, UnType.TGeneric), CollectionType.Create(UnType.Tuple, UnType.TGeneric)),
                         IsEssential = true
                     },
                 ],
@@ -391,10 +392,10 @@ public class Std : IPack
         { "zip", new NFn()
             {
                 Name = "zip",
-                ReturnType = "list[(T, U, ...)]",
+                ReturnType = CollectionType.Create(UnType.List, CollectionType.Create(UnType.Tuple, UnionType.Create(UnType.TGeneric, UnType.UGeneric, UnType.Infinity))),
                 Args = [
                     new Arg("arrays") {
-                        Type = "list[list[any] | tuple[any]]",
+                        Type = UnionType.Create(CollectionType.Create(UnType.List, UnType.TGeneric), CollectionType.Create(UnType.Tuple, UnType.TGeneric)),
                         IsPositional = true
                     },
                 ],
@@ -428,15 +429,13 @@ public class Std : IPack
                     }
 
                     return list;
-
-                    return new Iters();
                 }
             }
         },
         { "hash", new NFn()
             {
                 Name = "hash",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Args = [
                     new Arg("value") {
                         IsEssential = true,
@@ -460,7 +459,7 @@ public class Std : IPack
         { "open", new NFn()
             {
                 Name = "open",
-                ReturnType = "stream",
+                ReturnType = UnType.Create("stream"),
                 Args = [
                     new Arg("value") {
                         IsEssential = true,
@@ -488,10 +487,10 @@ public class Std : IPack
         { "sum", new NFn()
             {
                 Name = "sum",
-                ReturnType = "T",
+                ReturnType = UnType.TGeneric,
                 Args = [
                     new Arg("value") {
-                        Type = "tuple[T]",
+                        Type = UnionType.Create(UnType.Tuple, UnType.TGeneric),
                         IsPositional = true,
                     }
                 ],
@@ -538,10 +537,10 @@ public class Std : IPack
         { "max", new NFn()
             {
                 Name = "max",
-                ReturnType = "T",
+                ReturnType = UnType.TGeneric,
                 Args = [
                     new Arg("value") {
-                        Type = "tuple[T]",
+                        Type = UnionType.Create(UnType.Tuple, UnType.TGeneric),
                         IsPositional = true,
                     }
                 ],
@@ -585,10 +584,10 @@ public class Std : IPack
         { "min", new NFn()
             {
                 Name = "min",
-                ReturnType = "T",
+                ReturnType = UnType.TGeneric,
                 Args = [
                     new Arg("value") {
-                        Type = "tuple[T]",
+                        Type = UnionType.Create(UnType.Tuple, UnType.TGeneric),
                         IsPositional = true,
                     }
                 ],
@@ -632,14 +631,14 @@ public class Std : IPack
         { "round", new NFn()
             {
                 Name = "round",
-                ReturnType = "int | floor",
+                ReturnType = UnionType.Create(UnType.Int, UnType.Float),
                 Args = [
                     new Arg("value") {
-                        Type = "int | floor",
+                        Type = UnionType.Create(UnType.Int, UnType.Float),
                         IsEssential = true
                     },
                     new Arg("digit") {
-                        Type = "int",
+                        Type = UnionType.Create(UnType.Int),
                         IsOptional = true,
                         DefaultValue = Int.From(0),
                     }
@@ -683,10 +682,10 @@ public class Std : IPack
         { "abs", new NFn()
             {
                 Name = "abs",
-                ReturnType = "int | floor",
+                ReturnType = UnionType.Create(UnType.Int, UnType.Float),
                 Args = [
                     new Arg("value") {
-                        Type = "int | floor",
+                        Type = UnionType.Create(UnType.Int, UnType.Float),
                         IsEssential = true,
                     }
                 ],
@@ -713,10 +712,10 @@ public class Std : IPack
         { "ceil", new NFn()
             {
                 Name = "ceil",
-                ReturnType = "int | floor",
+                ReturnType = UnionType.Create(UnType.Int, UnType.Float),
                 Args = [
                     new Arg("value") {
-                        Type = "int | floor",
+                        Type = UnionType.Create(UnType.Int, UnType.Float),
                         IsEssential = true,
                     }
                 ],
@@ -747,10 +746,10 @@ public class Std : IPack
         { "sqrt", new NFn()
             {
                 Name = "sqrt",
-                ReturnType = "floor",
+                ReturnType = UnType.Float,
                 Args = [
                     new Arg("value") {
-                        Type = "int | floor",
+                        Type = UnionType.Create(UnType.Int, UnType.Float),
                         IsEssential = true,
                     }
                 ],
@@ -777,10 +776,10 @@ public class Std : IPack
         { "floor", new NFn()
             {
                 Name = "floor",
-                ReturnType = "int | floor",
+                ReturnType = UnionType.Create(UnType.Int, UnType.Float),
                 Args = [
                     new Arg("value") {
-                        Type = "int | floor",
+                        Type = UnionType.Create(UnType.Int, UnType.Float),
                         IsEssential = true,
                     }
                 ],
@@ -813,11 +812,11 @@ public class Std : IPack
                 Name = "memo",
                 Args = [
                     new Arg("func") {
-                        Type = "func",
+                        Type = UnType.Func,
                         IsEssential = true
                     },
                     new Arg("args") {
-                        Type = "tuple",
+                        Type = UnType.Tuple,
                         IsPositional = true,
                     }
                 ],
@@ -857,11 +856,11 @@ public class Std : IPack
         { "sleep", new NFn()
             {
                 Name = "sleep",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args = [
                     new Arg("time")
                     {
-                        Type = "int | float",
+                        Type = UnionType.Create(UnType.Int, UnType.Float),
                         IsEssential = true
                     }
                 ],
@@ -898,21 +897,21 @@ public class Std : IPack
         { "delay", new NFn()
             {
                 Name = "delay",
-                ReturnType = "T",
+                ReturnType = UnType.TGeneric,
                 Args = [
                     new Arg("time")
                     {
-                        Type = "int | float",
+                        Type = UnionType.Create(UnType.Int, UnType.Float),
                         IsEssential = true
                     },
                     new Arg("fn")
                     {
-                        Type = "func",
+                        Type = UnType.Func,
                         IsEssential = true
                     },
                     new Arg("args")
                     {
-                        Type = "tuple[any]",
+                        Type = UnType.Tuple,
                         IsPositional = true,
                     }
                 ],
@@ -956,14 +955,14 @@ public class Std : IPack
         { "panic", new NFn()
             {
                 Name = "panic",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args = [
                     new Arg("message") {
-                        Type = "str",
+                        Type = UnType.Str,
                         IsEssential = true
                     },
                     new Arg("name") {
-                        Type = "str",
+                        Type = UnType.Str,
                         IsOptional = true,
                         DefaultValue = Str.From("panic")
                     },
@@ -990,14 +989,14 @@ public class Std : IPack
         { "meta", new NFn()
             {
                 Name = "meta",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Args = [
                     new Arg("value") {
-                        Type = "any",
+                        Type = UnType.Any,
                         IsEssential = true
                     },
                     new Arg("name") {
-                        Type = "str",
+                        Type = UnType.Str,
                         IsEssential = true
                     }
                 ],
@@ -1027,7 +1026,7 @@ public class Std : IPack
         { "random", new NFn()
             {
                 Name = "random",
-                ReturnType = "float",
+                ReturnType = UnType.Float,
                 Annotations = {
                     ["doc"] = new Tup(
                         [
@@ -1045,7 +1044,7 @@ public class Std : IPack
         { "breakpoint", new NFn()
             {
                 Name = "breakpoint",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Annotations = {
                     ["doc"] = new Tup(
                         [
@@ -1068,7 +1067,7 @@ public class Std : IPack
         { "gc", new NFn()
             {
                 Name = "gc",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Annotations = {
                     ["doc"] = new Tup(
                         [
@@ -1090,14 +1089,14 @@ public class Std : IPack
         { "bench", new NFn()
             {
                 Name = "bench",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Args = [
                     new Arg("fn") {
-                        Type = "func",
+                        Type = UnType.Func,
                         IsEssential = true
                     },
                     new Arg("args") {
-                        Type = "tuple[any]",
+                        Type = CollectionType.Create(UnType.Tuple, UnType.Any),
                         IsPositional = true,
                     }
                 ],
@@ -1136,10 +1135,10 @@ public class Std : IPack
         { "attr", new NFn()
             {
                 Name = "attr",
-                ReturnType = "list[str]",
+                ReturnType = CollectionType.Create(UnType.List, UnType.Str),
                 Args = [
                     new Arg("value") {
-                        Type = "any",
+                        Type = UnType.Any,
                         IsEssential = true
                     },
                 ],
@@ -1161,7 +1160,7 @@ public class Std : IPack
         { "global", new NFn()
             {
                 Name = "global",
-                ReturnType = "dict[str, any]",
+                ReturnType = CollectionType.Create(UnType.Dict, UnionType.Create(UnType.Str, UnType.Any)),
                 Annotations = {
                     ["doc"] = new Tup(
                         [

@@ -1,22 +1,23 @@
 using Un.Object.Collections;
 using Un.Object.Primitive;
+using Un.Object.Type;
 
 namespace Un.Object;
 
-public class Obj(string type) : IComparable<Obj>
+public class Obj(UnType type) : IComparable<Obj>
 {
-    public static Obj Error = new("error");
-    public static Obj None = new("none");
-    public static Obj Null = new("null");
+    public static Obj Error = new(UnType.Error);
+    public static Obj None = new(UnType.None);
+    public static Obj Null = new(UnType.Null);
 
-    public virtual string Type { get; protected set; } = type;
-    public virtual HashSet<string> Types { get; set; } = [];
+    public virtual UnType Type { get; set; } = type;
+    public virtual BaseType Types { get; set; } = UnionType.Create(UnType.Obj, type);
     public virtual Obj Self { get; set; } = None;
     public virtual Obj Super { get; set; } = None;
     public virtual Attributes Members { get; set; } = [];
     public virtual OMap Annotations { get; set; } = [];
 
-    public Obj() : this("obj") { }
+    public Obj() : this(UnType.Obj) { }
 
     public virtual Obj Init(Tup args)
     {
@@ -219,7 +220,7 @@ public class Obj(string type) : IComparable<Obj>
             value = Super.GetAttr(name);
             goto Found;
         }
-        if (Global.TryGetOriginalValue(Type, name, out value))
+        if (Global.TryGetOriginalValue(Type.Name, name, out value))
             goto Found;
 
         return new Err($"'{Type}' object has no attribute '{name}'");
@@ -276,12 +277,13 @@ public class Obj(string type) : IComparable<Obj>
     {
         if (TryMethod("__is__", out Obj? value, new([obj], ["obj"])))
             return value;
+  
+        if (Types is UnionType unionTypes && unionTypes.In(obj.Type))
+            return Bool.True;
+        if (Types is UnType singleType && singleType == obj.Type)
+            return Bool.True;
 
-        foreach (var type in Types)
-            if (type == obj.Type)
-                return Bool.True;
-
-        return obj.Type == Type ? Bool.True : Super is not null && !Super.IsNone() ? Super.Is(obj) : Bool.False;
+        return Super is not null && !Super.IsNone() ? Super.Is(obj) : Bool.False;
     }
 
     public virtual Obj In(Obj obj)
@@ -317,7 +319,7 @@ public class Obj(string type) : IComparable<Obj>
     {
         if (TryMethod("__repr__", out Obj? value, []))
             return value;
-        return Super is not null && !Super.IsNone() && Super.Repr().As<Str>().Value != Super.Type ? Super.Repr(): Str.From(Type);
+        return Super is not null && !Super.IsNone() && Super.Repr().As<Str>().Value != Super.Type.Name ? Super.Repr(): Str.From(Type.Name);
     }
 
     public virtual Obj ToBool()
@@ -445,16 +447,6 @@ public class Obj(string type) : IComparable<Obj>
         throw new Panic(message);
     }
 
-    //public Obj As<T, U>(string message) where T : Obj where U : Obj
-    //{
-    //    if (this is T obj1)
-    //        return obj1;
-    //    if (this is U obj2)
-    //        return obj2;
-
-    //   return new Err(message);
-    //}
-
     public Obj Unwrap(Context context)
     {
         if (this is Err e)
@@ -485,9 +477,9 @@ public class Obj(string type) : IComparable<Obj>
         return false;
     }
 
-    public bool IsNone() => Type == "none";
+    public bool IsNone() => Type == UnType.None;
 
-    public bool IsType() => Type.StartsWith("__") && Type.EndsWith("__");
+    public bool IsType() => Type.Name.StartsWith("__") && Type.Name.EndsWith("__");
 
     public bool Has(string name)
     {

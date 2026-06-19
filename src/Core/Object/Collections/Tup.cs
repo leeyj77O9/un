@@ -2,6 +2,7 @@ using System.Collections;
 using Un.Object.Function;
 using Un.Object.Primitive;
 using Un.Object.Iter;
+using Un.Object.Type;
 
 namespace Un.Object.Collections;
 
@@ -38,14 +39,14 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
 
     public Tup() : this([], []) {}
 
-    public Tup(Obj[] values) : base(values, "tuple")
+    public Tup(Obj[] values) : base(values, UnType.Tuple)
     {
         Name = new string[values.Length];
         for (int i = 0; i < values.Length; i++)
             Name[i] = string.Empty;
     }
 
-    public Tup(Obj[] values, string[] names) : base(values, "tuple")
+    public Tup(Obj[] values, string[] names) : base(values, UnType.Tuple)
     {
         Name = names;
 
@@ -54,7 +55,7 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
                 Members[Name[i]] = values[i];
     }
 
-    public Tup(IEnumerable<KeyValuePair<string, Obj>> pairs) : base([..pairs.Select(x => x.Value)], "tuple")
+    public Tup(IEnumerable<KeyValuePair<string, Obj>> pairs) : base([..pairs.Select(x => x.Value)], UnType.Tuple)
     {
         Name = [.. pairs.Select(x => x.Key)];
     }

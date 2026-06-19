@@ -1,8 +1,6 @@
-using Un.Object.Function;
 using Un.Object.Primitive;
 using Un.Object.Collections;
-using System.Collections;
-using System.Collections.Generic;
+using Un.Object.Type;
 
 namespace Un.Object.Iter;
 
@@ -14,7 +12,7 @@ public class Range : Iters
 
     public Range(long start, long stop, long step = 1) : base(Default(start, stop, step))
     {
-        Type = "range";
+        Type = UnType.Create("range");
         this.start = start;
         this.stop = stop;
         this.step = step;

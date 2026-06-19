@@ -1,9 +1,10 @@
 using Un.Object.Collections;
 using Un.Object.Primitive;
+using Un.Object.Type;
 
 namespace Un.Object;
 
-public class Enu(string type, int n) : Obj(type)
+public class Enu(UnType type, int n) : Obj(type)
 {
     public int N => n;
 
@@ -14,7 +15,7 @@ public class Enu(string type, int n) : Obj(type)
         _ => new Err($"'{Type}' takes at most 1 argument, {args.Count} given")
     };
 
-    public override Str ToStr() => Str.From(Type);
+    public override Str ToStr() => Str.From(Type.Name);
 
     public override Int ToInt() => Int.From(N);
 

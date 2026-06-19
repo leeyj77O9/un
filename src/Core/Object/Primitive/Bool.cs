@@ -1,4 +1,5 @@
 using Un.Object.Collections;
+using Un.Object.Type;
 
 namespace Un.Object.Primitive;
 
@@ -8,7 +9,7 @@ public class Bool : Val<bool>
     public static Bool False = new(false);
 
     public Bool() : this(false) { }
-    private Bool(bool value) : base(value, "bool") { }
+    private Bool(bool value) : base(value, UnType.Bool) { }
 
     public override Obj Init(Tup args) => args switch
     {

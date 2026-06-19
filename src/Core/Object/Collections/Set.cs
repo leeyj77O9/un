@@ -1,9 +1,10 @@
 using Un.Object.Function;
 using Un.Object.Primitive;
+using Un.Object.Type;
 
 namespace Un.Object.Collections;
 
-public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
+public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, UnType.Set)
 {
     public Set() : this([]) { }
 
@@ -44,6 +45,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
         { "add", new NFn
             {
                 Name = "add",
+                ReturnType = UnType.Bool,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -56,6 +58,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
         { "remove", new NFn
             {
                 Name = "remove",
+                ReturnType = UnType.Bool,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -68,6 +71,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
         { "contains", new NFn
             {
                 Name = "contains",
+                ReturnType = UnType.Bool,
                 Args = [new Arg("value") { IsEssential = true }],
                 Func = args =>
                 {
@@ -93,6 +97,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
         { "clone", new NFn
             {
                 Name = "clone",
+                ReturnType = UnType.Set,
                 Args = [],
                 Func = args =>
                 {
@@ -105,6 +110,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
         { "union", new NFn
             {
                 Name = "union",
+                ReturnType = UnType.Set,
                 Args = [new Arg("other") { IsEssential = true }],
                 Func = args =>
                 {
@@ -119,6 +125,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
         { "intersect", new NFn
             {
                 Name = "intersect",
+                ReturnType = UnType.Set,
                 Args = [new Arg("other") { IsEssential = true }],
                 Func = args =>
                 {
@@ -133,6 +140,7 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, "set")
         { "difference", new NFn
             {
                 Name = "difference",
+                ReturnType = UnType.Set,
                 Args = [new Arg("other") { IsEssential = true }],
                 Func = args =>
                 {

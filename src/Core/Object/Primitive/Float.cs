@@ -1,8 +1,9 @@
 using Un.Object.Collections;
+using Un.Object.Type;
 
 namespace Un.Object.Primitive;
 
-public class Float(double value) : Val<double>(value, "float")
+public class Float(double value) : Val<double>(value, UnType.Float)
 {
     public Float() : this(0) { }
 

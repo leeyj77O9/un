@@ -3,6 +3,7 @@ using Un.Object.Primitive;
 using Un.Object.Collections;
 using System.Collections.Concurrent;
 using Un.Object.Function;
+using Un.Object.Type;
 
 namespace Un.Object.Flow;
 
@@ -11,7 +12,7 @@ public class Lock : Obj
     private readonly object syncRoot = new();
     private readonly ThreadLocal<bool> isHeld = new(() => false);
 
-    public Lock() : base("lock")
+    public Lock() : base(UnType.Create("lock"))
     {
         Members = GetOriginal();
     }
@@ -33,7 +34,7 @@ public class Lock : Obj
         { "acquire", new NFn()
             {
                 Name = "acquire",
-                ReturnType = "lock",
+                ReturnType = UnType.Create("lock"),
                 Func = args =>
                 {
                     Monitor.Enter(syncRoot);
@@ -45,7 +46,7 @@ public class Lock : Obj
         { "try_acquire", new NFn()
             {
                 Name = "try_acquire",
-                ReturnType = "bool",
+                ReturnType = UnType.Bool,
                 Func = args =>
                 {
                     bool success = Monitor.TryEnter(syncRoot);
@@ -57,7 +58,7 @@ public class Lock : Obj
         { "release", new NFn()
             {
                 Name = "release",
-                ReturnType = "lock",
+                ReturnType = UnType.Create("lock"),
                 Func = args =>
                 {
                     if (isHeld.Value)
@@ -76,7 +77,7 @@ public class Lock : Obj
         { "dispose", new NFn()
             {
                 Name = "dispose",
-                ReturnType = "lock",
+                ReturnType = UnType.Create("lock"),
                 Func = args =>
                 {
                     if (isHeld.Value)

@@ -2,10 +2,11 @@ using System.Diagnostics;
 using Un.Object.Collections;
 using Un.Object.Function;
 using Un.Object.Primitive;
+using Un.Object.Type;
 
 namespace Un.Object.Util;
 
-public class Timer() : Ref<Stopwatch>(new(), "timer")
+public class Timer() : Ref<Stopwatch>(new(), UnType.Create("timer"))
 {
     public override Obj Init(Tup args) => args switch
     {
@@ -20,7 +21,7 @@ public class Timer() : Ref<Stopwatch>(new(), "timer")
         { "start", new NFn()
             {
                 Name = "start",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Func = _ =>
                 {
                     Value.Start();
@@ -31,7 +32,7 @@ public class Timer() : Ref<Stopwatch>(new(), "timer")
         { "restart", new NFn()
             {
                 Name = "restart",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Func = _ =>
                 {
                     Value.Restart();
@@ -42,7 +43,7 @@ public class Timer() : Ref<Stopwatch>(new(), "timer")
         { "stop", new NFn()
             {
                 Name = "stop",
-                ReturnType = "none",
+                ReturnType = UnType.None,
                 Func = _ =>
                 {
                     Value.Stop();
@@ -53,7 +54,7 @@ public class Timer() : Ref<Stopwatch>(new(), "timer")
         { "ms", new NFn()
             {
                 Name = "ms",
-                ReturnType = "int",
+                ReturnType = UnType.Int,
                 Func = _ => Int.From(Value.ElapsedMilliseconds)
             }
         },

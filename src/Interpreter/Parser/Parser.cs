@@ -3,6 +3,7 @@ using Un.Object.Collections;
 using Un.Object.Function;
 using Un.Object.Iter;
 using Un.Object.Primitive;
+using Un.Object.Type;
 
 namespace Un;
 
@@ -136,7 +137,7 @@ public class Parser(Context context)
         if (IsEmpty(body) && colon < 4)
         {
             Global.SetClass(name, new Stru(
-                name,
+                UnType.Create(name),
                 [.. fields.Split(TokenType.Comma).Select(x => x[0].Value)])
             {
                 Annotations = context.Annotations,
@@ -146,11 +147,11 @@ public class Parser(Context context)
         }
         else
         {
-            Global.SetClass(name, new Obj(name)
+            Global.SetClass(name, new Obj(UnType.Create(name))
             {
                 Annotations = context.Annotations,
                 Super = isInherit ? Global.GetClass(superType) : Obj.None,
-                Types = types,
+                Types = UnType.Create(name),
                 Members = members
             });
         }
@@ -182,7 +183,7 @@ public class Parser(Context context)
                     constants.Add(member.Trim(), Int.From(i++));
         }
 
-        Global.SetClass(name, new Enu(name, 0)
+        Global.SetClass(name, new Enu(UnType.Create(name), 0)
         {
             Members = constants
         });
@@ -190,8 +191,8 @@ public class Parser(Context context)
         return Obj.None;
     }
     private Obj ParseReturn() => ReturnValue = Operator.On(nodes[1..], context);
-    private Obj ParseBreak() => ReturnValue = new Obj("break");
-    private Obj ParseSkip() => ReturnValue = new Obj("skip");
+    private Obj ParseBreak() => ReturnValue = new Obj(UnType.Break);
+    private Obj ParseSkip() => ReturnValue = new Obj(UnType.Skip);
     private Obj ParseExpreession()
     {
         for (int i = 0; i < nodes.Count; i++)
@@ -335,12 +336,12 @@ public class Parser(Context context)
 
             ReturnValue = runner.Run();
 
-            if (ReturnValue?.Type == "break")
+            if (ReturnValue?.Type == UnType.Break)
             {
                 ReturnValue = null!;
                 break;
             }
-            else if (ReturnValue?.Type == "skip")
+            else if (ReturnValue?.Type == UnType.Skip)
                 ReturnValue = null!;
         }
 
@@ -360,12 +361,12 @@ public class Parser(Context context)
         {
             ReturnValue = Runner.Load(innerContext, context).Run();
 
-            if (ReturnValue?.Type == "break")
+            if (ReturnValue?.Type == UnType.Break)
             {
                 ReturnValue = null!;
                 break;
             }
-            else if (ReturnValue?.Type == "skip")
+            else if (ReturnValue?.Type == UnType.Skip)
                 ReturnValue = null!;
 
             innerContext.File.Move(0, 0);

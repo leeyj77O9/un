@@ -1,10 +1,9 @@
 using System.Collections;
-using Un.Object.Function;
-using Un.Object.Primitive;
+using Un.Object.Type;
 
 namespace Un.Object.Collections;
 
-public class Spreads(Obj[] values) : Ref<Obj[]>(values, "spread"), IEnumerable<Obj>
+public class Spreads(Obj[] values) : Ref<Obj[]>(values, UnType.Spread), IEnumerable<Obj>
 {
     public struct Enumerator(Spreads spread) : IEnumerator<Obj>
     {

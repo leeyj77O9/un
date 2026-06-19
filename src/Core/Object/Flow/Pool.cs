@@ -3,6 +3,7 @@ using Un.Object.Primitive;
 using Un.Object.Collections;
 using System.Collections.Concurrent;
 using Un.Object.Function;
+using Un.Object.Type;
 
 namespace Un.Object.Flow;
 
@@ -11,7 +12,7 @@ public class Pool : Obj
     private readonly BlockingCollection<Future> queue = [];
     private readonly List<Thread> threads = [];
 
-    public Pool(long workers) : base("pool")
+    public Pool(long workers) : base(UnType.Create("pool"))
     {
         for (int i = 0; i < workers; i++)
         {
@@ -51,16 +52,14 @@ public class Pool : Obj
         { "submit", new NFn()
             {
                 Name = "submit",
-                ReturnType = "future",
+                ReturnType = UnType.Future,
                 Args = [
-                    new Arg("fn")
-                    {
-                        Type = "func",
+                    new Arg("fn") {
+                        Type = UnType.Func,
                         IsEssential = true,
                     },
-                    new Arg("args")
-                    {
-                        Type = "tuple[T]",
+                    new Arg("args") {
+                        Type = CollectionType.Create(UnType.Tuple, UnType.TGeneric),
                         IsPositional = true,
                     }
                 ],
@@ -80,11 +79,11 @@ public class Pool : Obj
                 Name = "map",
                 Args = [
                     new Arg("fn") {
-                        Type = "func",
+                        Type = UnType.Func,
                         IsEssential = true,
                     },
                     new Arg("vargs") {
-                        Type = "tuple[T]",
+                        Type = CollectionType.Create(UnType.Tuple, UnType.TGeneric),
                         IsPositional = true,
                     }
                 ],
@@ -103,15 +102,15 @@ public class Pool : Obj
                     foreach (var varg in vargs.Value)
                     {
                         queue.Add(new Future(new Task<Obj>(() =>
+                        {
+                            var res = fn.Call(varg is Tup t ? t : new([varg], [""]));
+                            lock (result)
                             {
-                                var res = fn.Call(varg is Tup t ? t : new([varg], [""]));
-                                lock (result)
-                                {
-                                    result.Add(res);
-                                }
-                                countdown.Signal();
-                                return None;
-                            })));
+                                result.Add(res);
+                            }
+                            countdown.Signal();
+                            return None;
+                        })));
                     }
 
                     countdown.Wait();
@@ -123,6 +122,7 @@ public class Pool : Obj
         { "close", new NFn()
             {
                 Name = "close",
+                ReturnType = UnType.None,
                 Args = [],
                 Func = (args) =>
                 {
