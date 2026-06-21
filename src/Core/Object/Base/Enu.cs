@@ -15,7 +15,7 @@ public class Enu(UnType type, int n) : Obj(type)
         _ => new Err($"'{Type}' takes at most 1 argument, {args.Count} given")
     };
 
-    public override Str ToStr() => Str.From(Type.Name);
+    public override Str ToStr() => Str.From($"{Type.Name}:{N}");
 
     public override Int ToInt() => Int.From(N);
 
@@ -32,4 +32,9 @@ public class Enu(UnType type, int n) : Obj(type)
         Enu e => Type == other.Type ? Bool.From(N < e.N) : base.Eq(e),
         _ => new Err($"unsupported operand type(s) for <: '{Type}' and '{other.Type}'")
     };
+
+    public override Enu Clone() => new(Type, N);
+
+    public override int GetHashCode() => N.GetHashCode();        
+    
 }

@@ -120,8 +120,8 @@ public static class Convert
             return Obj.None;
         else if (type == TokenType.Float)
             return new Float(System.Convert.ToDouble(value));
-        else if (type == TokenType.Boolean && bool.TryParse(value, out var boolValue))
-            return Bool.From(boolValue);
+        else if (type == TokenType.Boolean)
+            return Bool.From(bool.Parse(value));
         else if (type == TokenType.String)
             return Str.From(value);
         else if (DateTime.TryParse(value, out var dateValue))

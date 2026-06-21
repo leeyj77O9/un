@@ -126,7 +126,7 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
     {
         var obj = new Obj[Count];
         var names = new string[Count];
-        
+
         for (int i = 0; i < Count; i++)
         {
             obj[i] = this[i].Clone();
@@ -136,16 +136,31 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
         return new Tup(obj, names);
     }
 
+    public override bool Equals(object? obj)
+    {
+        if (obj is not Tup other)
+            return false;
+
+        if (Count != other.Count)
+            return false;
+
+        for (int i = 0; i < Count; i++)
+        {
+            if (!Value[i].Eq(other.Value[i]).As<Bool>().Value)
+                return false;
+        }
+
+        return true;
+    }
+
     public override int GetHashCode()
     {
-        int hash = Global.BASEHASH;
+        HashCode hash = new();
+
         foreach (var value in Value)
-        {
-            hash <<= Global.HASHPRIME;
-            hash *= value.GetHashCode();
-            hash >>= Global.HASHPRIME;
-        }
-        return Math.Abs(hash);
+            hash.Add(value);
+
+        return hash.ToHashCode();
     }
 
     private bool OutOfRange(int index) => index < 0 || index >= Count;

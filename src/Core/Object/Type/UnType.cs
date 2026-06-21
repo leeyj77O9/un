@@ -22,11 +22,11 @@ public sealed class UnType : BaseType
     public static readonly UnType Set = Register("set");
     public static readonly UnType Dict = Register("dict");
 
-    public static readonly UnType Fn = Register("fn");
     public static readonly UnType Func = Register("func");
     public static readonly UnType Iter = Register("iter");
     public static readonly UnType Spread = Register("spread");
     public static readonly UnType Future = Register("future");
+    public static readonly UnType Type = Register("type");
 
     public static readonly UnType TGeneric = Register("T");
     public static readonly UnType UGeneric = Register("U");
@@ -78,28 +78,13 @@ public sealed class UnType : BaseType
         return UnionType.Create(a, b);
     }
 
-    public static bool operator ==(UnType? a, UnType? b)
-    {
-        return ReferenceEquals(a, b);
-    }
+    public static bool operator ==(UnType? a, UnType? b) => ReferenceEquals(a, b);
 
-    public static bool operator !=(UnType? a, UnType? b)
-    {
-        return !ReferenceEquals(a, b);
-    }
+    public static bool operator !=(UnType? a, UnType? b) => !ReferenceEquals(a, b);
 
-    public override bool Equals(object? obj)
-    {
-        return ReferenceEquals(this, obj);
-    }
+    public override bool Equals(object? obj) => ReferenceEquals(this, obj);
 
-    public override int GetHashCode()
-    {
-        return Name.GetHashCode();
-    }
+    public override int GetHashCode() => Name.GetHashCode();
 
-    public override string ToString()
-    {
-        return Name;
-    }
+    public override string ToString() => Name;
 }

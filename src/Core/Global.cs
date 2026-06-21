@@ -210,6 +210,20 @@ public static class Global
         throw new Panic($"class '{name}' not found");
     }
 
+    public static Obj GetClass(TObj type) => GetClass(type.Value);
+
+    public static Obj GetClass(BaseType type)
+    {
+        if (type is UnType unType)        
+            return GetClass(unType.Name);        
+        else if (type is CollectionType colType)
+            return GetClass(colType.Kind);
+        else
+            throw new Panic($"invalid type '{type}'");
+
+        throw new Panic($"type '{type}' is not a class");
+    }
+
     public static bool TryGetClass(string name, out Obj? obj)
     {
         if (classes.Get(name, out obj))

@@ -84,8 +84,7 @@ public class Parser(Context context)
             if (value.IsEssential)
                 innerScope.Declare(value.Name, Obj.None);
             else if (value.IsOptional)
-                innerScope.Declare(value.Name, value.DefaultValue
-                    ?? throw new Panic("invalid class syntax"));
+                innerScope.Declare(value.Name, value.DefaultValue ?? throw new Panic("invalid class syntax"));
         }
 
  
@@ -355,11 +354,12 @@ public class Parser(Context context)
         var body = context.File.GetBody();
         var innerScope = new Scope(Scope);
         var innerContext = new Context(innerScope, new("while", body), []);
+        var runner = Runner.Load(innerContext, context);
         innerContext.EnterBlock("loop");
 
         while (Operator.On(expr, innerContext).As<Bool>("while keyword only boolearn").Value)
         {
-            ReturnValue = Runner.Load(innerContext, context).Run();
+            ReturnValue = runner.Run();
 
             if (ReturnValue?.Type == UnType.Break)
             {
@@ -369,7 +369,7 @@ public class Parser(Context context)
             else if (ReturnValue?.Type == UnType.Skip)
                 ReturnValue = null!;
 
-            innerContext.File.Move(0, 0);
+            runner.Reset();
         }
 
         

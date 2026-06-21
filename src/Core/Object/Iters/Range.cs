@@ -12,10 +12,13 @@ public class Range : Iters
 
     public Range(long start, long stop, long step = 1) : base(Default(start, stop, step))
     {
+        if (step == 0) 
+            throw new Panic("step cannot be zero");
+
         Type = UnType.Create("range");
         this.start = start;
         this.stop = stop;
-        this.step = step;
+        this.step = step;        
     }
 
     public override Obj Len()

@@ -1,9 +1,5 @@
 namespace Un;
 
-using Un.Object;
-using Un.Object.Collections;
-using Un.Object.Function;
-using Un.Object.Primitive;
 using TokenInfo = (Token token, TokenType type);
 
 public class Lexer()
@@ -60,10 +56,10 @@ public class Lexer()
             }
             else if (type == TokenType.Dot)
             {
-                if (!IsVariable())
-                    throw new Panic("expected identifier after dot");
+                (var property, var t) = Next();
 
-                (var property, _) = Next();
+                if (t != TokenType.Identifier)
+                    throw new Panic("expected identifier after dot");
 
                 nodes.Add(new Node(property.Value, TokenType.Property));
             }

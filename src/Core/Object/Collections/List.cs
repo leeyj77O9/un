@@ -6,13 +6,8 @@ using Un.Object.Type;
 
 namespace Un.Object.Collections;
 
-public class List : Ref<Obj[]>, IEnumerable<Obj>
+public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj>
 {
-    public List(Obj[] value) : base(value, UnType.List)
-    {
-        Count = value.Length;
-    }
-
     public struct Enumerator(List list) : IEnumerator<Obj>
     {
         private readonly List list = list;
@@ -47,7 +42,7 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
         set => Value[index] = value;
     }
 
-    public int Count { get; private set; }
+    public int Count { get; private set; } = value.Length;
 
     public bool IsFull => Count == Value.Length;
 
@@ -300,16 +295,12 @@ public class List : Ref<Obj[]>, IEnumerable<Obj>
 
     public override int GetHashCode()
     {
-        int hash = Global.BASEHASH;
+        HashCode hash = new();
 
-        foreach (var item in this)
-        {
-            hash <<= Global.HASHPRIME;
-            hash *= item.GetHashCode();
-            hash >>= Global.HASHPRIME;
-        }
+        foreach (var value in Value)
+            hash.Add(value);
 
-        return hash;
+        return hash.ToHashCode();
     }
 
     public void Resize()

@@ -1,15 +1,9 @@
-fn fib(n)
-    if n == 0
-        -> [0, 1]
-   
-    a, b = fib(n // 2)
+use timer
 
-    c = a * (2*b - a)      
-    d = a*a + b*b         
-
-    if n % 2 == 0:
-        -> [c, d]
-    else:
-        -> [d, c + d]
-
-write(fib(1000))
+t = timer()
+t.start()
+n = 0
+while n < 1000000
+	n += 1
+t.stop()
+write(t.ms() + "ms")

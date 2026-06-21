@@ -9,10 +9,11 @@ namespace Un.Object.Util;
 public class Std : IPack
 {
     private static readonly IO.Stream so = new(Console.OpenStandardOutput());
-    private static readonly StreamWriter ew = new(Console.OpenStandardError()) { AutoFlush = false };
     private static readonly IO.Stream sr = new(Console.OpenStandardInput());
+    private static readonly StreamWriter sw = new(so.Value);
+    private static readonly StreamWriter ew = new(Console.OpenStandardError()) { AutoFlush = false };
 
-    private static readonly Dictionary<Fn, Dictionary<int, Obj>> memo = []; 
+    private static readonly Dictionary<Fn, Dictionary<Tup, Obj>> memo = []; 
 
     private static readonly Random random = new();
 
@@ -61,12 +62,12 @@ public class Std : IPack
                     if (!args["stream"].As<IO.Stream>(out var stream))
                         return new Err("expected 'stream' argument to be of type 'stream'");
 
+                    if (!stream.CanWrite)
+                        return new Err("stream is not writable");
+
                     var items = args["value"].ToTuple().As<Tup>().Value;
 
-                    var cw = new StreamWriter(stream.Value)
-                    {
-                        AutoFlush = false
-                    };
+                    var cw = stream.Writer;
 
                     for (int i = 0; i < items.Length; i++)
                     {
@@ -101,11 +102,11 @@ public class Std : IPack
                         [
                             Str.From("Reads a line of input from the specified stream (default is standard input) with an optional prompt."),
                             Str.From("prompt: an optional string to display as a prompt before reading input"),
-                            Str.From("stream: the stream to write to, default is standard output"),
+                            Str.From("stream: the stream to read from, default is standard input"),
                             Str.From("returns: the line of input read as a string")
                         ],
                         [
-                            "description", "promt", "stream", "return"
+                            "description", "prompt", "stream", "return"
                         ]
                     )
                 },
@@ -114,14 +115,13 @@ public class Std : IPack
                     if (!args["stream"].As<IO.Stream>(out var stream))
                         return new Err("expected 'stream' argument to be of type 'stream'");
 
-                    var cr = new StreamReader(stream.Value);
-                    var cw = new StreamWriter(so.Value)
-                    {
-                        AutoFlush = false
-                    };
+                    if (!stream.CanRead)
+                        return new Err("stream is not readable");
 
-                    cw.Write(args["prompt"].ToStr().As<Str>(out var str) ? str.Value : args["prompt"].Repr().As<Str>().Value);
-                    cw.Flush();
+                    var cr = stream.Reader;                  
+
+                    sw.Write(args["prompt"].ToStr().As<Str>(out var str) ? str.Value : args["prompt"].Repr().As<Str>().Value);
+                    sw.Flush();
                     return Str.From(cr.ReadLine() ?? "");
                 }
             }
@@ -250,7 +250,7 @@ public class Std : IPack
         { "type", new NFn()
             {
                 Name = "type",
-                ReturnType = UnType.Str,
+                ReturnType = UnType.Type,
                 Args = [
                    new Arg("value") {
                     IsEssential = true,
@@ -267,7 +267,7 @@ public class Std : IPack
                         ]
                     )
                 },
-                Func = (args) => Str.From(args["value"].Type.Name)
+                Func = (args) => new TObj(args["value"].Type)
             }
         },
         { "array", new NFn()
@@ -319,14 +319,14 @@ public class Std : IPack
                 Name = "range",
                 ReturnType = UnType.Create("range"),
                 Args = [
+                    new Arg("stop") {
+                        Type = UnType.Int,
+                        IsEssential = true
+                    },
                     new Arg("start") {
                         Type = UnType.Int,
                         IsOptional = true,
                         DefaultValue = Int.From(0),
-                    },
-                    new Arg("stop") {
-                        Type = UnType.Int,
-                        IsEssential = true
                     },
                     new Arg("step") {
                         Type = UnType.Int,
@@ -350,9 +350,12 @@ public class Std : IPack
                 },
                 Func = (args) =>
                 {
-                    long stop = args["stop"].ToInt().As<Int>().Value,
+                    long stop  = args["stop"].ToInt().As<Int>().Value,
                          start = args["start"].ToInt().As<Int>().Value,
                          step  = args["step"].ToInt().As<Int>().Value;
+
+                    if (step == 0)
+                        return new Err("step argument must not be zero");
 
                     return new Iter.Range(start, stop, step);
                 }
@@ -402,7 +405,7 @@ public class Std : IPack
                 Annotations = {
                     ["doc"] = new Tup(
                         [
-                            Str.From("Returns a list of tuples, where the i-th tuple contains the i-th element from each of the input arrays. The length of the returned list is equal to the length of the longest input array."),
+                            Str.From("Returns a list of tuples, where the i-th tuple contains the i-th element from each of the input arrays. The length of the returned list is equal to the length of the shortest input array."),
                             Str.From("arrays: a variable number of lists or tuples to zip together"),
                             Str.From("returns: a list of tuples, where the i-th tuple contains the i-th element from each of the input arrays")
                         ],
@@ -417,15 +420,16 @@ public class Std : IPack
                         return new Err("expected 'array' argument to be of type 'list' or 'tuple'");
 
                     var source = arrays.Iter().As<Iters>();
-                    int length = source.Value.Max(a => (int)a.Len().As<Int>().Value);
+                    int length = source.Value.Min(a => (int)a.Len().As<Int>().Value);
                     List list = [];
 
                     for (int i = 0; i < length; i++)
                     {
-                        List tuple = [];
+                        List buf = [];
                         foreach (var array in source.Value)
-                            tuple.Append(array.Len().As<Int>().Value <= i ? Obj.None : array.GetItem(Int.From(i)));
-                        list.Append(new Tup([..tuple], [.. new string(' ', tuple.Count).Split()]));
+                            buf.Append(array.GetItem(Int.From(i)));
+
+                        list.Append(new Tup([..buf], new string[buf.Count]));
                     }
 
                     return list;
@@ -461,26 +465,49 @@ public class Std : IPack
                 Name = "open",
                 ReturnType = UnType.Create("stream"),
                 Args = [
-                    new Arg("value") {
+                    new Arg("path")
+                    {
+                        Type = UnType.Str,
                         IsEssential = true,
+                    },
+                    new Arg("mode")
+                    {
+                        Type = UnType.Str,
+                        IsOptional = true,
+                        DefaultValue = Str.From("r")
                     }
                 ],
                 Annotations = {
                     ["doc"] = new Tup(
                         [
                             Str.From("Opens a file and returns a stream object for it."),
-                            Str.From("value: the path to the file to open as a string"),
+                            Str.From("path: the path to the file to open"),
+                            Str.From("mode: file open mode, one of 'r' (read), 'w' (write), 'a' (append), or 'rw' (read/write), default is 'r'"),
                             Str.From("returns: a stream object for the opened file")
                         ],
                         [
-                            "description", "value", "return"
+                            "description", "path", "mode", "return"
                         ]
                     )
                 },
-                Func = (args) => args["value"] switch
+                Func = (args) =>
                 {
-                    Str s => File.Exists(s.Value) ? new IO.Stream(File.Open(s.Value, FileMode.Open)) : throw new Panic($"file {s.Value} dose not exist"),
-                    _ => throw new Panic("invalid type"),
+                    var path = args["path"].ToStr().As<Str>().Value;
+                    var mode = args["mode"].ToStr().As<Str>().Value;
+
+                    if (!Path.Exists(path))
+                        return new Err("file not found");
+                    if (mode != "r" && mode != "w" && mode != "a" && mode != "rw")
+                        return new Err("invalid 'mode' argument, expected one of 'r', 'w', 'a', or 'rw'");
+
+                    return mode switch
+                    {
+                        "r" => new IO.Stream(File.Open(path, FileMode.Open, FileAccess.Read)),
+                        "w" => new IO.Stream(File.Open(path, FileMode.Create, FileAccess.Write)),
+                        "a" => new IO.Stream(File.Open(path, FileMode.Append, FileAccess.Write)),
+                        "rw" => new IO.Stream(File.Open(path, FileMode.OpenOrCreate, FileAccess.ReadWrite)),
+                        _ => throw new Panic($"invalid file mode '{mode}'")
+                    };
                 }
             }
         },
@@ -665,7 +692,7 @@ public class Std : IPack
                         _ => double.NaN,
                     };
 
-                    if (v == double.NaN)
+                    if (double.IsNaN(v))
                         return new Err("expected number type");
 
                     if (!args["digit"].As<Int>(out var digit) || digit.Value > 15 || digit.Value < 0)
@@ -705,7 +732,7 @@ public class Std : IPack
                 {
                     Int i => Int.From(Math.Abs(i.Value)),
                     Float f => new Float(Math.Abs(f.Value)),
-                    _ => new Float(double.NaN),
+                    _ => new Err("expected number type")
                 }
             }
         },
@@ -739,7 +766,7 @@ public class Std : IPack
                         double d when d == (long)d => Int.From((long) d),
                         double d => new Float(d),
                     },
-                    _ => new Float(double.NaN),
+                    _ => new Err("expected number type"),
                 }
             }
         },
@@ -769,7 +796,7 @@ public class Std : IPack
                 {
                     Int i => new Float(Math.Sqrt(i.Value)),
                     Float f => new Float(Math.Sqrt(f.Value)),
-                    _ => new Float(double.NaN),
+                    _ => new Err("expected number type"),
                 }
             }
         },
@@ -803,7 +830,7 @@ public class Std : IPack
                         double d when d == (long)d => Int.From((long) d),
                         double d => new Float(d),
                     },
-                    _ => new Float(double.NaN),
+                    _ => new Err("expected number type"),
                 }
             }
         },
@@ -841,12 +868,11 @@ public class Std : IPack
                        memo.Add(fn, cache = []);
 
                     var targs = args["args"].ToTuple().As<Tup>();
-                    int hash = targs.GetHashCode();
 
-                    if (!cache.TryGetValue(hash, out var result))
+                    if (!cache.TryGetValue(targs, out var result))
                     {
                         result = fn.Call(targs);
-                        cache[hash] = result;
+                        cache[targs] = result;
                     }
 
                     return result;
@@ -891,64 +917,6 @@ public class Std : IPack
 
                     Thread.Sleep(milliseconds);
                     return Obj.None;
-                }
-            }
-        },
-        { "delay", new NFn()
-            {
-                Name = "delay",
-                ReturnType = UnType.TGeneric,
-                Args = [
-                    new Arg("time")
-                    {
-                        Type = UnionType.Create(UnType.Int, UnType.Float),
-                        IsEssential = true
-                    },
-                    new Arg("fn")
-                    {
-                        Type = UnType.Func,
-                        IsEssential = true
-                    },
-                    new Arg("args")
-                    {
-                        Type = UnType.Tuple,
-                        IsPositional = true,
-                    }
-                ],
-                Annotations = {
-                    ["doc"] = new Tup(
-                        [
-                            Str.From("Delays the execution of a function by a specified amount of time and returns the result of the function call."),
-                            Str.From("time: the amount of time to delay, can be an integer representing milliseconds or a float representing seconds"),
-                            Str.From("fn: the function to call after the delay"),
-                            Str.From("args: a variable argument of values to pass to the function when calling it, can be a tuple of values or a single list/tuple containing the values"),
-                            Str.From("returns: the result of the function call after the delay")
-                        ],
-                        [
-                            "description", "time", "fn", "args", "return"
-                        ]
-                    )
-                },
-                Func = args =>
-                {
-                    if (!args["fn"].As<Fn>(out var fn))
-                        return new Err("expected 'fn' argument to be of type 'func'");
-                    var vargs = args["args"].ToTuple().As<Tup>();
-
-                    var milliseconds = args["time"] switch
-                    {
-                        Int i => (int)i.Value,
-                        Float f => (int)(f.Value * 1000),
-                        Obj o => (int)o.ToInt().As<Int>().Value,
-                        _ => -1,
-                    };
-
-                    if (milliseconds == -1)
-                        return new Err("expected 'time' argument to be of type 'int' or 'float' or convertible to int");
-
-                    Thread.Sleep(milliseconds);
-
-                    return fn.Call(vargs);
                 }
             }
         },
@@ -1059,7 +1027,7 @@ public class Std : IPack
                 Func = (args) =>
                 {
                     Console.WriteLine("breakpoint hit. Press Enter to continue...");
-                    Console.Read();
+                    Console.ReadLine();
                     return Obj.None;
                 }
             }
@@ -1122,11 +1090,6 @@ public class Std : IPack
                     var sw = System.Diagnostics.Stopwatch.StartNew();
                     var returned = fn.Call(vargs);
                     sw.Stop();
-
-                    var w = new StreamWriter(so.Value)
-                    {
-                        AutoFlush = false
-                    };
 
                     return new Tup([returned, Int.From(sw.ElapsedMilliseconds)], ["value", "time"]);
                 }

@@ -1,10 +1,10 @@
 ﻿namespace Un.Object.Type;
 
-public class UnionType : BaseType
+public sealed class UnionType : BaseType
 {
     private static readonly Dictionary<string, UnionType> Cache = [];
 
-    public HashSet<BaseType> Types { get; }
+    public IReadOnlySet<BaseType> Types { get; }
 
     private UnionType(HashSet<BaseType> types)
     {
@@ -17,30 +17,49 @@ public class UnionType : BaseType
 
         foreach (var type in types)
         {
-            if (ReferenceEquals(type, UnType.Any))
-                return UnType.Any;
+            switch (type)
+            {
+                case null:
+                    continue;
 
-            normalized.Add(type);
+                case UnionType union:
+                    normalized.UnionWith(union.Types);
+                    break;
+
+                default:
+                    if (ReferenceEquals(type, UnType.Any))
+                        return UnType.Any;
+
+                    normalized.Add(type);
+                    break;
+            }
         }
+
+        if (normalized.Count == 0)
+            return UnType.None;
 
         if (normalized.Count == 1)
             return normalized.First();
 
-        string key = string.Join("|", normalized.Select(t => t.ToString()).OrderBy(x => x));
+        string key = GetKey(normalized);
 
-        if (Cache.TryGetValue(key, out var union))
-            return union;
+        if (Cache.TryGetValue(key, out var cached))
+            return cached;
 
-        union = new UnionType(normalized);
-        Cache[key] = union;
+        var created = new UnionType(normalized);
 
-        return union;
+        Cache[key] = created;
+
+        return created;
     }
 
+    private static string GetKey(IEnumerable<BaseType> types) => string.Join("|", types.Select(t => t.ToString()).OrderBy(x => x));
 
-    public bool In(UnType type) => Types.Contains(type);
+    public bool Contains(BaseType type) => Types.Contains(type);
 
-    public bool In(string name) => In(UnType.From(name));
+    public bool Contains(UnionType other) => Types.IsSubsetOf(other.Types);
+
+    public bool Contains(string name) => Contains(UnType.From(name));
 
     public static BaseType operator |(UnionType a, UnType b) => Create([.. a.Types, b]);
 
@@ -48,30 +67,9 @@ public class UnionType : BaseType
 
     public static BaseType operator |(UnionType a, UnionType b) => Create([.. a.Types, .. b.Types]);
 
-    public static bool operator ==(UnionType? a, UnionType? b)
-    {
-        if (ReferenceEquals(a, b))
-            return true;
+    public override bool Equals(object? obj) => ReferenceEquals(this, obj);
 
-        if (a is null || b is null)
-            return false;
-
-        return a.Types.SetEquals(b.Types);
-    }
-
-    public static bool operator !=(UnionType? a, UnionType? b) => !(a == b);
-
-    public override bool Equals(object? obj) => obj is UnionType other && Types.SetEquals(other.Types);
-
-    public override int GetHashCode()
-    {
-        int hash = 0;
-
-        foreach (var type in Types)
-            hash ^= type.GetHashCode();
-
-        return hash;
-    }
+    public override int GetHashCode() => GetKey(Types).GetHashCode();
 
     public override string ToString() => string.Join(" | ", Types.Select(t => t.ToString()).OrderBy(x => x));
 }

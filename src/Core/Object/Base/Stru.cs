@@ -64,4 +64,14 @@ public class Stru(UnType type, string[] names) : Obj(type)
 
         return Bool.True;
     }
+
+    public override int GetHashCode()
+    {
+        HashCode hash = new();
+        
+        foreach (var name in names)
+            hash.Add(Members[name]);
+
+        return hash.ToHashCode();
+    }
 }

@@ -95,6 +95,20 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, UnType
                 }
             }
         },
+        { "to_tuple", new NFn()
+            {
+                Name = "to_tuple",
+                ReturnType = UnType.Tuple,
+                Args = [],
+                Func = args =>
+                {
+                    if (args["self"] is not Iters self)
+                        return new Err("invalid argument: 'self'");
+
+                    return new Tup([.. self.Value]);
+                }
+            }
+        },
         { "count", new NFn()
             {
                 Name = "count",

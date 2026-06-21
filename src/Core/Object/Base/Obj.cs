@@ -6,9 +6,9 @@ namespace Un.Object;
 
 public class Obj(UnType type) : IComparable<Obj>
 {
-    public static Obj Error = new(UnType.Error);
-    public static Obj None = new(UnType.None);
-    public static Obj Null = new(UnType.Null);
+    public readonly static Obj Error = new(UnType.Error);
+    public readonly static Obj None = new(UnType.None);
+    public readonly static Obj Null = new(UnType.Null);
 
     public virtual UnType Type { get; set; } = type;
     public virtual BaseType Types { get; set; } = UnionType.Create(UnType.Obj, type);
@@ -132,8 +132,6 @@ public class Obj(UnType type) : IComparable<Obj>
     {
         if (IsNone() && other.IsNone())
             return Bool.True;
-        if (IsType() || other.IsType())
-            return Bool.False;
         if (TryMethod("__eq__", out Obj? value, new([other], ["other"])))
             return value;
         return Super is not null && !Super.IsNone() ? Super.Eq(other) : new Err($"unsupported operand type(s) for ==: '{Type}' and '{other.Type}'");
@@ -278,7 +276,7 @@ public class Obj(UnType type) : IComparable<Obj>
         if (TryMethod("__is__", out Obj? value, new([obj], ["obj"])))
             return value;
   
-        if (Types is UnionType unionTypes && unionTypes.In(obj.Type))
+        if (Types is UnionType unionTypes && unionTypes.Contains(obj.Type))
             return Bool.True;
         if (Types is UnType singleType && singleType == obj.Type)
             return Bool.True;
@@ -478,8 +476,6 @@ public class Obj(UnType type) : IComparable<Obj>
     }
 
     public bool IsNone() => Type == UnType.None;
-
-    public bool IsType() => Type.Name.StartsWith("__") && Type.Name.EndsWith("__");
 
     public bool Has(string name)
     {

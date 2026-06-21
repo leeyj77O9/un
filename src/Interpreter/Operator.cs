@@ -75,7 +75,7 @@ public static class Operator
                 {
                     var value = values.Pop();
                     var args = Convert.ToTuple(node, context).Unwrap<Tup>(context);
-                    var result = value.IsType() ? Global.GetClass(value.Type.Name[2..^2]).Clone() : value.As<Fn>().Clone();
+                    var result = value is TObj t ? Global.GetClass(t).Clone() : value.As<Fn>().Clone();
 
                     foreach (var key in result.Annotations.Keys)
                     {
@@ -98,7 +98,7 @@ public static class Operator
                     else if (Global.TryGetGlobalVariable(node.Value, out value))
                         values.Push(value);
                     else if (Global.IsClass(node.Value))
-                        values.Push(new Obj(UnType.Create($"__{node.Value}__"))
+                        values.Push(new TObj(UnType.Create(node.Value))
                         {
                             Annotations = Global.GetClass(node.Value).Annotations,
                         });
@@ -109,7 +109,7 @@ public static class Operator
                 {
                     var obj = values.Pop();
                     var prop = node.Value;
-                    var value = obj.IsType() ? Global.GetClass(obj.Type.Name[2..^2]).GetAttr(prop) : obj.GetAttr(prop);
+                    var value = obj is TObj t ? Global.GetClass(t).GetAttr(prop) : obj.GetAttr(prop);
 
                     values.Push(value.Unwrap(context));
                 }
@@ -184,7 +184,7 @@ public static class Operator
 
                         foreach (var condition in conditions)
                         {
-                            if (condition is { Count: 1 } && IsType(condition[0].Value) && value.Type == UnType.Create(condition[0].Value))
+                            if (condition is { Count: 1 } && Global.IsClass(condition[0].Value) && value.Type == UnType.Create(condition[0].Value))
                                 match = result;
                             else if (condition is { Count: 1 } && condition[0].Value == "_")
                                 match = result;
@@ -203,8 +203,6 @@ public static class Operator
                         match = new Err("no match found.");
 
                     values.Push(match.Unwrap(context));
-
-                    bool IsType(string s) => Global.IsClass(s);
                 }
                 else if (type.IsBinaryOperator())
                 {
@@ -234,7 +232,7 @@ public static class Operator
                             TokenType.GreaterThan => left.Gt(right),
                             TokenType.Xor => left.Xor(right),
                             TokenType.In => right.In(left),
-                            TokenType.Is => left.Is(right.IsType() ? new Obj(UnType.Create(right.Type.Name[2..^2])) : right),
+                            TokenType.Is => right is TObj || left is TObj ? right.Is(left) : left.Is(right),
                             _ => throw new Error($"binary operator {type} is not implemented.", context)
                         };
 
