@@ -62,7 +62,7 @@ public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj
 
     public override Obj GetItem(Obj key) => key switch
     {
-        Int i => OutOfRange((int)i.Value) ? new Err("list index out of range") : this[(int)i.Value],
+        Int i => OutOfRange((int)i.Value) ? OutOfRange((int)(i.Value + Count)) ? new Err("list index out of range") : this[(int)(i.Value + Count)] : this[(int)i.Value],
         _ => new Err("invalid index type")
     };
 
@@ -71,10 +71,13 @@ public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj
         if (key is not Int i)
             return new Err("invalid index type");
 
-        if (OutOfRange((int)i.Value))
-            return new Err("list index out of range");
+        if (!OutOfRange((int)i.Value))
+            return this[(int)i.Value] = value;
+            
+        if (!OutOfRange((int)(i.Value + Count)))
+            return this[(int)(i.Value + Count)] = value;
 
-        return this[(int)i.Value] = value;
+        return new Err("list index out of range");
     }
 
     public override Obj In(Obj obj) => obj switch

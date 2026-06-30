@@ -2,6 +2,7 @@ namespace Un;
 
 public enum TokenType
 {
+    EOF,
     Error,
     None,
     Null,
@@ -68,5 +69,12 @@ public enum TokenType
 
     Go, Wait,
 
-    Try, Defer,
+    Try, Catch, Defer,
+
+    NewLine,
+    Indent,
+    Dedent,
+    Finally,
+    Wildcard,
+    Underscore,
 }

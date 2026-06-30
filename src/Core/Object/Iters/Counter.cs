@@ -27,13 +27,13 @@ public class Counter : Iters
 
     public override Obj Iter() => this;
 
-    public override List ToList() => throw new Panic("counter is infinite");
+    public override Obj ToList() => new Err("counter is infinite");
 
-    public override Tup ToTuple() => throw new Panic("counter is infinite");
+    public override Obj ToTuple() => new Err("counter is infinite");
 
-    public override Str ToStr() => throw new Panic("counter is infinite");
+    public override Obj ToStr() => new Err("counter is infinite");
 
-    public override Spreads Spread() => throw new Panic("counter is infinite");
+    public override Obj Spread() => new Err("counter is infinite");
 
     public override Obj Clone() => new Counter(current)
     {

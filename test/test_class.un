@@ -2,10 +2,9 @@ class number(x, y, z)
 
 class point: number
 
-    __len__ = fn() -> (self.x +
-                       self.y + 
-                       self.z) / 2
+    __len__ = fn() -> (self.x +self.y + self.z) / 2
     __str__ = fn() -> `{self.x} {self.y} {self.z} {123}`
+
     new = fn() -> point(self.x, self.y, self.z)
 
     fn __init__(x, y, z)

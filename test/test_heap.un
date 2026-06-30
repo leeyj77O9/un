@@ -1,5 +1,3 @@
-# 최소 힙(Heap) 자료구조 구현
-
 class Heap
     data = 0
 

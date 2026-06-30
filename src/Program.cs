@@ -53,26 +53,25 @@ void PrintError(Exception e)
 
     if (runner is null) return;
 
-    var stack = runner.Context.BlockStackTrace;
+    var stack = runner.Context.Frames.ToArray();
     if (stack.Length <= 1) return;
 
     Console.ForegroundColor = ConsoleColor.Yellow;
     Console.WriteLine("    trace:");
     Console.ResetColor();
 
-    var blocksToPrint = stack.Length > 11
+    var frames = stack.Length > 11
         ? stack.Skip(1).Take(10).Reverse()
         : stack.Skip(1).Reverse();
 
-    foreach (var block in blocksToPrint)
+    foreach (var frame in frames)
     {
         Console.Write("\t");
 
         Console.ForegroundColor = ConsoleColor.Blue;
-        Console.Write(block.Code.Trim());
         Console.ResetColor();
 
-        Console.WriteLine($" :[{block.Line + 1}] ({block.Type})");
+        Console.WriteLine($" :[{frame.Source.GetLineText(frame.Start).Trim()}] ({frame.Name})");
     }
 
     if (stack.Length > 10)

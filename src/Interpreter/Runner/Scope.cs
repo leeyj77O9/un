@@ -2,20 +2,15 @@ using Un.Object;
 
 namespace Un;
 
-public class Scope
+public class Scope(Scope? parentScope = null)
 {
     public static readonly Scope Empty = new Scope(null);
 
-    private readonly Scope? parentScope;
+    private readonly Scope? parentScope = parentScope;
 
     private readonly Dictionary<string, int> symbols = new();
 
     private readonly List<Obj> slots = new();
-
-    public Scope(Scope? parentScope = null)
-    {
-        this.parentScope = parentScope;
-    }
 
     public Obj this[string key]
     {
@@ -75,8 +70,7 @@ public class Scope
         return parentScope != null && parentScope.ContainsKey(key);
     }
 
-    public bool ContainsKeyInTop(string key)
-        => symbols.ContainsKey(key);
+    public bool ContainsKeyInTop(string key) => symbols.ContainsKey(key);
 
     public void Declare(string key, Obj? initial = null)
     {
@@ -85,7 +79,9 @@ public class Scope
 
         symbols[key] = slots.Count;
         slots.Add(initial ?? Obj.None);
-    }
+    } 
+
+    public bool Remove(string key) => symbols.Remove(key);
 
     public IReadOnlyDictionary<string, int> GetSymbolTable() => symbols;
     public IReadOnlyList<Obj> GetSlots() => slots;

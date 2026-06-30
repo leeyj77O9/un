@@ -49,7 +49,8 @@ public class Str : Ref<string>
 
     public override Obj GetItem(Obj other) => other switch
     {
-        Int i => new Str($"{Value[(int)i.Value]}"),
+        Int i => OutOfRange((int)i.Value) ? OutOfRange((int)(i.Value + Value.Length)) ? new Err("list index out of range") : 
+        Str.From($"{this[(int)(i.Value + Value.Length)]}") : Str.From($"{this[(int)i.Value]}"),
         _ => new Err("invalid index type"),
     };
 
@@ -73,6 +74,13 @@ public class Str : Ref<string>
 
     public override Tup ToTuple() => ToList().ToTuple();
 
+    private bool OutOfRange(int value)
+    {
+        if (Value.Length <= value)
+            return true;
+        return false;
+    }
+
     public override Obj Copy() => new Str(Value)
     {
         Annotations = Annotations
@@ -92,6 +100,24 @@ public class Str : Ref<string>
     public static Str From(string value)
     {
         if (value == null) return Empty;
+
+        if (value.Length > 32)
+            return new Str(value);
+
+        if (pool.TryGetValue(value, out var cached))
+            return cached;
+
+        var result = new Str(value);
+        pool[value] = result;
+
+        return result;
+    }
+
+    public static Str From(string value, bool intern)
+    {
+        if (value == null) return Empty;
+
+        if (!intern) return new Str(value);
 
         if (pool.TryGetValue(value, out var cached))
             return cached;

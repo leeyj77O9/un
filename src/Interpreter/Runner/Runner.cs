@@ -1,87 +1,83 @@
 using Un.Object;
-using Un.Object.Type;
 
 namespace Un;
 
-public class Runner(Context context, Context? parentContext = null!)
+public sealed class Runner(Context context, Context? parentContext = null)
 {
-    public Context Context { get; private set; } = context;
-    public Context? ParentContext { get; private set; } = parentContext;
+    public Context Context { get; } = context;
+    public Context? ParentContext { get; } = parentContext;
 
     public Obj Run()
     {
-        Obj returned = Obj.None;
         try
         {
-            var tokenizer = new Tokenizer();
-            var lexer = new Lexer();
-            var parser = new Parser(Context);
+            var tokenizer = new Lexer(Context.Source);
+            var tokens = tokenizer.Tokenize();
 
-            while (!Context.File.EOF && parser.ReturnValue is null)
-            {
-                var tokens = tokenizer.Tokenize(Context.File);
-                var nodes = lexer.Lex(tokens);
-                returned = parser.Parse(nodes);
+            var parser = new Parser(tokens, Context);
+            var ast = parser.Parse();
 
-                if (Context.File.EOL)
-                    Context.File.Move(0, Context.File.Line + 1);
-            }
+            var desugarer = new Desugarer();
+            var desuraredAst = desugarer.Desugar(ast);
 
-            returned = parser.ReturnValue!;
+            var optimizedAst = Optimizer.Optimize(desuraredAst);
 
+            var evaluator = new Evaluator(Context);
+
+            return evaluator.Eval(desuraredAst);
         }
-        catch
+        catch (BreakFlow bf)
         {
-            if (ParentContext is not null)
-                foreach (var block in Context.BlockStack)
-                    ParentContext.BlockStack.Add(block);
-            throw;
+            throw new Error("'break' outside loop", bf.Start, bf.Length, Context.Source);
+        }
+        catch (SkipFlow sf)
+        {
+            throw new Error("'skip' outside loop", sf.Start, sf.Length, Context.Source);
+        }
+        catch (ReturnFlow rf)
+        {
+            throw new Error("'->' outside function", rf.Start, rf.Length, Context.Source);
         }
         finally
         {
-            Free();
-            Defer();
+            RunDefers();
+            FreeUsings();
         }
-
-        if ((returned?.Type == UnType.Skip || returned?.Type == UnType.Break) && Context.CurrentBlock?.Type != "loop")
-            throw new Panic($"'{returned?.Type}' keyword can only be used inside a loop");
-
-        return returned!;
     }
 
     public void Reset()
     {
-        Context.File.Move(0, 0);
         Context.Defers.Clear();
         Context.Usings.Clear();
+        Context.Frames.Clear();
     }
 
-    private void Free()
+    private void FreeUsings()
     {
         foreach (var obj in Context.Usings)
-        {
             obj.Exit();
-        }
     }
 
-    private void Defer()
+    private void RunDefers()
     {
-        foreach (var nodes in Context.Defers)
+        foreach (var block in Context.Defers)
         {
-            var parser = new Parser(new Context(Context.Scope, new("defer", []), []));
-            parser.Parse(nodes);
+            var evaluator = new Evaluator(Context);
+            evaluator.Eval(block);
         }
     }
 
     public static Runner Load(string path, Scope scope)
     {
-        var allPath = Path.Combine(Global.PATH, path) + (path.EndsWith(".un") ? "" : ".un");
-        var name = path.EndsWith(".un") ? path[..^3] : path;
+        var fullPath = Path.Combine(Global.PATH, path.EndsWith(".un") ? path : $"{path}.un");
 
-        if (!Path.Exists(allPath))
-            throw new Panic($"file {name} not found in {allPath}");
+        if (!File.Exists(fullPath))
+            throw new Panic($"file '{path}' not found");
 
-        return new(new(scope, new UnFile(name, File.ReadAllLines(allPath)), []));
+        var code = File.ReadAllText(fullPath).Replace("\r\n", "\n").Replace('\r', '\n');
+        var file = new Source(fullPath, code);
+
+        return new Runner(new Context(scope, file, []));
     }
 
     public static Runner Load(Context context, Context parentContext) => new(context, parentContext);

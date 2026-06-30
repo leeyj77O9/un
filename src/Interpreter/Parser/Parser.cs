@@ -1,491 +1,1254 @@
-using Un.Object;
-using Un.Object.Collections;
-using Un.Object.Function;
-using Un.Object.Iter;
-using Un.Object.Primitive;
-using Un.Object.Type;
+using System.Globalization;
+using System.Text;
+using Un.Util;
 
 namespace Un;
 
-public class Parser(Context context)
+public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
 {
-    public Obj ReturnValue = null!;
+    private int position;
 
-    private List<Node> nodes;
     private readonly Context context = context;
-    private Scope Scope => context.Scope;
+    private readonly Source source = context.Source;
+    private readonly string code = context.Source.Code;
 
-    public Obj Parse(List<Node> nodes)
+    private Token Current => position < tokens.Count ? tokens[position] : tokens[^1];
+
+    private bool IsEndOfStatement => Current.Type is TokenType.NewLine or TokenType.EOF;
+
+    private Token Previous() => tokens[position - 1];
+
+    private Token Next()
     {
-        this.nodes = nodes;
-
-        if (nodes.Count == 0)
-            return Obj.None;
-
-        (_, var type, _) = nodes[0];
-
-        return type switch
-        {
-            TokenType.Use => ParseUse(),
-            TokenType.Using => ParseUsing(),
-            TokenType.Class => ParseClass(),
-            TokenType.At => ParseAnotation(),
-            TokenType.Enum => ParseEunm(),
-            TokenType.Return => ParseReturn(),
-            TokenType.Skip => ParseSkip(),
-            TokenType.Break => ParseBreak(),
-            TokenType.For => ParseFor(),
-            TokenType.While => ParseWhile(),
-            TokenType.Try => ParseTry(),
-            TokenType.Defer => ParseDefer(),
-            TokenType.If or TokenType.ElIf or TokenType.Else => ParseIf(),
-            _ => ParseExpreession(),
-        };
-
+        var token = Current;
+        position++;
+        return token;
     }
 
-    #region Parser
-    private Obj ParseUse()
+    private bool Match(TokenType type)
     {
-        var splited = nodes.Split(TokenType.As);
-        var modules = splited[0][1..];
+        if (Current.Type != type)
+            return false;
 
-        bool isAs = splited is { Count: 2 } && splited[1] is { Count: 1 };
-        bool isNickname = isAs && splited[1][0] is { Type: TokenType.Identifier };
-        bool isSpread = isAs && splited[1][0] is { Type: TokenType.Asterisk };
-        bool isPart = modules[^1].Type == TokenType.Set;
-
-        string[] path = [..modules[..^(isPart ? 1 : 0)].Select(x => x.Value)];
-
-        if (!Global.IsClass(path[^1]))
-                Global.Import(path: path,
-                              nickname: isSpread ? "*" : isNickname ? splited[1][0].Value : "",
-                              parts: isPart ? [.. modules[^1].Children.Where(x => x.Type != TokenType.Comma).Select(x => x.Value)] : []);
-        else
-            Global.Include(name: path[^1]);
-        return Obj.None;
+        position++;
+        return true;
     }
-    private Obj ParseClass()
+
+    private Token Expect(TokenType type)
     {
-        var name = nodes[1].Value;
-        var colon = nodes.FindIndex(x => x.Type == TokenType.Colon);
-        var isInherit = (colon == 2 && nodes.Count >= 4) || (colon == 3 && nodes.Count >= 5);
-        var hasFields = colon == 3 || (colon == -1 && nodes.Count > 2 && nodes[2].Type == TokenType.Call);
-        var fields = hasFields ? nodes[2].Children : [];
-        var body = context.File.GetBody();
+        if (Current.Type != type)
+            throw new Panic($"expected {type}, got {Current.Type}");
 
-        var types = new HashSet<string>();
-        var superType = "";
+        return Next();
+    }
 
-        var innerScope = new Scope(context.Scope);
-
-        foreach (var value in Fn.GetArgs(fields, context))
+    private void Skips(params TokenType[] types)
+    {
+        while (true) 
         {
-            if (value.IsEssential)
-                innerScope.Declare(value.Name, Obj.None);
-            else if (value.IsOptional)
-                innerScope.Declare(value.Name, value.DefaultValue ?? throw new Panic("invalid class syntax"));
-        }
+            bool flag = false;
 
- 
-        var innerContext = new Context(innerScope, new UnFile(name, body), []);
-
-        Runner.Load(innerContext, context).Run();
-
-        if (isInherit)
-        {
-            var inherits = nodes.Split(TokenType.Colon);
-            if (inherits.Count != 2)
-                throw new Error("invalid class syntax", context);
-
-            var supers = inherits[1].Split(TokenType.Comma);
-            superType = supers[0][^1].Value;
-
-            types.Add(superType);
-
-            foreach (var super in supers.Skip(1))
+            foreach (var type in types)
             {
-                if (super[^1] is { Type: TokenType.Identifier })
-                {
-                    var superName = super[^1].Value;
-
-                    if (!Global.TryGetClass(superName, out Obj? superObj))
-                        throw new Error($"superclass {superName} is not defined", context);
-
-                    types.Add(superName);
-
-                    foreach (var (key, value) in superObj?.Members ?? [])
-                    {
-                        if (!innerScope.ContainsKeyInTop(key))
-                            innerScope.Declare(key, value);
-                    }
-                }
-                else
-                    throw new Error("invalid class syntax", context);
+                if (flag) break;
+                flag = Match(type);
             }
+
+            if (!flag) break;
+        }
+    }
+
+    private void SkipTrivia() => Skips(TokenType.NewLine, TokenType.Indent, TokenType.Dedent);
+
+    private void SkipNewLines()
+    {
+        while (Match(TokenType.NewLine)) { }
+    }
+
+    public Node Parse()
+    {
+        var statements = new List<Node>();
+
+        SkipNewLines();
+
+        while (Current.Type != TokenType.EOF)
+        {
+            statements.Add(ParseStatement());
+            SkipNewLines();
         }
 
-        var members = new Map();
+        var root = new Node(0, statements.Count == 0 ? 0 : statements[^1].Start + statements[^1].Length, NodeKind.Block, children: [.. statements]);
 
-        foreach (var (key, index) in innerScope.GetSymbolTable())
-        {
-            var value = innerScope.GetSlots()[index];
-            members.Add(key, value);
-        }
+        return root;
+    }
 
-        if (IsEmpty(body) && colon < 4)
+    private Node ParseStatement()
+    {
+        var annotations = ParseAnnotations();
+
+        if (IsAssignmentStart())
+            return RequireNoAnnotations(annotations, ParseAssignment);
+
+        return Current.Type switch
         {
-            Global.SetClass(name, new Stru(
-                UnType.Create(name),
-                [.. fields.Split(TokenType.Comma).Select(x => x[0].Value)])
+            TokenType.Use => RequireNoAnnotations(annotations, ParseUse),
+            TokenType.Using => RequireNoAnnotations(annotations, ParseUsing),
+
+            TokenType.Class => ParseClass(annotations),
+            TokenType.Enum => ParseEnum(annotations),
+            TokenType.Func => ParseFunction(annotations),
+
+            TokenType.If => RequireNoAnnotations(annotations, ParseIf),  
+
+            TokenType.For => RequireNoAnnotations(annotations, ParseFor),
+            TokenType.While => RequireNoAnnotations(annotations, ParseWhile),
+
+            TokenType.Try => RequireNoAnnotations(annotations, ParseTry),
+            TokenType.Defer => RequireNoAnnotations(annotations, ParseDefer),
+
+            TokenType.Break => RequireNoAnnotations(annotations, ParseBreak),
+            TokenType.Skip => RequireNoAnnotations(annotations, ParseSkip),
+            TokenType.Return => RequireNoAnnotations(annotations, ParseReturn),
+
+            _ => RequireNoAnnotations(annotations, ParseExpression)
+        };
+    }
+
+    private Node ParseAnnotation()
+    {
+        var at = Expect(TokenType.At);
+        var expr = ParseExpression();
+
+        return new Node(at.Start, GetLength(at, expr), NodeKind.Annotation, children: [expr]);
+    }
+
+    private List<Node> ParseAnnotations()
+    {
+        var annotations = new List<Node>();
+
+        while (Current.Type == TokenType.At)
+            annotations.Add(ParseAnnotation());
+
+        return annotations;
+    }
+
+    private Node ParseUsePath()
+    {
+        var path = ParseIdentifier();
+
+        while (Match(TokenType.Dot))
+        {
+            if (Current.Type == TokenType.Asterisk)
             {
-                Annotations = context.Annotations,
-                Super = isInherit ? Global.GetClass(superType) : Obj.None,
-                Members = members
-            });
+                var star = Next();
+
+                return new Node(path.Start, GetLength(path, star), NodeKind.Unary, TokenType.Wildcard, path);
+            }
+
+            var member = ParseIdentifier();
+
+            path = new Node(path.Start, GetLength(path, member), NodeKind.Property, children: [path, member]);
+        }
+
+        return path;
+    }
+
+    private Node ParseUse()
+    {
+        var keyword = Expect(TokenType.Use);
+        var path = ParseUsePath();
+
+        if (Match(TokenType.As))
+        {
+            var alias = ParseIdentifier();
+
+            return new Node(keyword.Start, GetLength(keyword, alias), NodeKind.Use, children: [path, alias]);
+        }
+
+        return new Node(keyword.Start, GetLength(keyword, path), NodeKind.Use, children: [path]);
+    }
+
+    private Node ParseUsing()
+    {
+        var keyword = Expect(TokenType.Using);
+        var expr = ParseAssignment();
+
+        if (expr.Kind != NodeKind.Assign)
+            throw new Error("using requires an assignment", expr, source);
+
+        return new Node(keyword.Start, GetLength(keyword, expr), NodeKind.Using, children: [expr]);
+    }
+
+    private Node ParseClass(List<Node> annotations)
+    {
+        var keyword = Expect(TokenType.Class);
+        var name = ParseIdentifier();
+
+        Node? parameters = null;
+        Node? bases = null;
+
+        if (Current.Type == TokenType.LParen)
+            parameters = ParseParameters();
+
+        if (Match(TokenType.Colon))
+        {
+            var types = new List<Node>();
+
+            while (true)
+            {
+                types.Add(ParseIdentifier());
+
+                if (!Match(TokenType.Comma))
+                    break;
+            }
+
+            var first = types[0];
+            var last = types[^1];
+
+            bases = new Node(first.Start, GetLength(first, last), NodeKind.ClassBases, children: [.. types]);
+        }
+
+
+        SkipNewLines();
+
+        Node body;
+
+        if (tokens[position].Type == TokenType.Indent)
+        {
+            body = ParseBlock();
         }
         else
         {
-            Global.SetClass(name, new Obj(UnType.Create(name))
-            {
-                Annotations = context.Annotations,
-                Super = isInherit ? Global.GetClass(superType) : Obj.None,
-                Types = UnType.Create(name),
-                Members = members
-            });
+            body = new Node(Current.Start, 0, NodeKind.Block);
         }
 
-        context.Annotations = [];
+        List<Node> children = [name];
 
-        return Obj.None;
+        if (parameters is not null)
+            children.Add(parameters);
 
-        bool IsEmpty(string[] strs)
+        if (bases is not null)
+            children.Add(bases);
+
+        children.Add(body);
+
+        return new Node(keyword.Start, GetLength(keyword, body), NodeKind.Class, children: [.. children])
         {
-            foreach (var str in strs)
-                if (!string.IsNullOrWhiteSpace(str))
-                    return false;
-            return true;
-        }
+            Annotations = annotations
+        };
     }
-    private Obj ParseEunm()
-    {
-        var name = nodes[1].Value;
-        var body = context.File.GetBody();
-        var constants = new Map();
-        var i = 0;
 
-        foreach (var line in body)
+    private Node ParseEnumMember()
+    {
+        var name = ParseIdentifier();
+
+        if (!Match(TokenType.Assign))
+            return name;
+
+        var value = ParseExpression();
+
+        return new Node(name.Start, GetLength(name, value), NodeKind.Assign, TokenType.Assign, name, value);
+    }
+
+    private Node ParseEnum(List<Node> annotations)
+    {
+        var keyword = Expect(TokenType.Enum);
+        var name = ParseIdentifier();
+
+        Expect(TokenType.NewLine);
+        Expect(TokenType.Indent);
+
+        var members = new List<Node>();
+
+        while (Current.Type != TokenType.Dedent && Current.Type != TokenType.EOF)
         {
-            var splited = line.Split(",");
-            foreach (var member in splited)
-                if (!string.IsNullOrWhiteSpace(member.Trim()))
-                    constants.Add(member.Trim(), Int.From(i++));
-        }
+            SkipNewLines();
 
-        Global.SetClass(name, new Enu(UnType.Create(name), 0)
-        {
-            Members = constants
-        });
+            if (Current.Type == TokenType.Dedent)
+                break;
 
-        return Obj.None;
-    }
-    private Obj ParseReturn() => ReturnValue = Operator.On(nodes[1..], context);
-    private Obj ParseBreak() => ReturnValue = new Obj(UnType.Break);
-    private Obj ParseSkip() => ReturnValue = new Obj(UnType.Skip);
-    private Obj ParseExpreession()
-    {
-        for (int i = 0; i < nodes.Count; i++)
-            if (nodes[i].Type.IsAssignmentOperator())
-                return ParseAssignment(i);
-        return Operator.On(nodes, context);
-    }
-    private Obj ParseAssignment(int assign)
-    {
-        var names = nodes[..assign];
-        var values = nodes[(assign + 1)..];
+            members.Add(ParseEnumMember());
 
-        int nameCount = names.Count(i => i.Type == TokenType.Comma) + 1;
-        int valueCount = values.Count(i => i.Type == TokenType.Comma) + 1;
-
-        var variable = Obj.None;
-        var objs = new List<Obj>(nameCount);
-        var buf = new List<Node>();
-
-        if (nameCount == valueCount)
-            objs.AddRange(Convert.ToTuple(new Node("tuple", TokenType.Tuple)
+            while (Match(TokenType.Comma))
             {
-                Children = values
-            }, context).Value);
-        else if (IsDeconstruct())
-            objs.AddRange(IsDeconstructableToken() ?
-                Convert.ToTuple(values[0], context).Value :
-                Scope.Get(values[0].Value).Spread().As<Spreads>());
-        else if (Operator.On(values, context).Spread().As<Spreads>(out var spreads))        
-            objs.AddRange(spreads);        
-        else
-            throw new Error($"invalid assignment {nodes[assign - 1].Type}.", context);
+                SkipNewLines();
 
-        if (context.Annotations.Count != 0)
-            foreach (var obj in objs)
-                foreach (var key in context.Annotations.Keys)
-                    obj.Annotations[key] = context.Annotations[key];
+                if (Current.Type is TokenType.NewLine or TokenType.Dedent)
+                    break;
 
-        int count = 0;
-        var type = nodes[assign].Type;
+                members.Add(ParseEnumMember());
+            }
 
-        for (int i = 0; i < names.Count; i++)
+            SkipNewLines();
+        }
+
+        var closer = Expect(TokenType.Dedent);
+
+        return new Node(keyword.Start, GetLength(keyword, closer), NodeKind.Enum, children: [name, .. members])
         {
-            if (IsEnd(i + 1))
-            {
-                switch (names[i].Type)
-                {
-                    case TokenType.Indexer:
-                        var index = Operator.On(names[i].Children, context).Unwrap(context);
-                        variable.SetItem(index, AssignValue(type, variable.GetItem(index).Unwrap(context), objs[count]));
-                        break;
-                    case TokenType.Property:
-                        variable.SetAttr(names[i].Value, AssignValue(type, variable.GetAttr(names[i].Value).Unwrap(context), objs[count]));
-                        break;
-                    case TokenType.Identifier:
-                        var name = names[i].Value;
-                        if (Scope.Get(name, out Obj? value))
-                            Scope.Set(name, AssignValue(type, value, objs[count]));
-                        else if (type == TokenType.Assign)
-                            Scope.Set(name, objs[count]);
-                        else
-                            throw new Error($"invalid assignment {names[i].Type}.", context);
-                        break;
-                    default:
-                        throw new Error($"invalid assignment {names[i].Type}.", context);
-                }
-                count++;
-                i++;
+            Annotations = annotations
+        };
+    }
 
-                if (names.Count > i && names[i].Type == TokenType.Colon)
-                    while (names.Count > i && names[i++].Type != TokenType.Comma) { }
+    private Node ParseIf()
+    {
+        var keyword = Expect(TokenType.If);
+
+        var cases = new List<Node>();
+
+        var condition = ParseExpression();
+        var thenBranch = ParseBlock();
+
+        cases.Add(new Node(keyword.Start, GetLength(keyword, thenBranch), NodeKind.Branch, default, condition, thenBranch));
+
+        Node? elseNode = null;
+
+        while (true)
+        {
+            if (Match(TokenType.ElIf))
+            {
+                var elifCond = ParseExpression();
+                var elifBody = ParseBlock();
+
+                cases.Add(new Node(Previous().Start, GetLength(Previous(), elifBody), NodeKind.ElIf, default, elifCond, elifBody));
+            }
+            else if (Match(TokenType.Else))
+            {
+                var elseBody = ParseBlock();
+
+                elseNode = new Node(Previous().Start, GetLength(Previous(), elseBody), NodeKind.Else, default, elseBody);
+
+                break;
             }
             else
-                variable = names[i].Type switch
-                {
-                    TokenType.Indexer => variable.GetItem(Operator.On(names[i].Children, context).Unwrap(context)).Unwrap(context),
-                    TokenType.Property => variable.GetAttr(names[i].Value).Unwrap(context),
-                    TokenType.Identifier => Scope.Get(names[i].Value, out var obj) ? obj : throw new Error($"variable {names[i].Value} not found.", context),
-                    _ => throw new Error($"invalid assignment {names[i].Type}.", context)
-                };
+            {
+                break;
+            }
         }
 
-        if (objs.Count == 1) return objs[0];
-        return new Tup([.. objs], new string[nameCount]);
+        var children = new List<Node>(cases);
 
-        bool IsEnd(int index) => index >= names.Count || names[index].Type == TokenType.Comma || names[index].Type == TokenType.Colon;
+        if (elseNode != null)
+            children.Add(elseNode);
 
-        bool IsDeconstructableToken() => (values[0].Type == TokenType.List || values[0].Type == TokenType.Tuple) && nameCount == values[0].Children.Count(i => i.Type == TokenType.Comma) + 1;
+        return new Node(keyword.Start, GetLength(keyword, children[^1]), NodeKind.If, default, [.. children]);
+    }
 
-        bool IsDeconstruct() => valueCount == 1 && (values[0].Type.IsDeconstruct() || !Scope.Get(values[0].Value).Spread().As<Err>(out _));
+    private Node ParseMatchBraceBody()
+    {
+        Expect(TokenType.LBrace);
 
-        Obj AssignValue(TokenType type, Obj a, Obj b) => type switch
+        var cases = new List<Node>();
+
+        SkipNewLines();
+
+        while (!Match(TokenType.RBrace))
         {
-            TokenType.Assign => b,
-            TokenType.PlusAssign => a.Add(b),
-            TokenType.MinusAssign => a.Sub(b),
-            TokenType.SlashAssign => a.Div(b),
-            TokenType.DoubleSlashAssign => a.IDiv(b),
-            TokenType.AsteriskAssign => a.Mul(b),
-            TokenType.DoubleAsteriskAssign => a.Pow(b),
-            TokenType.PercentAssign => a.Mod(b),
-            TokenType.BAndAssign => a.BAnd(b),
-            TokenType.BOrAssign => a.BOr(b),
-            TokenType.BXorAssign => a.BXor(b),
-            TokenType.LeftShiftAssign => a.LShift(b),
-            TokenType.RightShiftAssign => a.RShift(b),
-            _ => throw new Error("invalid assign operator", context),
+            var pattern = ParsePattern();
+
+            Expect(TokenType.Return);
+
+            var body = ParseBinary();
+
+            cases.Add(new Node(pattern.Start, GetLength(pattern, body), NodeKind.Case, children: [pattern, body]));
+
+            Match(TokenType.Comma); 
+            SkipNewLines();
+        }
+
+        return new Node(cases.Count > 0 ? cases[0].Start : 0, cases.Count > 0 ? GetLength(cases[0], cases[^1]) : 0, NodeKind.Block, children: [.. cases]);
+    }
+
+    private Node ParseMatch()
+    {
+        var keyword = Expect(TokenType.Match);
+
+        var expr = ParseExpression();
+        var body = ParseMatchBraceBody();
+
+        return new Node(keyword.Start, GetLength(keyword, body), NodeKind.Match, children: [expr, ..body.Children]);
+    }
+
+    private Node ParseFor()
+    {
+        var keyword = Expect(TokenType.For);
+        var target = ParsePattern();
+
+        Expect(TokenType.In);
+
+        var iterable = ParseExpression();
+        SkipNewLines();
+        var body = ParseBlock();
+
+        return new Node(keyword.Start, GetLength(keyword, body), NodeKind.For, children: [target, iterable, body]);
+    }
+
+    private Node ParseWhile()
+    {
+        var keyword = Expect(TokenType.While);
+
+        var condition = ParseExpression();
+        var body = ParseBlock();
+
+        return new Node(keyword.Start, GetLength(keyword, body), NodeKind.While, children: [condition, body]);
+    }
+
+    private Node ParseTry()
+    {
+        var keyword = Expect(TokenType.Try);
+
+        var body = ParseBlock();
+
+        var catches = new List<Node>();
+        Node? finallyNode = null;
+
+        while (Match(TokenType.Catch))
+        {
+            var catchKeyword = Previous();
+
+            Node? exception = null;
+
+            if (Current.Type == TokenType.Identifier)
+                exception = ParseIdentifier();
+
+            var catchBody = ParseBlock();
+            var catchNode = new Node(catchKeyword.Start, GetLength(catchKeyword, catchBody), NodeKind.Catch, children: exception is null ? [catchBody] : [exception, catchBody]);
+
+            catches.Add(catchNode);
+        }
+
+        if (Match(TokenType.Finally))
+        {
+            var finallyKeyword = Previous();
+            var finallyBody = ParseBlock();
+
+            finallyNode = new Node(finallyKeyword.Start, GetLength(finallyKeyword, finallyBody), NodeKind.Finally, children: [finallyBody]);
+        }
+
+        var children = new List<Node>
+        {
+            body
         };
+
+        children.AddRange(catches);
+
+        if (finallyNode is not null)
+            children.Add(finallyNode);
+
+        return new Node(keyword.Start, GetLength(keyword, children[^1]), NodeKind.Try, children: [.. children]);
     }
-    private Obj ParseFor()
+
+    private Node ParseDefer()
     {
-        var inIdx = nodes.FindIndex(x => x.Type == TokenType.In);
-        var vars = nodes[..inIdx][1..].Split(TokenType.Comma).Select(x => x[0]).ToList();
-        var iter = Operator.On(nodes[(inIdx + 1)..], context).Iter().As<Iters>().Value;
-        var innerScope = new Scope(Scope);
-        var innerContext = new Context(innerScope, new("for", context.File.GetBody()), []);
-        var runner = Runner.Load(innerContext, context);
+        var keyword = Expect(TokenType.Defer);
 
-        innerContext.EnterBlock("loop");
+        Node body;
 
-        foreach (var current in iter)
+        SkipNewLines();
+
+        if (Current.Type == TokenType.Indent)
         {
-            runner.Reset();
+            body = ParseBlock();
+        }
+        else
+        {
+            var expr = ParseExpression();
 
-            if (vars.Count != 1 && vars.Count != current switch
-            {
-                List or Tup => current.Len().As<Int>().Value,
-                _ => 1
-            })
-                throw new Error($"invalid for syntax", context);
-
-            var values = current switch
-            {
-                List l when vars.Count != 1 => l,
-                Tup t when vars.Count != 1 => new List(t.Value),
-                _ => new([current])
-            };
-
-            for (int i = 0; i < vars.Count; i++)
-                innerScope.Set(vars[i].Value, values[i]);
-
-            ReturnValue = runner.Run();
-
-            if (ReturnValue?.Type == UnType.Break)
-            {
-                ReturnValue = null!;
-                break;
-            }
-            else if (ReturnValue?.Type == UnType.Skip)
-                ReturnValue = null!;
+            body = new Node(expr.Start, expr.Length, expr.Kind, children: [expr]);
         }
 
-        innerContext.ExitBlock();
-
-        return ReturnValue ?? Obj.None;
+        return new Node(keyword.Start, GetLength(keyword, body), NodeKind.Defer, children: [body]);
     }
-    private Obj ParseWhile()
+
+    private Node ParseBreak()
     {
-        var expr = nodes[1..];
-        var body = context.File.GetBody();
-        var innerScope = new Scope(Scope);
-        var innerContext = new Context(innerScope, new("while", body), []);
-        var runner = Runner.Load(innerContext, context);
-        innerContext.EnterBlock("loop");
+        var keyword = Expect(TokenType.Break);
 
-        while (Operator.On(expr, innerContext).As<Bool>("while keyword only boolearn").Value)
-        {
-            ReturnValue = runner.Run();
+        return new Node(keyword.Start, keyword.Length, NodeKind.Break);
+    }
 
-            if (ReturnValue?.Type == UnType.Break)
-            {
-                ReturnValue = null!;
-                break;
-            }
-            else if (ReturnValue?.Type == UnType.Skip)
-                ReturnValue = null!;
+    private Node ParseSkip()
+    {
+        var keyword = Expect(TokenType.Skip);
 
-            runner.Reset();
-        }
+        return new Node(keyword.Start, keyword.Length, NodeKind.Skip);
+    }
 
+    private Node ParseReturn()
+    {
+        var keyword = Expect(TokenType.Return);
+
+        if (IsEndOfStatement)
+            return new Node(keyword.Start, keyword.Length, NodeKind.Return);
         
-        innerContext.ExitBlock();
+        var expr = ParseExpression();
 
-        return ReturnValue ?? Obj.None;
+        return new Node(keyword.Start, GetLength(keyword, expr), NodeKind.Return, children: [expr]);
     }
-    private Obj ParseIf()
+
+    private Node ParseExpression() => ParseBinary();
+
+    private Node ParseComma()
     {
-        Bool condition = nodes[0].Type == TokenType.Else ? Bool.True : Operator.On(nodes[1..], context).ToBool().As<Bool>();
-        var innerScope = new Scope(Scope);
-
-        if (condition.Value)
+        var items = new List<Node>
         {
-            var body = context.File.GetBody();
-            var innerContext = new Context(innerScope, new("if", body), [.. context.BlockStack]);
+            ParseBinary() 
+        };
 
-            ReturnValue = Runner.Load(innerContext, context).Run();
+        while (Match(TokenType.Comma))
+        {
+            items.Add(ParseBinary());
+        }
 
-            var file = context.File;
+        if (items.Count == 1)
+            return items[0];
 
-            while (file.TryPeekLine(out var code))
+        var first = items[0];
+        var last = items[^1];
+
+        return new Node(first.Start, GetLength(first, last), NodeKind.Tuple, children: [.. items]);
+    }
+
+    private Node ParseAssignment()
+    {
+        var left = ParsePattern();
+
+        if (Current.Type is not (
+            TokenType.Assign or
+            TokenType.PlusAssign or
+            TokenType.MinusAssign or
+            TokenType.AsteriskAssign or
+            TokenType.SlashAssign or
+            TokenType.DoubleSlashAssign or
+            TokenType.DoubleAsteriskAssign or
+            TokenType.PercentAssign or
+            TokenType.BAndAssign or
+            TokenType.BOrAssign or
+            TokenType.BXorAssign or
+            TokenType.LeftShiftAssign or
+            TokenType.RightShiftAssign or
+            TokenType.DoubleQuestionAssign))
+        {
+            return left;
+        }
+
+        var op = Next();
+        var right = ParseComma();
+
+        return new Node(left.Start, right.Start + right.Length - left.Start, NodeKind.Assign, op.Type, left, right);
+    }
+
+    private Node ParseBinary(int parentPrecedence = 0)
+    {
+        var left = ParseUnary();
+
+        while (true)
+        {
+            var precedence = GetBinaryPrecedence(Current.Type);
+
+            if (precedence <= parentPrecedence)
+                break;
+
+            var op = Next();
+            SkipTrivia();
+            var right = ParseBinary(precedence);
+
+            left = new Node(left.Start, right.Start + right.Length - left.Start, NodeKind.Binary, op.Type, left, right);
+        }
+
+        return left;
+    }
+
+    private Node ParseUnary()
+    {
+        if (Current.Type is TokenType.Not or TokenType.Plus or TokenType.Minus or 
+            TokenType.BNot or TokenType.Wait or TokenType.Go)
+        {
+            var op = Next();
+            var expr = ParseUnary();
+
+            return new Node(op.Start, expr.Start + expr.Length - op.Start, NodeKind.Unary, op.Type, expr);
+        }
+
+        return ParsePostfix();
+    }
+
+    private Node ParsePostfix()
+    {
+        var expr = ParsePrimary();
+
+        while (true)
+        {
+            switch (Current.Type)
             {
-                code = code.Trim();
-                if (code.StartsWith("elif") || code.StartsWith("else"))
-                    file.GetBody();
-                else break;
+                case TokenType.LParen:
+                    expr = ParseCall(expr);
+                    continue;
+
+                case TokenType.Dot:
+                    {
+                        Next(); 
+                        var member = ParseIdentifier();
+
+                        expr = new Node(expr.Start,
+                            GetLength(expr, member),
+                            NodeKind.Property,
+                            children: [expr, member]);
+
+                        continue;
+                    }
+
+                case TokenType.QuestionDot:
+                    {
+                        Next(); 
+                        var member = ParseIdentifier();
+
+                        expr = new Node(expr.Start,
+                            GetLength(expr, member),
+                            NodeKind.Property,
+                            children: [expr, member]);
+
+                        continue;
+                    }
+
+                case TokenType.LBrack:
+                    expr = ParseIndexOrSlice(expr);
+                    continue;
+            }
+
+            break;
+        }
+
+        return expr;
+    }
+
+    private Node ParseArgument()
+    {
+        Node expr;
+
+        if (Match(TokenType.Asterisk))
+        {
+            expr = ParseExpression();
+            return new Node(expr.Start, expr.Length, NodeKind.Spread, children: [expr]);
+        }
+
+        if (Match(TokenType.DoubleAsterisk))
+        {
+            expr = ParseExpression();
+            return new Node(expr.Start, expr.Length, NodeKind.KwSpread, children: [expr]);
+        }
+
+        expr = ParseExpression();
+
+        if (expr.Kind == NodeKind.Identifier && Match(TokenType.Assign))
+        {
+            var value = ParseExpression();
+            return new Node(expr.Start, GetLength(expr, value), NodeKind.Pair, children: [expr, value]);
+        }
+
+        return expr;
+    }
+
+    private List<Node> ParseArguments()
+    {
+        var args = new List<Node>();
+
+        if (Current.Type == TokenType.RParen)
+            return args;
+
+        while (true)
+        {
+            args.Add(ParseArgument());
+
+            if (!Match(TokenType.Comma))
+                break;
+
+            if (Current.Type == TokenType.RParen)
+                break;
+        }
+
+        return args;
+    }
+
+    private Node ParseCall(Node expr)
+    {
+        var opener = Expect(TokenType.LParen);
+        var args = ParseArguments();
+        var closer = Expect(TokenType.RParen);
+
+        var tuple = new Node(opener.Start, GetLength(opener, closer), NodeKind.Tuple, children: [.. args]);
+
+        return new Node(expr.Start, GetLength(expr, closer), NodeKind.Call, children: [expr, tuple]);
+    }
+
+    private Node ParseIndexOrSlice(Node expr)
+    {
+        var lbrack = Expect(TokenType.LBrack);
+
+        Node? start = null;
+        Node? end = null;
+        Node? step = null;
+
+        if (Current.Type != TokenType.Colon && Current.Type != TokenType.RBrack)
+            start = ParseExpression();
+
+        if (Match(TokenType.Colon))
+        {
+            if (Current.Type != TokenType.Colon && Current.Type != TokenType.RBrack)
+                end = ParseExpression();
+
+            if (Match(TokenType.Colon))
+            {
+                if (Current.Type != TokenType.RBrack)
+                    step = ParseExpression();
             }
         }
         else
         {
-            context.File.GetBody();
+            var rbrack = Expect(TokenType.RBrack);
+
+            return new Node(expr.Start, GetLength(expr, rbrack), NodeKind.Index, children: [expr, start!]);
         }
 
-        return ReturnValue ?? Obj.None;
+        var rbrack2 = Expect(TokenType.RBrack);
+
+        return new Node(expr.Start, GetLength(expr, rbrack2), NodeKind.Slice, children: [expr, start!, end!, step!]);
     }
-    private Obj ParseTry()
+
+    private Node ParsePrimary() => Current.Type switch
     {
-        var body = context.File.GetBody();
-        var innerScope = new Scope(Scope);
-        var innerContext = new Context(innerScope, new("try", body), []);
+        TokenType.Identifier => ParseIdentifier(),
+        TokenType.Integer => ParseLiteral(NodeKind.Integer),
+        TokenType.Float => ParseLiteral(NodeKind.Float),
+        TokenType.String => ParseLiteral(NodeKind.String),
+        TokenType.FString => ParseFString(),
+        TokenType.True or TokenType.False => ParseLiteral(NodeKind.Boolean),
+        TokenType.None => ParseLiteral(NodeKind.None),
+        TokenType.LParen => ParseTuple(),
+        TokenType.LBrace => ParseDictOrSet(),
+        TokenType.LBrack => ParseList(),
+        TokenType.Func => ParseLambda(),
+        TokenType.Match => ParseMatch(),
 
-        innerContext.EnterBlock("try");
+        _ => throw new Error($"unexpected primary token {Current.Type}", Current.Start, Current.Length, source),
+    };
 
-        try
+    private Node ParseIdentifier()
+    {
+        var token = Expect(TokenType.Identifier);
+        return new Node(token.Start, token.Length, NodeKind.Identifier)
         {
-            ReturnValue = Runner.Load(innerContext, context).Run();
-            innerContext.ExitBlock();
-        }
-        catch (Exception e)
-        {
-            innerContext.ExitBlock();
+            Value = GetText(token.Start, token.Length)
+        };
+    }
 
-            if (!context.File.EOL && context.File.PeekLine().StartsWith("catch"))
+    private Node ParseFString()
+    {
+        var token = Expect(TokenType.FString);
+        var raw = GetText(token.Start, token.Length);
+
+        int quoteLength = raw.StartsWith("```") ? 3 : 1;
+        var text = raw[quoteLength..^quoteLength];
+
+        List<Node> children = [];
+
+        int start = 0;
+        int pos = 0;
+
+        while (pos < text.Length)
+        {
+            if (text[pos] == '\\')
             {
-                var parts = context.File.PeekLine().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var name = parts.Length > 1 ? parts[1] : null;
-                body = context.File.GetBody();
-                innerContext = new Context(innerScope, new("catch", body), context.BlockStack);
+                pos += 2;
+                continue;
+            }
 
-                if (name is not null)
-                    innerContext.Scope.Set(name, new Err(e.Message));
+            if (text[pos] != '{')
+            {
+                pos++;
+                continue;
+            }
 
-                Runner.Load(innerContext, context).Run();
+            if (pos > start)
+            {
+                children.Add(new Node(0, 0, NodeKind.String)
+                {
+                    Value = text[start..pos]
+                });
+            }
+
+            int exprStart = pos + 1;
+            int depth = 1;
+
+            pos++;
+
+            while (pos < text.Length && depth > 0)
+            {
+                if (text[pos] == '\\')
+                {
+                    pos += 2;
+                    continue;
+                }
+
+                if (text[pos] == '{')
+                    depth++;
+                else if (text[pos] == '}')
+                    depth--;
+
+                pos++;
+            }
+
+            if (depth != 0)
+                throw new Error("unclosed interpolation", exprStart, pos - exprStart, source);
+
+            var exprText = text[exprStart..(pos - 1)];
+
+            children.Add(ParseInterpolation(exprText));
+
+            start = pos;
+        }
+
+        if (start < text.Length)
+        {
+            children.Add(new Node(0, 0, NodeKind.String)
+            {
+                Value = text[start..]
+            });
+        }
+
+        return new Node(token.Start, token.Length, NodeKind.FString, children: [.. children]);
+    }
+
+    private Node ParseInterpolation(string text)
+    {        
+        var source = new Source(this.source.Path, text);
+        var context = new Context(this.context.Scope, source, this.context.Frames);
+        var lexer = new Lexer(source);
+
+        var tokens = lexer.Tokenize();
+
+        var parser = new Parser(tokens, context);
+
+        return parser.ParseExpression();
+    }
+
+    private Node ParseLiteral(NodeKind kind)
+    {
+        var token = Next();
+        var text = GetText(token.Start, token.Length);
+
+        return new Node(token.Start, token.Length, kind)
+        {
+            Value = kind switch 
+            {
+                NodeKind.Integer => long.Parse(text.Replace("_", "")),
+                NodeKind.Float => double.Parse(text.Replace("_", ""), CultureInfo.InvariantCulture),
+                NodeKind.String => Unescape(RemoveQuotes(text)),
+                NodeKind.Boolean => text == "true",
+                NodeKind.None => null,
+                _ => new Error($"invalid literal {kind}", token.Start, token.Length, source)
+            }
+        };
+    }
+
+    private List<Node> ParseExpressionList(TokenType end)
+    {
+        var items = new List<Node>();
+
+        if (Current.Type == end)
+            return items;
+
+        while (true)
+        {
+            SkipTrivia();
+
+            if (Current.Type == end)
+                break;
+
+            items.Add(ParseExpression());
+
+            SkipTrivia();
+
+            if (!Match(TokenType.Comma))
+                break;
+        }
+
+        return items;
+    }
+
+    private Node ParseTuple()
+    {
+        var opener = Expect(TokenType.LParen);
+        var values = ParseExpressionList(TokenType.RParen);
+        var closer = Expect(TokenType.RParen);
+
+        if (values.Count == 1)
+            return values[0];
+
+        if (values.Count == 0)
+            return new Node(opener.Start, GetLength(opener, closer), NodeKind.Tuple);
+
+        return new Node(opener.Start, GetLength(opener, closer), NodeKind.Tuple, children: [.. values]);
+    }
+
+    private Node ParseDictOrSet()
+    {
+        var opener = Expect(TokenType.LBrace);
+        var values = new List<Node>();
+
+        Token closer;
+
+        SkipTrivia();
+
+        if (Current.Type == TokenType.RBrace)
+        {
+            closer = Next();
+            return new Node(opener.Start, GetLength(opener, closer), NodeKind.Set);
+        }
+
+        SkipTrivia();
+
+        var firstKey = ParseExpression();
+
+        NodeKind kind;
+
+        SkipTrivia();
+
+        if (Match(TokenType.Colon))
+            kind = NodeKind.Dict;
+        else
+            kind = NodeKind.Set;
+
+        if (kind == NodeKind.Set)
+        {
+            values.Add(firstKey);
+        }
+        else
+        {
+            SkipTrivia();
+
+            var value = ParseExpression();
+
+            values.Add(new Node(firstKey.Start, GetLength(firstKey, value), NodeKind.Pair, children: [firstKey, value]));
+        }
+
+        while (true)
+        {
+            SkipTrivia();
+
+            if (Current.Type == TokenType.RBrace)
+                break;
+
+            Expect(TokenType.Comma);
+
+            SkipTrivia();
+
+            if (Current.Type == TokenType.RBrace)
+                break;
+
+            var key = ParseExpression();
+
+            if (kind == NodeKind.Set)
+            {
+                SkipTrivia();
+
+                if (Current.Type == TokenType.Colon)
+                    throw new Error("set cannot contain key-value pair", Current.Start, Current.Length, context.Source);
+
+                values.Add(key);
+            }
+            else
+            {
+                SkipTrivia();
+                Expect(TokenType.Colon);
+
+                SkipTrivia();
+
+                var value = ParseExpression();
+
+                values.Add(new Node(
+                    key.Start,
+                    GetLength(key, value),
+                    NodeKind.Pair,
+                    children: [key, value]));
             }
         }
-        finally
-        {
-            if (!context.File.EOL && context.File.PeekLine().StartsWith("fin"))
-            {
-                body = context.File.GetBody();
-                innerContext = new Context(innerScope, new("fin", body), context.BlockStack);
 
-                Runner.Load(innerContext, context).Run();
+        closer = Expect(TokenType.RBrace);
+
+        return new Node(
+            opener.Start,
+            GetLength(opener, closer),
+            kind,
+            children: [.. values]);
+    }
+
+    private Node ParseList()
+    {
+        var opener = Expect(TokenType.LBrack);
+        var values = ParseExpressionList(TokenType.RBrack);
+        var closer = Expect(TokenType.RBrack);
+
+        return new Node(opener.Start, GetLength(opener, closer), NodeKind.List, children: [.. values]);
+    }
+
+    private Node ParseFunction(List<Node> annotations)
+    {
+        var func = Expect(TokenType.Func);
+        var name = ParseIdentifier(); 
+        var parameters = ParseParameters();
+        SkipNewLines();
+        var body = ParseBlock(); 
+
+        return new Node(func.Start, GetLength(func, body), NodeKind.Function, children: [name, parameters, body])
+        {
+            Annotations = annotations,
+        };
+    }
+
+    private Node ParseLambda()
+    {
+        var func = Expect(TokenType.Func);
+
+        var parameters = ParseParameters();
+
+        Expect(TokenType.Return);
+
+        var expr = ParseExpression();
+        var ret = new Node(expr.Start, expr.Length, NodeKind.Return, children: [expr]);
+        var body = new Node(ret.Start, ret.Length, NodeKind.Block, children: [ret]);
+
+        return new Node(func.Start, GetLength(func, body), NodeKind.Lambda, children: [parameters, body]);
+    }
+
+    private Node ParseParameters()
+    {
+        var opener = Expect(TokenType.LParen);
+        var parameters = new List<Node>();
+
+        if (Current.Type != TokenType.RParen)
+        {
+            while (true)
+            {
+                parameters.Add(ParseParameter());
+
+                if (Match(TokenType.Comma))
+                    continue;                
+                break;
             }
         }
 
-        return ReturnValue ?? Obj.None;
+        var closer = Expect(TokenType.RParen);
+
+        return new Node(opener.Start, GetLength(opener, closer), NodeKind.Tuple, children: [.. parameters]);
     }
-    private Obj ParseUsing()
+
+    private Node ParseParameter()
     {
-        var name = nodes[1].Value;
-        nodes = nodes[1..];
-        int assign = -1;
+        Token? star = null;
 
-        for (int i = 0; assign == -1 && i < nodes.Count; i++)
-            if (nodes[i].Type.IsAssignmentOperator())
-                assign = i;
+        if (Current.Type is TokenType.Asterisk or TokenType.DoubleAsterisk)
+            star = Next();
 
-        if (assign == -1)
-            throw new Error("'using' keyword must be followed by an assignment operator:", context);
+        var name = ParseIdentifier();
+        Node value = name;
 
-        ParseAssignment(assign);
+        if (star is not null)        
+            value = new Node(star.Value.Start, GetLength(star.Value, name), NodeKind.Unary, star.Value.Type, name);        
 
-        Scope.Get(name, out var obj);
-        obj.Entry();
-        context.Usings.Push(obj);
+        if (Match(TokenType.Colon))
+        {
+            var type = ParseIdentifier();
 
-        return Obj.None;
+            value = new Node(value.Start, type.Start + type.Length - value.Start, NodeKind.Typed, children: [value, type]);
+        }
+
+        if (Match(TokenType.Assign))
+        {
+            var expr = ParseExpression();
+
+            value = new Node(value.Start, expr.Start + expr.Length - value.Start, NodeKind.Assign, TokenType.Assign, value, expr);
+        }
+
+        return new Node(value.Start, value.Length, NodeKind.Parameter, children: [value]);
     }
-    private Obj ParseDefer()
+
+    private Node ParseBlock()
     {
-        context.Defers.Push(nodes[1..]);
-        return Obj.None;
+        SkipNewLines();
+
+        Expect(TokenType.Indent);
+
+        var statements = new List<Node>();
+
+        while (Current.Type != TokenType.Dedent && Current.Type != TokenType.EOF)
+        {
+            SkipNewLines();
+
+            if (Current.Type == TokenType.Dedent)
+                break;
+
+            statements.Add(ParseStatement());
+
+            SkipNewLines();
+        }
+
+        Expect(TokenType.Dedent);
+
+        if (statements.Count == 0)
+            return new Node(Current.Start, 0, NodeKind.Block);
+
+        return new Node(statements[0].Start, GetLength(statements[0], statements[^1]), NodeKind.Block, children: [.. statements]
+        );
     }
-    private Obj ParseAnotation()
+
+    private Node ParsePattern()
     {
-        if (nodes.Count <= 1 || nodes.Count >= 4)
-            throw new Error("invalid annotation syntax", context);
+        var first = ParsePrimaryPattern();
 
-        var name = nodes[1].Value;
+        if (!Match(TokenType.Comma))
+            return first;
 
-        context.Annotations[name] = nodes.Count == 2 ? new Tup([], []) : Convert.ToTuple(nodes[2], context);
-        return Obj.None;
+        var items = new List<Node> { first };
+
+        do
+        {
+            items.Add(ParsePrimaryPattern());
+        }
+        while (Match(TokenType.Comma));
+
+        return new Node(first.Start, GetLength(first, items[^1]), NodeKind.Tuple, children: [.. items]);
     }
-    #endregion
 
+    private Node ParsePrimaryPattern()
+    {
+        if (Match(TokenType.Underscore))
+        {
+            var token = Previous();
+            return new Node(token.Start, token.Length, NodeKind.Wildcard);
+        }
 
+        var expr = ParsePostfix();
+
+        if (Match(TokenType.Colon))
+        {
+            var type = ParseExpression();
+            return new Node(expr.Start, GetLength(expr, type), NodeKind.Typed, children: [expr, type]);
+        }
+
+        return expr;
+    }
+
+    private Node RequireNoAnnotations(List<Node> annotations, Func<Node> parser)
+    {
+        if (annotations.Count > 0)
+            throw new Error("annotations are not allowed here", annotations[0].Start, annotations[^1].Start + annotations[^1].Length - annotations[0].Start, source);
+
+        return parser();
+    }
+
+    private string GetText(int start, int length) => code.Substring(start, length);
+
+    private string RemoveQuotes(string text)
+    {
+        if (text.Length >= 6 &&
+            ((text.StartsWith("\"\"\"") && text.EndsWith("\"\"\"")) ||
+             (text.StartsWith("'''") && text.EndsWith("'''"))))
+            return text[3..^3];
+
+        return text[1..^1];
+    }
+
+    private string Unescape(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] != '\\')
+            {
+                sb.Append(s[i]);
+                continue;
+            }
+
+            if (++i >= s.Length)
+                break;
+
+            sb.Append(s[i] switch
+            {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '\\' => '\\',
+                '"' => '"',
+                '\'' => '\'',
+                _ => s[i]
+            });
+        }
+
+        return sb.ToString();
+    }
+
+    private int GetLength(ISpan start, ISpan end) => end.Start + end.Length - start.Start;
+
+    private int GetBinaryPrecedence(TokenType type)
+    {
+        return type switch
+        {
+            TokenType.Or => 1,
+            TokenType.Xor => 2,
+            TokenType.And => 3,
+
+            TokenType.Equal => 4,
+            TokenType.Unequal => 4,
+
+            TokenType.LessThan => 5,
+            TokenType.LessOrEqual => 5,
+            TokenType.GreaterThan => 5,
+            TokenType.GreaterOrEqual => 5,
+            TokenType.Is => 5,
+            TokenType.In => 5,
+
+            TokenType.BOr => 6,
+            TokenType.BXor => 7,
+            TokenType.BAnd => 8,
+
+            TokenType.LeftShift => 9,
+            TokenType.RightShift => 9,
+
+            TokenType.Plus => 10,
+            TokenType.Minus => 10,
+
+            TokenType.Asterisk => 11,
+            TokenType.Slash => 11,
+            TokenType.DoubleSlash => 11,
+            TokenType.Percent => 11,
+
+            TokenType.DoubleAsterisk => 12,
+
+            TokenType.DoubleQuestion => 13,
+
+            _ => 0
+        };
+    }
+
+    private bool IsAssignmentStart()
+    {
+        return Current.Type == TokenType.Identifier || Current.Type == TokenType.LParen || Current.Type == TokenType.Underscore;
+    }
+
+    private bool IsValidAssignmentTarget(Node node)
+    {
+        return node.Kind switch
+        {
+            NodeKind.Identifier => true,
+            NodeKind.Property => true,
+            NodeKind.Index => true,
+            NodeKind.Wildcard => true,
+            NodeKind.Typed => IsValidAssignmentTarget(node.Children[0]),
+            NodeKind.Tuple => node.Children.All(IsValidAssignmentTarget),
+
+            _ => false
+        };
+    }
 }

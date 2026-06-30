@@ -21,11 +21,11 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, UnType
 
     public override Obj Iter() => this;
 
-    public override List ToList() => new([.. Value]);
+    public override Obj ToList() => new List([.. Value]);
 
-    public override Tup ToTuple() => new([.. Value], new string[Value.Count()]);
+    public override Obj ToTuple() => new Tup([.. Value], new string[Value.Count()]);
 
-    public override Str ToStr() => Str.From(string.Join(", ", Value.Select(x => x.ToStr().As<Str>().Value)));
+    public override Obj ToStr() => Str.From(string.Join(", ", Value.Select(x => x.ToStr().As<Str>().Value)));
 
     public override Obj Next()
     {
@@ -36,7 +36,7 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, UnType
         return new Err("iteration stopped");
     }
 
-    public override Spreads Spread() => new([.. Value]);
+    public override Obj Spread() => new Spreads([.. Value]);
 
     public override Obj Copy() => this;
 

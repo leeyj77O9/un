@@ -5,8 +5,8 @@ namespace Un.Object.Primitive;
 
 public class Bool : Val<bool>
 {
-    public static Bool True = new(true);
-    public static Bool False = new(false);
+    public readonly static Bool True = new(true);
+    public readonly static Bool False = new(false);
 
     public Bool() : this(false) { }
     private Bool(bool value) : base(value, UnType.Bool) { }

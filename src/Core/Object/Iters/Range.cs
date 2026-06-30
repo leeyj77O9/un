@@ -12,9 +12,6 @@ public class Range : Iters
 
     public Range(long start, long stop, long step = 1) : base(Default(start, stop, step))
     {
-        if (step == 0) 
-            throw new Panic("step cannot be zero");
-
         Type = UnType.Create("range");
         this.start = start;
         this.stop = stop;
@@ -40,7 +37,7 @@ public class Range : Iters
 
     public override Tup ToTuple() => ToList().ToTuple();
 
-    public override Str ToStr() => throw new Panic("range to string not implemented");
+    public override Obj ToStr() => new Err("range to string not implemented");
 
     public override Spreads Spread() => new(ToList().Value);
 

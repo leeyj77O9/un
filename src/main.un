@@ -1,9 +1,0 @@
-use timer
-
-t = timer()
-t.start()
-n = 0
-while n < 1000000
-	n += 1
-t.stop()
-write(t.ms() + "ms")

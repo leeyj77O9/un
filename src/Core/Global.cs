@@ -1,6 +1,5 @@
 global using Attributes = System.Collections.Generic.Dictionary<string, Un.Object.Obj>;
 global using Map = System.Collections.Generic.Dictionary<string, Un.Object.Obj>;
-global using OMap = System.Collections.Specialized.OrderedDictionary;
 
 using Un.Object;
 using Un.Object.Flow;
@@ -17,14 +16,10 @@ public static class Global
 {
     public static string PATH { get; private set; } = "";
 
-    public static readonly int BASEHASH = Math.Abs(DateTime.Now.Millisecond * 6929891 + DateTime.Now.Second * 1025957);
-    public static readonly int HASHPRIME = 11;
     public static ulong MAXRECURSIONDEPTH = 1000;
 
-    public static int CallDepth = 0;
-
-    private static Scope scope = new();
-    private static Scope classes = new();
+    private static readonly Scope scope = new();
+    private static readonly Scope classes = new();
 
     public static Attributes Package { get; private set; } = [];
 
@@ -101,102 +96,110 @@ public static class Global
 
     public static void Import(string[] path, string nickname, string[] parts)
     {
-        var fullPath = Path.Combine(PATH, Path.Join(path));
-        bool isSpread = nickname == "*";
-        bool isNickname = !string.IsNullOrEmpty(nickname);
+        var map = Load(Path.Combine(PATH, string.Join('/', path)));
 
-        if (isSpread || isNickname)
+        if (parts.Length != 0)
         {
-            var map = Merge();
-            var nameSet = parts.ToHashSet();
-
-            map = nameSet.Count != 0 ? map.Where(x => nameSet.Contains(x.Key)).ToDictionary() : map;
-
-            if (isSpread)
-            {
-                foreach (var (key, value) in map)               
-                    if (value is Obj obj)
-                        scope.Set(key, obj);
-            }
-            else
-            {
-                if (scope.ContainsKey(nickname))
-                    throw new Panic($"'{nickname}' already exists in the global scope");
-
-                var obj = new Obj(UnType.Create(nickname))
-                {
-                    Members = map
-                };
-                scope.Set(nickname, obj);
-            }
+            var set = parts.ToHashSet();
+            map = map.Where(x => set.Contains(x.Key)).ToDictionary();
         }
+
+        if (nickname == "*")
+        {
+            ImportSpread(map);
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(nickname))
+        {
+            ImportAlias(map, nickname);
+            return;
+        }
+
+        ImportNamespace(path, map);
+    }
+
+    private static void ImportSpread(Map map)
+    {
+        foreach (var (key, value) in map)
+            if (value is Obj obj)
+                scope.Set(key, obj);
+    }
+
+    private static void ImportAlias(Map map, string nickname)
+    {
+        if (scope.ContainsKey(nickname))
+            throw new Panic($"'{nickname}' already exists in the global scope");
+
+        scope.Set(nickname, new Obj(UnType.Create(nickname))
+        {
+            Members = map
+        });
+    }
+
+    private static void ImportNamespace(string[] path, Map map)
+    {
+        var scope = GetGlobalScope();
+
+        Obj top;
+
+        if (scope.Get(path[0], out var existing))
+            top = existing;
         else
         {
-            var scope = GetGlobalScope();
-            Obj top = scope.Get(path[0], out var existing) ? existing : new Obj(UnType.Create(path[0]));
-            
-            if (existing == null)
-                scope.Set(path[0], top);            
-
-            for (int i = 1; i < path.Length; i++)
-            {
-                if (top.Members.TryGetValue(path[i], out var existingObj))
-                    top = existingObj;
-                else
-                {
-                    Obj obj = new(UnType.Create(path[i]));
-                    top.Members[path[i]] = obj;
-                    top = obj;
-                }
-            }
-
-            var nameSet = parts.ToHashSet();
-
-            top.Members = Merge();
-            top.Members = nameSet.Count != 0 ? top.Members.Where(x => nameSet.Contains(x.Key)).ToDictionary() : top.Members;
+            top = new Obj(UnType.Create(path[0]));
+            scope.Set(path[0], top);
         }
 
-        Map Merge()
+        for (int i = 1; i < path.Length; i++)
         {
-            var topMap = new Map();
-
-            void LoadFile(string filePath)
+            if (!top.Members.TryGetValue(path[i], out var child))
             {
-                var inner = new Scope(GetGlobalScope());
-
-                Runner.Load(filePath, inner).Run();
-
-                var symbols = inner.GetSymbolTable();
-                var slots = inner.GetSlots();
-
-                foreach (var (key, index) in symbols)
-                {
-                    var value = slots[index];
-                    if (value is Obj obj)
-                        topMap.Add(key, obj);
-                }
+                child = new Obj(UnType.Create(path[i]));
+                top.Members[path[i]] = child;
             }
 
-            if (Directory.Exists(fullPath))
+            top = child;
+        }
+
+        top.Members = map;
+    }
+
+    private static Map Load(string fullPath)
+    {
+        Map map = [];
+
+        if (Directory.Exists(fullPath))
+        {
+            foreach (var file in Directory.GetFiles(fullPath, "*.un"))
+                LoadFile(file);
+
+            return map;
+        }
+
+        var filePath = fullPath.EndsWith(".un") ? fullPath : fullPath + ".un";
+
+        if (!File.Exists(filePath))
+            throw new Panic($"file or directory '{fullPath}' not found");
+
+        LoadFile(filePath);
+
+        return map;
+
+        void LoadFile(string file)
+        {
+            var inner = new Scope(GetGlobalScope());
+
+            Runner.Load(file, inner).Run();
+
+            var symbols = inner.GetSymbolTable();
+            var slots = inner.GetSlots();
+
+            foreach (var (key, index) in symbols)
             {
-                foreach (var file in Directory.GetFiles(fullPath, "*.un"))
-                {
-                    LoadFile(file);
-                }
+                if (slots[index] is Obj obj)
+                    map[key] = obj;
             }
-            else
-            {
-                var filePath = fullPath.EndsWith(".un")
-                    ? fullPath
-                    : fullPath + ".un";
-
-                if (!File.Exists(filePath))
-                    throw new Panic($"file or directory '{fullPath}' not found");
-
-                LoadFile(filePath);
-            }
-
-            return topMap;
         }
     }
 
@@ -207,7 +210,7 @@ public static class Global
         if (classes.Get(name, out var obj))
             return obj;
 
-        throw new Panic($"class '{name}' not found");
+        return new Err($"class '{name}' not found");
     }
 
     public static Obj GetClass(TObj type) => GetClass(type.Value);
@@ -218,18 +221,16 @@ public static class Global
             return GetClass(unType.Name);        
         else if (type is CollectionType colType)
             return GetClass(colType.Kind);
-        else
-            throw new Panic($"invalid type '{type}'");
 
-        throw new Panic($"type '{type}' is not a class");
+        return new Err($"type '{type}' is not a class");
     }
 
-    public static bool TryGetClass(string name, out Obj? obj)
+    public static bool TryGetClass(string name, out Obj obj)
     {
         if (classes.Get(name, out obj))
             return true;
 
-        obj = null;
+        obj = null!;
         return false;
     }
 
@@ -249,7 +250,7 @@ public static class Global
     }
 
 
-    public static Obj GetGlobalVariable(string name) => scope.Get(name, out var value) ? value : throw new Panic($"global variable '{name}' not found");
+    public static Obj GetGlobalVariable(string name) => scope.Get(name, out var value) ? value : new Err($"global variable '{name}' not found");
 
     public static void SetGlobalVariable(string name, Obj obj) => scope.Set(name, obj);
 

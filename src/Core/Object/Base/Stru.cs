@@ -1,23 +1,26 @@
+using Un.Object;
 using Un.Object.Collections;
 using Un.Object.Primitive;
 using Un.Object.Type;
 
-namespace Un.Object;
+namespace Un;
 
 public class Stru(UnType type, string[] names) : Obj(type)
 {
-    private string[] names = names;
+    private readonly string[] names = names;
 
     public override Obj Init(Tup args)
     {
-        if (Super is Stru st)
-            names = [..st.names, ..names];
-    
-        if (args.Count != names.Length) return new Err("invalid initialize");
+        var allNames = GetAllNames(this);
 
-        for (int i = 0; i < names.Length; i++)
-            Members[names[i]] = args[i];
-        
+        if (args.Count != allNames.Length)
+            return new Err("invalid initialize");
+
+        int i = 0;
+
+        foreach (var name in allNames)
+            Members[name] = args[i++];
+
         return this;
     }
 
@@ -29,26 +32,27 @@ public class Stru(UnType type, string[] names) : Obj(type)
         _ => new Err($"unsupported operand type(s) for +: '{Type}' and '{other.Type}'")
     };
 
-    public override Obj Copy() => new Stru(Type, names)
+    public override Obj Copy() => new Stru(Type, [.. names])
     {
         Annotations = Annotations,
         Members = Members.New(),
+        Super = Super
     };
 
-    public override Stru Clone() => new(Type, names)
+    public override Stru Clone() => new(Type, [.. names])
     {
         Annotations = Annotations,
-        Super = Super,
         Members = Members.New(),
+        Super = Super
     };
 
-    public override Obj Len() => Int.From(names.Length);
+    public override Obj Len() => Int.From(GetAllNames(this).Length);
 
     public override Obj Spread()
     {
         List list = [];
 
-        foreach (var name in names)
+        foreach (var name in GetAllNames(this))
             list.Append(new Tup([Members[name]], [name]));
 
         return list.Spread();
@@ -56,11 +60,16 @@ public class Stru(UnType type, string[] names) : Obj(type)
 
     public override Bool Eq(Obj other)
     {
-        if (Type != other.Type) return Bool.False;
+        if (Type != other.Type)
+            return Bool.False;
 
-        foreach (var name in names)
+        var allNames = GetAllNames(this);
+
+        foreach (var name in allNames)
+        {
             if (Members[name].NEq(other.Members[name]).As<Bool>().Value)
                 return Bool.False;
+        }
 
         return Bool.True;
     }
@@ -68,10 +77,31 @@ public class Stru(UnType type, string[] names) : Obj(type)
     public override int GetHashCode()
     {
         HashCode hash = new();
-        
-        foreach (var name in names)
+
+        var allNames = GetAllNames(this);
+
+        foreach (var name in allNames)
             hash.Add(Members[name]);
 
         return hash.ToHashCode();
+    }
+
+    private static string[] GetAllNames(Stru stru)
+    {
+        var result = new List<string>();
+
+        var current = stru;
+
+        while (current.Super is Stru parent)
+        {
+            result.AddRange(parent.names);
+            current = parent;
+        }
+
+        result.Reverse();
+
+        result.AddRange(stru.names);
+
+        return [.. result];
     }
 }

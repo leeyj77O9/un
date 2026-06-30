@@ -1,84 +1,62 @@
-using Un;
 using Un.Object.Collections;
 
 namespace Un.Object.Function;
 
-public class LFn : Fn
+public class LFn(List<Node> body, Context closure) : Fn(closure)
 {
-    private UnFile file = null!; 
-
-    public LFn() { }
-
-    public LFn(string[] body)
-    {
-        file = new UnFile("fn", body);
-    }
+    private readonly List<Node> body = body;
 
     public override Obj Call(Tup args)
     {
-        if (Global.CallDepth++ > (int)Global.MAXRECURSIONDEPTH)
-            throw new Panic("maximum recursion depth exceeded");
+        if (Closure.CallDepth >= (int)Global.MAXRECURSIONDEPTH)
+            return new Err("maximum recursion depth exceeded");
 
-        var scope = new Scope(Closure ?? Scope.Empty);
-        Bind(scope, args);
+        Closure.CallDepth++;
 
-        var context = new Context(scope, file, []);
-        Obj? returned = null;
-        var parser = new Parser(context);
+        var scope = new Scope(Closure.Scope ?? Scope.Empty);
+        var error = Bind(scope, args);
+
+        if (!error.IsNone())
+            return error;
+
+        var context = new Context(scope, Closure.Source, Closure.Frames);
+        var evaluator = new Evaluator(context);
 
         try
         {
-            var tokenizer = new Tokenizer();
-            var lexer = new Lexer();
 
-            while (!context.File.EOF && parser.ReturnValue is null)
-            {
-                var tokens = tokenizer.Tokenize(context.File);
-                var nodes = lexer.Lex(tokens);
-                returned = parser.Parse(nodes);
-
-                if (context.File.EOL)
-                    context.File.Move(0, context.File.Line + 1);
-            }
-
-            returned = parser.ReturnValue!;
+            foreach (Node node in body)
+                evaluator.Eval(node);
         }
-        catch
+        catch (ReturnFlow rf)
         {
-            throw;
-        } 
+            return rf.Value;
+        }
         finally
         {
-            if (context.Defers.Count > 0)
+            if (context.Defers is { Count: > 0 })
             {
-                parser = new Parser(new Context(context.Scope, new("defer", []), []));
-                foreach (var nodes in context.Defers)
-                {
-                    parser.Parse(nodes);
-                }                
+                foreach(Node node in context.Defers)
+                    evaluator.Eval(node);
             }
 
-            if (context.Usings.Count > 0)
+            if (context.Usings is { Count: > 0 })
             {
                 foreach (var obj in context.Usings)
-                {
                     obj.Exit();
-                }
             }
+
+            Closure.CallDepth--;
         }
 
-        Global.CallDepth--;
-
-        return returned ?? None;
+        return None;
     }
 
-    public override Obj Clone() => new LFn()
+    public override Obj Clone() => new LFn(body, Closure)
     {
         Name = Name,
         Args = [..Args],
         ReturnType = ReturnType,
-        Closure = Closure,
-        file = file.Clone(),
         Self = Self,
         Super = Super?.Clone()!,
     };

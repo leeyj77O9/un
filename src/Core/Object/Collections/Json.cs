@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Un.Object.Primitive;
 using Un.Object.Type;
 
@@ -5,11 +6,6 @@ namespace Un.Object.Collections;
 
 public class Json : Ref<Obj>
 {
-    private static readonly Tokenizer tokenizer = new();
-    private static readonly Lexer lexer = new();
-    private static readonly Scope scope = new(Global.GetGlobalScope());
-    private static UnFile buf = new("json", []);
-
     public int Count => Value switch
     {
         Dict dict => dict.Value.Count,
@@ -19,12 +15,12 @@ public class Json : Ref<Obj>
 
     public Json() : base(None, UnType.Create("json"))
     {
-        scope.Set("null", None);
+        
     }
 
     public Json(Obj obj) : base(obj, UnType.Create("json"))
     {
-        scope.Set("null", None);
+        
     }
 
 
@@ -37,26 +33,7 @@ public class Json : Ref<Obj>
             return new Err($"invalid json: expected 1 argument, got {args.Count}");
 
         if (args[0] is Str s)
-        {
-            buf = new UnFile("json", [s.Value]);
-            var tokens = tokenizer.Tokenize(buf);
-            var lexed = lexer.Lex(tokens);
-
-            if (lexed.Count != 1)
-                return new Err($"invalid json: expected 1 expression, got {lexed.Count}");
-
-            Obj? json;
-            try
-            {
-                json = Convert.Auto(lexed[0], new(scope, new UnFile("json", []), []));
-            }
-            catch
-            {
-                return new Err("invalid json: parsing error");
-            }
-
-            return new Json(json);
-        }
+            return new Json(ToJson(s.Value));
         if (args[0] is Dict d)
             return new Json(d);
         if (args[0] is List l)
@@ -98,5 +75,43 @@ public class Json : Ref<Obj>
             List list => "[" + string.Join(", ", list.Value.Select(v => Stringfy(v, depth + 1))) + "]",
             _ => $"\"{obj.ToStr().As<Str>().Value}\""
         };
+    }
+
+    private Obj ToJson(string text)
+    {
+        using var doc = JsonDocument.Parse(text);
+        return Convert(doc.RootElement);
+    }
+
+    private Obj Convert(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.Object => ConvertObject(element),
+        JsonValueKind.Array => ConvertArray(element),
+        JsonValueKind.String => Str.From(element.GetString()!),
+        JsonValueKind.Number => element.TryGetInt64(out var i) ? Int.From(i) : new Float(element.GetDouble()),
+        JsonValueKind.True => Bool.True,
+        JsonValueKind.False => Bool.False,
+        JsonValueKind.Null => None,
+        _ => None
+    };
+
+    private Dict ConvertObject(JsonElement element)
+    {
+        var dict = new Dict();
+
+        foreach (var property in element.EnumerateObject())
+            dict.Value[Str.From(property.Name)] = Convert(property.Value);
+
+        return dict;
+    }
+
+    private List ConvertArray(JsonElement element)
+    {
+        List list = [];
+
+        foreach (var item in element.EnumerateArray())
+            list.Add(Convert(item));
+
+        return list;
     }
 }

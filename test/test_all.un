@@ -1,0 +1,191 @@
+write("=== literals ===")
+
+i = 123
+f = 3.14
+b = true
+s = "hello"
+
+write(i)
+write(f)
+write(b)
+write(s)
+
+write()
+write("=== grouping ===")
+
+x = (1)
+y = (1 + 2) * 3
+
+write(x)
+write(y)
+
+write()
+write("=== tuple ===")
+
+t = (1, 2)
+write(t)
+
+a, b = t
+
+write(a)
+write(b)
+
+write()
+write("=== list ===")
+
+list = [
+    1,
+    2,
+    3,
+    4
+]
+
+write(list)
+write(list[0])
+write(list[3])
+
+list[1] = 99
+
+write(list)
+
+write()
+write("=== nested list ===")
+
+graph = [
+    [0, 5, 10],
+    [1, 2, 3],
+    [7, 8, 9]
+]
+
+write(graph[0][1])
+write(graph[2][2])
+
+graph[0][1] = 123
+
+write(graph[0][1])
+
+write()
+write("=== dict ===")
+
+d = {
+    "name": "un",
+    "age": 20
+}
+
+write(d)
+
+write()
+write("=== function ===")
+
+fn add(a, b)
+    -> a + b
+
+write(add(3, 4))
+
+write()
+write("=== default arg ===")
+
+fn greet(name = "world")
+    -> `hello {name}`
+
+write(greet())
+write(greet("un"))
+
+write()
+write("=== lambda ===")
+
+mul = fn(a, b) -> a * b
+
+write(mul(6, 7))
+
+write()
+write("=== fstring ===")
+
+name = "Un"
+version = 1
+
+write(`language: {name} v{version}`)
+
+write()
+write("=== if ===")
+
+if 10 > 5
+    write("ok")
+else
+    write("fail")
+
+write()
+write("=== while ===")
+
+n = 0
+
+while n < 5
+    write(n)
+    n += 1
+
+write()
+write("=== for ===")
+
+sum = 0
+
+for x in [1, 2, 3, 4, 5]
+    sum += x
+
+write(sum)
+
+write()
+write("=== break ===")
+
+n = 0
+
+while true
+    if n == 3
+        break
+
+    write(n)
+    n += 1
+
+write()
+write("=== continue ===")
+
+for x in [0, 1, 2, 3, 4]
+    if x == 2
+        skip
+
+    write(x)
+
+write()
+write("=== class ===")
+
+class Point(x, y)
+
+    fn len()
+        -> self.x + self.y
+
+p = Point(10, 20)
+
+write(p.x)
+write(p.y)
+write(p.len())
+
+write()
+write("=== destructuring ===")
+
+x, y = (100, 200)
+
+write(x)
+write(y)
+
+write()
+write("=== nested destructuring ===")
+
+a, (b, c) = (1, (2, 3))
+
+write(a)
+write(b)
+write(c)
+
+write()
+write("=== final ===")
+
+write("all tests passed")

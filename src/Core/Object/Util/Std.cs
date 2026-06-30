@@ -72,12 +72,12 @@ public class Std : IPack
                     for (int i = 0; i < items.Length; i++)
                     {
                         var text = items[i].ToStr().As<Str>(out var str) ? str.Value : items[i].Repr().As<Str>().Value;
-                        cw.Write(text);
+                        cw?.Write(text);
                         if (i != items.Length - 1)
-                            cw.Write(args["sep"].ToStr().As<Str>(out var sep) ? sep.Value : args["sep"].Repr().As<Str>().Value);
+                            cw?.Write(args["sep"].ToStr().As<Str>(out var sep) ? sep.Value : args["sep"].Repr().As<Str>().Value);
                     }
-                    cw.Write(args["end"].ToStr().As<Str>(out var end) ? end.Value : args["end"].Repr().As<Str>().Value);
-                    cw.Flush();
+                    cw?.Write(args["end"].ToStr().As<Str>(out var end) ? end.Value : args["end"].Repr().As<Str>().Value);
+                    cw?.Flush();
 
                     return Obj.None;
                 }
@@ -122,7 +122,7 @@ public class Std : IPack
 
                     sw.Write(args["prompt"].ToStr().As<Str>(out var str) ? str.Value : args["prompt"].Repr().As<Str>().Value);
                     sw.Flush();
-                    return Str.From(cr.ReadLine() ?? "");
+                    return Str.From(cr?.ReadLine() ?? "");
                 }
             }
         },
@@ -357,6 +357,9 @@ public class Std : IPack
                     if (step == 0)
                         return new Err("step argument must not be zero");
 
+                    if (start > stop && step > 0)
+                        (start, stop) = (stop, start);
+
                     return new Iter.Range(start, stop, step);
                 }
             }
@@ -506,7 +509,7 @@ public class Std : IPack
                         "w" => new IO.Stream(File.Open(path, FileMode.Create, FileAccess.Write)),
                         "a" => new IO.Stream(File.Open(path, FileMode.Append, FileAccess.Write)),
                         "rw" => new IO.Stream(File.Open(path, FileMode.OpenOrCreate, FileAccess.ReadWrite)),
-                        _ => throw new Panic($"invalid file mode '{mode}'")
+                        _ => new Err($"invalid file mode '{mode}'")
                     };
                 }
             }
@@ -537,7 +540,7 @@ public class Std : IPack
                     var tuple = args["value"].ToTuple().As<Tup>();
 
                     if (tuple.Count == 0)
-                        throw new Panic("expected more than one argument");
+                        return new Err("expected more than one argument");
 
                     if (tuple.Count == 1)
                     {
@@ -548,7 +551,7 @@ public class Std : IPack
                         else if (tuple[0].As<Iter.Range>(out var r))
                             return Int.From(r.Value.Sum(x => x.As<Int>().Value));
                         else if (tuple[0].As<Iters>(out var it))
-                            tuple = it.ToTuple();
+                            tuple = it.ToTuple().As<Tup>();
                         else
                             return tuple[0];
                     }
@@ -950,7 +953,7 @@ public class Std : IPack
                 },
                 Func = (args) =>
                 {
-                    throw new Panic(args["message"].ToStr().As<Str>().Value, args["name"].ToStr().As<Str>().Value);
+                    return new Err(args["message"].ToStr().As<Str>().Value, args["name"].ToStr().As<Str>().Value);
                 }
             }
         },
@@ -985,8 +988,8 @@ public class Std : IPack
                 {
                     var name = args["name"].ToStr().As<Str>().Value;
 
-                    if (args["value"].Annotations.Contains(name))
-                        return args["value"].Annotations[name] as Obj ?? new Err("invalid annotation");
+                    if (args["value"].Annotations.TryGetValue(name, out Obj? value))
+                        return value ?? new Err("invalid annotation");
                     return Obj.None;
                 }
             }

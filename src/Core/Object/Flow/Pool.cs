@@ -103,7 +103,7 @@ public class Pool : Obj
                     {
                         queue.Add(new Future(new Task<Obj>(() =>
                         {
-                            var res = fn.Call(varg is Tup t ? t : new([varg], [""]));
+                            var res = fn.Call(varg is Tup t ? t : new([varg]));
                             lock (result)
                             {
                                 result.Add(res);

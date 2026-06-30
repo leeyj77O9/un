@@ -1,4 +1,4 @@
-fn sign(x):
+fn sign(x)
     if x > 0
         -> "plus"
     elif x < 0

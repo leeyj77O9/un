@@ -37,6 +37,8 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
     public string[] Name { get; private set; }
     public int Count => Value.Length;
 
+    public static Tup Empty => new([], []);
+    
     public Tup() : this([], []) {}
 
     public Tup(Obj[] values) : base(values, UnType.Tuple)
@@ -60,10 +62,7 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
         Name = [.. pairs.Select(x => x.Key)];
     }
 
-    public Obj this[int index]
-    {
-        get => OutOfRange(index) ? new Err("tuple index out of range") : Value[index];
-    }
+    public Obj this[int index] => Value[index];
 
     public override Bool Eq(Obj other)
     {
@@ -79,7 +78,7 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
 
     public override Obj GetItem(Obj key) => key switch
     {
-        Int i => OutOfRange((int)i.Value) ? new Err("tuple index out of range") : this[(int)i.Value],
+        Int i => OutOfRange((int)i.Value) ? OutOfRange((int)(i.Value + Count)) ? new Err("tuple index out of range") : this[(int)(i.Value + Count)] : this[(int)i.Value],
         Str s => Members.TryGetValue(s.Value, out Obj? value) ? value : new Err($"tuple has no attribute '{s.Value}'"),
         _ => new Err("invalid index type")
     };
@@ -170,4 +169,9 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
     public IEnumerator<Obj> GetEnumerator() => new Enumerator(this);
 
     IEnumerator IEnumerable.GetEnumerator() => new Enumerator(this);
+
+    public static Tup One(string name, Obj value) => new([value], [name]);
+
+    public static Tup Two(string n1, Obj v1, string n2, Obj v2) => new([v1, v2], [n1, n2]);
+
 }

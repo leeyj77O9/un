@@ -60,12 +60,7 @@ public sealed class UnType : BaseType
         return type;
     }
 
-    public static UnType From(string name)
-    {
-        return Cache.TryGetValue(name, out var type)
-            ? type
-            : throw new Panic($"type not found: {name}");
-    }
+    public static UnType From(string name) => Cache.TryGetValue(name, out var type) ? type : throw new Panic($"type not found: {name}");
 
     public static BaseType operator |(UnType a, UnType b)
     {

@@ -4,14 +4,14 @@ using Un.Object.Type;
 
 namespace Un.Object.Function;
 
-public class Fn() : Obj(UnType.Func)
+public class Fn(Context closure) : Obj(UnType.Func)
 {
     public string? Name { get; set; }
     public List<Arg> Args { get; set; } = [];
-    public BaseType ReturnType { get; set; } = UnType.Any;  
-    public Scope? Closure { get; set; }
+    public BaseType ReturnType { get; set; } = UnType.Any;
+    public Context Closure { get; set; } = closure;
 
-    protected void Bind(Scope scope, Tup args)
+    protected Obj Bind(Scope scope, Tup args)
     {
         scope["self"] = Self;
         scope["super"] = Super;
@@ -33,15 +33,14 @@ public class Fn() : Obj(UnType.Func)
             else
             {
                 if (scope.ContainsKeyInTop(name))
-                    throw new Panic($"argument '{name}' provided multiple times.");
+                    return new Err($"argument '{name}' provided multiple times.");
                 extraNamed[name] = val;
             }
         }
 
         int unnamedIndex = 0;
         var argNames = new HashSet<string>();
-        Arg positionalArg = Arg.Null;
-        Arg keywordArg = Arg.Null;
+        Arg positionalArg = Arg.Null, keywordArg = Arg.Null;
 
         bool positionalReached = false;
 
@@ -75,7 +74,7 @@ public class Fn() : Obj(UnType.Func)
                 }
                 else
                 {
-                    throw new Panic($"missing required argument: '{arg.Name}'");
+                    return new Err($"missing required argument: '{arg.Name}'");
                 }
             }
             else if (arg.IsOptional && !positionalReached)
@@ -114,7 +113,7 @@ public class Fn() : Obj(UnType.Func)
             }
             else
             {
-                throw new Panic("function does not accept positional arguments.");
+                return new Err("function does not accept positional arguments.");
             }
         }
 
@@ -133,23 +132,16 @@ public class Fn() : Obj(UnType.Func)
             else
             {
                 var unexpected = extraNamed.Keys.First();
-                throw new Panic($"unexpected keyword argument: '{unexpected}'");
+                return new Err($"unexpected keyword argument: '{unexpected}'");
             }
         }
+
+        return None;
     }
 
     public override Obj Repr() => Str.From($"fn({string.Join(", ", Args.Select(x => x.Type))}) -> {ReturnType}");
 
-    public override int GetHashCode()
-    {
-        unchecked
-        {
-            int hash = Global.BASEHASH;
-            hash = hash * Global.HASHPRIME + (Name?.GetHashCode() ?? 0);
-            hash = hash * Global.HASHPRIME + Args.Count;
-            return hash;
-        }
-    }
+    public override int GetHashCode() => Name?.GetHashCode() ?? Type.GetHashCode();
 
     public override bool Equals(object? obj)
     {
@@ -184,71 +176,93 @@ public class Fn() : Obj(UnType.Func)
         return new([.. objs], [.. names]);
     }
 
-    public static List<Arg> GetArgs(List<Node> args, Context context)
+    public static List<Arg> GetArgs(Node tuple, Context context)
     {
-        List<Arg> result = [];
-        List<Node> buf = [];
+        var result = new List<Arg>();
+        var eval = new Evaluator(context);
 
-        string name = "";
-        string argType = "";
-        bool isOptional = false;
-        bool isPositional = false;
-        bool isKeyword = false;
-
-        bool hasDefault = false;
-
-        for (int i = 0; i < args.Count; i++)
+        foreach (var parameter in tuple.Children)
         {
-            (_, var type, _) = args[i];
+            if (parameter.Kind != NodeKind.Parameter)
+                throw new Error("invalid parameter", tuple, context.Source);
 
-            if (type == TokenType.Comma)
+            var node = parameter.Children[0];
+
+            string name;
+            BaseType type = UnType.Any;
+            bool optional = false;
+            bool positional = false;
+            bool keyword = false;
+            Obj defaultValue = Null;
+
+            switch (node.Kind)
             {
-                result.Add(new Arg(name)
-                {
-                    Type = UnType.Create(argType),
-                    IsEssential = !isOptional && !isPositional && !isKeyword,
-                    IsOptional = isOptional,
-                    IsPositional = isPositional,
-                    IsKeyword = isKeyword,
-                    DefaultValue = hasDefault ? Operator.On(buf, context) : Null,
-                });
+                case NodeKind.Identifier:
+                    {
+                        name = GetName(node);
+                        break;
+                    }
 
-                (argType, name) = ("", "");
-                (isOptional, isPositional, isKeyword, hasDefault) = (false, false, false, false);
+                case NodeKind.Typed:
+                    {
+                        name = GetName(node.Children[0]);
+                        type = GetType(node.Children[1]);
+                        break;
+                    }
 
-                buf.Clear();
-            }
-            else if (hasDefault)
-                buf.Add(args[i]);
-            else if (type == TokenType.Spread)
-                isPositional = true;
-            else if (type == TokenType.DoubleAsterisk)
-                isKeyword = true;
-            else if (type == TokenType.Assign)
-            {
-                hasDefault = true;
-                isOptional = true;
-            }
-            else if (type == TokenType.Colon)
-            {
-                argType = args[i + 1].Value;
-                i++;
-            }
-            else if (type == TokenType.Identifier)
-                name = args[i].Value;
-        }
+                case NodeKind.Assign:
+                    {
+                        optional = true;
 
-        if (!string.IsNullOrEmpty(name))
+                        var target = node.Children[0];
+
+                        if (target.Kind == NodeKind.Typed)
+                        {
+                            name = GetName(target.Children[0]);
+                            type = GetType(target.Children[1]);
+                        }
+                        else
+                        {
+                            name = GetName(target);
+                        }
+
+                        defaultValue = eval.Eval(node.Children[1]);
+                        break;
+                    }
+
+                case NodeKind.Unary when node.Operator == TokenType.Asterisk:
+                    {
+                        positional = true;
+                        name = GetName(node.Children[0]);
+                        break;
+                    }
+
+                case NodeKind.Unary when node.Operator == TokenType.DoubleAsterisk:
+                    {
+                        keyword = true;
+                        name = GetName(node.Children[0]);
+                        break;
+                    }
+
+                default:
+                    throw new Error("invalid function parameter", node, context.Source);
+            }
+
             result.Add(new Arg(name)
             {
-                Type = UnType.Create(argType),
-                IsEssential = !isOptional && !isPositional && !isKeyword,
-                IsOptional = isOptional,
-                IsPositional = isPositional,
-                IsKeyword = isKeyword,
-                DefaultValue = hasDefault ? Operator.On(buf, context) : Null,
+                Type = type,
+                IsEssential = !optional && !positional && !keyword,
+                IsOptional = optional,
+                IsPositional = positional,
+                IsKeyword = keyword,
+                DefaultValue = defaultValue
             });
+        }
 
         return result;
+
+        string GetName(Node node) => (string)(node.Value ?? throw new Error("invalid argument name", node, context.Source));
+
+        BaseType GetType(Node node) => UnType.Create(context.Source.Code.Substring(node.Start, node.Length));
     }
 }

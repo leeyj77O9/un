@@ -2,27 +2,33 @@ using Un.Object;
 
 namespace Un;
 
-public class Context(Scope scope, UnFile file, List<Block> blockStack)
+public class Context(Scope scope, Source source, List<Frame> frames)
 {
     public Scope Scope { get; set; } = scope;
-    public UnFile File { get; set; } = file;
-    public List<Block> BlockStack = blockStack;
-    public ulong Depth { get; set; } = 0;
-    public OMap Annotations { get; set; } = [];
-    public Stack<List<Node>> Defers { get; set; } = [];
+    public Source Source { get; set; } = source;
+    public List<Frame> Frames { get; set; } = frames;
+    public Stack<Node> Defers { get; set; } = [];
     public Stack<Obj> Usings { get; set; } = [];
 
-    public Block? CurrentBlock => BlockStack.LastOrDefault();
+    public int CallDepth { get; set; }
 
-    public void EnterBlock(string type) => BlockStack.Add(new(type, File.PeekLine(), File.Line, Scope));
+    public void PushFrame(Frame frame) => Frames.Add(frame);
 
-    public void ExitBlock()
+    public void PopFrame()
     {
-        if (BlockStack.Count > 0)
-            BlockStack.RemoveAt(BlockStack.Count - 1);
+        if (Frames.Count == 0)
+            throw new Panic("stack is empty");
+
+        Frames.RemoveAt(Frames.Count - 1);
     }
 
-    public bool InBlock(string type) => BlockStack.Count > 0 && BlockStack.Any(x => x.Type == type);
-
-    public Block[] BlockStackTrace => [.. BlockStack];
+    public Context Fork()
+    {
+        return new Context(Scope, Source, [.. Frames])
+        {
+            CallDepth = 0,
+            Defers = [],
+            Usings = []
+        };
+    }
 }
