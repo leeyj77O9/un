@@ -51,10 +51,10 @@ public static class Iter
 
     [Native(
         Name = "array",
-        Description = "Creates an iterator from a value.",
-        Example = "items = iter(values)",
+        Description = "Creates an array from a value and dimensions.",
+        Example = "items = array(1, 3)",
         ReturnType = "list",
-        ArgumentTypes = new[] { "iterable", "int" }
+        ArgumentTypes = new[] { "any", "int" }
     )]
     public static Obj Array(
         [ArgInfo(Essential = true)] Obj value,

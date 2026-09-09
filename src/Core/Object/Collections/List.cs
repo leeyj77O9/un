@@ -515,7 +515,7 @@ public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj
         ReturnType = "any",
         ArgumentTypes = new[] { "any" }
     )]
-    public static Obj Pop([Self] List self, [ArgInfo(Essential = true)] Obj? index = null)
+    public static Obj Pop([Self] List self, [ArgInfo(Optional = true)] Obj? index = null)
     {
         index ??= Int.From(self.Count - 1);
 

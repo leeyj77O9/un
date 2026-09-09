@@ -8,7 +8,6 @@ namespace Un.Native;
 [NativeModule("sys")]
 public static class Sys
 {
-    // ---- safe wrappers delegating to Os (read-only) ----
     [Native(Name = "env", Description = "Reads an environment variable by name.", Example = "write(sys.env(\"HOME\"))", ReturnType = "str", ArgumentTypes = new[] { "str" })]
     public static Obj Env([ArgInfo(Essential = true)] Obj name) => Os.Env(name);
 
@@ -57,7 +56,6 @@ public static class Sys
     [Native(Name = "tickCount", Description = "Returns elapsed system ticks in milliseconds.", Example = "write(sys.tickCount())", ReturnType = "int")]
     public static Int TickCount() => Os.TickCount();
 
-    // ---- recursion depth (usable from web) ----
     [Native(Name = "getcalldepth", Description = "Returns current maximum recursion depth.", Example = "write(sys.getcalldepth())", ReturnType = "int")]
     public static Obj GetCallDepth() => Int.From((long)Global.MAXRECURSIONDEPTH);
 
