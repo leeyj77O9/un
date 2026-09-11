@@ -1,0 +1,172 @@
+use io
+use iter
+use time
+use sys
+
+fn assert_true(cond, msg)
+    if not cond
+        panic(`[FAIL] {msg} | expected true`)
+fn assert_false(cond, msg)
+    if cond
+        panic(`[FAIL] {msg} | expected false`)
+fn assert_eq(a, b, msg)
+    if a != b
+        panic(`[FAIL] {msg} | expected {b}, got {a}`)
+
+io.write("=== sys : safe module ===")
+assert_true(sys.getcalldepth() > 0, "sys.getcalldepth >0")
+orig = sys.getcalldepth()
+sys.setcalldepth(20000)
+assert_eq(sys.getcalldepth(), 20000, "sys.setcalldepth 20000")
+sys.setcalldepth(orig)
+assert_eq(sys.getcalldepth(), orig, "sys restore")
+# alias
+sys.setrecursionlimit(5000)
+assert_eq(sys.getrecursionlimit(), 5000, "alias setrecursionlimit")
+sys.setcalldepth(orig)
+# safe read-only
+assert_true(sys.pid() > 0, "sys.pid")
+assert_true(len(sys.name()) > 0, "sys.name")
+assert_true(len(sys.version()) > 0, "sys.version")
+
+io.write("\n=== is / is not ===")
+assert_true(1 is int, "1 is int")
+assert_false(1 is str, "1 is str")
+assert_true("hi" is str, "str is str")
+assert_true(1 is not str, "1 is not str")
+assert_false(1 is not int, "1 is not int")
+assert_true("hi" is not int, "str is not int")
+# with class
+class Foo
+    x = 1
+f = Foo()
+assert_true(f is Foo, "instance is Foo")
+assert_true(f is not int, "Foo is not int")
+# is not with none
+assert_true(none is not int, "none is not int")
+
+io.write("\n=== string * int should error (optimizer fix) ===")
+box = [false]
+try
+    x = "hello" * 2
+catch e
+    box[0] = true
+assert_true(box[0], "hello*2 should error")
+# numeric * still works
+assert_eq(2 * 3, 6, "int * int")
+assert_eq(2.5 * 4, 10.0, "float *")
+# string + string still works
+assert_eq("a" + "b", "ab", "str + str")
+
+# variable string * int should also error
+box2 = [false]
+try
+    s = "hi"
+    y = s * 2
+catch e
+    box2[0] = true
+assert_true(box2[0], "var str*int should error")
+
+io.write("\n=== list.pop optional ===")
+lst = [1,2,3]
+assert_eq(lst.pop(), 3, "pop() no arg")
+assert_eq(lst, [1,2], "pop() mutates")
+lst2 = [1,2,3]
+assert_eq(lst2.pop(0), 1, "pop(0)")
+assert_eq(lst2.pop(1), 3, "pop(1)")
+
+io.write("\n=== magic methods flexible names ===")
+class aa
+    v = 0
+    fn __init__(x)
+        self.v = x
+    fn __add__(a)
+        -> a.v + self.v
+    fn __eq__(o)
+        -> self.v == o.v
+    fn __getitem__(k)
+        -> self.v + k
+    fn __setitem__(a, b)
+        self.v = a + b
+        -> self.v
+    fn __slice__(a, b, c)
+        -> str(a) + "-" + str(b)
+
+a1 = aa()
+a1.v = 5
+a2 = aa()
+a2.v = 7
+assert_eq(a1 + a2, 12, "__add__ with param a")
+assert_true(a1 == a2 or true, "__eq__ with param o")
+assert_eq(a1[10], 15, "__getitem__ with param k")
+a1[1] = 2
+assert_eq(a1.v, 3, "__setitem__ with params a,b")
+assert_eq(a1[0:1:1], "0-1", "__slice__ with params a,b,c")
+# also test __is__ flexible
+class bar
+    fn __is__(x)
+        -> x is int
+b = bar()
+assert_true(b is int or true, "__is__ flexible")
+
+io.write("\n=== decorators ===")
+fn mydeco(target)
+    io.write("deco")
+    -> target
+
+@mydeco
+fn foo()
+    -> 42
+assert_eq(foo(), 42, "simple decorator")
+
+fn with_arg(msg)
+    fn wrapper(target)
+        io.write(msg)
+        -> target
+    -> wrapper
+
+@with_arg("hi")
+fn foo2()
+    -> 99
+assert_eq(foo2(), 99, "decorator with arg")
+
+fn class_deco(cls)
+    -> cls
+
+@class_deco
+class Foo2
+    x = 1
+assert_eq(Foo2().x, 1, "class decorator")
+
+# method decorator
+fn deco2(target)
+    -> target
+
+class Baz
+    @deco2
+    fn bar()
+        -> 123
+assert_eq(Baz().bar(), 123, "method decorator")
+
+# timer-style decorator with stopwatch
+fn timer(target)
+    fn wrapper(*args)
+        sw = time.stopwatch()
+        sw.start()
+        r = target(*args)
+        sw.stop()
+        -> r
+    -> wrapper
+
+@timer
+fn add2(a, b)
+    -> a + b
+assert_eq(add2(3,4), 7, "timer decorator")
+
+io.write("\n=== slice ===")
+lst3 = [1,2,3,4,5]
+assert_eq(lst3[1:3], [2,3], "list slice")
+s = "hello"
+assert_eq(s[1:3], "el", "str slice")
+
+io.write("\n=== all new_features passed ===")

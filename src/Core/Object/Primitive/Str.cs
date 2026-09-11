@@ -127,8 +127,9 @@ public class Str : Ref<string>
     public override List ToList()
     {
         var list = new List();
+        // 문자열을 List[str]로 변환: 각 문자(char)를 Str로 래핑하여 Append — 2026-09-11 수정 (문자열 슬라이싱/인덱싱 일관성 유지, List.Append가 Str 타입을 보존하도록)
         foreach (var c in Value)
-            list.Add(From($"{c}"));
+            List.Append(list, From($"{c}"));
         return list;
     }
 
