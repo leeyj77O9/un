@@ -124,6 +124,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
         TokenType.Break or
         TokenType.Skip or
         TokenType.Wait or
+        TokenType.At or
         TokenType.Return => true,
 
         _ => false
