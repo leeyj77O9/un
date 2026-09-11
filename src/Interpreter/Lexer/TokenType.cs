@@ -24,7 +24,7 @@ public enum TokenType
 
     Or, And, Xor, Not,
 
-    In, Is, As,
+    In, Is, IsNot, As,
 
     Equal, Unequal,
     LessOrEqual, GreaterOrEqual,

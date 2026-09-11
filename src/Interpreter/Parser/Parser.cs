@@ -593,12 +593,26 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
 
         while (true)
         {
-            var precedence = GetBinaryPrecedence(Current.Type);
+            TokenType opType = Current.Type;
+            int precedence;
+            Token op;
 
-            if (precedence <= parentPrecedence)
-                break;
-
-            var op = Next();            
+            if (opType == TokenType.Is && position + 1 < tokens.Count && tokens[position + 1].Type == TokenType.Not)
+            {
+                precedence = GetBinaryPrecedence(TokenType.IsNot);
+                if (precedence <= parentPrecedence)
+                    break;
+                var isTok = Next();
+                var notTok = Next();
+                op = new Token(isTok.Start, notTok.Start + notTok.Length - isTok.Start, TokenType.IsNot);
+            }
+            else
+            {
+                precedence = GetBinaryPrecedence(opType);
+                if (precedence <= parentPrecedence)
+                    break;
+                op = Next();
+            }
             var right = ParseBinary(precedence);
 
             left = new Node(left.Start, right.Start + right.Length - left.Start, NodeKind.Binary, op.Type, left, right);
@@ -1331,6 +1345,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
             TokenType.GreaterThan => 5,
             TokenType.GreaterOrEqual => 5,
             TokenType.Is => 5,
+            TokenType.IsNot => 5,
             TokenType.In => 5,
 
             TokenType.BOr => 6,

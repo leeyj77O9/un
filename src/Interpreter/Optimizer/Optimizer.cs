@@ -92,20 +92,13 @@ public static class Optimizer
                 break;
 
             case TokenType.Asterisk:
-                if (IsZero(left) || IsZero(right))
-                    return Node.Const(0, node.Start, node.Length);
-                if (IsOne(left)) return right;
-                if (IsOne(right)) return left;
+                // 문자열 * 정수 최적화는 타입을 알 수 없어 보류 — "hello"*2 가 덧셈으로 바뀌면 오류가 숨겨짐
                 break;
 
             case TokenType.Slash:
                 if (IsOne(right)) return left;
                 break;
         }
-
-        if (node.Operator == TokenType.Asterisk)
-            if (IsConst(right, out var v) && v is long l && l == 2)
-                return new Node(node.Start, node.Length, NodeKind.Binary, TokenType.Plus, left, left);
 
         return node;
     }
@@ -201,9 +194,7 @@ public static class Optimizer
             (double x, double y) => EvalDouble(op, x, y),
             (long x, double y) => EvalDouble(op, x, y),
             (double x, long y) => EvalDouble(op, x, y),
-            (string x, string y) => x + y,
-            (string x, long y) => string.Join("", Enumerable.Repeat(x, (int)y)),
-            (long x, string y) => string.Join("", Enumerable.Repeat(y, (int)x)),
+            (string x, string y) when op == TokenType.Plus => x + y,
 
             _ => throw new Panic($"unsupported optimize types: {a.GetType().Name}, {b.GetType().Name}")
         };

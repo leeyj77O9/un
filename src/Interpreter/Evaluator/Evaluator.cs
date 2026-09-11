@@ -229,11 +229,14 @@ public sealed class Evaluator(Context context)
             TokenType.Xor => left.Xor(right),
             TokenType.In => right.In(left),
             TokenType.Is => right is TObj || left is TObj ? right.Is(left) : left.Is(right),
+            TokenType.IsNot => NegateIs(right is TObj || left is TObj ? right.Is(left) : left.Is(right)),
             _ => throw new Error($"invalid binary operator {node.Operator}", node, context.Source)
         };
 
         return Unwrap(result, node);
     }
+
+    private static Obj NegateIs(Obj o) => o is Bool b ? Bool.From(!b.Value) : o;
 
     private Obj EvalProperty(Node node)
     {
