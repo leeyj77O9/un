@@ -109,7 +109,7 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual Obj Eq(Obj other)
     {
-        if (TryMethod("__eq__", out var value, new([other], ["other"])))
+        if (TryMethod("__eq__", out var value, new([other])))
             return value;
 
         if (ValidSuper())
@@ -160,7 +160,7 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual Obj Slice(Obj? start, Obj? end, Obj? step)
     {
-        if (TryMethod("__slice__", out var value, new([start ?? None, end ?? None, step ?? None], ["start", "end", "step"])))
+        if (TryMethod("__slice__", out var value, new([start ?? None, end ?? None, step ?? None])))
             return value;
         if (ValidSuper())
             Super.Slice(start, end, step);
@@ -170,7 +170,7 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual Obj SetAttr(string name, Obj value)
     {
-        if (TryMethod("__setattr__", out _, new([Str.From(name), value], ["key", "value"])))
+        if (TryMethod("__setattr__", out _, new([Str.From(name), value])))
             return value;
         if (ValidSuper())
             Super.SetAttr(name, value);
@@ -183,7 +183,7 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual Obj GetAttr(string name)
     {
-        if (TryMethod("__getattr__", out Obj? value, new([Str.From(name)], [])))
+        if (TryMethod("__getattr__", out Obj? value, new([Str.From(name)])))
             goto Found;
         if (Members.TryGetValue(name, out value))
             goto Found;
@@ -208,7 +208,7 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual Obj SetItem(Obj key, Obj value)
     {
-        if (TryMethod("__setitem__", out _, new([key, value], ["key", "value"])))
+        if (TryMethod("__setitem__", out _, new([key, value])))
             return value;
         else if (ValidSuper())
             return Super.SetItem(key, value);
@@ -218,7 +218,7 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual Obj Is(Obj obj)
     {
-        if (TryMethod("__is__", out Obj? value, new([obj], ["obj"])))
+        if (TryMethod("__is__", out Obj? value, new([obj])))
             return value;
   
         if (Types is UnionType unionTypes && unionTypes.Contains(obj.Type))
@@ -231,7 +231,7 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual Obj In(Obj obj)
     {
-        if (TryMethod("__in__", out Obj? value, new([obj], [])))
+        if (TryMethod("__in__", out Obj? value, new([obj])))
             return value;
         return ValidSuper() ? Super.In(obj) : new Err($"unsupported operand type(s) for in: '{Type}'");
     }
@@ -290,7 +290,7 @@ public class Obj(UnType type) : IComparable<Obj>
 
     protected Obj Binary(string method, Obj other, string argName, Func<Obj, Obj> superCall, Func<Obj> fallback)
     {
-        if (TryMethod(method, out var value, new([other], [argName])))
+        if (TryMethod(method, out var value, new([other])))
             return value;
 
         if (ValidSuper())
