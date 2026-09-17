@@ -1,3 +1,4 @@
+using System.Linq;
 using Un.Object.Primitive;
 using Un.Object.Collections;
 using Un.Object.Type;
@@ -47,6 +48,10 @@ public class Fn(Context closure) : Obj(UnType.Func)
 
         foreach (var arg in Args)
         {
+            // self/super는 인스턴스 바인딩으로 이미 설정됨 — 파라미터로 덮어쓰지 않음
+            if (arg.Name == "self" || arg.Name == "super")
+                continue;
+
             if (arg.IsPositional)
             {
                 starArg = arg;
@@ -108,9 +113,10 @@ public class Fn(Context closure) : Obj(UnType.Func)
             }
         }
 
-        for (var i = 0; i < Args.Count; i++)
+        var bindable = Args.Where(a => a.Name != "self" && a.Name != "super").ToList();
+        for (var i = 0; i < bindable.Count; i++)
         {
-            var arg = Args[i];
+            var arg = bindable[i];
 
             if (arg.IsPositional || arg.IsKeyword)
             {
@@ -134,7 +140,7 @@ public class Fn(Context closure) : Obj(UnType.Func)
             return true;
         }
 
-        if (args.Count > Args.Count)
+        if (args.Count > bindable.Count)
         {
             result = new Err("too many positional arguments");
             return true;
