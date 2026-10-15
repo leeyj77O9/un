@@ -1,7 +1,7 @@
 using System.Collections;
 using Un.Object.Function;
-using Un.Object.Primitive;
 using Un.Object.Iter;
+using Un.Object.Primitive;
 using Un.Object.Type;
 using Un.Reflection;
 
@@ -80,12 +80,12 @@ public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj
         if (start != null)
         {
             if (!start.As<Int>(out var sInt)) return new Err("slice start must be int");
-            s = (int)sInt.Value; if (s < 0) s += len; s = Math.Clamp(s, 0, len);
+            s = (int)sInt.Value; if (s < 0) s += len; s = System.Math.Clamp(s, 0, len);
         }
         if (end != null)
         {
             if (!end.As<Int>(out var eInt)) return new Err("slice end must be int");
-            e = (int)eInt.Value; if (e < 0) e += len; e = Math.Clamp(e, 0, len);
+            e = (int)eInt.Value; if (e < 0) e += len; e = System.Math.Clamp(e, 0, len);
         }
         if (step != null)
         {
@@ -544,12 +544,12 @@ public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj
     {
         var list = new List();
 
-        foreach (var item in self)
+        for (int i = 0; i < self.Count; i++)
         {
-            var res = type.Call(Tup.One("", item));
+            var res = type.Call(Tup.Two("", self[i], "", Int.From(i)));
             if (res is Err)
                 return res;
-            list.Add(res);
+            Append(list, res);
         }
 
         return list;

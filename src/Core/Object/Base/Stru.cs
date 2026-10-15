@@ -55,7 +55,7 @@ public class Stru(UnType type, string[] names) : Obj(type)
         List list = [];
 
         foreach (var name in GetAllNames(this))
-            list.Append(new Tup([Members[name]], [name]));
+            List.Append(list, Members[name]);
 
         return list.Spread();
     }

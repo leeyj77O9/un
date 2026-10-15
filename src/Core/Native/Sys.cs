@@ -68,7 +68,6 @@ public static class Sys
         return Obj.None;
     }
 
-    // aliases for familiarity (Python-like)
     [Native(Name = "getrecursionlimit", Description = "Returns current maximum recursion depth (alias).", Example = "write(sys.getrecursionlimit())", ReturnType = "int")]
     public static Obj GetRecursionLimit() => Int.From((long)Global.MAXRECURSIONDEPTH);
 

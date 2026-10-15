@@ -89,8 +89,7 @@ public static class Random
         ReturnType = "bool",
         ArgumentTypes = new[] { "int" }
     )]
-    public static Obj Bytes(
-    [ArgInfo(Essential = true)] Obj length)
+    public static Obj Bytes([ArgInfo(Essential = true)] Obj length)
     {
         if (!length.As<Int>(out var lengthValue))
             return new Err("expected 'random.bytes' argument 'length' is int");

@@ -42,7 +42,6 @@ public static class Re
         return regex;
     }
 
-
     static bool TryCompile(string pattern, out Regex regex, out Obj err)
     {
         try

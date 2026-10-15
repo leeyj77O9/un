@@ -1,6 +1,6 @@
 ﻿using Un.Object;
 using Un.Object.Primitive;
-using Un.Object.Type;
+
 using Un.Reflection;
 
 namespace Un.Native;
@@ -49,25 +49,67 @@ public static class Builtin
     public static Obj Hash([ArgInfo(Essential = true)] Obj value) => value.Hash();
 
     [Native(
-        Name = "panic",
+        Name = "throw",
         Description = "Raises a named runtime error.",
-        Example = "panic(\"invalid state\")",
+        Example = "throw(\"invalid state\")",
         ReturnType = "error",
         ArgumentTypes = new[] { "str", "str" }
     )]
-    public static Obj Panic(
+    public static Obj Throw(
         [ArgInfo(Essential = true)] Obj message,
         [ArgInfo(Optional = true)] Obj name = null!)
     {
         if (!message.ToStr().As<Str>(out var messageValue))
             return new Err("cannot convert argument 'message' to a str");
 
-        name ??= Str.From("panic");
+        name ??= Str.From("error");
 
         if (!name.ToStr().As<Str>(out var nameValue))
             return new Err("cannot convert argument 'name' to a str");
 
         return new Err(messageValue.Value, nameValue.Value);
+    }
+
+    [Native(
+        Name = "throw_if",
+        Description = "Raises a named runtime error if the condition is true.",
+        Example = "throw_if(condition, \"invalid state\")",
+        ReturnType = "error",
+        ArgumentTypes = new[] { "bool", "str", "str" }
+    )]
+    public static Obj ThrowIf(
+        [ArgInfo(Essential = true)] Obj condition, 
+        [ArgInfo(Essential = true)] Obj message,
+        [ArgInfo(Optional = true)] Obj name = null!)
+    {
+        if (!condition.As<Bool>(out var cond))
+            return new Err("throw_if: expected bool condition");
+
+        if (cond.Value)
+            return Throw(message, name);
+
+        return Obj.None;
+    }
+
+    [Native(
+        Name = "throw_unless",
+        Description = "Raises a named runtime error if the condition is false.",
+        Example = "throw_unless(condition, \"invalid state\")",
+        ReturnType = "error",
+        ArgumentTypes = new[] { "bool", "str", "str" }
+    )]
+    public static Obj ThrowUnless(
+        [ArgInfo(Essential = true)] Obj condition,
+        [ArgInfo(Essential = true)] Obj message,
+        [ArgInfo(Optional = true)] Obj name = null!)
+    {
+        if (!condition.As<Bool>(out var cond))
+            return new Err("throw_unless: expected bool condition");
+
+        if (!cond.Value)
+            return Throw(message, name);
+
+        return Obj.None;
     }
 
     [Native(

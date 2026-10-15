@@ -11,4 +11,8 @@
     <None Remove="IO\w42w4eky.udl~" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="test\" />
+  </ItemGroup>
+
 </Project>

@@ -5,7 +5,7 @@ Runner? runner = null;
 #if DEBUG
 try
 {
-    Global.Init("C:/dev/un/");
+    Global.Init("C:/Users/leeyj/Desktop/dev/un/");
     runner = Runner.Load("src/main.un", Global.GetGlobalScope());
     runner.Run();
 }

@@ -1,0 +1,5 @@
+use iter
+use time
+use io
+
+io.write(io.read("123"))

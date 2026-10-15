@@ -1148,7 +1148,7 @@ public sealed class Evaluator(Context context)
             Tup t => t.Value,
             List l => l.Value,
             Spreads s => s.Value,
-            _ => [new Err($"cannot unpack {obj.GetType().Name}")]
+            _ => obj.Spread().As<Spreads>(out var s) ? s.Value : [new Err($"cannot unpack {obj.GetType().Name}")]
         };
     }
 

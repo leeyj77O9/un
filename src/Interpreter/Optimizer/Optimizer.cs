@@ -92,7 +92,6 @@ public static class Optimizer
                 break;
 
             case TokenType.Asterisk:
-                // 문자열 * 정수 최적화는 타입을 알 수 없어 보류 — "hello"*2 가 덧셈으로 바뀌면 오류가 숨겨짐
                 break;
 
             case TokenType.Slash:
