@@ -142,7 +142,7 @@ public static class Global
                     return;
                 }
 
-                var module = new Obj(UnType.Create(moduleAlias));
+                var module = new Obj(UnType.Module);
 
                 foreach (var (name, alias) in imports)
                 {
@@ -193,14 +193,14 @@ public static class Global
 
         if (scope.ContainsKey(objectName))
         {
-            scope.Set(objectName, new Obj(UnType.Create(objectName))
+            scope.Set(objectName, new Obj(UnType.Module)
             {
                 Members = new(map)
             });
             return;
         }
 
-        scope.Set(objectName, new Obj(UnType.Create(objectName))
+        scope.Set(objectName, new Obj(UnType.Module)
         {
             Members = new(map)
         });

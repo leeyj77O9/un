@@ -39,7 +39,7 @@ public class Random : Ref<System.Random>
         if (minValue.Value > maxValue.Value)
             return new Err("'min' cannot be greater than 'max'");
 
-        return Object.Primitive.Int.From(self.Value.Next((int)minValue.Value, (int)maxValue.Value + 1));
+        return Primitive.Int.From(self.Value.Next((int)minValue.Value, (int)maxValue.Value + 1));
     }
 
     [Native(

@@ -4,7 +4,11 @@ using Un.Reflection;
 
 namespace Un.Object.Collections;
 
-[BuiltinType("set", Description = "Unordered collection of unique values.", Example = "s = {1, 2, 3}\ns.add(4)\nio.write(s)")]
+[BuiltinType(
+    "set", 
+    Description = "Unordered collection of unique values.", 
+    Example = "s = {1, 2, 3}\ns.add(4)\nio.write(s)"
+)]
 public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, UnType.Set)
 {
     public Set() : this([]) { }

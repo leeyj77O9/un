@@ -7,7 +7,11 @@ using Un.Reflection;
 
 namespace Un.Object.Collections;
 
-[BuiltinType("list", Description = "Dynamic resizable array with heap and search operations.", Example = "l = [1, 2, 3]\nl.push(4)\nio.write(l)")]
+[BuiltinType(
+    "list", 
+    Description = "Dynamic resizable array with heap and search operations.", 
+    Example = "l = [1, 2, 3]\nl.push(4)\nio.write(l)"
+)]
 public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj>
 {
     public struct Enumerator(List list) : IEnumerator<Obj>

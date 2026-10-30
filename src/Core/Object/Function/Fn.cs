@@ -48,7 +48,6 @@ public class Fn(Context closure) : Obj(UnType.Func)
 
         foreach (var arg in Args)
         {
-            // self/super는 인스턴스 바인딩으로 이미 설정됨 — 파라미터로 덮어쓰지 않음
             if (arg.Name == "self" || arg.Name == "super")
                 continue;
 
@@ -150,7 +149,9 @@ public class Fn(Context closure) : Obj(UnType.Func)
         return true;
     }
 
-    public override Str Repr() => Str.From($"fn({string.Join(", ", Args.Select(x => x.Type))}) -> {ReturnType}");
+    public override Str Repr() => Str.From($"fn {Name}({string.Join(", ", Args.Select(x => $"{x.Name}: {x.Type}"))}) -> {ReturnType}");
+
+    public override Str ToStr() => Str.From($"fn({string.Join(", ", Args.Select(x => x.Type))}) -> {ReturnType}");
 
     public override int GetHashCode() => Name?.GetHashCode() ?? Type.GetHashCode();
 

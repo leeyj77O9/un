@@ -27,6 +27,7 @@ public sealed class UnType : BaseType
     public static readonly UnType Spread = Register("spread");
     public static readonly UnType Future = Register("future");
     public static readonly UnType Type = Register("type");
+    public static readonly UnType Module = Register("module");
 
     public static readonly UnType TGeneric = Register("T");
     public static readonly UnType UGeneric = Register("U");

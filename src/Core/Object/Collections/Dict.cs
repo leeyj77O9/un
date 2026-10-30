@@ -1,12 +1,15 @@
 using Un.Object.Primitive;
-using Un.Object.Function;
 using Un.Object.Iter;
 using Un.Object.Type;
 using Un.Reflection;
 
 namespace Un.Object.Collections;
 
-[BuiltinType("dict", Description = "Hash map storing key-value pairs.", Example = "d = {\"a\": 1, \"b\": 2}\nio.write(d[\"a\"])")]
+[BuiltinType(
+    "dict", 
+    Description = "Hash map storing key-value pairs.", 
+    Example = "d = {\"a\": 1, \"b\": 2}\nio.write(d[\"a\"])"
+)]
 public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value, UnType.Dict)
 {
     public Dict() : this([]) { }

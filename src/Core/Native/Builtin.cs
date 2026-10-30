@@ -191,4 +191,13 @@ public static class Builtin
         if (v < 0) return Str.From("-0x" + (-v).ToString("x"));
         return Str.From("0x" + v.ToString("x"));
     }
+
+    [Native(
+        Name = "repr",
+        Description = "Convert to repr string.",
+        Example = "repr(io.write)",
+        ReturnType = "str",
+        ArgumentTypes = new[] { "any" }
+    )]
+    public static Str Repr([ArgInfo(Essential = true)] Obj value) => value.Repr();
 }
