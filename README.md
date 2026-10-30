@@ -1,7 +1,6 @@
 # Un — Modern Scripting Language
 
 <p align="center">
-  <img src="https://img.shields.io/badge/language-Un-4A90E2?style=for-the-badge" />
   <img src="https://img.shields.io/badge/.NET-8.0-512BD4?style=for-the-badge&logo=dotnet" />
   <img src="https://img.shields.io/badge/license-MIT-22C55E?style=for-the-badge" />
   <img src="https://img.shields.io/badge/status-beta-orange?style=for-the-badge" />
