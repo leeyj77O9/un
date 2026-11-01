@@ -1,8 +1,8 @@
 use iter
 use io
-a = iter.iter(0, [5])
+a = iter.array(0, [5])
 io.write(a)
-b = iter.iter(1, [2, 3])
+b = iter.array(1, [2, 3])
 io.write(b)
-c = iter.iter("x", [3])
+c = iter.array("x", [3])
 io.write(c)

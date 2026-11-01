@@ -35,6 +35,7 @@ public static class Optimizer
         return node.Kind switch
         {
             NodeKind.Binary => OptimizeBinary(node),
+            NodeKind.Ternary => OptimizeTernary(node),
             NodeKind.If => OptimizeIf(node),
             NodeKind.While => OptimizeWhile(node),
             _ => node
@@ -98,6 +99,16 @@ public static class Optimizer
                 if (IsOne(right)) return left;
                 break;
         }
+
+        return node;
+    }
+
+    private static Node OptimizeTernary(Node node)
+    {
+        var cond = node.Children[0];
+
+        if (IsConst(cond, out var v) && v is bool b)
+            return b ? node.Children[1] : node.Children[2];
 
         return node;
     }

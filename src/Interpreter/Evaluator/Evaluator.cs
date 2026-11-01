@@ -30,6 +30,8 @@ public sealed class Evaluator(Context context)
 
             NodeKind.Binary => EvalBinary(node),
 
+            NodeKind.Ternary => EvalTernary(node),
+
             NodeKind.Call => EvalCall(node),
             NodeKind.Property => EvalProperty(node),
             NodeKind.Index => EvalIndex(node),
@@ -37,6 +39,7 @@ public sealed class Evaluator(Context context)
             NodeKind.Unary => EvalUnary(node),
 
             NodeKind.Function => EvalFunction(node),
+            NodeKind.Extension => EvalExtension(node),
 
             NodeKind.Lambda => EvalLambda(node),
             NodeKind.Match => EvalMatch(node),
@@ -236,6 +239,23 @@ public sealed class Evaluator(Context context)
         return Unwrap(result, node);
     }
 
+    private Obj EvalTernary(Node node)
+    {
+        var cond = Eval(node.Children[0]);
+
+        bool truthy;
+        try
+        {
+            truthy = cond.ToBool().As<Bool>(out var condValue) && condValue.Value;
+        }
+        catch
+        {
+            throw;
+        }
+
+        return truthy ? Eval(node.Children[1]) : Eval(node.Children[2]);
+    }
+
     private static Obj NegateIs(Obj o) => o is Bool b ? Bool.From(!b.Value) : o;
 
     private Obj EvalProperty(Node node)
@@ -369,6 +389,30 @@ public sealed class Evaluator(Context context)
         fn = afn;
 
         context.Scope.Set(name, fn);
+
+        return fn;
+    }
+
+    private Obj EvalExtension(Node node)
+    {
+        var type = GetText(node.Children[0]);
+        var name = GetText(node.Children[1]);
+        var parameters = node.Children[2];
+        var body = node.Children[3];
+
+        Fn fn = new LFn([.. body.Children], context)
+        {
+            Name = name,
+            Closure = context,
+            Args = Fn.GetArgs(parameters, context),
+        };
+
+        if (!EvalAnnotations(fn, node.Annotations!).As<Fn>(out var afn))
+            return new Err("annotation error");
+
+        fn = afn;
+
+        Global.TrySetOriginalClass(type, name, fn);
 
         return fn;
     }
@@ -721,32 +765,42 @@ public sealed class Evaluator(Context context)
         if (!Eval(iterable).Iter().As<Iters>(out var iter))
             throw new Error($"{GetText(iterable)} is not iterable", node, context.Source);
 
-        foreach (var item in iter.Value)
+        var outerScope = context.Scope;
+        var loopScope = new Scope(outerScope);
+
+        try
         {
-            BindPattern(target, item, localOnly: true);
+            context.Scope = loopScope;
 
-            try
+            foreach (var item in iter.Value)
             {
-                foreach (var child in body.Children)
-                    Eval(child);
+                BindPattern(target, item, localOnly: true);
+
+                try
+                {
+                    foreach (var child in body.Children)
+                        Eval(child);
+                }
+                catch (SkipFlow)
+                {
+                    continue;
+                }
+                catch (BreakFlow)
+                {
+                    break;
+                }
+                catch (ReturnFlow rf)
+                {
+                    return rf.Value;
+                }
             }
-            catch (SkipFlow)
-            {
-                continue;
-            }
-            catch (BreakFlow)
-            {
-                break;
-            }
-            catch (ReturnFlow rf)
-            {
-                return rf.Value;
-            }
+
+            return Obj.None;
         }
-
-        DeletePattern(target);
-
-        return Obj.None;
+        finally
+        {
+            context.Scope = outerScope;
+        }
     }
     
     private Obj EvalWhile(Node node)

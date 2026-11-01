@@ -1,7 +1,15 @@
+fn int.bit(self: int)
+    count = 0
+    while self > 0
+        self = self // 2
+        count = count + 1
+    -> count
+
+fn bool.tostr(self: bool)
+    if self
+        -> "TRUE"
+    -> "FALSE"
+
 use io
 
-a = {}
-
-a.write = io.write
-
-a.write(repr(a.write))
+io.write(true.tostr() if a else 1)

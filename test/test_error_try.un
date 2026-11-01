@@ -2,7 +2,7 @@ use io
 
 # basic try/catch
 try
-    panic("oops")
+    throw("oops")
 catch e
     io.write(`caught: {e}`)
 
@@ -33,10 +33,10 @@ test_defer()
 # nested
 try
     try
-        panic("inner")
+        throw("inner")
     catch e
         io.write(`inner caught {e}`)
-        panic("outer")
+        throw("outer")
 catch e
     io.write(`outer caught {e}`)
 

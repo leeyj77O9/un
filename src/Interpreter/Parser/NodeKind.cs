@@ -17,6 +17,7 @@ public enum NodeKind
 
     Unary,
     Binary,
+    Ternary,
 
     Call,
     Property,
@@ -31,7 +32,7 @@ public enum NodeKind
     LeftShiftAssign, RightShiftAssign,
     QuestionAssign, DoubleQuestionAssign,
 
-    Function,
+    Function, Extension,
 
     If,
     ElIf,

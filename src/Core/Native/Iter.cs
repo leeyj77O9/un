@@ -65,6 +65,9 @@ public static class Iter
         if (!size.ToList().As<List>(out var sizeList))
             return new Err("expected 'size' argument to be a 'list'");
 
+        if (sizeList.Count == 1 && sizeList.Value[0].As<List>(out var nestedList))
+            sizeList = nestedList;
+
         var sizes = new List<int>();
 
         foreach (var item in sizeList.Value)

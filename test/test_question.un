@@ -2,7 +2,7 @@ use io
 
 fn may_fail(x)
     if x < 0
-        -> panic("negative")
+        -> throw("negative")
     -> x * 2
 
 fn caller_ok()

@@ -417,6 +417,17 @@ public static class Global
         return false;
     }
 
+    public static bool TrySetOriginalClass(string type, string name, Obj value)
+    {
+        if (originalClasses.TryGetValue(type, out var cla))
+        {
+            cla.Add(name, value);
+            return true;
+        }
+
+        return false;
+    }
+
     public static IEnumerable<string> GetAllAttrKeys(Obj value)
     {
         var seen = new HashSet<string>();

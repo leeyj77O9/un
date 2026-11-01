@@ -411,7 +411,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
 
             Expect(TokenType.Return, "expected '->' after match pattern");
 
-            var body = ParseBinary();
+            var body = ParseTernary();
 
             cases.Add(new Node(pattern.Start, GetLength(pattern, body), NodeKind.Case, children: [pattern, body]));
 
@@ -549,18 +549,81 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
         return new Node(keyword.Start, GetLength(keyword, expr), NodeKind.Return, children: [expr]);
     }
 
-    private Node ParseExpression() => ParseBinary();
+    private Node ParseExpression() => ParseTernary();
+
+    private Node ParseTernary()
+    {
+        var cond = ParseBinary();
+
+        if (Current.Type == TokenType.Question && IsTernaryQuestion())
+        {
+            var q = Next();
+            var trueExpr = ParseTernary();
+            Expect(TokenType.Colon, "expected ':' in ternary expression");
+            var falseExpr = ParseTernary();
+
+            return new Node(cond.Start, falseExpr.Start + falseExpr.Length - cond.Start, NodeKind.Ternary, children: [cond, trueExpr, falseExpr]);
+        }
+
+        return cond;
+    }
+
+    private bool IsTernaryQuestion()
+    {
+        if (position + 1 >= tokens.Count)
+            return false;
+
+        if (tokens[position + 1].Type == TokenType.Colon)
+            return false;
+
+        if (!IsExpressionStart(tokens[position + 1].Type))
+            return false;
+
+        int i = position + 1;
+        int depth = 0;
+
+        while (i < tokens.Count)
+        {
+            var t = tokens[i].Type;
+
+            if (t is TokenType.EOF or TokenType.NewLine or TokenType.Dedent)
+                break;
+
+            if (t is TokenType.RParen or TokenType.RBrack or TokenType.RBrace)
+            {
+                if (depth == 0)
+                    break;
+                depth--;
+                i++;
+                continue;
+            }
+
+            if (t is TokenType.LParen or TokenType.LBrack or TokenType.LBrace)
+            {
+                depth++;
+                i++;
+                continue;
+            }
+
+            if (depth == 0 && t == TokenType.Colon)
+                return true;
+
+            i++;
+        }
+
+        return false;
+    }
 
     private Node ParseComma()
     {
         var items = new List<Node>
         {
-            ParseBinary() 
+            ParseTernary() 
         };
 
         while (Match(TokenType.Comma))
         {
-            items.Add(ParseBinary());
+            items.Add(ParseTernary());
         }
 
         if (items.Count == 1)
@@ -642,6 +705,9 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
 
         while (true)
         {
+            if (Current.Type == TokenType.Question && IsTernaryQuestion())
+                break;
+
             switch (Current.Type)
             {
                 case TokenType.LParen:
@@ -1098,12 +1164,21 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
     private Node ParseFunction(List<Node> annotations)
     {
         var func = Expect(TokenType.Func, "expected 'fn' keyword");
-        var name = ParseIdentifier(); 
+        var name = ParseIdentifier();
+        Node type = null!;
+        if (Match(TokenType.Dot))
+        {
+            type = name;
+            name = ParseIdentifier();
+        }
         var parameters = ParseParameters();
         SkipNewLines();
         var body = ParseBlock(); 
 
-        return new Node(func.Start, GetLength(func, body), NodeKind.Function, children: [name, parameters, body])
+        return type is null ? new Node(func.Start, GetLength(func, body), NodeKind.Function, children: [name, parameters, body])
+        {
+            Annotations = annotations,
+        } : new Node(func.Start, GetLength(func, body), NodeKind.Extension, children: [type, name, parameters, body])
         {
             Annotations = annotations,
         };
@@ -1371,6 +1446,14 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
             _ => 0
         };
     }
+
+    private bool IsExpressionStart(TokenType type) => type is
+        TokenType.Identifier or TokenType.Integer or TokenType.Float or TokenType.String or TokenType.FString or
+        TokenType.True or TokenType.False or TokenType.None or
+        TokenType.LParen or TokenType.LBrack or TokenType.LBrace or
+        TokenType.Func or TokenType.Match or
+        TokenType.Not or TokenType.Plus or TokenType.Minus or TokenType.BNot or TokenType.Wait or TokenType.Go or
+        TokenType.Asterisk;
 
     private bool IsAssignmentStart()
     {
