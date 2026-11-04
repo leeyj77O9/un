@@ -27,7 +27,15 @@ public class Obj(UnType type) : IComparable<Obj>
             return this;
 
         if (ValidSuper())
-            return Super.Init(args);
+        {
+            var result = Super.Init(args);
+
+            if (result is Err)
+                return result;
+
+            // Keep this instance instead of the super object returned by
+            // Init, so subclass identity and inherited types are preserved.
+        }
 
         return this;
     }
@@ -200,9 +208,13 @@ public class Obj(UnType type) : IComparable<Obj>
     Found:
         if (value is null)
             return new Err($"'{Type}' object has no attribute '{name}'");
-            
-        value.Self = this;
-        value.Super = Super!;
+
+        if (value is Un.Object.Function.Fn)
+        {
+            value.Self = this;
+            value.Super = Super!;
+        }
+
         return value;
     }
 

@@ -21,8 +21,21 @@ public class TObj(BaseType type) : Ref<BaseType>(type, UnType.Type)
     public override Bool Is(Obj obj) => obj switch
     {
         TObj o => Bool.From(Value == o.Value),
-        _ => Bool.From(ReferenceEquals(Value, obj.Type))
+        _ => Bool.From(Matches(obj))
     };
+
+    private bool Matches(Obj obj)
+    {
+        if (ReferenceEquals(Value, obj.Type))
+            return true;
+
+        return obj.Types switch
+        {
+            UnionType union => union.Contains(Value),
+            UnType single => ReferenceEquals(single, Value),
+            _ => false
+        };
+    }
 
     public override Bool In(Obj obj)
     {
