@@ -136,6 +136,10 @@ public static class IO
                 if (promptInput != null)
                     return Str.From(promptInput);
             }
+            catch (NeedInputException)
+            {
+                throw;
+            }
             catch { }
         }
 

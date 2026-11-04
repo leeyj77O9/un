@@ -200,4 +200,18 @@ public static class Builtin
         ArgumentTypes = new[] { "any" }
     )]
     public static Str Repr([ArgInfo(Essential = true)] Obj value) => value.Repr();
+
+    [Native(
+        Name = "ascii",
+        Description = "Convert to ascii for char",
+        Example = "ascii('a')",
+        ReturnType = "int",
+        ArgumentTypes = new[] { "str" }
+        )]
+    public static Obj Ascii([ArgInfo(Essential = true)] Obj value)
+    {
+        if (value.As<Str>(out var chr) && chr.Value.Length == 1)
+            return Int.From(chr[0]);
+        return new Err("ascii: expected str");
+    }
 }

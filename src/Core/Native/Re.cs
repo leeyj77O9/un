@@ -184,7 +184,7 @@ public static class Re
         if (!m.Success)
             return Obj.None;
 
-        var list = new System.Collections.Generic.List<Obj>();
+        var list = new List<Obj>();
 
         for (int i = 1; i < m.Groups.Count; i++)
         {

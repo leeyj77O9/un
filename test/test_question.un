@@ -16,7 +16,8 @@ fn caller_fail()
 # ok path
 io.write(caller_ok())  # 11
 
-# fail path returns Err via ? -> caller propagates Err, call site throws Error, need try
+# fail path returns Err via ? -> caller propagates Err, call site throws Error, 
+try
 try
     r = caller_fail()
     io.write("should not reach")
