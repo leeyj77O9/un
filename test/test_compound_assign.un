@@ -1,0 +1,91 @@
+use io
+
+fn check(actual, expected, label)
+    if actual != expected
+        panic(`[FAIL] {label}: expected {expected}, got {actual}`)
+
+# arithmetic
+x = 10
+x += 5
+check(x, 15, "x += 5")
+x -= 3
+check(x, 12, "x -= 3")
+x *= 2
+check(x, 24, "x *= 2")
+x /= 4
+check(x, 6.0, "x /= 4")
+x = 9
+x //= 2
+check(x, 4, "x //= 2")
+x %= 3
+check(x, 1, "x %= 3")
+x = 3
+x **= 3
+check(x, 27, "x **= 3")
+
+# bitwise / shift
+x = 6
+x &= 3
+check(x, 2, "x &= 3")
+x |= 5
+check(x, 7, "x |= 5")
+x ^= 2
+check(x, 5, "x ^= 2")
+x = 1
+x <<= 3
+check(x, 8, "x <<= 3")
+x >>= 2
+check(x, 2, "x >>= 2")
+
+# loop scopes must update the outer accumulator
+sum = 0
+for v in [1, 2, 3]
+    sum += v
+check(sum, 6, "for loop +=")
+
+sum2 = 0
+for v in [1, 2, 3]
+    sum2 = sum2 + v
+check(sum2, 6, "for loop assignment")
+
+total = 0
+for i in [1, 2]
+    for j in [10, 20]
+        total += i * j
+check(total, 90, "nested loop +=")
+
+pair_total = 0
+for a, b in [[1, 2], [3, 4]]
+    pair_total += a + b
+check(pair_total, 10, "destructuring for +=")
+
+# property / index targets
+class Box(v)
+box = Box(1)
+box.v += 5
+check(box.v, 6, "property +=")
+
+lst = [1, 2, 3]
+lst[1] += 10
+check(lst[1], 12, "index +=")
+
+# null-coalescing
+n = none
+check(n ?? 4, 4, "none ?? 4")
+check(5 ?? 4, 5, "5 ?? 4")
+check(none ?? 2 + 3, 5, "?? precedence")
+
+n ??= 7
+check(n, 7, "none ??= 7")
+n ??= 9
+check(n, 7, "7 ??= 9 keeps value")
+
+box2 = Box(none)
+box2.v ??= 3
+check(box2.v, 3, "property ??=")
+
+lst2 = [none]
+lst2[0] ??= 5
+check(lst2[0], 5, "index ??=")
+
+io.write("all compound assignment tests passed!")

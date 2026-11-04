@@ -41,6 +41,9 @@ Design goals:
 - Slicing and indexing
 - Null/error propagation with postfix `?`
 - C-style ternary expression `cond ? a : b`
+- Compound assignment `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `??=`
+- Assignment as an expression with `:=` (returns the assigned value)
+- Null coalescing with `??`
 - `try` / `catch` / `finally`
 
 ### Type system (experimental)

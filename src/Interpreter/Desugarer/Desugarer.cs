@@ -61,6 +61,9 @@ public sealed class Desugarer
                 TokenType.BAndAssign => TokenType.BAnd,
                 TokenType.BOrAssign => TokenType.BOr,
                 TokenType.BXorAssign => TokenType.BXor,
+                TokenType.LeftShiftAssign => TokenType.LeftShift,
+                TokenType.RightShiftAssign => TokenType.RightShift,
+                TokenType.DoubleQuestionAssign => TokenType.DoubleQuestion,
                 _ => default
             };
 

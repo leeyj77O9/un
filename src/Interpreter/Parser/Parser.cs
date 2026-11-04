@@ -549,7 +549,23 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
         return new Node(keyword.Start, GetLength(keyword, expr), NodeKind.Return, children: [expr]);
     }
 
-    private Node ParseExpression() => ParseTernary();
+    private Node ParseExpression() => ParseExpressionAssign();
+
+    private Node ParseExpressionAssign()
+    {
+        var left = ParseTernary();
+
+        if (Current.Type != TokenType.ColonAssign)
+            return left;
+
+        if (!IsValidAssignmentTarget(left))
+            throw new Error("invalid assignment target", left.Start, left.Length, source);
+
+        var op = Next();
+        var right = ParseExpressionAssign();
+
+        return new Node(left.Start, right.Start + right.Length - left.Start, NodeKind.Assign, op.Type, left, right);
+    }
 
     private Node ParseTernary()
     {
@@ -618,12 +634,12 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
     {
         var items = new List<Node>
         {
-            ParseTernary() 
+            ParseExpression()
         };
 
         while (Match(TokenType.Comma))
         {
-            items.Add(ParseTernary());
+            items.Add(ParseExpression());
         }
 
         if (items.Count == 1)
@@ -1441,7 +1457,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
 
             TokenType.DoubleAsterisk => 12,
 
-            TokenType.DoubleQuestion => 13,
+            TokenType.DoubleQuestion => 1,
 
             _ => 0
         };
@@ -1480,6 +1496,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
     {
         return type is
             TokenType.Assign or
+            TokenType.ColonAssign or
             TokenType.PlusAssign or
             TokenType.MinusAssign or
             TokenType.AsteriskAssign or

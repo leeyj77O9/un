@@ -207,6 +207,11 @@ public sealed class Evaluator(Context context)
             return cond ? left : Eval(node.Children[1]);
         }
 
+        if (node.Operator == TokenType.DoubleQuestion)
+        {
+            return left.IsNone() ? Eval(node.Children[1]) : left;
+        }
+
         var right = Eval(node.Children[1]);
 
         var result = node.Operator switch
@@ -1078,6 +1083,14 @@ public sealed class Evaluator(Context context)
         }
     }
 
+    private void BindName(string name, Obj value, bool localOnly)
+    {
+        if (localOnly || context.Scope.IsFunctionScope)
+            context.Scope.SetLocalOrDeclare(name, value);
+        else
+            context.Scope.Set(name, value);
+    }
+
     private void BindPattern(Node pattern, Obj value, bool localOnly = false)
     {
         switch (pattern.Kind)
@@ -1085,10 +1098,7 @@ public sealed class Evaluator(Context context)
             case NodeKind.Identifier:
                 {
                     var name = GetText(pattern);
-                    if (localOnly)
-                        context.Scope.SetLocalOrDeclare(name, value);
-                    else
-                        context.Scope.SetLocalOrDeclare(name, value);
+                    BindName(name, value, localOnly);
                     break;
                 }
             case NodeKind.Wildcard:
@@ -1100,10 +1110,7 @@ public sealed class Evaluator(Context context)
 
                     var name = GetText(nameNode);
 
-                    if (localOnly)
-                        context.Scope.SetLocalOrDeclare(name, value);
-                    else
-                        context.Scope.SetLocalOrDeclare(name, value);
+                    BindName(name, value, localOnly);
 
                     break;
                 }
@@ -1119,7 +1126,7 @@ public sealed class Evaluator(Context context)
                         throw new Error("tuple unpack mismatch", pattern, context.Source);
 
                     for (int i = 0; i < items.Count; i++)
-                        BindPattern(items[i], values[i]);
+                        BindPattern(items[i], values[i], localOnly);
                     break;
                 }
             case NodeKind.Property:

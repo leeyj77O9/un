@@ -16,7 +16,7 @@ public class NFn(Context context) : Fn(context)
             return new Err("maximum recursion depth exceeded");
         }
 
-        var scope = new Scope(Closure.Scope ?? Scope.Empty);
+        var scope = new Scope(Closure.Scope ?? Scope.Empty, isFunctionScope: true);
         var error = Bind(scope, args);
 
         if (!error.IsNone())

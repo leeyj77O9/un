@@ -1,35 +1,36 @@
-passed = 0
-failed = 0
+state = {"passed": 0, "failed": 0}
 
 fn assert_true(cond, msg)
     if cond
-        passed += 1
+        state["passed"] += 1
     else
-        failed += 1
+        state["failed"] += 1
         io.write(`[FAIL] {msg} | expected true, got false`)
 
 fn assert_false(cond, msg)
     if not cond
-        passed += 1
+        state["passed"] += 1
     else
-        failed += 1
+        state["failed"] += 1
         io.write(`[FAIL] {msg} | expected false, got true`)
 
 fn assert_eq(a, b, msg)
     if a == b
-        passed += 1
+        state["passed"] += 1
     else
-        failed += 1
+        state["failed"] += 1
         io.write(`[FAIL] {msg} | expected {b}, got {a}`)
 
 fn assert_neq(a, b, msg)
     if a != b
-        passed += 1
+        state["passed"] += 1
     else
-        failed += 1
+        state["failed"] += 1
         io.write(`[FAIL] {msg} | expected not {b}`)
 
 fn summary()
+    passed = state["passed"]
+    failed = state["failed"]
     io.write(`\n=== Result: {passed} passed, {failed} failed ===`)
     if failed > 0
         panic(`{failed} test(s) failed`)

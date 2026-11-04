@@ -14,7 +14,7 @@ public enum TokenType
     DoubleQuestion,
     Dot, Question,
 
-    Assign, PlusAssign, MinusAssign,
+    Assign, ColonAssign, PlusAssign, MinusAssign,
     AsteriskAssign, DoubleAsteriskAssign,
     SlashAssign, DoubleSlashAssign,
     PercentAssign,

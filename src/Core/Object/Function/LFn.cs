@@ -13,7 +13,7 @@ public class LFn(List<Node> body, Context closure) : Fn(closure)
 
         Closure.CallDepth++;
 
-        var scope = new Scope(Closure.Scope ?? Scope.Empty);
+        var scope = new Scope(Closure.Scope ?? Scope.Empty, isFunctionScope: true);
         var error = Bind(scope, args);
 
         if (!error.IsNone())

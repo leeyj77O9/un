@@ -448,7 +448,7 @@ public class Lexer(Source source)
             '}' => Create(TokenType.RBrace, 1, -1),
 
             ',' => Create(TokenType.Comma, 1),
-            ':' => Create(TokenType.Colon, 1),
+            ':' => Match(":=") ? Create(TokenType.ColonAssign, 2) : Create(TokenType.Colon, 1),
 
             _ => GetComplexOperatorToken()
         };
