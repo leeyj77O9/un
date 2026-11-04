@@ -361,3 +361,28 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# ---------------------------------------------------------------------------
+# AI coding agents
+# Shared guidance lives in AGENTS.md (tracked). Local agent state, caches, and
+# tool-specific configuration are machine-local and stay out of the repo.
+# ---------------------------------------------------------------------------
+.opencode/
+.claude/
+.cursor/
+.windsurf/
+.continue/
+.codex/
+.gemini/
+.roo/
+.kiro/
+.trae/
+.specstory/
+.aider*
+*.local.md
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
