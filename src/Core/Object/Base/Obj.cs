@@ -1,5 +1,3 @@
-using System.Runtime.Remoting;
-using System.Xml.Linq;
 using Un.Object.Collections;
 using Un.Object.Primitive;
 using Un.Object.Type;
@@ -32,9 +30,6 @@ public class Obj(UnType type) : IComparable<Obj>
 
             if (result is Err)
                 return result;
-
-            // Keep this instance instead of the super object returned by
-            // Init, so subclass identity and inherited types are preserved.
         }
 
         return this;
@@ -180,12 +175,12 @@ public class Obj(UnType type) : IComparable<Obj>
     {
         if (TryMethod("__setattr__", out _, new([Str.From(name), value])))
             return value;
+        if (Members.ContainsKey(name))
+            return Members[name] = value;
         if (ValidSuper())
-            Super.SetAttr(name, value);
-
+            return Super.SetAttr(name, value);
         if (Type.Name is "int" or "float" or "str" or "bool" or "date" or "none" or "null")
             return new Err($"'{Type}' object has no attribute '{name}'");
-
         return Members[name] = value;
     }
 
@@ -209,10 +204,10 @@ public class Obj(UnType type) : IComparable<Obj>
         if (value is null)
             return new Err($"'{Type}' object has no attribute '{name}'");
 
-        if (value is Un.Object.Function.Fn)
+        if (value is Function.Fn)
         {
             value.Self = this;
-            value.Super = Super!;
+            value.Super = Super;
         }
 
         return value;

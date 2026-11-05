@@ -774,12 +774,12 @@ public sealed class Evaluator(Context context)
             if (member.Kind == NodeKind.Function)
             {
                 var fn = EvalFunction(member);
-                type.SetAttr(GetText(member.Children[0]), fn);
+                type.Members.Add(GetText(member.Children[0]), fn);
             }
             else if (member.Kind == NodeKind.Assign)
             {
                 var value = Eval(member.Children[1]);
-                type.SetAttr(GetText(member.Children[0]), value);
+                type.Members.Add(GetText(member.Children[0]), value);
             }
         }
 
