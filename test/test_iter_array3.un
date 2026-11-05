@@ -1,4 +1,0 @@
-use iter
-use io
-use inspect
-io.write(inspect.attr(iter))

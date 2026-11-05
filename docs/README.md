@@ -44,6 +44,7 @@ Design goals:
 - Compound assignment `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `??=`
 - Assignment as an expression with `:=` (returns the assigned value)
 - Null coalescing with `??`
+- Safe property/method access with `?.`
 - `try` / `catch` / `finally`
 
 ### Type system (experimental)

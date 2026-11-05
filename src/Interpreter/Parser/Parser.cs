@@ -754,10 +754,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
                         Next(); 
                         var member = ParseIdentifier();
 
-                        expr = new Node(expr.Start,
-                            GetLength(expr, member),
-                            NodeKind.Property,
-                            children: [expr, member]);
+                        expr = new Node(expr.Start, GetLength(expr, member), NodeKind.Property, TokenType.QuestionDot, expr, member);
 
                         continue;
                     }
@@ -911,6 +908,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
 
         List<Node> children = [];
 
+        int textStart = token.Start + quoteLength;
         int start = 0;
         int pos = 0;
 
@@ -930,7 +928,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
 
             if (pos > start)
             {
-                children.Add(new Node(0, 0, NodeKind.String)
+                children.Add(new Node(textStart + start, pos - start, NodeKind.String)
                 {
                     Value = text[start..pos]
                 });
@@ -958,18 +956,18 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
             }
 
             if (depth != 0)
-                throw new Error("unclosed interpolation", exprStart, pos - exprStart, source);
+                throw new Error("unclosed interpolation", textStart + exprStart - 1, text.Length - exprStart + 1, source);
 
             var exprText = text[exprStart..(pos - 1)];
 
-            children.Add(ParseInterpolation(exprText));
+            children.Add(ParseInterpolation(exprText, textStart + exprStart));
 
             start = pos;
         }
 
         if (start < text.Length)
         {
-            children.Add(new Node(0, 0, NodeKind.String)
+            children.Add(new Node(textStart + start, text.Length - start, NodeKind.String)
             {
                 Value = text[start..]
             });
@@ -978,14 +976,30 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
         return new Node(token.Start, token.Length, NodeKind.FString, children: [.. children]);
     }
 
-    private Node ParseInterpolation(string text)
-    {        
+    private Node ParseInterpolation(string text, int start)
+    {
         var source = new Source(this.source.Path, text);
-        var context = new Context(this.context.Scope, source, this.context.Frames);
         var lexer = new Lexer(source);
 
-        var tokens = lexer.Lex();
+        List<Token> tokens;
 
+        try
+        {
+            tokens = lexer.Lex();
+        }
+        catch (Error error)
+        {
+            throw new Error(error.Message, start + error.Start, error.Lenght, this.source, error.Header, error.InnerException);
+        }
+
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            var token = tokens[i];
+            token.Start += start;
+            tokens[i] = token;
+        }
+
+        var context = new Context(this.context.Scope, this.source, this.context.Frames);
         var parser = new Parser(tokens, context);
 
         return parser.ParseExpression();

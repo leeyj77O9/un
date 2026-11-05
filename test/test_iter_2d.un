@@ -1,5 +1,0 @@
-use iter
-use io
-io.write(iter.array(0, 5))
-io.write(iter.array(0, 2, 3))
-io.write(iter.array("x", 3))

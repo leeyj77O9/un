@@ -31,6 +31,34 @@ assert.assert_true(not false, "not")
 assert.assert_true(true and true, "and")
 assert.assert_true(true or false, "or")
 
+# compound assignment
+cx = 10
+cx += 5
+assert.assert_eq(cx, 15, "compound +=")
+cx <<= 3
+assert.assert_eq(cx, 120, "compound <<=")
+acc = 0
+for v in [1,2,3]
+    acc += v
+assert.assert_eq(acc, 6, "compound in loop")
+nv = none
+nv ??= 7
+assert.assert_eq(nv, 7, "compound ??=")
+
+# optional chaining
+maybe = none
+assert.assert_eq(maybe?.value, none, "optional property")
+assert.assert_eq(maybe?.value.more, none, "optional chain")
+assert.assert_eq(maybe?.call(), none, "optional call")
+
+# assignment as an expression
+ex := 10
+assert.assert_eq(ex, 10, "colon assignment")
+ey := ex := 4
+assert.assert_eq(ey, 4, "colon assignment value")
+assert.assert_eq(ex, 4, "colon assignment target")
+assert.assert_eq((ez := 2) + 3, 5, "colon assignment expression")
+
 io.write("\n=== tuple / destructuring ===")
 t = (1, 2)
 assert.assert_eq(t[0], 1, "tuple index 0")
@@ -51,6 +79,9 @@ assert.assert_eq(lst[0], 1, "list index")
 assert.assert_eq(lst[3], 4, "list index 3")
 lst[1] = 99
 assert.assert_eq(lst[1], 99, "list set")
+sl = [1,2,3,4]
+sl[1:3] = [9]
+assert.assert_eq(sl, [1,9,4], "slice assignment")
 lst2 = [1,3,5,7,9]
 assert.assert_eq(lst2.lower_bound(5), 2, "lower_bound")
 assert.assert_eq(lst2.upper_bound(5), 3, "upper_bound")
@@ -161,6 +192,7 @@ class Point(x, y)
         -> self.x + self.y
 
 p = Point(10, 20)
+assert.assert_eq(p?.x, 10, "optional property on object")
 assert.assert_eq(p.x, 10, "class field x")
 assert.assert_eq(p.y, 20, "class field y")
 assert.assert_eq(p.len(), 30, "class method")
@@ -175,6 +207,16 @@ class Child: Point
 
 ch = Child(5, 6)
 assert.assert_eq(ch.x, 5, "inherit field")
+assert.assert_true(ch is Child, "is own class")
+assert.assert_true(ch is Point, "is base class")
+
+class BaseA
+class BaseB
+class Multi: BaseA, BaseB
+m = Multi()
+assert.assert_true(m is Multi, "multi is own class")
+assert.assert_true(m is BaseA, "multi is first base")
+assert.assert_true(m is BaseB, "multi is second base")
 
 io.write("\n=== iter / range ===")
 r = iter.range(0, 3)
@@ -182,6 +224,8 @@ lst_r = []
 for v in r
     lst_r.add(v)
 assert.assert_eq(lst_r, [0,1,2], "range")
+assert.assert_eq(iter.array(0, 3), [0,0,0], "iter.array")
+assert.assert_eq(iter.array("x", [2]), ["x","x"], "iter.array value")
 
 io.write("\n=== error handling ===")
 # type mismatch should return Err and be catchable via panic path is tested externally

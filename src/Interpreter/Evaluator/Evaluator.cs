@@ -266,6 +266,10 @@ public sealed class Evaluator(Context context)
     private Obj EvalProperty(Node node)
     {
         var target = Eval(node.Children[0]);
+
+        if (target.IsNone() && (node.Operator == TokenType.QuestionDot || IsOptionalChain(node.Children[0])))
+            return Obj.None;
+
         var name = GetText(node.Children[1]);
         var value = target is TObj t ? Global.GetClass(t).GetAttr(name) : target.GetAttr(name);
 
@@ -275,6 +279,10 @@ public sealed class Evaluator(Context context)
     private Obj EvalIndex(Node node)
     {
         var target = Eval(node.Children[0]);
+
+        if (target.IsNone() && IsOptionalChain(node.Children[0]))
+            return Obj.None;
+
         var index = Eval(node.Children[1]);
 
         return Unwrap(target.GetItem(index), node);
@@ -283,12 +291,25 @@ public sealed class Evaluator(Context context)
     private Obj EvalSlice(Node node)
     {
         var target = Eval(node.Children[0]);
+
+        if (target.IsNone() && IsOptionalChain(node.Children[0]))
+            return Obj.None;
+
         Obj? startObj = node.Children.Count > 1 && node.Children[1] != null ? Eval(node.Children[1]) : null;
         Obj? endObj = node.Children.Count > 2 && node.Children[2] != null ? Eval(node.Children[2]) : null;
         Obj? stepObj = node.Children.Count > 3 && node.Children[3] != null ? Eval(node.Children[3]) : null;
 
         return Unwrap(target.Slice(startObj, endObj, stepObj), node);
     }
+
+    private static bool IsOptionalChain(Node node) => node.Kind switch
+    {
+        NodeKind.Property => node.Operator == TokenType.QuestionDot || IsOptionalChain(node.Children[0]),
+        NodeKind.Call => IsOptionalChain(node.Children[0]),
+        NodeKind.Index => IsOptionalChain(node.Children[0]),
+        NodeKind.Slice => IsOptionalChain(node.Children[0]),
+        _ => false,
+    };
 
     private Tup EvalArguments(Node tupleNode)
     {
@@ -357,6 +378,10 @@ public sealed class Evaluator(Context context)
     private Obj EvalCall(Node node)
     {
         var callable = Eval(node.Children[0]);
+
+        if (callable.IsNone() && IsOptionalChain(node.Children[0]))
+            return Obj.None;
+
         var args = EvalArguments(node.Children[1]);
         Obj result;
 

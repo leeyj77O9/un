@@ -1,9 +1,0 @@
-use iter
-use io
-a = iter.array(0, [5])
-io.write(a)
-b = iter.array(1, [2, 3])
-io.write(b)
-c = iter.array("x", [3])
-io.write(c)
-io.write(iter.array(0, [2, 2]))

@@ -149,7 +149,7 @@ public static class MyMod
 
 - 통합 테스트 러너(`.csproj`)는 없다. `test/*.un`을 CLI로 직접 실행한다.
 - `test/test_suite.un`은 가장 넓은 스모크 테스트이며 `test/assert.un`을 모듈로 사용한다.
-  정상 기준 출력은 `72 passed, 0 failed`이고, 실패 시 `[FAIL]` 라인과 `panic`이 발생한다.
+  정상 기준 출력은 `92 passed, 0 failed`이고, 실패 시 `[FAIL]` 라인과 `panic`이 발생한다.
 - 상대 import/순환 import 검증용 픽스처는 `test/circular/`, `test/rel_test/`에 있다.
 - 변경 후 최소한 다음을 수행한다.
   1. `dotnet build -c Release` — 오류 0, 새 경고 0.

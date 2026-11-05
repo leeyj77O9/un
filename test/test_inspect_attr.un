@@ -1,33 +1,12 @@
-use inspect
 use io
+use inspect
 use test.assert as assert
 
-# str 메서드 확인
 s = "hello"
-a = inspect.attr(s)
-io.write("str attr:", a)
+assert.assert_true(inspect.hasattr(s, "split"), "str split")
+assert.assert_true(inspect.hasattr(s, "to_upper"), "str to_upper")
+assert.assert_false(inspect.hasattr(s, "nonexistent"), "str missing attr")
+assert.assert_true(inspect.hasattr([1, 2], "add"), "list add")
 
-# hasattr / getattr 확인
-assert.assert_eq(inspect.hasattr(s, "split"), true, "hasattr str.split")
-assert.assert_eq(inspect.hasattr(s, "to_upper"), true, "hasattr str.to_upper")
-assert.assert_eq(inspect.hasattr(s, "nonexistent"), false, "hasattr str.nonexistent")
-
-val = inspect.getattr(s, "to_upper")
-io.write("getattr to_upper:", val)
-
-# list 메서드 확인
-l = [1, 2, 3]
-la = inspect.attr(l)
-io.write("list attr:", la)
-
-# int 메서드 확인
-i = 42
-ia = inspect.attr(i)
-io.write("int attr:", ia)
-
-# float 메서드 확인
-f = 3.14
-fa = inspect.attr(f)
-io.write("float attr:", fa)
-
+assert.summary()
 io.write("all inspect tests passed!")

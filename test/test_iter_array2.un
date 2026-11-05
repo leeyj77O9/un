@@ -1,7 +1,0 @@
-use iter
-use io
-# try different call styles
-io.write(iter)
-# try direct
-# a = iter(0, [5])
-# io.write(a)
