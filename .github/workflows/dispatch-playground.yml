@@ -1,0 +1,43 @@
+name: Notify playground
+
+# Optional: ask `un-playground` to rebuild its WASM immediately after a push
+# to `un`. This requires a fine-grained PAT stored in the `un` repository as
+# the `PLAYGROUND_DISPATCH_TOKEN` secret:
+#
+#   Repository access: leeyj77O9/un-playground only
+#   Permissions:       Contents -> Read and write
+#
+# If the secret is not configured, this workflow does nothing and the
+# scheduled rebuild in `un-playground` still keeps the WASM up to date.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for dispatch token
+        id: token
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.PLAYGROUND_DISPATCH_TOKEN }}
+        run: |
+          if [[ -n "$TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::PLAYGROUND_DISPATCH_TOKEN is not set. The scheduled rebuild in un-playground will still pick this up."
+          fi
+
+      - name: Trigger un-playground rebuild
+        if: steps.token.outputs.available == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PLAYGROUND_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '{"event_type":"un-push","client_payload":{"un_ref":"%s"}}' "${{ github.sha }}" > payload.json
+          gh api repos/leeyj77O9/un-playground/dispatches --method POST --input payload.json
