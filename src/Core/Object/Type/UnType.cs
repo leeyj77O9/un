@@ -1,8 +1,10 @@
-﻿namespace Un.Object.Type;
+﻿using System.Collections.Concurrent;
+
+namespace Un.Object.Type;
 
 public sealed class UnType : BaseType
 {
-    private static readonly Dictionary<string, UnType> Cache = [];
+    private static readonly ConcurrentDictionary<string, UnType> Cache = [];
 
     public static readonly UnType Obj = Register("obj");
     public static readonly UnType Error = Register("error");
@@ -56,9 +58,7 @@ public sealed class UnType : BaseType
             return type;
 
         type = new UnType(name);
-        Cache[name] = type;
-
-        return type;
+        return Cache.GetOrAdd(name, type);
     }
 
     public static UnType From(string name) => Cache.TryGetValue(name, out var type) ? type : throw new Panic($"type not found: {name}");

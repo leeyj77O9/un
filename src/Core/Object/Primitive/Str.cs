@@ -13,7 +13,8 @@ public class Str : Ref<string>
     private const int MAX_POOLED_STRING_LEGNTH = 1000;
 
     public static readonly Str Empty = new();
-    private static ConcurrentDictionary<string, Str> pool = [];
+    private static readonly ConcurrentDictionary<string, Str> pool = [];
+    private static int poolSize;
 
     public Str() : this("") { }
 
@@ -155,10 +156,25 @@ public class Str : Ref<string>
     {
         if (value.Length > MAX_POOLED_STRING_LEGNTH)
             return new Str(value);
-        if (pool.Count >= MAX_POOL_SIZE)
-            pool.Clear();
 
-        return pool.GetOrAdd(value, static v => new Str(v));
+        if (pool.TryGetValue(value, out var cached))
+            return cached;
+
+        if (Volatile.Read(ref poolSize) >= MAX_POOL_SIZE)
+        {
+            pool.Clear();
+            Volatile.Write(ref poolSize, 0);
+        }
+
+        var created = new Str(value);
+
+        if (pool.TryAdd(value, created))
+        {
+            Interlocked.Increment(ref poolSize);
+            return created;
+        }
+
+        return pool.TryGetValue(value, out cached) ? cached : created;
     }
 
     public static Str From(string value, bool intern)

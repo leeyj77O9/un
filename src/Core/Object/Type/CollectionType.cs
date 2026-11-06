@@ -1,8 +1,10 @@
-﻿namespace Un.Object.Type;
+﻿using System.Collections.Concurrent;
+
+namespace Un.Object.Type;
 
 public class CollectionType : BaseType
 {
-    private static readonly Dictionary<(UnType Kind, BaseType ItemType), CollectionType> Cache = [];
+    private static readonly ConcurrentDictionary<(UnType Kind, BaseType ItemType), CollectionType> Cache = [];
 
     public UnType Kind { get; }
 
@@ -16,15 +18,7 @@ public class CollectionType : BaseType
 
     public static CollectionType Create(UnType kind, BaseType itemType)
     {
-        var key = (kind, itemType);
-
-        if (Cache.TryGetValue(key, out var type))
-            return type;
-
-        type = new CollectionType(kind, itemType);
-        Cache[key] = type;
-
-        return type;
+        return Cache.GetOrAdd((kind, itemType), key => new CollectionType(key.Kind, key.ItemType));
     }
 
     public override bool Equals(object? obj) => ReferenceEquals(this, obj);

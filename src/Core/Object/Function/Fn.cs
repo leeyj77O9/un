@@ -112,10 +112,14 @@ public class Fn(Context closure) : Obj(UnType.Func)
             }
         }
 
-        var bindable = Args.Where(a => a.Name != "self" && a.Name != "super").ToList();
-        for (var i = 0; i < bindable.Count; i++)
+        var bindableCount = 0;
+
+        for (var i = 0; i < Args.Count; i++)
         {
-            var arg = bindable[i];
+            var arg = Args[i];
+
+            if (arg.Name == "self" || arg.Name == "super")
+                continue;
 
             if (arg.IsPositional || arg.IsKeyword)
             {
@@ -123,15 +127,17 @@ public class Fn(Context closure) : Obj(UnType.Func)
                 return false;
             }
 
-            if (i < args.Count)
+            if (bindableCount < args.Count)
             {
-                scope.SetLocal(arg.Name, args[i]);
+                scope.SetLocal(arg.Name, args[bindableCount]);
+                bindableCount++;
                 continue;
             }
 
             if (!arg.IsEssential)
             {
                 scope.SetLocal(arg.Name, arg.DefaultValue!);
+                bindableCount++;
                 continue;
             }
 
@@ -139,7 +145,7 @@ public class Fn(Context closure) : Obj(UnType.Func)
             return true;
         }
 
-        if (args.Count > bindable.Count)
+        if (args.Count > bindableCount)
         {
             result = new Err("too many positional arguments");
             return true;

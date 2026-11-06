@@ -11,20 +11,19 @@ public class LFn(List<Node> body, Context closure) : Fn(closure)
         if (Closure.CallDepth >= (int)Global.MAXRECURSIONDEPTH)
             return new Err("maximum recursion depth exceeded");
 
-        Closure.CallDepth++;
-
         var scope = new Scope(Closure.Scope ?? Scope.Empty, isFunctionScope: true);
         var error = Bind(scope, args);
 
         if (!error.IsNone())
             return error;
 
+        Closure.CallDepth++;
+
         var context = new Context(scope, Closure.Source, Closure.Frames);
         var evaluator = new Evaluator(context);
 
         try
         {
-
             foreach (Node node in body)
                 evaluator.Eval(node);
         }
@@ -38,19 +37,21 @@ public class LFn(List<Node> body, Context closure) : Fn(closure)
         }
         finally
         {
-            if (context.Defers is { Count: > 0 })
+            try
             {
-                foreach(Node node in context.Defers)
+                while (context.Defers.Count > 0)
+                {
+                    var node = context.Defers.Pop();
                     evaluator.Eval(node);
-            }
+                }
 
-            if (context.Usings is { Count: > 0 })
+                while (context.Usings.Count > 0)
+                    context.Usings.Pop().Exit();
+            }
+            finally
             {
-                foreach (var obj in context.Usings)
-                    obj.Exit();
+                Closure.CallDepth--;
             }
-
-            Closure.CallDepth--;
         }
 
         return None;

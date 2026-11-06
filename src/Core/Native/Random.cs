@@ -86,7 +86,7 @@ public static class Random
         Name = "bytes",
         Description = "Returns a list of pseudo-random byte values.",
         Example = "values = bytes(16)",
-        ReturnType = "bool",
+        ReturnType = "list",
         ArgumentTypes = new[] { "int" }
     )]
     public static Obj Bytes([ArgInfo(Essential = true)] Obj length)

@@ -247,16 +247,7 @@ public sealed class Evaluator(Context context)
     private Obj EvalTernary(Node node)
     {
         var cond = Eval(node.Children[0]);
-
-        bool truthy;
-        try
-        {
-            truthy = cond.ToBool().As<Bool>(out var condValue) && condValue.Value;
-        }
-        catch
-        {
-            throw;
-        }
+        var truthy = cond.ToBool().As<Bool>(out var condValue) && condValue.Value;
 
         return truthy ? Eval(node.Children[1]) : Eval(node.Children[2]);
     }
@@ -497,10 +488,10 @@ public sealed class Evaluator(Context context)
 
                     var values = Unpack(value);
 
-                    if (values[0] is Err err)
+                    if (values.Length > 0 && values[0] is Err err)
                         throw new Error(err.Message, pattern, context.Source, header: err.Header);
 
-                    if (values is null || values.Length != items.Count)
+                    if (values.Length != items.Count)
                         return false;
 
                     for (int i = 0; i < items.Count; i++)
@@ -1144,7 +1135,7 @@ public sealed class Evaluator(Context context)
                     var items = pattern.Children;
                     var values = Unpack(value);
 
-                    if (values[0] is Err err)
+                    if (values.Length > 0 && values[0] is Err err)
                         throw new Error(err.Message, pattern, context.Source, header: err.Header);
 
                     if (items.Count != values.Length)
@@ -1232,7 +1223,7 @@ public sealed class Evaluator(Context context)
         return obj switch
         {
             Tup t => t.Value,
-            List l => l.Value,
+            List l => l.Count == l.Value.Length ? l.Value : l.Value[..l.Count],
             Spreads s => s.Value,
             _ => obj.Spread().As<Spreads>(out var s) ? s.Value : [new Err($"cannot unpack {obj.GetType().Name}")]
         };

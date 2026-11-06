@@ -81,25 +81,6 @@ public static class Optimizer
             }
         }
 
-        switch (node.Operator)
-        {
-            case TokenType.Plus:
-                if (IsZero(left)) return right;
-                if (IsZero(right)) return left;
-                break;
-
-            case TokenType.Minus:
-                if (IsZero(right)) return left;
-                break;
-
-            case TokenType.Asterisk:
-                break;
-
-            case TokenType.Slash:
-                if (IsOne(right)) return left;
-                break;
-        }
-
         return node;
     }
 
@@ -191,10 +172,6 @@ public static class Optimizer
         return n.Kind is NodeKind.Integer or NodeKind.Float or NodeKind.String or NodeKind.Boolean;
     }
 
-    private static bool IsZero(Node n) => IsConst(n, out var v) && v is long l && l == 0;
-
-    private static bool IsOne(Node n) => IsConst(n, out var v) && v is long l && l == 1;
-
     private static object Eval(TokenType op, object a, object b)
     {
         return (a, b) switch
@@ -217,7 +194,7 @@ public static class Optimizer
             TokenType.Plus => checked(a + b),
             TokenType.Minus => checked(a - b),
             TokenType.Asterisk => checked(a * b),
-            TokenType.Slash => b == 0 ? throw new Panic("division by zero") : a / b,
+            TokenType.Slash => b == 0 ? throw new Panic("division by zero") : (double)a / b,
             TokenType.DoubleSlash => b == 0 ? throw new Panic("division by zero") : a / b,
             TokenType.Percent => b == 0 ? throw new Panic("division by zero") : a % b,
             TokenType.DoubleAsterisk => EvalPowLong(a, b),
@@ -273,19 +250,6 @@ public static class Optimizer
         if (double.IsInfinity(d) || double.IsNaN(d))
             throw new Panic($"float pow overflow: {a} ** {b}");
         return d;
-    }
-
-    private static string Hash(Node node)
-    {
-        if (node.Children == null || node.Children.Count == 0)
-            return $"{node.Kind}:{node.Value}";
-
-        return $"{node.Kind}:{node.Operator}:{Hash(node.Children[0])}:{Hash(node.Children[1])}";
-    }
-
-    private class Env
-    {
-        public Dictionary<string, object> Const = [];
     }
 }
 

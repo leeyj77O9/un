@@ -56,8 +56,14 @@ public sealed class Runner(Context context, Context? parentContext = null)
         }
         finally
         {
-            RunDefers();
-            FreeUsings();
+            try
+            {
+                RunDefers();
+            }
+            finally
+            {
+                FreeUsings();
+            }
         }
     }
 
@@ -79,14 +85,15 @@ public sealed class Runner(Context context, Context? parentContext = null)
 
     private void FreeUsings()
     {
-        foreach (var obj in Context.Usings)
-            obj.Exit();
+        while (Context.Usings.Count > 0)
+            Context.Usings.Pop().Exit();
     }
 
     private void RunDefers()
     {
-        foreach (var block in Context.Defers)
+        while (Context.Defers.Count > 0)
         {
+            var block = Context.Defers.Pop();
             var evaluator = new Evaluator(Context);
             evaluator.Eval(block);
         }

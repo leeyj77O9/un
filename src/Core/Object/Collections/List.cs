@@ -59,14 +59,30 @@ public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj
         _ => args.ToList(),
     };
 
-    public override Bool Eq(Obj other)
+    public override Obj Eq(Obj other)
     {
         if (other is not List list)
             return Bool.False;
 
+        if (Count != list.Count)
+            return Bool.False;
+
         for (int i = 0; i < Count; i++)
-            if (Value[i].NEq(list[i]).As<Bool>(out var neq) && neq.Value)
-                return Bool.False;
+        {
+            var neq = Value[i].NEq(list[i]);
+
+            if (neq.As<Bool>(out var isNotEqual))
+            {
+                if (isNotEqual.Value)
+                    return Bool.False;
+                continue;
+            }
+
+            if (neq is Err)
+                return neq;
+
+            return new Err("equals operand is must be a boolean");
+        }
 
         return Bool.True;
     }
@@ -160,9 +176,27 @@ public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj
         return newList;
     }
 
-    public override Str ToStr() => Str.From($"[{string.Join(", ", Value[..Count].Select(Format))}]");
+    public override Str ToStr()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append('[');
 
-    private string Format(Obj value) => value is Str s ? $"'{s.Value}'" : Str.To(value).Value;
+        for (int i = 0; i < Count; i++)
+        {
+            if (i > 0)
+                sb.Append(", ");
+
+            var value = Value[i];
+
+            if (value is Str s)
+                sb.Append('\'').Append(s.Value).Append('\'');
+            else
+                sb.Append(Str.To(value).Value);
+        }
+
+        sb.Append(']');
+        return Str.From(sb.ToString());
+    }
 
     public override Spreads Spread() => new(Value[..Count]);
 
@@ -170,11 +204,23 @@ public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj
 
     private static bool Overlap(List self, List list)
     {
-        foreach (var item in list)
+        for (int j = 0; j < list.Count; j++)
         {
-            if (!self.Value.Contains(item))
+            var found = false;
+
+            for (int i = 0; i < self.Count; i++)
+            {
+                if (self.Value[i].Eq(list.Value[j]).As<Bool>(out var eq) && eq.Value)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
                 return false;
         }
+
         return true;
     }
 
@@ -578,8 +624,8 @@ public class List(Obj[] value) : Ref<Obj[]>(value, UnType.List), IEnumerable<Obj
     {
         HashCode hash = new();
 
-        foreach (var value in Value)
-            hash.Add(value);
+        for (int i = 0; i < Count; i++)
+            hash.Add(Value[i]);
 
         return hash.ToHashCode();
     }

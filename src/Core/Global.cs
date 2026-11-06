@@ -24,6 +24,8 @@ public static class Global
 
     public static void SetAllowedModules(string[]? allow) => _allowedNatives = allow == null ? null : new HashSet<string>(allow, StringComparer.Ordinal);
 
+    public static string[]? GetAllowedModules() => _allowedNatives?.ToArray();
+
     public static bool IsAllowed(string name) => _allowedNatives == null || _allowedNatives.Contains(name);
 
     private static readonly Scope scope = new();
@@ -72,7 +74,7 @@ public static class Global
         foreach (var type in nativeTypes)
         {
             var attr = type.GetCustomAttribute<NativeTypeAttribute>()!;
-            if (!originalClasses.ContainsKey(attr.Name))
+            if (attr.Name is not null && !originalClasses.ContainsKey(attr.Name))
                 originalClasses[attr.Name] = CreateMethod(type);
         }
     }

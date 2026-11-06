@@ -18,6 +18,7 @@ public static class PlaygroundRunner
         var originalPath = Global.PATH;
         var originalOut = Native.IO.GetStdout();
         var originalIn = Native.IO.GetStdin();
+        var originalAllowed = Global.GetAllowedModules();
 
         var stdoutMem = new MemoryStream();
         var stdoutStream = new Object.IO.Stream(stdoutMem);
@@ -103,7 +104,7 @@ public static class PlaygroundRunner
         {
             Global.FileSystem = originalFs;
             Global.SetPath(originalPath);
-            Global.SetAllowedModules(null);
+            Global.SetAllowedModules(originalAllowed);
             Native.IO.SetStdout(originalOut);
             Native.IO.SetStdin(originalIn);
         }

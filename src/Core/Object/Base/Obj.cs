@@ -10,8 +10,21 @@ public class Obj(UnType type) : IComparable<Obj>
     public readonly static Obj None = new(UnType.None);
     public readonly static Obj Null = new(UnType.Null);
 
+    private readonly UnType declaredType = type;
+    private BaseType? types;
+
     public virtual UnType Type { get; set; } = type;
-    public virtual BaseType Types { get; set; } = UnionType.Create(UnType.Obj, type);
+
+    /// <summary>
+    /// Union of the base object type and this object's type. Built on first use
+    /// because most values never query it, which keeps object creation cheap.
+    /// </summary>
+    public virtual BaseType Types
+    {
+        get => types ??= UnionType.Create(UnType.Obj, declaredType);
+        set => types = value;
+    }
+
     public virtual Obj Self { get; set; } = None;
     public virtual Obj Super { get; set; } = None;
     public virtual Attributes Members { get; set; } = [];
@@ -166,7 +179,7 @@ public class Obj(UnType type) : IComparable<Obj>
         if (TryMethod("__slice__", out var value, new([start ?? None, end ?? None, step ?? None])))
             return value;
         if (ValidSuper())
-            Super.Slice(start, end, step);
+            return Super.Slice(start, end, step);
 
         return new Err($"unsupported slice for '{Type}'");
     }    
@@ -326,8 +339,9 @@ public class Obj(UnType type) : IComparable<Obj>
             value = method.Call(args);
             return true;
         }
-        
-        return (value = null!) is not null;
+
+        value = null!;
+        return false;
     }
 
     protected bool ValidSuper()

@@ -1,14 +1,33 @@
-﻿namespace Un.Object.Type;
+﻿using System.Collections.Concurrent;
+
+namespace Un.Object.Type;
 
 public sealed class UnionType : BaseType
 {
-    private static readonly Dictionary<string, UnionType> Cache = [];
+    private static readonly ConcurrentDictionary<string, UnionType> Cache = [];
+
+    private static readonly ConcurrentDictionary<(BaseType, BaseType), BaseType> PairCache = [];
 
     public IReadOnlySet<BaseType> Types { get; }
 
     private UnionType(HashSet<BaseType> types)
     {
         Types = types;
+    }
+
+    public static BaseType Create(BaseType a, BaseType b)
+    {
+        if (a is null) return b ?? UnType.None;
+        if (b is null) return a;
+        if (ReferenceEquals(a, b)) return a;
+        if (ReferenceEquals(a, UnType.Any) || ReferenceEquals(b, UnType.Any)) return UnType.Any;
+
+        if (PairCache.TryGetValue((a, b), out var cached))
+            return cached;
+
+        var created = Create([a, b]);
+        PairCache[(a, b)] = created;
+        return created;
     }
 
     public static BaseType Create(params BaseType[] types)
@@ -43,14 +62,7 @@ public sealed class UnionType : BaseType
 
         string key = GetKey(normalized);
 
-        if (Cache.TryGetValue(key, out var cached))
-            return cached;
-
-        var created = new UnionType(normalized);
-
-        Cache[key] = created;
-
-        return created;
+        return Cache.GetOrAdd(key, _ => new UnionType(normalized));
     }
 
     private static string GetKey(IEnumerable<BaseType> types) => string.Join("|", types.Select(t => t.ToString()).OrderBy(x => x));

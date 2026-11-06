@@ -31,6 +31,13 @@ assert.assert_true(not false, "not")
 assert.assert_true(true and true, "and")
 assert.assert_true(true or false, "or")
 
+# constant folding must preserve runtime semantics (types included)
+assert.assert_eq(4 / 1, 4.0, "const division value")
+assert.assert_eq(type(4 / 1), float, "const division type")
+assert.assert_eq(type(7 // 2), int, "const idiv type")
+assert.assert_eq("a" + 0, "a0", "const str + int")
+assert.assert_eq(type("a" + 0), str, "const str + int type")
+
 # compound assignment
 cx = 10
 cx += 5
@@ -93,6 +100,22 @@ h.hpush(7)
 h.hpush(1)
 assert.assert_eq(h.hpop(), 1, "hpop 1")
 assert.assert_eq(h.hpop(), 3, "hpop 2")
+
+# comparisons never read past the logical length
+assert.assert_false([1,2] == [1,2,3], "list eq shorter lhs")
+assert.assert_false([1,2,3] == [1,2], "list eq longer lhs")
+rm = [1,2,3]
+rm.remove_at(2)
+assert.assert_false([3] in rm, "list shrink drops stale slot")
+assert.assert_eq(rm, [1,2], "list shrink value")
+assert.assert_eq(len(rm), 2, "list shrink len")
+
+# destructuring must use the logical length, not the backing capacity
+grown = [1]
+grown.add(2)
+ga, gb = grown
+assert.assert_eq(ga, 1, "destructure grown list a")
+assert.assert_eq(gb, 2, "destructure grown list b")
 
 io.write("\n=== dict / set / json ===")
 d = {"name": "un", "age": 20}
