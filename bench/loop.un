@@ -1,0 +1,27 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 중첩 반복 산술 - i * j 합 (200 x 200)
+# Node.js 벤치마크: bench/node/loop.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/loop.un  (C:\dev\un 에서)
+# ============================================================
+
+fn nested_sum(size)
+    total = 0
+    for i in iter.range(1, size + 1)
+        for j in iter.range(1, size + 1)
+            total += i * j
+    -> total
+
+# ---------- 검증 ----------
+# sum(i) * sum(j) = (200*201/2)^2 = 20100^2 = 404010000
+assert.assert_eq(nested_sum(200), 404010000, "nested product sum")
+
+# ---------- 측정 ----------
+# 한 번의 nested_sum(200) = 40000 번의 곱셈/덧셈
+bench.measure("nested_sum_200", fn(n) -> nested_sum(200), 40000, 7, 2)
+
+assert.summary()

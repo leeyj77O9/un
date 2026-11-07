@@ -1,0 +1,33 @@
+use io
+use sys
+use test.assert as assert
+
+# ============================================================
+# sys - 이름/버전/pid, 호출 깊이 한도
+# 실행: Un.exe run test/unit/native/sys.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 기본 정보 ----------
+assert.assert_eq(sys.name(), "windows", "sys name")
+assert.assert_true(sys.pid() > 0, "sys pid is positive")
+assert.assert_true(len(sys.version()) > 0, "sys version is not empty")
+
+# ---------- 호출 깊이 ----------
+orig = sys.getcalldepth()
+assert.assert_eq(orig, 1000, "default call depth is 1000")
+assert.assert_eq(sys.getrecursionlimit(), sys.getcalldepth(), "recursion limit mirrors call depth")
+
+# ---------- 한도 변경 후 복원 ----------
+sys.setrecursionlimit(3000)
+assert.assert_eq(sys.getrecursionlimit(), 3000, "setrecursionlimit changes the limit")
+sys.setcalldepth(orig)
+assert.assert_eq(sys.getcalldepth(), orig, "setcalldepth restores the depth")
+
+# ---------- 상태 변경 반복 ----------
+sys.setrecursionlimit(2000)
+assert.assert_eq(sys.getrecursionlimit(), 2000, "recursion limit change repeats")
+sys.setrecursionlimit(3000)
+assert.assert_eq(sys.getrecursionlimit(), 3000, "recursion limit changes again")
+sys.setcalldepth(orig)
+assert.assert_eq(sys.getcalldepth(), orig, "depth is restored after repeats")
+assert.summary()

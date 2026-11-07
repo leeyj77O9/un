@@ -1,0 +1,100 @@
+use io
+use iter
+use test.assert as assert
+
+# ============================================================
+# KnownFailures - 문서에 있는 동작과 실제 구현이 다른 항목
+# 실행: Un.exe run test/regression/defects.un  (C:\dev\un 에서)
+# 이 파일은 test/KnownFailures.txt에 등록되어 있고, 현재 실패한다.
+# 제품 코드를 고쳐야 없애는 테스트다. 기대값은 문서/표준 semantics다.
+# ============================================================
+
+# ---------- list reverse slice ----------
+# [1,2,3,4][2:0:-1]는 [3,2]여야 한다.
+sl = [1, 2, 3, 4]
+assert.assert_eq(sl[2:0:-1], [3, 2], "list slice with a negative step walks backwards")
+
+# ---------- upper_bound는 일 후 위치를 반환해야 한다 ----------
+b = [1, 2, 4, 5]
+assert.assert_eq(b.upper_bound(5), 4, "upper_bound of the last element is len")
+
+# ---------- iter.reverse ----------
+assert.assert_eq(list(iter.reverse([1, 2, 3])), [3, 2, 1], "iter.reverse yields values in reverse order")
+
+# ---------- in이 list의 원소를 검사해야 한다 ----------
+in_list = false
+try
+    in_list = 2 in [1, 2, 3]
+catch err_def1
+    in_list = false
+assert.assert_true(in_list, "2 in [1, 2, 3] is true")
+
+# ---------- set == set ----------
+set_eq = false
+try
+    set_eq = set(1, 2) == set(1, 2)
+catch err_def2
+    set_eq = false
+assert.assert_true(set_eq, "two sets with the same elements are equal")
+
+# ---------- dict == dict ----------
+dict_eq = false
+try
+    dict_eq = {"a": 1} == {"a": 1}
+catch err_def3
+    dict_eq = false
+assert.assert_true(dict_eq, "two dicts with the same entries are equal")
+
+# ---------- iter.zip / iter.chain ----------
+zipped = []
+try
+    zipped = list(iter.zip([1, 2], [3, 4]))
+catch err_def4
+    zipped = []
+assert.assert_eq(zipped, [(1, 3), (2, 4)], "iter.zip pairs the elements")
+
+chained = []
+try
+    chained = list(iter.chain([1], [2]))
+catch err_def5
+    chained = []
+assert.assert_eq(chained, [1, 2], "iter.chain concatenates iterables")
+
+# ---------- catch 변수가 전역을 가린다 ----------
+# catch e는 같은 이름의 전역 e를 Err로 덮어쓰고, 그 후 e를 읽으면
+# Err가 다시 던져져 잡히지 않는다. 파일 안에서 검증할 수 없어서
+# test/negative/catch_clobbers.un이 종료 코드로 검증한다.
+
+# ---------- go가 for의 루프 변수를 잡지 못한다 ----------
+# go square(i)를 반복 안에서 만들면 future가 루프 밖에서 평가된다.
+# wait 시점에 루프 변수는 사라져 'undefined variable' 잡히지 않는 예외가
+# 프로세스를 죽인다. 파일 안에서 검증할 수 없어서
+# test/negative/go_loop_var.un이 종료 코드로 검증한다.
+
+# ---------- 클래스 메서드가 전역 내장을 가린다 ----------
+# class 안의 fn len은 클래스 멤버에만 속해야 하는데, 전역 len을 가린다.
+# 그 뒤 len([1,2,3])는 'too many positional arguments'로 실패한다.
+class ShadowLen
+    fn len()
+        -> 99
+shadow_len = -1
+try
+    shadow_len = len([1, 2, 3])
+catch e_sh
+    shadow_len = -1
+assert.assert_eq(shadow_len, 3, "a class method must not shadow the global len")
+
+# ---------- 호출 한도를 올리면 스택이 먼저 고갈된다 ----------
+# sys.setcalldepth(2000) 이후 depth(1000)은 'maximum recursion depth exceeded'
+# 가 잡히지 않는 Stack overflow로 프로세스를 죽인다(종료 코드 -1073741571).
+# 파일 안에서 검증할 수 없어서 test/negative/depth_limit_crash.un이 종료 코드로 검증한다.
+
+# ---------- type(none) ----------
+none_type_is_none = false
+try
+    none_type_is_none = type(none) is none
+catch err_def7
+    none_type_is_none = false
+assert.assert_true(none_type_is_none, "type of none is the none type")
+
+assert.summary()

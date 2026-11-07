@@ -1,0 +1,24 @@
+use io
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 재귀 호출 - fib(24)
+# Node.js 벤치마크: bench/node/fib.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/fib.un  (C:\dev\un 에서)
+# ============================================================
+
+fn fib(n)
+    if n < 2
+        -> n
+    -> fib(n - 1) + fib(n - 2)
+
+# ---------- 검증 ----------
+assert.assert_eq(fib(10), 55, "fib(10)")
+assert.assert_eq(fib(24), 46368, "fib(24)")
+
+# ---------- 측정 ----------
+# iters=1: 한 번의 fib(24) 호출이 하나의 측정 단위다.
+bench.measure("fib24", fn(n) -> fib(24), 1, 7, 2)
+
+assert.summary()

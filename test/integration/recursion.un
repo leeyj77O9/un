@@ -1,0 +1,82 @@
+use io
+use sys
+use test.assert as assert
+
+# ============================================================
+# 재귀 - depth limits, memo, mutual recursion, tree traversal
+# 실행: Un.exe run test/integration/recursion.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 단항 재귀 ----------
+fn factorial(n)
+    if n <= 1
+        -> 1
+    -> n * factorial(n - 1)
+assert.assert_eq(factorial(0), 1, "factorial base case")
+assert.assert_eq(factorial(10), 3628800, "factorial recursion")
+
+fn fib(n)
+    if n < 2
+        -> n
+    -> fib(n - 1) + fib(n - 2)
+assert.assert_eq(fib(0), 0, "fib base 0")
+assert.assert_eq(fib(1), 1, "fib base 1")
+assert.assert_eq(fib(20), 6765, "double recursion")
+
+# ---------- 상호 재귀 ----------
+fn is_even(n)
+    if n == 0
+        -> true
+    -> is_odd(n - 1)
+fn is_odd(n)
+    if n == 0
+        -> false
+    -> is_even(n - 1)
+assert.assert_eq(is_even(10), true, "mutual recursion even")
+assert.assert_eq(is_odd(7), true, "mutual recursion odd")
+
+# ---------- 중첩 리스트 순회 ----------
+fn count_leaves(node)
+    if node is list
+        total = 0
+        for child in node
+            total += count_leaves(child)
+        -> total
+    -> 1
+assert.assert_eq(count_leaves([1, 2, 3]), 3, "flat list counts leaves")
+assert.assert_eq(count_leaves([[1, 2], [3, [4, 5]]]), 5, "nested list counts leaves")
+assert.assert_eq(count_leaves([]), 0, "empty list counts zero leaves")
+
+# ---------- memo ----------
+memo = {}
+fn fib_memo(n)
+    if n < 2
+        -> n
+    if memo.contains_key(n)
+        -> memo[n]
+    v = fib_memo(n - 1) + fib_memo(n - 2)
+    memo[n] = v
+    -> v
+assert.assert_eq(fib_memo(30), 832040, "memoized recursion")
+assert.assert_eq(len(memo), 29, "the cache stores one entry per computed index")
+assert.assert_eq(memo[30], 832040, "the cache holds the computed value")
+assert.assert_eq(fib_memo(30), 832040, "memoized result repeats")
+
+# ---------- 깊이가 한도 안인 재귀 ----------
+fn depth(n)
+    if n == 0
+        -> 0
+    -> 1 + depth(n - 1)
+assert.assert_eq(depth(500), 500, "recursion inside the default depth limit")
+
+# ---------- 한도 변경 ----------
+# 한도를 1000 이상으로 올리고 그만큼 재귀하면 OS 스택이 먼저 고갈되어
+# 잡히지 않는 Stack overflow로 프로세스가 죽는다.
+# 파일 안에서 검증할 수 없어서 test/negative/depth_limit_crash.un이 종료 코드로 검증한다.
+orig = sys.getcalldepth()
+sys.setcalldepth(2000)
+assert.assert_eq(sys.getcalldepth(), 2000, "setcalldepth raises the limit")
+sys.setcalldepth(orig)
+assert.assert_eq(sys.getcalldepth(), orig, "the depth limit is restored")
+
+assert.summary()

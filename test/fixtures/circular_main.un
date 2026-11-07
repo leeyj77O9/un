@@ -1,0 +1,3 @@
+use io
+use test.fixtures.circular.a
+io.write("should not reach")

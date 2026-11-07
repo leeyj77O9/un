@@ -1,0 +1,77 @@
+use io
+use math
+use test.assert as assert
+
+# ============================================================
+# math - 정수/음수/0/경계값, 반올림, 상수, 정의역 오류
+# 실행: Un.exe run test/unit/native/math.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 기본 ----------
+assert.assert_eq(math.abs(-5), 5, "abs negative")
+assert.assert_eq(math.abs(5), 5, "abs positive")
+assert.assert_eq(math.abs(-2.5), 2.5, "abs float")
+assert.assert_eq(math.abs(0), 0, "abs zero")
+
+# ---------- 반올림/절미 ----------
+assert.assert_eq(math.ceil(1.2), 2, "ceil up")
+assert.assert_eq(math.floor(1.9), 1, "floor down")
+assert.assert_eq(math.trunc(-1.9), -1, "trunc toward zero")
+assert.assert_eq(math.round(2.5), 2, "round half to even (2.5)")
+assert.assert_eq(math.round(-2.5), -2, "round half to even (-2.5)")
+assert.assert_eq(math.round(3.14159, 2), 3.14, "round with digits")
+
+# ----------冪乘/근 ----------
+assert.assert_eq(math.pow(2, 3), 8, "pow int")
+assert.assert_close(math.pow(2, 0.5), 1.4142135623730951, 1e-12, "pow float")
+assert.assert_eq(math.sqrt(4), 2, "sqrt perfect square")
+assert.assert_close(math.sqrt(2), 1.4142135623730951, 1e-12, "sqrt 2")
+assert.assert_eq(math.cbrt(27), 3, "cbrt perfect cube")
+assert.assert_eq(math.hypot(3, 4), 5, "hypot 3-4-5")
+
+# ---------- 약수 ----------
+assert.assert_eq(math.gcd(12, 8), 4, "gcd")
+assert.assert_eq(math.gcd(0, 5), 5, "gcd with zero")
+assert.assert_eq(math.lcm(4, 6), 12, "lcm")
+
+# ---------- 부호/범위 ----------
+assert.assert_eq(math.sign(-3), -1, "sign negative")
+assert.assert_eq(math.sign(3), 1, "sign positive")
+assert.assert_eq(math.sign(0), 0, "sign zero")
+assert.assert_eq(math.clamp(-1, 0, 3), 0, "clamp below low")
+assert.assert_eq(math.clamp(5, 0, 3), 3, "clamp above high")
+assert.assert_eq(math.clamp(2, 0, 3), 2, "clamp inside range")
+
+# ---------- 상수 ----------
+assert.assert_close(math.pi(), 3.141592653589793, 1e-12, "pi")
+assert.assert_close(math.e(), 2.718281828459045, 1e-12, "e")
+assert.assert_close(math.tau(), 6.283185307179586, 1e-12, "tau")
+
+# ---------- 삼각/로그 ----------
+assert.assert_eq(math.sin(0), 0, "sin 0")
+assert.assert_eq(math.cos(0), 1, "cos 0")
+assert.assert_eq(math.tan(0), 0, "tan 0")
+assert.assert_close(math.asin(1), 1.5707963267948966, 1e-12, "asin 1")
+assert.assert_eq(math.acos(1), 0, "acos 1")
+assert.assert_close(math.atan(1), 0.7853981633974483, 1e-12, "atan 1")
+assert.assert_eq(math.exp(1), math.e(), "exp 1 equals e")
+assert.assert_eq(math.log(math.e()), 1, "log e")
+assert.assert_eq(math.log(100, 10), 2, "log with base")
+
+# ---------- 특수 값 ----------
+inf = math.exp(1000)
+assert.assert_eq(math.is_finite(inf), false, "is_finite of infinity")
+assert.assert_eq(math.is_infinite(inf), true, "is_infinite of infinity")
+assert.assert_eq(math.is_finite(math.pi()), true, "is_finite of pi")
+assert.assert_eq(math.is_nan(math.pi()), false, "is_nan of pi")
+assert.assert_eq(math.is_nan(float("nan")), true, "is_nan of nan")
+assert.assert_eq(math.is_infinite(math.pi()), false, "is_infinite of pi")
+
+# ---------- 정의역 밖 ----------
+assert.assert_err(fn() -> math.sqrt(-1), "cannot compute sqrt of a negative number")
+assert.assert_err(fn() -> math.log(0), "expected value greater than 0")
+
+# ---------- 상수 폴딩 검증 ----------
+assert.assert_eq(2 + 3 * 4, 14, "precedence before folding")
+assert.assert_eq((2 + 3) * 4, 20, "parentheses kept")
+assert.summary()

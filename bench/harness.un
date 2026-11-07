@@ -1,0 +1,57 @@
+use io
+use time
+use math
+
+# ============================================================
+# 벤치마크 측정 도구
+# 실행: Un.exe run bench/<script>.un  (C:\dev\un 에서)
+#
+# 각 측정은 warmup번 준비 실행 후, reps번 실행을 하나씩 시간 재고
+# Min/Median/Average/Max/StdDev와 Median 기준 OPS를 출력한다.
+# 출력 형식(scripts/bench.ps1이 파싱한다):
+#   BENCH|label|iters|reps|warmup|min|median|avg|max|stddev|ops
+#
+# 주의:
+#   time.stopwatch()는 변수에 담고 start()를 호출해야 한다.
+#   시간 측정에 io.write 같은 출력은 포함하지 않는다.
+# ============================================================
+
+fn measure(label, work, iters, reps, warmup)
+    i = 0
+    while i < warmup
+        work(iters)
+        i += 1
+
+    sw = time.stopwatch()
+    times = []
+    r = 0
+    while r < reps
+        sw.reset()
+        sw.start()
+        work(iters)
+        sw.stop()
+        # tick은 0.1ms 단위다. ms()는 정수 ms만 반환해서 짧은 작업의
+        # 측정 해상도가 너무 낮다.
+        times.add(sw.tick() / 10000.0)
+        r += 1
+
+    times.sort()
+    n = len(times)
+    mn = times[0]
+    mx = times[n - 1]
+    md = times[n // 2]
+
+    total = 0
+    for t in times
+        total += t
+    avg = total / n
+
+    dev = 0
+    for t in times
+        dev += (t - avg) * (t - avg)
+    sd = math.sqrt(dev / n)
+
+    ops = iters / (md / 1000.0)
+
+    io.write(`BENCH|{label}|{iters}|{reps}|{warmup}|{mn}|{md}|{avg}|{mx}|{sd}|{ops}`)
+    -> { "label": label, "iters": iters, "reps": reps, "warmup": warmup, "min": mn, "median": md, "avg": avg, "max": mx, "stddev": sd, "ops": ops }

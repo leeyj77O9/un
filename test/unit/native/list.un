@@ -1,0 +1,139 @@
+use io
+use iter
+use test.assert as assert
+
+# ============================================================
+# list primitive - mutation semantics, return values,
+# boundary cases and invalid input
+# ============================================================
+
+# ---------- literal / index ----------
+l = [1, 2, 3, 4]
+assert.assert_eq(len(l), 4, "list len")
+assert.assert_eq(l[0], 1, "index 0")
+assert.assert_eq(l[3], 4, "index 3")
+assert.assert_eq(l[-1], 4, "index -1")
+assert.assert_eq([[0, 5], [7]][1][0], 7, "nested list index")
+l[1] = 99
+assert.assert_eq(l[1], 99, "item assignment")
+
+graph = [[0, 5, 10], [1, 2, 3]]
+graph[0][1] = 123
+assert.assert_eq(graph[0][1], 123, "nested element assignment")
+assert.assert_eq(graph, [[0, 123, 10], [1, 2, 3]], "nested assignment changes the outer list")
+
+# ---------- slice ----------
+sl = [1, 2, 3, 4]
+assert.assert_eq(sl[1:3], [2, 3], "list slice")
+assert.assert_eq(sl[1:], [2, 3, 4], "list slice start only")
+assert.assert_eq(sl[:2], [1, 2], "list slice end only")
+assert.assert_eq(sl[0:0], [], "list empty slice")
+assert.assert_eq(sl[3:10], [4], "list slice end clamps to the tail")
+sl[1:3] = [9]
+assert.assert_eq(sl, [1, 9, 4], "slice assignment shrinks list")
+
+# ---------- append / insert / extend ----------
+a = [3, 1, 2]
+assert.assert_eq(a.add(4), none, "add returns none")
+assert.assert_eq(a, [3, 1, 2, 4], "add appends in place")
+assert.assert_eq(a.insert(9, 0), [9, 3, 1, 2, 4], "insert returns the list")
+assert.assert_eq(a, [9, 3, 1, 2, 4], "insert mutates in place")
+assert.assert_eq(a.extend([5, 6]), none, "extend returns none")
+assert.assert_eq(a, [9, 3, 1, 2, 4, 5, 6], "extend appends in place")
+assert.assert_eq(a.extend_insert(7, 2), [9, 3, 7, 1, 2, 4, 5, 6], "extend_insert returns the list")
+assert.assert_eq(a, [9, 3, 7, 1, 2, 4, 5, 6], "extend_insert mutates in place")
+
+# ---------- search ----------
+assert.assert_eq(a.index_of(9), 0, "index_of hit")
+assert.assert_eq(a.index_of(99), -1, "index_of miss")
+assert.assert_true(a.contains(9), "contains hit")
+assert.assert_false(a.contains(99), "contains miss")
+
+# ---------- remove / pop ----------
+assert.assert_true(a.remove(9), "remove returns true on hit")
+assert.assert_false(a.remove(99), "remove returns false on miss")
+assert.assert_true(a.remove_at(0), "remove_at returns true")
+assert.assert_eq(a, [7, 1, 2, 4, 5, 6], "removals mutate the list")
+assert.assert_eq(a.pop(), 6, "pop() takes the last element")
+assert.assert_eq(a.pop(0), 7, "pop(i) takes the given index")
+assert.assert_eq(a, [1, 2, 4, 5], "pop mutates the list")
+
+# ---------- sort / reverse ----------
+assert.assert_eq(a.sort(), none, "sort returns none")
+assert.assert_eq(a, [1, 2, 4, 5], "sort mutates in place")
+assert.assert_eq(a.reverse(), none, "reverse returns none")
+assert.assert_eq(a, [5, 4, 2, 1], "reverse mutates in place")
+
+# ---------- binary search ----------
+b = [1, 2, 4, 5]
+assert.assert_eq(b.binary_search(1), 0, "binary_search first hit")
+assert.assert_eq(b.binary_search(5), 3, "binary_search last hit")
+assert.assert_eq(b.binary_search(3), -3, "binary_search missing returns negative insertion point")
+assert.assert_eq(b.binary_search(0), -1, "binary_search missing below")
+assert.assert_eq(b.binary_search(9), -5, "binary_search missing above")
+assert.assert_eq(b.lower_bound(1), 0, "lower_bound hit")
+assert.assert_eq(b.lower_bound(3), 2, "lower_bound gap points at the first value >= target")
+assert.assert_eq(b.lower_bound(5), 3, "lower_bound last")
+assert.assert_eq(b.upper_bound(1), 1, "upper_bound hit")
+assert.assert_eq(b.upper_bound(3), 2, "upper_bound gap")
+
+# ---------- heap ----------
+h = []
+h.hpush(5)
+h.hpush(3)
+h.hpush(7)
+h.hpush(1)
+assert.assert_eq(h.hpop(), 1, "hpop min 1")
+assert.assert_eq(h.hpop(), 3, "hpop min 2")
+assert.assert_eq(h.hpop(), 5, "hpop min 3")
+assert.assert_eq(h.hpop(), 7, "hpop min 4")
+
+# ---------- map ----------
+m = [3, 1, 2]
+assert.assert_eq(m.map(fn(x, i) -> x * 2), [6, 2, 4], "map with 2-arg lambda")
+
+# ---------- resize / clear ----------
+r = [1, 2, 3]
+assert.assert_eq(r.resize(), none, "resize returns none")
+
+# ---------- equality / length ----------
+assert.assert_true([1, 2] == [1, 2], "list equality")
+assert.assert_true([1, 2] != [1, 3], "list inequality")
+assert.assert_false([1, 2] == [1, 2, 3], "shorter list is not equal")
+assert.assert_false([1, 2, 3] == [1, 2], "longer list is not equal")
+
+# ---------- growing list and destructuring ----------
+grown = [1]
+grown.add(2)
+ga, gb = grown
+assert.assert_eq(ga, 1, "destructure grown list a")
+assert.assert_eq(gb, 2, "destructure grown list b")
+
+# ---------- shrinking list drops stale slots ----------
+shrunk = [1, 2, 3]
+shrunk.remove_at(2)
+assert.assert_eq(shrunk, [1, 2], "shrunk list value")
+assert.assert_eq(len(shrunk), 2, "shrunk list len")
+assert.assert_false([3] in shrunk, "shrunk list drops stale slot")
+
+# ---------- boundary: empty list ----------
+e = []
+assert.assert_eq(len(e), 0, "empty list len")
+assert.assert_eq(e.sort(), none, "sort empty list")
+assert.assert_eq(e.reverse(), none, "reverse empty list")
+assert.assert_eq(e.index_of(1), -1, "index_of on empty list")
+assert.assert_false(e.contains(1), "contains on empty list")
+assert.assert_eq(list(iter.take(0, e)), [], "take 0 from empty list")
+assert.assert_eq(e.map(fn(x, i) -> x), [], "map on empty list")
+
+# ---------- invalid input ----------
+assert.assert_err(fn() -> e.pop(), "pop on empty list")
+assert.assert_err(fn() -> e.hpop(), "hpop on empty list")
+assert.assert_err(fn() -> e.remove_at(0), "remove_at on empty list")
+assert.assert_err(fn() -> e[0], "empty list index")
+assert.assert_err(fn() -> l[100], "list index out of range")
+assert.assert_err(fn() -> m.map(fn(x) -> x), "map requires a 2-arg lambda")
+assert.assert_eq(l[0:100], l, "list slice clamps to the logical length")
+assert.assert_eq(len(l[0:100]), 4, "clamped slice length")
+
+assert.summary()

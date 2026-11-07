@@ -1,0 +1,90 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# 함수 - 기본인자, 키워드 인자, 가변 인자, 람다, 재귀, 장식, 전파
+# 실행: Un.exe run test/unit/runtime/functions.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 기본값 ----------
+fn defaults(a, b = 10)
+    -> a + b
+assert.assert_eq(defaults(1), 11, "default argument is used when omitted")
+assert.assert_eq(defaults(1, 20), 21, "explicit argument overrides the default")
+assert.assert_eq(defaults(1, b = 30), 31, "keyword argument binds by name")
+
+# ---------- 가변 인자 ----------
+fn varargs_fn(a, *rest)
+    -> len(rest)
+assert.assert_eq(varargs_fn(1, 2, 3), 2, "varargs collects the extra arguments")
+assert.assert_eq(varargs_fn(1), 0, "varargs is empty when no extra arguments")
+
+# ---------- 람다 ----------
+lam2 = fn(a, b) -> a - b
+assert.assert_eq(lam2(5, 2), 3, "assigned lambda is callable")
+assert.assert_eq((fn(x) -> x * 2)(4), 8, "inline lambda is callable")
+
+# ---------- 재귀 ----------
+fn factorial(n)
+    if n <= 1
+        -> 1
+    -> n * factorial(n - 1)
+assert.assert_eq(factorial(10), 3628800, "recursive factorial")
+assert.assert_eq(factorial(0), 1, "recursion base case")
+assert.assert_eq(factorial(1), 1, "recursion base case 1")
+
+fn fib(n)
+    if n < 2
+        -> n
+    -> fib(n - 1) + fib(n - 2)
+assert.assert_eq(fib(10), 55, "double recursion")
+
+# ---------- 깊은 재귀 ----------
+# 재귀 깊이가 한도를 넘으면 프로세스가 스택 오버플로로 죽는다.
+# test/negative/stack_overflow.un이 종료 코드로 검증하므로 여기서는 하지 않는다.
+
+# ---------- 클로저 ----------
+fn make_adder(n)
+    fn add(x)
+        -> x + n
+    -> add
+add5 = make_adder(5)
+assert.assert_eq(add5(10), 15, "closure captures the parameter")
+
+# ---------- 장식 ----------
+fn double(x)
+    -> x * 2
+fn deco(target)
+    fn wrapped(x)
+        -> target(x) * 3
+    -> wrapped
+@deco
+fn decorated(x)
+    -> x + 1
+assert.assert_eq(decorated(5), 18, "decorator wraps the function")
+
+# ---------- 예외 전파 ----------
+fn may_fail(x)
+    if x < 0
+        -> throw("negative")
+    -> x * 2
+assert.assert_eq(may_fail(5)?, 10, "? returns the value on success")
+assert.assert_err(fn() -> may_fail(-1)?, "negative")
+
+v = none
+assert.assert_eq(v?.value, none, "safe member access on none is none")
+assert.assert_eq(v?.len(), none, "safe call on none is none")
+
+# ---------- throw 계열 ----------
+assert.assert_err(fn() -> throw("boom"), "boom")
+assert.assert_err(fn() -> throw_if(true, "cond hit"), "cond hit")
+assert.assert_eq(throw_if(false, "no"), none, "throw_if does nothing when the condition is false")
+assert.assert_err(fn() -> throw_unless(false, "cond miss"), "cond miss")
+assert.assert_eq(throw_unless(true, "no"), none, "throw_unless does nothing when the condition is true")
+
+# ---------- 반환값이 없는 함수 ----------
+fn no_return()
+    unused = 1
+assert.assert_eq(no_return(), none, "function without a return yields none")
+
+assert.summary()

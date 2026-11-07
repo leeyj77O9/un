@@ -1,0 +1,53 @@
+use io
+use test.assert as assert
+use iter
+
+# ============================================================
+# tuple - 불변 순서열, 인덱스/슬라이스, 분해, 변환
+# 실행: Un.exe run test/unit/native/tup.un  (C:\dev\un 에서)
+# ============================================================
+
+t = (1, 2, 3)
+assert.assert_eq(len(t), 3, "tuple len")
+assert.assert_eq(t[0], 1, "tuple index 0")
+assert.assert_eq(t[2], 3, "tuple index 2")
+assert.assert_eq(t[-1], 3, "tuple negative index")
+assert.assert_eq(t[-3], 1, "tuple negative index first")
+assert.assert_eq(str(t), "(1, 2, 3)", "str tuple")
+assert.assert_eq(str((1,)), "1", "str single element tuple")
+
+# ---------- 슬라이스 ----------
+assert.assert_eq(t[1:3], (2, 3), "tuple slice")
+assert.assert_eq(t[-2:], (2, 3), "tuple slice negative start")
+assert.assert_eq(t[0:3:2], (1, 3), "tuple slice step")
+assert.assert_eq(t[3:10], (), "tuple slice out of range is empty")
+
+# ---------- 비교 ----------
+assert.assert_eq((1, 2) == (1, 2), true, "tuple equality")
+assert.assert_eq((1, 2) != (1, 3), true, "tuple inequality")
+assert.assert_eq(2 in (1, 2, 3), true, "in tuple hit")
+assert.assert_eq(9 in (1, 2, 3), false, "in tuple miss")
+
+# ---------- 형 변환 ----------
+assert.assert_eq(list(t), [1, 2, 3], "tuple to list")
+assert.assert_eq(tuple([1, 2]), (1, 2), "list to tuple")
+
+# ---------- 분해 ----------
+a1, b1 = (1, 2)
+assert.assert_eq(a1, 1, "tuple destructuring first")
+assert.assert_eq(b1, 2, "tuple destructuring second")
+c1, (d1, e1) = (1, (2, 3))
+assert.assert_eq(d1, 2, "nested destructuring inner first")
+assert.assert_eq(e1, 3, "nested destructuring inner second")
+
+# ---------- 문자열 join ----------
+assert.assert_eq("-".join(t), "1-2-3", "join over tuple")
+
+# ---------- 한 요소 ----------
+assert.assert_eq(len((1,)), 1, "single element tuple len")
+
+# ---------- 불가능한 연산 ----------
+assert.assert_err(fn() -> t.add(4), "'tuple' object has no attribute 'add'")
+assert.assert_err(fn() -> t.contains(2), "'tuple' object has no attribute 'contains'")
+assert.assert_err(fn() -> t[5], "tuple index out of range")
+assert.summary()

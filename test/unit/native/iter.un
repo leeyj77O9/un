@@ -1,0 +1,63 @@
+use io
+use iter
+use test.assert as assert
+
+# ============================================================
+# iter - range/filter/map/take/enumerate 등, 공집합과 경계값
+# 실행: Un.exe run test/unit/native/iter.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- range ----------
+assert.assert_eq(list(iter.range(0, 10, 2)), [0, 2, 4, 6, 8], "range with step")
+assert.assert_eq(list(iter.range(3)), [0, 1, 2], "range stop only")
+assert.assert_eq(list(iter.range(-2, 2)), [-2, -1, 0, 1], "range negative start")
+assert.assert_eq(list(iter.range(3, 3)), [], "range empty")
+assert.assert_eq(list(iter.range(3, 0, -1)), [3, 2, 1], "range reverse step")
+
+# ---------- 집계 ----------
+assert.assert_eq(iter.sum([1, 2, 3]), 6, "sum list")
+assert.assert_eq(iter.sum([1.5, 1.5]), 3, "sum float is int result")
+assert.assert_eq(iter.max([3, 1, 2]), 3, "max list")
+assert.assert_eq(iter.min([3, 1, 2]), 1, "min list")
+assert.assert_eq(iter.sum("ab"), "ab", "sum string concatenates")
+assert.assert_eq(iter.max("ba"), "b", "max string")
+assert.assert_eq(iter.min("ba"), "a", "min string")
+
+# ---------- 술어 기반 ----------
+assert.assert_eq(iter.all(fn(x) -> x > 0, [1, 2, 3]), true, "all true")
+assert.assert_eq(iter.all(fn(x) -> x > 1, [1, 2, 3]), false, "all false")
+assert.assert_eq(iter.all(fn(x) -> true, []), true, "all on empty is true")
+assert.assert_eq(iter.any(fn(x) -> x > 2, [1, 2, 3]), true, "any true")
+assert.assert_eq(iter.any(fn(x) -> x > 3, [1, 2, 3]), false, "any false")
+assert.assert_eq(iter.any(fn(x) -> true, []), false, "any on empty is false")
+assert.assert_eq(iter.count(fn(x) -> x > 1, [1, 2, 3]), 2, "count matching")
+assert.assert_eq(iter.count(fn(x) -> true, []), 0, "count on empty is 0")
+
+# ---------- 변환 ----------
+assert.assert_eq(list(iter.filter(fn(x) -> x > 1, [1, 2, 3])), [2, 3], "filter")
+assert.assert_eq(list(iter.map(fn(x) -> x * 2, [1, 2])), [2, 4], "map")
+assert.assert_eq(list(iter.flatten([[1, 2], [3]])), [1, 2, 3], "flatten")
+assert.assert_eq(list(iter.enumerate(["a", "b"])), [(0, "a"), (1, "b")], "enumerate")
+assert.assert_eq(list(iter.sorted([3, 1, 2])), [1, 2, 3], "sorted")
+assert.assert_eq(list(iter.take(2, [1, 2, 3])), [1, 2], "take")
+assert.assert_eq(list(iter.take(0, [1, 2, 3])), [], "take zero")
+assert.assert_eq(list(iter.array(1, [2, 2])), [[1, 1], [1, 1]], "array with dimensions")
+assert.assert_eq(list(iter.array(0, 0)), [], "array size zero")
+assert.assert_eq(list(iter.repeat([1], 2)), [1, 1], "repeat iterable twice")
+assert.assert_eq(list(iter.take(2, iter.counter(1))), [1, 2], "counter from start")
+
+# ---------- 공집합 ----------
+assert.assert_eq(list(iter.filter(fn(x) -> true, [])), [], "filter empty")
+assert.assert_eq(list(iter.map(fn(x) -> x, [])), [], "map empty")
+assert.assert_eq(list(iter.enumerate([])), [], "enumerate empty")
+assert.assert_eq(list(iter.flatten([])), [], "flatten empty")
+assert.assert_eq(list(iter.sorted([])), [], "sorted empty")
+assert.assert_eq(list(iter.take(3, [])), [], "take from empty")
+
+# ---------- 중첩 ----------
+nested = [[1, 2], [3, [4, 5]]]
+assert.assert_eq(list(iter.flatten(nested)), [1, 2, 3, [4, 5]], "flatten one level only")
+
+# ---------- 없는 멤버 ----------
+assert.assert_err(fn() -> iter.drop(1, [1, 2, 3]), "'module' object has no attribute 'drop'")
+assert.summary()

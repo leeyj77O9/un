@@ -1,0 +1,2 @@
+use io as i
+i.write("as ok")

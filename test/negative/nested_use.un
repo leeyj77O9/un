@@ -1,0 +1,3 @@
+use test.assert as a
+a.assert_true(true, "nested use")
+a.summary()

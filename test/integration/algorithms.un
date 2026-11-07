@@ -1,0 +1,319 @@
+use io
+use iter
+use test.assert as assert
+
+# ============================================================
+# 알고리즘 - 자료구조/수학/순회 조합 (순수 Un 코드)
+# 실행: Un.exe run test/integration/algorithms.un  (C:\dev\un 에서)
+#
+# 목록 연산은 사본을 반환하지 않는 메서드(sort/extend/add)를 쓴다.
+# 정렬 검증은 정렬 후 사본을 만들어 비교한다.
+# ============================================================
+
+# ---------- 최소 힙 ----------
+class Heap
+    data = 0
+
+    fn __init__()
+        self.data = []
+
+    fn parent(i)
+        -> (i - 1) // 2
+
+    fn left(i)
+        -> 2 * i + 1
+
+    fn right(i)
+        -> 2 * i + 2
+
+    fn swap(i, j)
+        tmp = self.data[i]
+        self.data[i] = self.data[j]
+        self.data[j] = tmp
+
+    fn up(i)
+        if i == 0
+            -> 0
+        p = self.parent(i)
+        if self.data[i] < self.data[p]
+            self.swap(i, p)
+            self.up(p)
+
+    fn push(x)
+        self.data.add(x)
+        self.up(len(self.data) - 1)
+
+    fn down(i)
+        l = self.left(i)
+        r = self.right(i)
+        n = len(self.data)
+        smallest = i
+        if l < n and self.data[l] < self.data[smallest]
+            smallest = l
+        if r < n and self.data[r] < self.data[smallest]
+            smallest = r
+        if smallest != i
+            self.swap(i, smallest)
+            self.down(smallest)
+
+    fn pop()
+        n = len(self.data)
+        top = self.data[0]
+        self.data[0] = self.data[n - 1]
+        self.data.pop()
+        self.down(0)
+        -> top
+
+h = Heap()
+h.push(5)
+h.push(3)
+h.push(7)
+popped = []
+popped.add(h.pop())
+popped.add(h.pop())
+popped.add(h.pop())
+assert.assert_eq(popped, [3, 5, 7], "a heap pops values in ascending order")
+assert.assert_eq(len(h.data), 0, "the heap is empty after every pop")
+
+# ---------- 내장 힙(hpush/hpop) ----------
+ih = []
+ih.hpush(10)
+ih.hpush(1)
+ih.hpush(5)
+ih_popped = []
+ih_popped.add(ih.hpop())
+ih_popped.add(ih.hpop())
+ih_popped.add(ih.hpop())
+assert.assert_eq(ih_popped, [1, 5, 10], "the native heap pops the smallest first")
+assert.assert_eq(len(ih), 0, "the native heap empties after every pop")
+
+# ---------- 이분 탐색 ----------
+# 루프 안의 ->는 함수를 빠져나가지 못한다(test/regression/defects.un에 등록).
+# 그래서 발견 여부를 변수에 기록하고 루프를 종료한다.
+fn binary_search(xs, target)
+    lo = 0
+    hi = len(xs) - 1
+    found = -1
+    while lo <= hi
+        mid = (lo + hi) // 2
+        if xs[mid] == target
+            found = mid
+            hi = lo - 1
+        elif xs[mid] < target
+            lo = mid + 1
+        else
+            hi = mid - 1
+    -> found
+
+sorted_xs = [1, 3, 5, 7, 9]
+assert.assert_eq(binary_search(sorted_xs, 7), 3, "binary search finds a middle element")
+assert.assert_eq(binary_search(sorted_xs, 1), 0, "binary search finds the first element")
+assert.assert_eq(binary_search(sorted_xs, 9), 4, "binary search finds the last element")
+assert.assert_eq(binary_search(sorted_xs, 4), -1, "binary search reports a missing value")
+assert.assert_eq(binary_search([], 1), -1, "binary search on an empty list finds nothing")
+assert.assert_eq(sorted_xs.binary_search(5), 2, "the native binary_search finds the index")
+assert.assert_eq(sorted_xs.binary_search(4), -3, "the native binary_search returns a negative insertion hint")
+
+# ---------- 소수筛 ----------
+fn sieve(limit)
+    flags = []
+    for i in iter.range(0, limit)
+        flags.add(true)
+    primes = []
+    for n in iter.range(2, limit)
+        if flags[n]
+            primes.add(n)
+            m = n * n
+            while m < limit
+                flags[m] = false
+                m += n
+    -> primes
+
+assert.assert_eq(sieve(30), [2, 3, 5, 7, 11, 13, 17, 19, 23, 29], "the sieve finds primes under 30")
+assert.assert_eq(sieve(2), [], "the sieve finds nothing below the first prime")
+assert.assert_eq(len(sieve(100)), 25, "there are 25 primes under 100")
+
+# ---------- 유클리드 gcd ----------
+fn gcd(a, b)
+    while b != 0
+        t = b
+        b = a % b
+        a = t
+    -> a
+
+assert.assert_eq(gcd(12, 8), 4, "gcd of 12 and 8")
+assert.assert_eq(gcd(7, 5), 1, "coprime numbers have gcd 1")
+assert.assert_eq(gcd(100, 100), 100, "gcd of equal numbers is the number")
+assert.assert_eq(gcd(0, 5), 5, "gcd with zero is the other number")
+assert.assert_eq(gcd(36, 60), 12, "gcd of larger numbers")
+
+# ---------- quicksort ----------
+fn qsort(xs)
+    if len(xs) <= 1
+        -> xs
+    pivot = xs[0]
+    smaller = []
+    larger = []
+    for x in xs[1:]
+        if x < pivot
+            smaller.add(x)
+        else
+            larger.add(x)
+    out = qsort(smaller)
+    out.add(pivot)
+    for v in qsort(larger)
+        out.add(v)
+    -> out
+
+assert.assert_eq(qsort([3, 1, 2]), [1, 2, 3], "quicksort sorts a small list")
+assert.assert_eq(qsort([5, 5, 5, 1]), [1, 5, 5, 5], "quicksort keeps duplicates")
+assert.assert_eq(qsort([]), [], "quicksort on an empty list")
+assert.assert_eq(qsort([9, 8, 7, 6, 5, 4, 3, 2, 1]), [1, 2, 3, 4, 5, 6, 7, 8, 9], "quicksort sorts a descending list")
+desc = []
+for i in iter.range(1, 40)
+    desc.add(40 - i)
+sdesc = qsort(desc)
+assert.assert_eq(len(sdesc), 39, "quicksort keeps every element")
+assert.assert_eq(sdesc[0], 1, "the sorted head is the smallest")
+assert.assert_eq(sdesc[38], 39, "the sorted tail is the largest")
+
+# ---------- 문자열 RLE ----------
+fn rle_encode(text)
+    out = ""
+    i = 0
+    n = len(text)
+    while i < n
+        c = text[i]
+        run = 1
+        while i + run < n and text[i + run] == c
+            run += 1
+        out += c + str(run)
+        i += run
+    -> out
+
+fn rle_decode(text)
+    out = ""
+    i = 0
+    n = len(text)
+    while i < n
+        c = text[i]
+        digits = ""
+        j = i + 1
+        while j < n
+            d = text[j]
+            ok = false
+            try
+                int(d)
+                ok = true
+            catch err_alg1
+                ok = false
+            if not ok
+                break
+            digits += d
+            j += 1
+        count = int(digits)
+        for k in iter.range(0, count)
+            out += c
+        i = j
+    -> out
+
+enc = rle_encode("aaabcc")
+assert.assert_eq(enc, "a3b1c2", "RLE encodes runs")
+assert.assert_eq(rle_decode(enc), "aaabcc", "RLE decodes back to the input")
+assert.assert_eq(rle_encode(""), "", "RLE of an empty string is empty")
+assert.assert_eq(rle_encode("abc"), "a1b1c1", "RLE of single characters")
+
+# ---------- 행렬 ----------
+fn mat_mul(a, b)
+    n = len(a)
+    out = []
+    for i in iter.range(0, n)
+        row = []
+        for j in iter.range(0, n)
+            s = 0
+            for k in iter.range(0, n)
+                s += a[i][k] * b[k][j]
+            row.add(s)
+        out.add(row)
+    -> out
+
+ident = [[1, 0], [0, 1]]
+m = [[1, 2], [3, 4]]
+assert.assert_eq(mat_mul(m, ident), m, "multiplying by the identity keeps the matrix")
+assert.assert_eq(mat_mul(m, m), [[7, 10], [15, 22]], "2x2 matrix product")
+
+fn transpose(a)
+    n = len(a)
+    out = []
+    for j in iter.range(0, n)
+        row = []
+        for i in iter.range(0, n)
+            row.add(a[i][j])
+        out.add(row)
+    -> out
+
+assert.assert_eq(transpose(m), [[1, 3], [2, 4]], "transpose swaps rows and columns")
+assert.assert_eq(transpose(transpose(m)), m, "transposing twice returns the original")
+
+# ---------- Floyd-Warshall 최단 경로 ----------
+fn all_pairs(graph)
+    n = len(graph)
+    dist = []
+    for i in iter.range(0, n)
+        row = []
+        for j in iter.range(0, n)
+            row.add(graph[i][j])
+        dist.add(row)
+    for k in iter.range(0, n)
+        for i in iter.range(0, n)
+            for j in iter.range(0, n)
+                if dist[i][j] > dist[i][k] + dist[k][j]
+                    dist[i][j] = dist[i][k] + dist[k][j]
+    -> dist
+
+INF = 99999999
+graph = [
+    [0, 5, INF, 10],
+    [INF, 0, 3, INF],
+    [INF, INF, 0, 1],
+    [INF, INF, INF, 0]
+]
+dist = all_pairs(graph)
+assert.assert_eq(dist[0], [0, 5, 8, 9], "the shortest paths from node 0 use the intermediate nodes")
+assert.assert_eq(dist[1], [INF, 0, 3, 4], "node 1 reaches node 3 through node 2")
+assert.assert_eq(dist[2], [INF, INF, 0, 1], "direct edges are kept when they are shortest")
+assert.assert_eq(dist[3], [INF, INF, INF, 0], "unreachable nodes stay at the sentinel")
+
+# ---------- Floyd cycle detection ----------
+nexts = {1: 2, 2: 3, 3: 4, 4: 2}
+tortoise = 1
+hare = 1
+while true
+    tortoise = nexts[tortoise]
+    hare = nexts[nexts[hare]]
+    if tortoise == hare
+        break
+cycle = 1
+cur = tortoise
+while true
+    cur = nexts[cur]
+    if cur == tortoise
+        break
+    cycle += 1
+assert.assert_eq(cycle, 3, "the cycle length is 3 (2 -> 3 -> 4 -> 2)")
+
+# ---------- Ring buffer ----------
+ring = []
+fn push_ring(buf, value, size)
+    buf.add(value)
+    if len(buf) > size
+        buf.pop(0)
+    -> len(buf)
+assert.assert_eq(push_ring(ring, 1, 3), 1, "the first item fills the ring")
+push_ring(ring, 2, 3)
+push_ring(ring, 3, 3)
+assert.assert_eq(ring, [1, 2, 3], "the ring fills in insertion order")
+push_ring(ring, 4, 3)
+assert.assert_eq(ring, [2, 3, 4], "pushing past the size drops the oldest item")
+
+assert.summary()

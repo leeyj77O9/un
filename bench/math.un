@@ -1,0 +1,30 @@
+use io
+use iter
+use math
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 수학 - 1..10000에 floor(sqrt(i)) 합
+# Node.js 벤치마크: bench/node/math.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/math.un  (C:\dev\un 에서)
+# ============================================================
+
+fn math_work(n)
+    total = 0
+    for i in iter.range(1, n + 1)
+        total += math.floor(math.sqrt(i))
+    -> total
+
+# ---------- 검증 ----------
+# n=100: k=floor(sqrt(i))의 개수는 2k+1이고, k=10은 1개다.
+# 1*3 + 2*5 + ... + 9*19 + 10*1 = 625
+assert.assert_eq(math_work(1), 1, "math_work(1)")
+assert.assert_eq(math_work(100), 625, "math_work(100)")
+# n=1000: k=1..30의 합은 2*sum(k^2)+sum(k)=19375, k=31은 40개*31=1240
+assert.assert_eq(math_work(1000), 20615, "math_work(1000)")
+
+# ---------- 측정 ----------
+bench.measure("math10000", fn(n) -> math_work(10000), 10000, 7, 2)
+
+assert.summary()

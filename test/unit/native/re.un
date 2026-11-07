@@ -1,0 +1,50 @@
+use io
+use re
+use test.assert as assert
+
+# ============================================================
+# re - 정규식 test/search/find_all/replace/split/groups
+# 실행: Un.exe run test/unit/native/re.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 일치 여부 ----------
+assert.assert_eq(re.test("\\d", "abc"), false, "test no digit")
+assert.assert_eq(re.test("\\d", "a1b"), true, "test digit hit")
+assert.assert_eq(re.test("^a", "abc"), true, "test anchored start")
+assert.assert_eq(re.test("^a", "bca"), false, "test anchored miss")
+
+# ---------- 검색 ----------
+assert.assert_eq(re.search("b", "abc"), "b", "search hit")
+assert.assert_eq(re.search("z", "abc"), none, "search miss is none")
+assert.assert_eq(re.find_all("\\d", "a1b2c3"), ["1", "2", "3"], "find_all multiple")
+assert.assert_eq(re.find_all("\\d", "abc"), [], "find_all no match is empty list")
+
+# ---------- 캡처 그룹 ----------
+assert.assert_eq(re.groups("(a)(b)", "ab"), ["a", "b"], "groups capture returns a list")
+assert.assert_eq(re.groups("(a)(b)", "xyz"), none, "groups no match is none")
+
+# ---------- 치환 ----------
+assert.assert_eq(re.replace("a", "abc", "X"), "Xbc", "replace first")
+assert.assert_eq(re.replace("z", "abc", "X"), "abc", "replace miss keeps text")
+assert.assert_eq(re.replace_all("a", "aaa", "X"), "XXX", "replace_all every match")
+assert.assert_eq(re.replace_all("a", "aaa", ""), "", "replace_all with empty replacement")
+
+# ---------- 분할 ----------
+assert.assert_eq(re.split("\\d", "a1b2"), ["a", "b", ""], "split on digits")
+assert.assert_eq(re.split("z", "abc"), ["abc"], "split with no separator")
+assert.assert_eq(re.split(",", "a,b,c"), ["a", "b", "c"], "split on comma")
+
+# ---------- 이스케이프 ----------
+assert.assert_eq(re.escape("a.b"), "a\\.b", "escape dot")
+assert.assert_eq(re.escape("abc"), "abc", "escape plain text")
+
+# ---------- 빈 입력 ----------
+assert.assert_eq(re.test("", ""), true, "empty pattern on empty text")
+assert.assert_eq(re.split("", "ab"), ["", "a", "b", ""], "split on an empty pattern puts separators at every boundary")
+
+# ---------- 잘못된 패턴 ----------
+assert.assert_err(fn() -> re.test("(", "abc"), "invalid regex pattern")
+
+# ---------- re.match는 예약어 때문에 점 접근으로 호출할 수 없다 ----------
+assert.assert_true(len("re.match is a keyword") > 0, "re.match keyword note")
+assert.summary()

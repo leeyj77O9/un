@@ -1,0 +1,3 @@
+use io
+x = " "
+io.write("x len=", len(x))

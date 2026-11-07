@@ -1,0 +1,10 @@
+use io
+
+# catch 변수가 같은 이름의 전역을 덮어쓰는 문제.
+# e를 읽으면 Err가 다시 던져져 잡히지 않고 종료된다.
+e = 1
+try
+    v = 1 / 0
+catch e
+    marker = 1
+io.write("value=", e)

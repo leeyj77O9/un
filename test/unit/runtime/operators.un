@@ -1,0 +1,120 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# 연산자와 우선순위 - 정수/음수/0/부동소수점, 비트, 비교, 단항
+# 실행: Un.exe run test/unit/runtime/operators.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 산술 ----------
+assert.assert_eq(1 + 2 * 3, 7, "multiplication binds tighter than addition")
+assert.assert_eq((1 + 2) * 3, 9, "parentheses override precedence")
+assert.assert_eq(7 - 2 - 3, 2, "subtraction is left associative")
+assert.assert_eq(8 / 4, 2, "division")
+assert.assert_eq(3.0 / 2, 1.5, "float division")
+assert.assert_eq(2.5 * 4, 10.0, "float multiplication")
+assert.assert_eq(7 // 2, 3, "integer division truncates")
+assert.assert_eq(-7 // 2, -3, "integer division truncates toward zero")
+assert.assert_eq(7 % 3, 1, "modulo")
+assert.assert_eq(-7 % 3, -1, "modulo keeps the sign of the left operand")
+assert.assert_eq(2 ** 3, 8, "power")
+assert.assert_eq(2 ** 3 ** 2, 64, "power is right associative")
+assert.assert_eq(-2 ** 2, 4, "unary minus binds looser than power")
+
+# ---------- 0과 음수 ----------
+assert.assert_eq(0 * 5, 0, "multiply by zero")
+assert.assert_eq(0 + 5, 5, "add zero")
+assert.assert_eq(-0, 0, "negative zero is zero")
+assert.assert_eq(1 / -2, -0.5, "division by negative")
+assert.assert_eq(-3 * -2, 6, "negative times negative")
+
+# ---------- 나눗셈 정의역 ----------
+assert.assert_err(fn() -> 1 / 0, "int division by zero")
+assert.assert_err(fn() -> 1 // 0, "int division by zero")
+
+# ---------- 비트 ----------
+assert.assert_eq(6 & 3, 2, "bit and")
+assert.assert_eq(6 | 3, 7, "bit or")
+assert.assert_eq(6 ^ 3, 5, "bit xor")
+assert.assert_eq(1 << 3, 8, "shift left")
+assert.assert_eq(8 >> 3, 1, "shift right")
+
+# ---------- 논리 ----------
+assert.assert_eq(true and false, false, "and")
+assert.assert_eq(true or false, true, "or")
+assert.assert_eq(not true, false, "not")
+assert.assert_eq(true and false or true, true, "and binds tighter than or")
+
+# ---------- 비교 ----------
+assert.assert_eq(1 < 2, true, "less")
+assert.assert_eq(2 < 1, false, "less false")
+assert.assert_eq(2 > 1, true, "greater")
+assert.assert_eq(2 >= 2, true, "greater or equal")
+assert.assert_eq(1 <= 2, true, "less or equal")
+assert.assert_eq(1 == 1, true, "equal")
+assert.assert_eq(1 != 2, true, "not equal")
+assert.assert_eq(1 == 2, false, "equal false")
+assert.assert_eq(1.0 == 1, true, "float and int equal")
+assert.assert_eq(1 < 2 == true, true, "comparison with bool right side")
+
+# ---------- is / is not ----------
+assert.assert_true(1 is int, "int is the int type")
+assert.assert_false(1 is str, "int is not the str type")
+assert.assert_true("hi" is str, "str is the str type")
+assert.assert_true(1 is not str, "is not rejects the other type")
+assert.assert_false(1 is not int, "is not keeps a matching type")
+assert.assert_true("hi" is not int, "str is not int")
+assert.assert_true(none is not int, "none is not int")
+
+# ---------- 연산은 지원되지 않는 조합 ----------
+assert.assert_eq(1 == 1 == 1, false, "chained equality is not associative")
+
+# ---------- 단항/보조 연산 ----------
+assert.assert_eq(1 ? "y" : "n", "y", "ternary true")
+assert.assert_eq(0 ? "y" : "n", "n", "ternary false")
+assert.assert_eq(none ?? 1, 1, "coalesce uses the default")
+assert.assert_eq(3 ?? 7, 3, "coalesce keeps the value")
+
+x = 10
+x += 5
+assert.assert_eq(x, 15, "add assign")
+x -= 5
+assert.assert_eq(x, 10, "sub assign")
+x *= 2
+assert.assert_eq(x, 20, "mul assign")
+x //= 2
+assert.assert_eq(x, 10, "floor div assign")
+x %= 3
+assert.assert_eq(x, 1, "mod assign")
+x **= 2
+assert.assert_eq(x, 1, "power assign keeps value")
+
+y = 1
+y <<= 3
+assert.assert_eq(y, 8, "shift left assign")
+y >>= 1
+assert.assert_eq(y, 4, "shift right assign")
+
+nv = none
+nv ??= 7
+assert.assert_eq(nv, 7, "coalesce assign fills none")
+
+colon := 10
+assert.assert_eq(colon, 10, "colon assignment binds the value")
+
+# ---------- 문자열 ----------
+assert.assert_eq("a" + "b", "ab", "string concat")
+
+# ---------- 형식 불일치 ----------
+assert.assert_err(fn() -> "ab" * 2, "unsupported operand type(s) for *: 'str' and 'int'")
+assert.assert_err(fn() -> [1, 2] < [1, 3], "unsupported operand type(s) for <: 'list' and 'list'")
+assert.assert_err(fn() -> 1 == "1", "unsupported operand type(s) for ==: 'int' and 'str'")
+
+# ---------- 문자열 숫자 변환 ----------
+assert.assert_eq(int("42"), 42, "int from string")
+assert.assert_eq(int(" 42 "), 42, "int from string with spaces")
+assert.assert_eq(float("1.5"), 1.5, "float from string")
+assert.assert_eq(str(1), "1", "str from int")
+assert.assert_err(fn() -> int("abc"), "cannot convert")
+
+assert.summary()

@@ -1,0 +1,59 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# set - add/remove/ membership, 집합 연산, 비운 집합
+# 실행: Un.exe run test/unit/native/set.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 생성 ----------
+s = set(1, 2, 3)
+assert.assert_eq(len(s), 3, "set len")
+assert.assert_true(s.contains(1), "set contains hit")
+assert.assert_false(s.contains(9), "set contains miss")
+assert.assert_eq(str(set(1, 2)), "{1, 2}", "str set")
+
+# ---------- add ----------
+assert.assert_eq(s.add(4), true, "add new returns true")
+assert.assert_eq(len(s), 4, "add mutates set")
+assert.assert_eq(s.add(4), false, "add duplicate returns false")
+assert.assert_eq(len(s), 4, "duplicate add does not grow set")
+
+# ---------- remove ----------
+assert.assert_true(s.remove(4), "remove hit returns true")
+assert.assert_false(s.contains(4), "remove mutates set")
+assert.assert_eq(s.remove(99), false, "remove miss returns false")
+
+# ---------- 집합 연산 ----------
+a = set(1, 2, 3)
+b = set(3, 4)
+assert.assert_eq(len(a.union(b)), 4, "union len")
+assert.assert_eq(len(a.intersect(b)), 1, "intersect len")
+assert.assert_eq(len(a.difference(b)), 2, "difference len")
+assert.assert_true(type(a.union(b)) is set, "union returns set")
+assert.assert_true(type(a.intersect(b)) is set, "intersect returns set")
+assert.assert_true(type(a.difference(b)) is set, "difference returns set")
+cloned = a.clone()
+assert.assert_true(type(cloned) is set, "clone returns set")
+assert.assert_eq(len(cloned), 3, "clone copies elements")
+cloned.add(10)
+assert.assert_false(a.contains(10), "clone is independent")
+
+# ---------- 형 변환 ----------
+assert.assert_eq(len(list(set(1, 2))), 1, "list(set) wraps the set in a list")
+assert.assert_eq(len(set([1, 1, 2])), 1, "set(list) wraps the list in a set")
+assert.assert_eq(len(set("aa")), 1, "set(str) wraps the string in a set")
+
+# ---------- 비운 집합 ----------
+es = set()
+assert.assert_eq(len(es), 0, "empty set len")
+assert.assert_false(es.contains(1), "empty set contains is false")
+assert.assert_eq(es.add(1), true, "add to empty set")
+assert.assert_eq(es.clear(), none, "clear returns none")
+assert.assert_eq(len(es), 0, "clear empties set")
+assert.assert_eq(len(set().union(set())), 0, "union of empty sets")
+
+# ---------- 비교 연산 ----------
+assert.assert_err(fn() -> set(1) == set(1), "unsupported operand type(s) for ==: 'set' and 'set'")
+assert.assert_err(fn() -> 1 in set(1, 2), "unsupported operand type(s) for in: 'set'")
+assert.summary()

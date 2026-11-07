@@ -1,0 +1,5 @@
+use io
+
+fn f()
+    io.write("a")
+      io.write("b")

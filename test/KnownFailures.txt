@@ -1,0 +1,6 @@
+# test/KnownFailures.txt
+# 현재 실패하는 스크립트 목록. scripts/test.ps1 -Group known이 읽는다.
+# 각 파일은 문서(README)에 적힌 동작과 실제 구현이 다른 지점을 기대값으로
+# 단언한다. 제품 코드를 고쳐야 통과한다.
+# 형식: <path>
+test/regression/defects.un

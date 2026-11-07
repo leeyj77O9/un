@@ -1,0 +1,58 @@
+# test/MANIFEST.txt
+# 테스트 러너(scripts/test.ps1)가 실행할 스크립트 목록.
+# 형식: <group>|<path>
+# group: suite | unit | integration | regression | known | negative
+# 실행 경로(C:\dev\un) 기준 상대 경로.
+# fixtures/의 .un 파일은 import 픽스처이고, 종료 코드로 검증되는 항목은
+# test/negative/manifest.txt에 등록된다.
+
+# ---------- suite ----------
+suite|test/test_suite.un
+
+# ---------- unit: lexer ----------
+unit|test/unit/lexer/literals.un
+
+# ---------- unit: parser ----------
+unit|test/unit/parser/precedence.un
+unit|test/unit/parser/structure.un
+
+# ---------- unit: runtime ----------
+unit|test/unit/runtime/operators.un
+unit|test/unit/runtime/scope.un
+unit|test/unit/runtime/control_flow.un
+unit|test/unit/runtime/functions.un
+unit|test/unit/runtime/classes.un
+unit|test/unit/runtime/async.un
+unit|test/unit/runtime/errors.un
+unit|test/unit/runtime/date.un
+unit|test/unit/runtime/builtins.un
+
+# ---------- unit: native ----------
+unit|test/unit/native/str.un
+unit|test/unit/native/list.un
+unit|test/unit/native/dict.un
+unit|test/unit/native/set.un
+unit|test/unit/native/tup.un
+unit|test/unit/native/math.un
+unit|test/unit/native/iter.un
+unit|test/unit/native/re.un
+unit|test/unit/native/random.un
+unit|test/unit/native/inspect.un
+unit|test/unit/native/os.un
+unit|test/unit/native/sys.un
+unit|test/unit/native/fs.un
+unit|test/unit/native/io.un
+
+# ---------- integration ----------
+integration|test/integration/modules.un
+integration|test/integration/concurrency.un
+integration|test/integration/recursion.un
+integration|test/integration/algorithms.un
+
+# ---------- known ----------
+# KnownFailures.txt에 등록되어 있고, 러너는 이 스크립트를 Positive 집계에
+# 넣지 않는다. -Group known로 실행한다.
+known|test/regression/defects.un
+
+# ---------- negative ----------
+# test/negative/manifest.txt가 목록을 직접 읽는다.

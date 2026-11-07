@@ -747,6 +747,7 @@ public sealed class Evaluator(Context context)
                 throw new Error($"unknown base class '{firstName}'", node, context.Source);
 
             type.Super = baseType;
+            type.Parents = [baseType];
             type.Types = UnionType.Create(type.Types, baseType.Types);
 
             foreach (var baseNode in bases.Children.Skip(1))
@@ -756,6 +757,7 @@ public sealed class Evaluator(Context context)
                 if (!Global.TryGetClass(baseName, out baseType))
                     throw new Error($"unknown base class '{baseName}'", node, context.Source);
 
+                type.Parents.Add(baseType);
                 type.Types = UnionType.Create(type.Types, baseType.Types);
             }
         }
@@ -810,10 +812,6 @@ public sealed class Evaluator(Context context)
                 {
                     break;
                 }
-                catch (ReturnFlow rf)
-                {
-                    return rf.Value;
-                }
             }
 
             return Obj.None;
@@ -848,10 +846,6 @@ public sealed class Evaluator(Context context)
             {
                 break;
             }
-            catch (ReturnFlow rf)
-            {
-                return rf.Value;
-            }           
         }
 
         return Obj.None;    

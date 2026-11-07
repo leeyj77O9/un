@@ -1,0 +1,47 @@
+use io
+use inspect
+use test.assert as assert
+
+# ============================================================
+# inspect - hasattr/getattr/setattr/delattr/attr/global/meta
+# 실행: Un.exe run test/unit/native/inspect.un  (C:\dev\un 에서)
+# ============================================================
+
+class ObjX
+    value = 3
+
+o = ObjX()
+
+# ---------- hasattr ----------
+assert.assert_true(inspect.hasattr(o, "value"), "hasattr existing attribute")
+assert.assert_false(inspect.hasattr(o, "zz"), "hasattr missing attribute")
+assert.assert_true(inspect.hasattr("hello", "split"), "hasattr str method")
+assert.assert_true(inspect.hasattr("hello", "to_upper"), "hasattr str to_upper")
+assert.assert_true(inspect.hasattr([1, 2], "add"), "hasattr list add")
+assert.assert_true(inspect.hasattr({"a": 1}, "get"), "hasattr dict method")
+
+# ---------- getattr ----------
+assert.assert_eq(inspect.getattr(o, "value"), 3, "getattr existing attribute")
+assert.assert_eq(inspect.getattr(o, "zz", default_value=7), 7, "getattr with default")
+assert.assert_err(fn() -> inspect.getattr(int, "value"), "attribute")
+
+# ---------- attr 목록 ----------
+assert.assert_true(len(inspect.attr(o)) >= 1, "attr lists instance attributes")
+assert.assert_eq(len(inspect.attr(int)), 0, "attr of int is empty")
+assert.assert_true(len(inspect.attr("abc")) > 0, "attr of str lists methods")
+
+# ---------- setattr / delattr ----------
+assert.assert_eq(inspect.setattr(o, "value", 9), 9, "setattr returns the value")
+assert.assert_eq(o.value, 9, "setattr mutates instance")
+assert.assert_eq(inspect.delattr(o, "value"), none, "delattr returns none")
+assert.assert_false(inspect.hasattr(o, "value"), "delattr removes attribute")
+
+# ---------- global ----------
+g = inspect.global()
+assert.assert_true(type(g) is dict, "global returns dict")
+assert.assert_true(g.contains_key("io"), "global contains the imported io module")
+
+# ---------- meta는 지원되지 않는다 ----------
+assert.assert_err(fn() -> inspect.meta(o, "type"), "attribute 'type' not found")
+assert.assert_err(fn() -> inspect.meta("a", "split"), "attribute 'split' not found")
+assert.summary()

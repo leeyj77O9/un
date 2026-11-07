@@ -1,0 +1,50 @@
+use io
+use inspect
+use test.assert as assert
+use test.fixtures.dirmod as dm
+use test.fixtures.dirall as da
+use test.fixtures.rel_test.utils as u1
+use test.fixtures.rel_test.utils as u2
+
+# ============================================================
+# 모듈 시스템 - 경로 해석, 별칭, 캐시, 디렉터리 모듈, 없는 속성
+# 실행: Un.exe run test/integration/modules.un  (C:\dev\un 에서)
+#
+# 경로 해석: 현재 파일 기준 상대 경로를 먼저 찾고, 없으면 Global.PATH(CWD)를 쓴다.
+# test/fixtures/rel_test/main.un의 'use utils'는 파일 기준 상대 경로로 풀린다.
+# 그 파일은 MANIFEST에 등록되어 종료 코드로 검증된다.
+# ============================================================
+
+# ---------- 디렉터리 모듈(mod.un 우선) ----------
+assert.assert_eq(dm.marker, 7, "mod.un defines the module contents")
+assert.assert_eq(dm.doubled(5), 10, "a function defined in mod.un is callable")
+
+# ---------- 디렉터리 모듈(mod.un이 없으면 모든 .un을 합친다) ----------
+assert.assert_eq(da.alpha, 1, "the first file of the directory is loaded")
+assert.assert_eq(da.beta, 2, "the second file of the directory is loaded")
+assert.assert_eq(len(inspect.attr(da)), 2, "both files contribute their names")
+
+# ---------- 별칭 ----------
+assert.assert_eq(u1.value, 42, "the imported module keeps its values")
+g = inspect.global()
+assert.assert_true(g.contains_key("u1"), "the first alias is bound in the global scope")
+assert.assert_true(g.contains_key("u2"), "the second alias is bound in the global scope")
+assert.assert_false(g.contains_key("utils"), "the file name is not bound when an alias is used")
+assert.assert_true(g.contains_key("io"), "imported modules appear in the global scope")
+
+# ---------- 캐시 ----------
+assert.assert_true(u1 is u2, "importing the same path twice gives the same module")
+
+# ---------- 형 ----------
+assert.assert_eq(str(type(dm)), "<type: module>", "a module has the module type")
+
+# ---------- 안전한 접근 ----------
+assert.assert_true(inspect.hasattr(u1, "value"), "hasattr finds a module value")
+assert.assert_eq(inspect.getattr(u1, "value"), 42, "getattr reads a module value")
+
+# ---------- 없는 속성 ----------
+assert.assert_err(fn() -> io.nosuchattr, "'module' object has no attribute 'nosuchattr'")
+assert.assert_err(fn() -> u1.nosuchattr, "'module' object has no attribute 'nosuchattr'")
+assert.assert_err(fn() -> dm.nope, "'module' object has no attribute 'nope'")
+
+assert.summary()

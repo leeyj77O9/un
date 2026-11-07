@@ -1,0 +1,207 @@
+use io
+use inspect
+use test.assert as assert
+
+# ============================================================
+# 클래스 - 생성자, 매직 메서드, 상속, 장식이 붙은 클래스
+# 실행: Un.exe run test/unit/runtime/classes.un  (C:\dev\un 에서)
+# (test/test_class.un의 내용을 검증 형태로 확장한 파일)
+# ============================================================
+
+# ---------- 생성자와 메서드 ----------
+class Counter
+    count = 0
+    fn __init__(start)
+        self.count = start
+    fn inc()
+        self.count += 1
+        -> self.count
+    fn __len__()
+        -> self.count
+    fn __str__()
+        -> `Counter({self.count})`
+
+c = Counter(0)
+assert.assert_eq(c.count, 0, "init stores the argument")
+assert.assert_eq(c.inc(), 1, "method mutates self")
+assert.assert_eq(c.inc(), 2, "method mutation persists")
+assert.assert_eq(len(c), 2, "__len__ is used by len")
+assert.assert_eq(str(c), "Counter(2)", "__str__ is used by str")
+
+# ---------- 매직 메서드 ----------
+class Num
+    fn __init__(v)
+        self.v = v
+    fn __add__(other)
+        -> Num(self.v + other.v)
+    fn __eq__(other)
+        -> self.v == other.v
+    fn __getitem__(i)
+        -> self.v + i
+
+n1 = Num(10)
+n2 = Num(5)
+assert.assert_eq((n1 + n2).v, 15, "__add__ is used by +")
+assert.assert_eq(n1 == n2, false, "__eq__ is used by ==")
+assert.assert_eq(n1[3], 13, "__getitem__ is used by []")
+
+# ---------- __setitem__ / __slice__ ----------
+class Cells
+    fn __init__(v)
+        self.v = v
+    fn __setitem__(key, value)
+        self.v = key + value
+        -> self.v
+    fn __slice__(start, stop, step)
+        -> str(start) + "-" + str(stop) + "-" + str(step)
+
+c1 = Cells(5)
+c1[1] = 2
+assert.assert_eq(c1.v, 3, "__setitem__ takes (key, value)")
+c1[10] = 20
+assert.assert_eq(c1.v, 30, "__setitem__ repeats with new arguments")
+assert.assert_eq(c1[0:1:2], "0-1-2", "__slice__ takes (start, stop, step)")
+
+# ---------- __is__는 is 연산이 부르지 않는다 ----------
+class Marker
+    fn __is__(x)
+        -> "custom"
+m = Marker()
+assert.assert_eq(m is int, false, "is compares the runtime type, not __is__")
+assert.assert_eq(m.__is__(3), "custom", "the __is__ method is callable directly")
+
+# ---------- 클래스 헤더 인자 ----------
+class number(x, y, z)
+    fn __init__(x, y, z)
+        self.x = x
+        self.y = y
+        self.z = z
+
+class point: number
+    __len__ = fn() -> (self.x + self.y + self.z) / 2
+    __str__ = fn() -> `{self.x} {self.y} {self.z} {123}`
+    new = fn() -> point(self.x, self.y, self.z)
+
+p1: point = point(55, 2, 348)
+assert.assert_eq(p1.x, 55, "header initializer assigns x")
+assert.assert_eq(p1.z, 348, "header initializer assigns z")
+assert.assert_eq(str(p1), "55 2 348 123", "__str__ as f-string")
+assert.assert_eq(len(p1), 202.5, "__len__ as a lambda field uses float division")
+fresh = p1.new()
+assert.assert_eq(fresh.y, 2, "method returning a new instance")
+
+# ---------- 일반 메서드 ----------
+class Dims(x, y)
+    fn len()
+        -> self.x + self.y
+dims = Dims(10, 20)
+assert.assert_eq(dims.x, 10, "class header arguments bind the field")
+assert.assert_eq(dims.len(), 30, "a method named len is called on the instance")
+
+# ---------- 상속 ----------
+class Base
+    v = 1
+class Derived: Base
+    w = 2
+d = Derived()
+assert.assert_eq(d.v, 1, "inheritance keeps the parent field")
+assert.assert_eq(d.w, 2, "child adds its own field")
+
+# ---------- 다중 상속 ----------
+class S1
+    one = 1
+    fn first()
+        -> 1
+class S2
+    two = 2
+    fn second()
+        -> 2
+class Two: S1, S2
+    three = 3
+t = Two()
+assert.assert_eq(t.one, 1, "first base field is inherited")
+assert.assert_eq(t.two, 2, "second base field is inherited")
+assert.assert_eq(t.three, 3, "own field is kept")
+assert.assert_eq(t.first(), 1, "method from the first base is callable")
+assert.assert_eq(t.second(), 2, "method from the second base is callable")
+assert.assert_true(t is S1, "instance is an instance of the first base")
+assert.assert_true(t is S2, "instance is an instance of the second base")
+assert.assert_true(inspect.hasattr(t, "second"), "hasattr finds a second base method")
+assert.assert_false(inspect.hasattr(t, "nope"), "hasattr is false for a missing name")
+assert.assert_true(inspect.attr(t).contains("two"), "attr lists the second base field")
+
+# ---------- 이름 충돌은 첫 번째 부모가 이긴다 ----------
+class B1
+    shared = 1
+    fn shared_fn()
+        -> "b1"
+class B2
+    shared = 2
+    fn shared_fn()
+        -> "b2"
+class Multi: B1, B2
+    own = 3
+m = Multi()
+assert.assert_eq(m.shared, 1, "the first base wins a field conflict")
+assert.assert_eq(m.shared_fn(), "b1", "the first base wins a method conflict")
+assert.assert_eq(m.own, 3, "the child field is kept")
+
+# ---------- 체인 안의 다중 상속 ----------
+class GA
+    ga = 1
+class PA2: GA
+    pa = 2
+class PB2
+    pb = 3
+class CC2: PA2, PB2
+    cc = 4
+c2 = CC2()
+assert.assert_eq(c2.ga, 1, "grandparent field is inherited through the first base")
+assert.assert_eq(c2.pa, 2, "first base field is inherited")
+assert.assert_eq(c2.pb, 3, "second base field is inherited")
+assert.assert_eq(c2.cc, 4, "own field is kept")
+
+# ---------- 스트럿 다중 상속 ----------
+class Ls(x)
+    fn label()
+        -> "ls"
+class Rs(y)
+    fn label()
+        -> "rs"
+class Both(z): Ls, Rs
+
+b = Both(1, 2, 3)
+assert.assert_eq(b.x, 1, "first base field is initialized from the constructor")
+assert.assert_eq(b.y, 2, "second base field is initialized from the constructor")
+assert.assert_eq(b.z, 3, "own field is initialized from the constructor")
+assert.assert_true(inspect.attr(b).contains("y"), "attr lists the second base field")
+assert.assert_eq(b.label(), "ls", "the first base method wins")
+
+# ---------- 형 검사 ----------
+class Foo
+    x = 1
+f = Foo()
+assert.assert_true(f is Foo, "instance is its own class")
+assert.assert_true(f is not int, "instance is not int")
+
+# ---------- 클래스 장식 ----------
+fn tag(target)
+    fn wrapped(x)
+        -> target(x)
+    -> wrapped
+@tag
+fn tagged(x)
+    -> x + 1
+assert.assert_eq(tagged(1), 2, "decorator on a function")
+
+# ---------- 기본 인스턴스는 str() 대상이 아니다 ----------
+class Point
+    fn __init__(x, y)
+        self.x = x
+        self.y = y
+assert.assert_err(fn() -> str(Point(10, 20)), "unsupported operand type(s) for str(): 'Point'")
+assert.assert_eq(repr(Point(10, 20)), "Point", "repr of an instance is the class name")
+assert.assert_eq(str(type(Point(10, 20))), "<type: Point>", "type of an instance names the class")
+assert.assert_true(Point(1, 2) is Point, "instance is its own class")
+
+assert.summary()

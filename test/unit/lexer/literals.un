@@ -1,0 +1,71 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# Lexers literals - 숫자/문자열/집합 리터럴, 이스케이프, f-string
+# 실행: Un.exe run test/unit/lexer/literals.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 숫자 리터럴 ----------
+assert.assert_eq(0x10, 16, "hex literal")
+assert.assert_eq(0xff, 255, "hex literal with letters")
+assert.assert_eq(1e3, 1000, "float literal with exponent")
+assert.assert_eq(1.5e2, 150, "float literal with exponent and fraction")
+assert.assert_eq(1_000, 1000, "underscore separator in an integer literal")
+assert.assert_eq(1_000_000, 1000000, "multiple underscore separators")
+assert.assert_eq(0, 0, "zero literal")
+assert.assert_eq(-1, -1, "negative literal")
+assert.assert_eq(0.0, 0.0, "zero float literal")
+
+# ---------- 형 ----------
+assert.assert_eq(type(1e3), float, "exponent literal is a float")
+assert.assert_eq(type(1.5), float, "fraction literal is a float")
+assert.assert_eq(type(1_000), int, "underscore literal is an int")
+
+# ---------- 문자열 이스케이프 ----------
+assert.assert_eq(len("a\tb"), 3, "tab escape is one character")
+assert.assert_eq(len("a\nb"), 3, "newline escape is one character")
+assert.assert_eq("a\"b", "a\"b", "quote escape stays inside the string")
+assert.assert_eq(len("a\\b"), 3, "escaped backslash is one character")
+assert.assert_eq("a\\b", "a" + "\\" + "b", "escaped backslash equals a literal backslash")
+assert.assert_eq(len("a\\\\b"), 4, "two escapes give two backslashes")
+assert.assert_eq(len("ab\\"), 3, "a trailing escape keeps the backslash")
+
+# ---------- 문자열 길이/내용 ----------
+assert.assert_eq(len("한"), 1, "one unicode character has length 1")
+assert.assert_eq(len("한글"), 2, "korean string length")
+assert.assert_eq("", "", "empty string literal")
+assert.assert_eq('a', "a", "single quoted string literal")
+
+# ---------- f-string ----------
+assert.assert_eq(`x={1 + 2}`, "x=3", "f-string evaluates the expression")
+assert.assert_eq(`{1}`, "1", "f-string of a single value")
+assert.assert_eq(`{none}`, "none", "f-string of none")
+assert.assert_eq(`{true}`, "true", "f-string of a bool")
+assert.assert_eq(`{[1, 2]}`, "[1, 2]", "f-string of a list")
+assert.assert_eq(`{1 + 2} {3 * 4}`, "3 12", "two interpolations in one f-string")
+
+# ---------- 리터럴 ----------
+assert.assert_eq([1, 2, 3], [1, 2, 3], "list literal")
+assert.assert_eq([], [], "empty list literal")
+assert.assert_eq(len({"a": 1}), 1, "dict literal length")
+assert.assert_eq({1: 2}[1], 2, "dict literal with int keys")
+assert.assert_eq(str({"a": 1}), "{a:1}", "str of a dict literal")
+assert.assert_eq(len({}), 0, "empty dict literal")
+assert.assert_eq((1, 2), (1, 2), "tuple literal")
+assert.assert_eq(len((1,)), 1, "single element tuple literal")
+
+# ---------- 리터럴은 연산 대상이 된다 ----------
+assert.assert_eq(1 + 1e3, 1001, "int and float literal add")
+assert.assert_eq("a" + "b" + "c", "abc", "chained string concat")
+assert.assert_eq(2 ** 3 ** 2, 64, "power is right associative")
+assert.assert_eq(-2 ** 2, 4, "unary minus binds looser than power")
+assert.assert_eq(~5, -6, "bitwise not")
+assert.assert_eq(~~5, 5, "double bitwise not cancels")
+
+# ---------- 중첩 리터럴 ----------
+assert.assert_eq([[1], [2, [3]]], [[1], [2, [3]]], "nested list literal")
+assert.assert_eq({"a": [1, 2]}["a"][1], 2, "nested literal access")
+assert.assert_eq((1, (2, 3))[1][0], 2, "nested tuple access")
+
+assert.summary()

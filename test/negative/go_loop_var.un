@@ -1,0 +1,18 @@
+use io
+use iter
+
+# go가 for의 루프 변수를 잡지 못한다.
+# future는 루프 밖에서 평가되고, wait 시점에 루프 변수는 사라진다.
+#잡히지 않는 예외로 프로세스가 죽으므로 종료 코드로 검증한다.
+fn square(n)
+    -> n * n
+
+futs = []
+for i in [1, 2, 3]
+    futs.add(go square(i))
+
+out = []
+for f in futs
+    out.add(wait f)
+
+io.write("sorted = ", list(iter.sorted(out)))

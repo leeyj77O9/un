@@ -1,0 +1,44 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# Parser precedence - 연산자 결합 우선순위 사칙 검증
+# 실행: Un.exe run test/unit/parser/precedence.un  (C:\dev\un 에서)
+# 각 값은 좌변/우변을 따로 계산한 결과와 비교해 결합을 확인한다.
+# ============================================================
+
+# ---------- 산술 ----------
+assert.assert_eq(1 + 2 * 3, 7, "multiplication binds tighter than addition")
+assert.assert_eq(2 * 3 + 1, 7, "addition applies after the product")
+assert.assert_eq(1 - 2 * 3, -5, "product before subtraction")
+assert.assert_eq((1 + 2) * 3, 9, "parentheses override precedence")
+assert.assert_eq(1 + 2 * 3 ** 2, 19, "power binds tighter than multiplication")
+assert.assert_eq(2 * 3 // 2, 3, "multiplication before floor division")
+assert.assert_eq(1 + 8 / 4, 3, "division before addition")
+
+# ---------- 거듭제곱 ----------
+assert.assert_eq(2 ** 3 ** 2, 64, "power is right associative")
+assert.assert_eq((2 ** 3) ** 2, 64, "left grouping of power gives the same value here")
+assert.assert_eq(-2 ** 2, 4, "unary minus binds looser than power")
+
+# ---------- 비트 ----------
+assert.assert_eq(1 | 2 & 3, 3, "bit and binds tighter than bit or")
+assert.assert_eq(6 & 3 | 1, 3, "bit and applies before the or")
+assert.assert_eq(1 << 2 + 3, 32, "addition binds tighter than shift")
+assert.assert_eq(8 >> 1 + 1, 2, "addition binds tighter than a right shift")
+
+# ---------- 논리 ----------
+assert.assert_eq(true and 1 < 2, true, "comparison binds tighter than and")
+assert.assert_eq(false or 1 > 2 and true, false, "and binds tighter than or")
+assert.assert_eq(true and false or true, true, "and applies before the or")
+
+# ---------- 보조 연산 ----------
+assert.assert_eq(1 ? 2 : 3 + 1, 2, "the true branch is taken before the false expression")
+assert.assert_eq(none ?? 1 + 2, 3, "coalesce evaluates the right side fully")
+assert.assert_eq(not (1 == 2), true, "not applies to the comparison result")
+
+# ---------- 단항/비트 NOT ----------
+assert.assert_eq(~5, -6, "bit not")
+assert.assert_eq(~5 + 1, -5, "bit not binds tighter than addition")
+
+assert.summary()

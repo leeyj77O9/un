@@ -1,0 +1,3 @@
+use io
+x = "a\tb"
+io.write(len(x))

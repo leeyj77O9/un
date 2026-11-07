@@ -1,0 +1,6 @@
+use io
+
+fn p(a, b)
+    -> a
+
+io.write(p("x", ord(" ")))

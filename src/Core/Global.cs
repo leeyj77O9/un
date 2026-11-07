@@ -443,14 +443,10 @@ public static class Global
                 if (seen.Add(key))
                     yield return key;
 
-        var super = value.Super;
-        while (super is not null && !super.IsNone())
-        {
-            foreach (var key in super.Members.Keys)
+        foreach (var baseObj in value.BaseChain())
+            foreach (var key in baseObj.Members.Keys)
                 if (seen.Add(key))
                     yield return key;
-            super = super.Super;
-        }
     }
 
     public static bool HasAttrDeep(Obj value, string name)
@@ -459,13 +455,11 @@ public static class Global
             return true;
         if (TryGetOriginalValue(value.Type.Name, name, out _))
             return true;
-        var super = value.Super;
-        while (super is not null && !super.IsNone())
-        {
-            if (super.Members.ContainsKey(name))
+
+        foreach (var baseObj in value.BaseChain())
+            if (baseObj.Members.ContainsKey(name))
                 return true;
-            super = super.Super;
-        }
+
         return false;
     }
 
@@ -475,13 +469,11 @@ public static class Global
             return v;
         if (TryGetOriginalValue(value.Type.Name, name, out v) && v is not null)
             return v;
-        var super = value.Super;
-        while (super is not null && !super.IsNone())
-        {
-            if (super.Members.TryGetValue(name, out v))
+
+        foreach (var baseObj in value.BaseChain())
+            if (baseObj.Members.TryGetValue(name, out v))
                 return v;
-            super = super.Super;
-        }
+
         return new Err($"'{value.Type}' object has no attribute '{name}'");
     }
 

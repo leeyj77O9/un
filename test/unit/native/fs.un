@@ -1,0 +1,91 @@
+use io
+use fs
+use test.assert as assert
+
+# ============================================================
+# fs - 경로 연산, 읽기/쓰기, 존재 확인, 복사/이동/삭제
+# 실행: Un.exe run test/unit/native/fs.un  (C:\dev\un 에서)
+# 임시 디렉터리 아래에만 파일을 만든다.
+# ============================================================
+
+# ---------- 경로 연산 ----------
+assert.assert_eq(fs.join("a", "b"), "a\\b", "join two parts")
+assert.assert_eq(fs.ext("a/b/c.txt"), ".txt", "ext")
+assert.assert_eq(fs.stem("a/b/c.txt"), "c", "stem")
+assert.assert_eq(fs.name("a/b/c.txt"), "c.txt", "name")
+assert.assert_eq(fs.parent("a/b/c.txt"), "a\\b", "parent")
+
+# ---------- 기준 경로 ----------
+assert.assert_eq(fs.absolute("a.txt"), fs.join(fs.cwd(), "a.txt"), "absolute joins cwd")
+assert.assert_true(len(fs.cwd()) > 0, "cwd is not empty")
+assert.assert_true(len(fs.temp()) > 0, "temp is not empty")
+assert.assert_true(len(fs.home()) > 0, "home is not empty")
+assert.assert_true(len(fs.exe()) > 0, "exe is not empty")
+assert.assert_true(len(fs.app()) > 0, "app is not empty")
+assert.assert_true(type(fs.normalize("a/./b")) is str, "normalize returns str")
+
+# ---------- 작업 디렉터리 ----------
+work = fs.join(fs.temp(), "un_test_fs")
+fs.mkdir(work)
+assert.assert_true(fs.dir(work), "mkdir creates directory")
+f = fs.join(work, "fs_test.txt")
+
+# ---------- 쓰기/읽기 ----------
+assert.assert_eq(fs.write(f, "hello"), none, "write returns none")
+assert.assert_eq(fs.read(f), "hello", "read returns content")
+assert.assert_eq(fs.size(f), 5, "size is byte length")
+assert.assert_true(fs.exists(f), "exists after write")
+assert.assert_true(fs.file(f), "file is true for a file")
+assert.assert_false(fs.dir(f), "dir is false for a file")
+assert.assert_eq(fs.append(f, "!"), none, "append returns none")
+assert.assert_eq(fs.read(f), "hello!", "append appends content")
+
+# ---------- 시간 메타데이터는 문자열 ----------
+assert.assert_true(type(fs.modified(f)) is str, "modified returns str")
+assert.assert_true(type(fs.created(f)) is str, "created returns str")
+assert.assert_true(type(fs.accessed(f)) is str, "accessed returns str")
+
+# ---------- 목록 ----------
+assert.assert_true(fs.list(work).contains(f), "list returns full paths")
+assert.assert_true(fs.files(work).contains(f), "files lists files")
+assert.assert_eq(fs.dirs(work), [], "dirs is empty for a leaf directory")
+
+# ---------- 복사/이동/이름 변경 ----------
+copy = fs.join(work, "copy.txt")
+assert.assert_eq(fs.copy(f, copy), none, "copy returns none")
+assert.assert_true(fs.exists(copy), "copy exists")
+moved = fs.join(work, "moved.txt")
+assert.assert_eq(fs.move(copy, moved), none, "move returns none")
+assert.assert_true(fs.exists(moved), "moved file exists")
+assert.assert_false(fs.exists(copy), "copy is gone after move")
+renamed = fs.join(work, "renamed.txt")
+assert.assert_eq(fs.rename(moved, "renamed.txt"), none, "rename returns none")
+assert.assert_true(fs.exists(renamed), "renamed file exists")
+
+# ---------- touch / 삭제 ----------
+touched = fs.join(work, "touched.txt")
+assert.assert_eq(fs.touch(touched), none, "touch returns none")
+assert.assert_true(fs.exists(touched), "touch creates file")
+assert.assert_eq(fs.delete(touched), none, "delete returns none")
+assert.assert_false(fs.exists(touched), "delete removes file")
+
+# ---------- 접근 속성 ----------
+assert.assert_eq(fs.readonly(f), false, "readonly is false by default")
+assert.assert_eq(fs.hidden(f), false, "hidden is false by default")
+
+# ---------- 상대 경로 ----------
+assert.assert_eq(fs.relative(work, f), "fs_test.txt", "relative from parent")
+assert.assert_true(type(fs.relative(fs.cwd(), f)) is str, "relative across roots is str")
+
+# ---------- 없는 경로 ----------
+missing = fs.join(work, "no_such_file.txt")
+assert.assert_false(fs.exists(missing), "exists is false for missing file")
+assert.assert_err(fn() -> fs.read(missing), "file not found")
+assert.assert_err(fn() -> fs.size(missing), "file not found")
+
+# ---------- 정리 ----------
+fs.delete(f)
+assert.assert_false(fs.exists(f), "cleanup deletes file")
+fs.rmdir(work)
+assert.assert_false(fs.dir(work), "rmdir removes directory")
+assert.summary()

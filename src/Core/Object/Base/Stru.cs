@@ -38,14 +38,16 @@ public class Stru(UnType type, string[] names) : Obj(type)
     {
         Annotations = Annotations,
         Members = Members.New(),
-        Super = Super
+        Super = Super,
+        Parents = Parents
     };
 
     public override Stru Clone() => new(Type, [.. names])
     {
         Annotations = Annotations,
         Members = Members.New(),
-        Super = Super
+        Super = Super,
+        Parents = Parents
     };
 
     public override Obj Len() => Int.From(GetAllNames(this).Length);
@@ -99,17 +101,21 @@ public class Stru(UnType type, string[] names) : Obj(type)
     private static string[] GetAllNames(Stru stru)
     {
         var result = new List<string>();
+        var seen = new HashSet<Obj>(ReferenceEqualityComparer.Instance);
 
-        var current = stru;
-
-        while (current.Super is Stru parent)
+        void Collect(Obj current)
         {
-            result.AddRange(parent.names);
-            current = parent;
+            foreach (var baseObj in current.BaseChain())
+            {
+                if (baseObj is not Stru baseStru || !seen.Add(baseStru))
+                    continue;
+
+                Collect(baseStru);
+                result.AddRange(baseStru.names);
+            }
         }
 
-        result.Reverse();
-
+        Collect(stru);
         result.AddRange(stru.names);
 
         return [.. result];

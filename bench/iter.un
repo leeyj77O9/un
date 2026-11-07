@@ -1,0 +1,27 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 반복자 - 10000개에 map / filter / sum
+# Node.js 벤치마크: bench/node/iter.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/iter.un  (C:\dev\un 에서)
+# ============================================================
+
+fn iter_work(n)
+    base = list(iter.range(0, n))
+    mapped = list(iter.map(fn(x) -> x * 2, base))
+    evens = list(iter.filter(fn(x) -> x % 4 == 0, mapped))
+    -> iter.sum(evens)
+
+# ---------- 검증 ----------
+# 2*i 중 4로 나누어 떨어지는 것은 짝수 i이고, 합은 4 * (0+1+...+4999)
+assert.assert_eq(iter_work(5), 12, "small iter work")
+assert.assert_eq(iter_work(10000), 49990000, "map + filter + sum")
+
+# ---------- 측정 ----------
+# 한 번의 iter_work = 10000개 생성 + 10000개 map + 10000개 filter
+bench.measure("iter10000", fn(n) -> iter_work(10000), 30000, 7, 2)
+
+assert.summary()

@@ -1,0 +1,77 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 문자열 - 1994자 입력을 RLE로 인코딩/디코딩
+# Node.js 벤치마크: bench/node/string.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/string.un  (C:\dev\un 에서)
+# ============================================================
+
+fn build(n)
+    s = ""
+    for i in iter.range(0, n)
+        c = "abcde"[i % 5]
+        r = i % 7 + 1
+        for k in iter.range(0, r)
+            s += c
+    -> s
+
+fn rle_encode(text)
+    out = ""
+    i = 0
+    n = len(text)
+    while i < n
+        c = text[i]
+        run = 1
+        while i + run < n and text[i + run] == c
+            run += 1
+        out += c + str(run)
+        i += run
+    -> out
+
+fn rle_decode(text)
+    out = ""
+    i = 0
+    n = len(text)
+    while i < n
+        c = text[i]
+        digits = ""
+        j = i + 1
+        while j < n
+            d = text[j]
+            ok = false
+            try
+                int(d)
+                ok = true
+            catch err_b1
+                ok = false
+            if not ok
+                break
+            digits += d
+            j += 1
+        count = int(digits)
+        for k in iter.range(0, count)
+            out += c
+        i = j
+    -> out
+
+# ---------- 입력 ----------
+src = build(500)
+# 각 패턴 문자의 개수는 i % 7 + 1이다.
+# 71개의 완전한 주기가 1..7의 합 28을 만들고, 마지막 3개는 1+2+3이다.
+assert.assert_eq(len(src), 1994, "the input is 1994 characters")
+
+# ---------- 검증 ----------
+enc = rle_encode(src)
+dec = rle_decode(enc)
+assert.assert_eq(len(enc), 1000, "each run encodes to character + digit")
+assert.assert_eq(dec, src, "decode returns the original string")
+assert.assert_eq(rle_encode(""), "", "encoding an empty string is empty")
+assert.assert_eq(rle_decode(""), "", "decoding an empty string is empty")
+
+# ---------- 측정 ----------
+bench.measure("rle1994", fn(n) -> len(rle_decode(rle_encode(src))), 1994, 7, 2)
+
+assert.summary()

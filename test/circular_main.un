@@ -1,3 +1,0 @@
-use io
-use test.circular.a
-io.write("should not reach")

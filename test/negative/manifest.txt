@@ -1,0 +1,42 @@
+# test/negative/manifest.txt
+# 비정상 입력 / 구문 오류 / 런타임 crash 스크립트 검증 목록.
+# 형식: <path>|<expected exit code>|<expected substring>
+# substring이 비어 있으면 종료 코드만 검증한다.
+# import 경로 픽스처의 정상 실행(종료 코드 0)도 같은 형식으로 검증한다.
+# scripts/test.ps1 -Group negative 가 이 목록을 읽는다.
+test/fixtures/rel_test/main.un|0|rel ok
+test/fixtures/circular_main.un|1|circular import detected
+test/negative/bad_indent.un|1|unexpected primary token Indent
+test/negative/tab_indent.un|1|unexpected primary token Indent
+test/negative/bad_string.un|1|expected closing "
+test/negative/unclosed.un|1|expected ']' to close list
+test/negative/missing_body.un|1|expected indented block
+test/negative/semicolon.un|1|unknown operator
+test/negative/use_member.un|1|module 'C:\dev\un\io\write' not found
+test/negative/use_missing.un|1|module 'C:\dev\un\nosuchmod' not found
+test/negative/use_missing2.un|1|undefined variable 'os'
+test/negative/panic_probe.un|1|undefined variable 'panic'
+test/negative/mod_zero.un|1|System.DivideByZeroException
+test/negative/replace_missing.un|1|System.NullReferenceException
+test/negative/replace_empty.un|1|System.ArgumentException
+test/negative/order_crash.un|1|inconsistent results
+test/negative/uncaught.un|1|int division by zero
+test/negative/stack_overflow.un|1|maximum recur
+test/negative/depth_limit_crash.un|-1073741571|Stack overflow
+test/negative/empty.un|0|
+test/negative/comment_only.un|0|
+test/negative/crlf.un|0|crlf ok
+test/negative/space_str.un|0|1
+test/negative/tab_str.un|0|3
+test/negative/quote_str.un|0|2
+test/negative/space_call.un|0|len= 1
+test/negative/space_call2.un|0|x len= 1
+test/negative/space_arg.un|0|1
+test/negative/multi_space_arg.un|0|x
+test/negative/ord_space.un|0|32
+test/negative/chr_space.un|0|true
+test/negative/len_space.un|0|1
+test/negative/nested_use.un|0|1 passed, 0 failed
+test/negative/use_as.un|0|as ok
+test/negative/catch_clobbers.un|1|int division by zero
+test/negative/go_loop_var.un|1|undefined variable 'i'

@@ -1,0 +1,92 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# 스코프와 섀도잉 - 함수/블록/루프 스코프, 클로저, catch 변수
+# 실행: Un.exe run test/unit/runtime/scope.un  (C:\dev\un 에서)
+# (test/test_scope_shadow.un의 내용을 통합한 파일)
+# ============================================================
+
+# ---------- 함수 본문 대입은 로컬을 만든다 ----------
+fn shadow_outer()
+    x = 1
+    fn inner()
+        x = 2
+    inner()
+    -> x
+assert.assert_eq(shadow_outer(), 1, "inner assignment shadows the outer variable")
+
+# ---------- 여러 단계 섀도잉 ----------
+fn level1()
+    a = 10
+    fn level2()
+        a = 20
+        fn level3()
+            a = 30
+        level3()
+        -> a
+    r = level2()
+    -> r
+assert.assert_eq(level1(), 20, "nested assignment shadows at each level")
+
+# ---------- 루프 변수는 밖으로 새지 않는다 ----------
+fn loop_shadow()
+    i = 100
+    for i in [1, 2, 3]
+        skip
+    -> i
+assert.assert_eq(loop_shadow(), 100, "loop variable does not overwrite the outer binding")
+
+fn fresh_loop()
+    for k in [1, 2, 3]
+        skip
+    -> "gone"
+probe = fresh_loop()
+assert.assert_eq(probe, "gone", "fresh loop variable is not visible after the loop")
+
+# ---------- 블록 스코프의 대입은 부모 바인딩을 갱신한다 ----------
+fn accumulate()
+    total = 0
+    for v in [1, 2, 3, 4]
+        total += v
+    -> total
+assert.assert_eq(accumulate(), 10, "accumulator inside a loop block updates the parent binding")
+
+# ---------- 클로저는 외부 값을 읽는다 ----------
+fn closure_read()
+    base = 5
+    fn add()
+        -> base + 1
+    -> add()
+assert.assert_eq(closure_read(), 6, "closure reads the captured variable")
+
+fn closure_write()
+    counter = 0
+    fn inc()
+        counter = counter + 1
+        -> counter
+    r = inc()
+    -> (r, counter)
+observed = closure_write()
+assert.assert_eq(observed[0], 1, "closure write sees its own local result")
+assert.assert_eq(observed[1], 0, "closure write creates a local and leaves the outer value")
+
+# ---------- 파라미터는 지역 슬롯이다 ----------
+fn param_scope(n)
+    n = n + 1
+    -> n
+caller = 10
+assert.assert_eq(param_scope(caller), 11, "parameter assignment does not touch the caller")
+assert.assert_eq(caller, 10, "argument is not modified by the callee")
+
+# ---------- catch 변수는 지역이다 ----------
+outer_name = 1
+caught_text = ""
+try
+    z = 1 / 0
+catch err_scope1
+    caught_text = `catch saw {err_scope1}`
+assert.assert_eq(caught_text.contains("division by zero"), true, "catch binds the error value")
+assert.assert_eq(outer_name, 1, "catch does not change unrelated globals")
+
+assert.summary()

@@ -27,7 +27,41 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual Obj Self { get; set; } = None;
     public virtual Obj Super { get; set; } = None;
+
+    /// <summary>
+    /// Base classes in declaration order. <c>Super</c> is the first entry, so
+    /// single inheritance keeps using the single <c>Super</c> slot and the
+    /// remaining bases are searched after it.
+    /// </summary>
+    public virtual List<Obj> Parents { get; set; } = [];
     public virtual Attributes Members { get; set; } = [];
+
+    /// <summary>
+    /// Base objects in lookup order: the first base and its chain, then the
+    /// remaining bases in declaration order. Cycles are ignored.
+    /// </summary>
+    public IEnumerable<Obj> BaseChain()
+    {
+        // Obj equality is value equality, so cycle detection must be identity-based.
+        var seen = new HashSet<Obj>(ReferenceEqualityComparer.Instance);
+        var queue = new List<Obj>();
+
+        void Push(Obj b)
+        {
+            if (b.IsNone()) return;
+            if (!seen.Add(b)) return;
+            queue.Add(b);
+            for (int i = 1; i < b.Parents.Count; i++)
+                Push(b.Parents[i]);
+            Push(b.Super);
+        }
+
+        Push(Super);
+        for (int i = 1; i < Parents.Count; i++)
+            Push(Parents[i]);
+
+        return queue;
+    }
     public virtual Attributes Annotations { get; set; } = [];
 
     public Obj() : this(UnType.Obj) { }
@@ -211,6 +245,14 @@ public class Obj(UnType type) : IComparable<Obj>
         if (Global.TryGetOriginalValue(Type.Name, name, out value))
             goto Found;
 
+        for (int i = 1; i < Parents.Count; i++)
+        {
+            var parent = Parents[i];
+            if (!parent.Has(name)) continue;
+            value = parent.GetAttr(name);
+            goto Found;
+        }
+
         return new Err($"'{Type}' object has no attribute '{name}'");
 
     Found:
@@ -282,6 +324,7 @@ public class Obj(UnType type) : IComparable<Obj>
             Annotations = Annotations,
             Self = Self,
             Super = Super is null ? None : !Super.IsNone() ? Super.Clone() : Super,
+            Parents = Parents,
         };
     }
 
@@ -357,8 +400,13 @@ public class Obj(UnType type) : IComparable<Obj>
     {
         if (Members.ContainsKey(name))
             return true;
-        if (ValidSuper())
-            return Super.Has(name);
+        if (ValidSuper() && Super.Has(name))
+            return true;
+
+        for (int i = 1; i < Parents.Count; i++)
+            if (Parents[i].Has(name))
+                return true;
+
         return false;
     }
 

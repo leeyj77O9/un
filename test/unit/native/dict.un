@@ -1,0 +1,74 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# dict - index, get, add, remove, clear, keys/values, membership
+# 실행: Un.exe run test/unit/native/dict.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 기본 접근 ----------
+d = {"a": 1, "b": 2}
+assert.assert_eq(d["a"], 1, "index hit")
+assert.assert_eq(d["b"], 2, "index key b")
+assert.assert_eq(len(d), 2, "len dict")
+assert.assert_eq(d.get("a"), 1, "get hit")
+assert.assert_eq(d.get("z"), none, "get missing is none")
+assert.assert_eq(d.get("z", default_value=9), 9, "get with default")
+
+# ---------- 키 없음 ----------
+assert.assert_err(fn() -> d["z"], "key 'z' not found in dictionary")
+
+# ---------- 멤버십 ----------
+assert.assert_true(d.contains_key("a"), "contains_key hit")
+assert.assert_false(d.contains_key("z"), "contains_key miss")
+assert.assert_true(d.contains_value(1), "contains_value hit")
+assert.assert_false(d.contains_value(9), "contains_value miss")
+assert.assert_true("a" in d, "in dict key")
+assert.assert_false("z" in d, "in dict missing key")
+
+# ---------- 갱신 ----------
+d["c"] = 3
+assert.assert_eq(d["c"], 3, "assign new key")
+d["c"] = 4
+assert.assert_eq(d["c"], 4, "assign existing key")
+assert.assert_eq(len(d), 3, "len after add key")
+assert.assert_eq(d.add("d", 5), none, "add returns none")
+assert.assert_eq(d["d"], 5, "add mutates dict")
+
+# ---------- 키 목록 ----------
+assert.assert_true(len(d.keys()) == 4, "keys len")
+assert.assert_true(d.keys().contains("c"), "keys contains c")
+assert.assert_true(len(d.values()) == 4, "values len")
+assert.assert_true(d.values().contains(5), "values contains 5")
+
+# ---------- 삭제 ----------
+assert.assert_true(d.remove("d"), "remove hit returns true")
+assert.assert_eq(d.contains_key("d"), false, "remove mutates dict")
+assert.assert_eq(d.remove("zz"), false, "remove miss returns false")
+
+# ---------- 문자열 표현 ----------
+one = {"a": 1}
+assert.assert_eq(str(one), "{a:1}", "str dict")
+
+# ---------- 비운 dict ----------
+ed = {}
+assert.assert_eq(len(ed), 0, "len empty dict")
+assert.assert_eq(ed.get("x"), none, "get on empty dict")
+assert.assert_eq(ed.get("x", default_value=1), 1, "get default on empty dict")
+assert.assert_eq(ed.keys(), [], "keys on empty dict")
+assert.assert_eq(ed.values(), [], "values on empty dict")
+assert.assert_false(ed.contains_key("x"), "contains_key on empty dict")
+assert.assert_false(ed.contains_value(1), "contains_value on empty dict")
+ed["x"] = 1
+assert.assert_eq(len(ed), 1, "assign to empty dict")
+assert.assert_eq(ed.clear(), none, "clear returns none")
+assert.assert_eq(len(ed), 0, "clear empties dict")
+
+# ---------- 중첩 ----------
+nested = {"outer": {"inner": [1, 2]}}
+assert.assert_eq(nested["outer"]["inner"][1], 2, "nested dict index")
+assert.assert_eq(len(nested), 1, "nested dict len")
+
+# ---------- dict 비교 연산은 지원되지 않는다 ----------
+assert.assert_err(fn() -> {"a": 1} == {"a": 1}, "unsupported operand type(s) for ==: 'dict' and 'dict'")
+assert.summary()

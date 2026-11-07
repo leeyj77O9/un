@@ -44,5 +44,6 @@ public class NFn(Context context) : Fn(context)
         Func = Func,
         Self = Self,
         Super = Super,
+        Parents = Parents,
     };
 }

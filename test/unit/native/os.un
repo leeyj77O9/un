@@ -1,0 +1,40 @@
+use io
+use os
+use test.assert as assert
+
+# ============================================================
+# os - 이름/경구분/환경/프로세스 정보
+# 실행: Un.exe run test/unit/native/os.un  (C:\dev\un 에서)
+# 머신 고유의 값은 길이/범위로만 검증한다.
+# ============================================================
+
+# ---------- 정적 정보 ----------
+assert.assert_eq(os.name(), "windows", "os name")
+assert.assert_eq(os.sep(), "\\", "path separator")
+assert.assert_eq(os.pathsep(), ";", "path list separator")
+assert.assert_eq(os.arch(), "X64", "architecture")
+assert.assert_eq(os.is64bit(), true, "is64bit")
+
+# ---------- 값이 존재하는 항목 ----------
+assert.assert_true(len(os.linesep()) > 0, "linesep is not empty")
+assert.assert_true(len(os.version()) > 0, "version is not empty")
+assert.assert_true(len(os.hostname()) > 0, "hostname is not empty")
+assert.assert_true(len(os.username()) > 0, "username is not empty")
+
+# ---------- 프로세스 ----------
+assert.assert_true(os.pid() > 0, "pid is positive")
+assert.assert_true(os.cpuCount() > 0, "cpuCount is positive")
+assert.assert_true(os.tickCount() > 0, "tickCount is positive")
+
+# ---------- 인수 / 환경 ----------
+assert.assert_true(len(os.args()) >= 2, "args includes the script path")
+assert.assert_true(type(os.environ()) is list, "environ returns list")
+assert.assert_true(len(os.env("PATH")) > 0, "PATH is readable")
+assert.assert_eq(os.expand_vars("%PATH%"), os.env("PATH"), "expand_vars expands %PATH%")
+
+# ---------- 환경 변수 설정/해제 ----------
+assert.assert_eq(os.setenv("UN_TEST_VAR", "abc"), none, "setenv returns none")
+assert.assert_eq(os.env("UN_TEST_VAR"), "abc", "env reads the new variable")
+assert.assert_eq(os.unsetenv("UN_TEST_VAR"), none, "unsetenv returns none")
+assert.assert_err(fn() -> os.env("UN_TEST_MISSING"), "environment variable not found")
+assert.summary()

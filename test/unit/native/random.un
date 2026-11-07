@@ -1,0 +1,63 @@
+use io
+use random
+use test.assert as assert
+
+# ============================================================
+# random - 시드, 범위, 타입, 가중치, 경계값
+# 실행: Un.exe run test/unit/native/random.un  (C:\dev\un 에서)
+# 결정적이지 않은 값은 범위/종류로만 검증한다.
+# ============================================================
+
+# ---------- 시드 ----------
+assert.assert_eq(random.seed(12345), none, "seed returns none")
+
+# ---------- 시드의 재현성 ----------
+random.seed(7)
+first = random.int(1, 10)
+random.seed(7)
+second = random.int(1, 10)
+assert.assert_eq(first, second, "same seed produces the same value")
+
+# ---------- 기본 범위 ----------
+v = random.int(1, 10)
+assert.assert_true(v >= 1 and v <= 10, "random int is inside range")
+f = random.float(0.0, 1.0)
+assert.assert_true(f >= 0.0 and f <= 1.0, "random float is inside range")
+assert.assert_true(type(random.bool()) is bool, "random bool")
+assert.assert_true(type(random.next()) is int, "random next is int")
+
+# ---------- 경계값 ----------
+assert.assert_eq(random.int(5, 5), 5, "random int with equal bounds")
+
+# ---------- 선택 ----------
+assert.assert_true([1, 2, 3].contains(random.choice([1, 2, 3])), "choice picks a source element")
+assert.assert_eq(len(random.choices([1], 5)), 5, "choices with repeats")
+assert.assert_eq(len(random.choices([1, 2], 1)), 1, "choices k is 1")
+
+# ---------- 문자열/바이트 ----------
+assert.assert_eq(len(random.bytes(4)), 4, "bytes length")
+assert.assert_eq(len(random.str(5)), 5, "str length")
+assert.assert_eq(len(random.uuid()), 36, "uuid length")
+assert.assert_true(type(random.chance(0.5)) is bool, "chance returns bool")
+
+# ---------- 섞기/표본 ----------
+lst = [1, 2, 3, 4]
+assert.assert_eq(random.shuffle(lst), none, "shuffle returns none")
+assert.assert_eq(len(lst), 4, "shuffle keeps length")
+assert.assert_eq(len(random.sample(lst, 2)), 2, "sample length matches k")
+assert.assert_eq(len(random.sample(lst, 0)), 0, "sample of zero")
+assert.assert_true([1, 2, 3, 4].contains(random.sample(lst, 1)[0]), "sample takes source elements")
+
+# ---------- 순열 ----------
+perm = random.range(1, 5)
+assert.assert_true(type(perm) is list, "range returns list")
+assert.assert_eq(len(perm), 5, "range covers start..stop inclusive")
+assert.assert_true(perm.contains(1), "range permutation contains start")
+assert.assert_true(perm.contains(5), "range permutation contains stop")
+
+# ---------- 가중치 ----------
+assert.assert_true([1, 2].contains(random.weighted([1, 2], [1.0, 0.0])), "weighted picks the only positive weight")
+assert.assert_true([1, 2].contains(random.weighted([1, 2], [0.5, 0.5])), "weighted with equal weights")
+assert.assert_err(fn() -> random.weighted([1, 2], [0.0, 0.0]), "sum of weights must be greater than zero")
+assert.assert_err(fn() -> random.weighted([1, 2], [1.0]), "'values' and 'weights' must have the same length")
+assert.summary()

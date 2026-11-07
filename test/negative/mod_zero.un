@@ -1,0 +1,2 @@
+use io
+io.write(1 % 0)

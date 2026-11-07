@@ -1,0 +1,3 @@
+marker = 7
+fn doubled(n)
+    -> n * 2

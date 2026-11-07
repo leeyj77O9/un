@@ -1,0 +1,4 @@
+use io
+fn f(a)
+    -> len(a)
+io.write(f(" "))

@@ -1,0 +1,30 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 사전 - 5000개 키 삽입 후 5000개 키 조회
+# Node.js 벤치마크: bench/node/dict.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/dict.un  (C:\dev\un 에서)
+# ============================================================
+
+fn dict_work(n)
+    d = {}
+    for i in iter.range(0, n)
+        d[i * 2] = i
+    total = 0
+    for i in iter.range(0, n)
+        total += d[i * 2]
+    -> total
+
+# ---------- 검증 ----------
+# 0..4999의 합 = 12497500
+assert.assert_eq(dict_work(5), 10, "small dict work")
+assert.assert_eq(dict_work(5000), 12497500, "dict insert and lookup sum")
+
+# ---------- 측정 ----------
+# 한 번의 dict_work = 5000삽입 + 5000조회
+bench.measure("dict5000", fn(n) -> dict_work(5000), 10000, 7, 2)
+
+assert.summary()

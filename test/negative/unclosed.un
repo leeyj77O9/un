@@ -1,0 +1,4 @@
+use io
+
+l = [1, 2
+io.write(l)

@@ -1,0 +1,15 @@
+use io
+use sys
+
+# 한도를 1000 이상으로 올리면 Un의 호출 깊이 검사보다 OS 스택이 먼저 고갈된다.
+# 잡히지 않는 Stack overflow로 프로세스가 죽으므로 종료 코드로 검증한다.
+fn depth(n)
+    if n == 0
+        -> 0
+    -> 1 + depth(n - 1)
+
+sys.setcalldepth(2000)
+io.write("limit = ", sys.getcalldepth())
+io.write("\n")
+io.write("depth(1000) = ", depth(1000))
+io.write("\n")

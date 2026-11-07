@@ -1,0 +1,6 @@
+use io
+
+fn deep(n)
+    -> deep(n + 1)
+
+io.write(deep(0))

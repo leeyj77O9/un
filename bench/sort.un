@@ -1,0 +1,68 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 정렬 - LCG로 만든 500개 정수를 quicksort
+# Node.js 벤치마크: bench/node/sort.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/sort.un  (C:\dev\un 에서)
+# ============================================================
+
+fn lcg(n, seed)
+    xs = []
+    s = seed
+    for i in iter.range(0, n)
+        s = (s * 1103515245 + 12345) % 100000
+        xs.add(s)
+    -> xs
+
+fn qsort(xs)
+    if len(xs) <= 1
+        -> xs
+    pivot = xs[0]
+    smaller = []
+    larger = []
+    for x in xs[1:]
+        if x < pivot
+            smaller.add(x)
+        else
+            larger.add(x)
+    out = qsort(smaller)
+    out.add(pivot)
+    for v in qsort(larger)
+        out.add(v)
+    -> out
+
+fn is_sorted(xs)
+    for i in iter.range(1, len(xs))
+        if xs[i] < xs[i - 1]
+            -> false
+    -> true
+
+fn total(xs)
+    t = 0
+    for x in xs
+        t += x
+    -> t
+
+# ---------- 입력 ----------
+data = lcg(500, 7)
+assert.assert_eq(len(data), 500, "the input has 500 numbers")
+
+# ---------- 검증 ----------
+# 기대값은 내장 sort의 결과와 quicksort 결과가 같은지 비교한다.
+ref = []
+for x in data
+    ref.add(x)
+ref.sort()
+out = qsort(data)
+assert.assert_eq(len(out), 500, "quicksort keeps every element")
+assert.assert_true(is_sorted(out), "quicksort result is ascending")
+assert.assert_eq(out, ref, "quicksort equals the sorted reference")
+assert.assert_eq(total(out), total(data), "quicksort preserves the sum")
+
+# ---------- 측정 ----------
+bench.measure("qsort500", fn(n) -> qsort(data), 500, 7, 2)
+
+assert.summary()

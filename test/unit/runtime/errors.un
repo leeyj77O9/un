@@ -1,0 +1,132 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# 예외 - throw/catch/finally, 안전 접근, 에러 문구
+# 실행: Un.exe run test/unit/runtime/errors.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- throw ----------
+assert.assert_err(fn() -> throw("boom"), "boom")
+assert.assert_err(fn() -> throw_if(true, "cond hit"), "cond hit")
+assert.assert_err(fn() -> throw_unless(false, "cond miss"), "cond miss")
+
+# ---------- 전파 ----------
+fn may_fail(x)
+    if x < 0
+        -> throw("negative")
+    -> x * 2
+assert.assert_eq(may_fail(5), 10, "success path returns the value")
+assert.assert_err(fn() -> may_fail(-1), "negative")
+assert.assert_eq(may_fail(5)?, 10, "? yields the value on success")
+assert.assert_err(fn() -> may_fail(-1)?, "negative")
+
+fn caller()
+    r = may_fail(-1)?
+    -> r + 1
+assert.assert_err(caller, "negative")
+
+# ---------- ?의 연쇄 ----------
+fn chain_inner(x)
+    -> may_fail(x)?
+
+fn chain_outer(x)
+    -> chain_inner(x)? + 10
+
+assert.assert_eq(chain_outer(5), 20, "? chains through nested functions")
+assert.assert_err(fn() -> chain_outer(-1), "negative")
+
+fn add_after(x)
+    v = may_fail(x)?
+    -> v + 1
+
+assert.assert_eq(add_after(5), 11, "? unwraps the value inside a function body")
+
+fn plain(x)
+    -> x
+
+assert.assert_eq(plain(42)?, 42, "? on a plain value is the value")
+
+# ---------- 연산 오류 ----------
+assert.assert_err(fn() -> 1 / 0, "int division by zero")
+assert.assert_err(fn() -> 1 // 0, "int division by zero")
+assert.assert_err(fn() -> math_sqrt_neg, "undefined variable")
+assert.assert_err(fn() -> "ab" * 2, "unsupported operand type(s) for *: 'str' and 'int'")
+assert.assert_err(fn() -> 1 == "1", "unsupported operand type(s) for ==: 'int' and 'str'")
+assert.assert_err(fn() -> [1, 2] < [1, 3], "unsupported operand type(s) for <: 'list' and 'list'")
+assert.assert_err(fn() -> int("abc"), "cannot convert")
+
+# ---------- 없는 이름 ----------
+assert.assert_err(fn() -> nosuchname_xyz, "undefined variable")
+
+# ---------- 없는 키/인덱스 ----------
+d = {"a": 1}
+assert.assert_err(fn() -> d["z"], "key 'z' not found in dictionary")
+l = [1, 2]
+assert.assert_err(fn() -> l[5], "list index out of range")
+assert.assert_err(fn() -> l[-5], "list index out of range")
+
+# ---------- 없는 속성 ----------
+class Box
+    v = 1
+b = Box()
+assert.assert_err(fn() -> b.zz, "'Box' object has no attribute 'zz'")
+
+# ---------- 잡는 형태 ----------
+log = []
+try
+    log.add("before")
+    z = 1 / 0
+    log.add("after")
+catch err_er1
+    log.add("catch")
+assert.assert_eq(log, ["before", "catch"], "catch runs after the failing statement")
+
+# ---------- 변수 없는 catch ----------
+log3 = []
+try
+    z3 = 1 / 0
+catch
+    log3.add("bare catch")
+assert.assert_eq(log3, ["bare catch"], "catch works without binding the error")
+
+# ---------- catch 안의 재던지기 ----------
+rethrow_log = []
+try
+    try
+        throw("inner")
+    catch err_er4
+        rethrow_log.add(`inner {err_er4}`)
+        throw("outer")
+catch err_er5
+    rethrow_log.add(`outer {err_er5}`)
+assert.assert_eq(rethrow_log, ["inner error: inner", "outer error: outer"], "a rethrown error reaches the outer catch")
+
+log2 = []
+try
+    log2.add("ok")
+catch err_er2
+    log2.add("catch")
+finally
+    log2.add("finally")
+assert.assert_eq(log2, ["ok", "finally"], "finally runs on the success path")
+
+# ---------- catch 변수의 문자열 표현 ----------
+caught = ""
+try
+    z2 = 1 / 0
+catch err_er3
+    caught = `caught: {err_er3}`
+assert.assert_eq(caught, "caught: error: int division by zero", "f-string shows the error text")
+
+# ---------- 안전 접근 ----------
+v = none
+assert.assert_eq(v?.value, none, "safe member access on none is none")
+assert.assert_eq(v?.len(), none, "safe call on none is none")
+assert.assert_eq((none)?.add, none, "safe attribute read on none is none")
+
+# ---------- throw는 값이 없다 ----------
+t = throw_if(false, "no")
+assert.assert_eq(t, none, "throw_if returns none when the condition is false")
+
+assert.summary()

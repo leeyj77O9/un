@@ -1,0 +1,64 @@
+use io
+use fs
+use test.assert as assert
+
+# ============================================================
+# io - stream 열기/읽기/쓰기/닫기, 모드 검증
+# 실행: Un.exe run test/unit/native/io.un  (C:\dev\un 에서)
+# 임시 디렉터리 아래에만 파일을 만든다.
+#
+# 주의: using으로 열한 stream은 프로그램 끝에서 한 번 더 닫히므로
+# close()와 함께 쓰면 ObjectDisposedException이 발생한다.
+# 그래서 이 테스트는 io.open + close()만 쓴다.
+# ============================================================
+
+work = fs.join(fs.temp(), "un_test_io")
+fs.mkdir(work)
+f = fs.join(work, "io_test.txt")
+
+# ---------- 쓰기 모드 ----------
+stream = io.open(f, "w")
+stream.write_line("line1")
+stream.write_line("line2")
+stream.close()
+
+content = fs.read(f)
+assert.assert_true(content.contains("line1"), "write_line writes the first line")
+assert.assert_true(content.contains("line2"), "write_line writes the second line")
+
+# ---------- 읽기 모드 ----------
+stream2 = io.open(f, "r")
+assert.assert_eq(str(type(stream2)), "<type: stream>", "open returns a stream")
+assert.assert_eq(stream2.can_read(), true, "read mode can_read")
+assert.assert_eq(stream2.can_write(), false, "read mode cannot write")
+assert.assert_true(stream2.length() > 0, "length is positive")
+assert.assert_eq(stream2.eof(), false, "eof is false before reading")
+assert.assert_eq(stream2.read_line(), "line1", "read_line returns the first line")
+assert.assert_eq(stream2.read_line(), "line2", "read_line returns the second line")
+assert.assert_eq(stream2.eof(), true, "eof is true after reading every line")
+stream2.close()
+
+# ---------- 추가 모드 ----------
+stream3 = io.open(f, "a")
+stream3.write_line("line3")
+stream3.close()
+assert.assert_true(fs.read(f).contains("line3"), "append mode adds content")
+
+# ---------- 읽기/쓰기 모드 ----------
+stream4 = io.open(f, "rw")
+assert.assert_eq(stream4.can_read(), true, "rw mode can_read")
+assert.assert_eq(stream4.can_write(), true, "rw mode can_write")
+assert.assert_true(stream4.can_seek(), "stream supports seek")
+stream4.seek(0)
+assert.assert_eq(stream4.position(), 0, "position is 0 after seek")
+stream4.close()
+
+# ---------- 없는 파일 / 잘못된 모드 ----------
+assert.assert_err(fn() -> io.open(fs.join(work, "nope.txt"), "r"), "file not found")
+assert.assert_err(fn() -> io.open(f, "z"), "invalid 'mode' argument")
+
+# ---------- 정리 ----------
+fs.delete(f)
+fs.rmdir(work)
+
+assert.summary()

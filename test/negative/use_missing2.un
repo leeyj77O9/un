@@ -1,0 +1,3 @@
+use io
+use io
+io.write(os.sep())

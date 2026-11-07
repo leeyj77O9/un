@@ -1,0 +1,79 @@
+use io
+use iter
+use flow
+use test.assert as assert
+
+# ============================================================
+# 동시성 - pool/lock/go/wait 조합
+# 실행: Un.exe run test/integration/concurrency.un  (C:\dev\un 에서)
+#
+# 주의: pool을 using으로 잡지 않으면 프로그램 끝에서 대기하며 멈춘다.
+# pool.close() 이후 map은 잡히지 않는 예외로 프로세스가 죽는다.
+# pool.map의 결과 순서는 완료 순서이므로 순서에 의존하지 않는다.
+# ============================================================
+
+using pool = flow.spawn(4)
+
+# ---------- 많은 인자 ----------
+results = pool.map(fn(x) -> x * x, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+assert.assert_eq(len(results), 10, "pool.map returns one result per argument")
+sorted_results = list(iter.sorted(results))
+assert.assert_eq(sorted_results, [1, 4, 9, 16, 25, 36, 49, 64, 81, 100], "mapped values match")
+
+total = 0
+for r in results
+    total += r
+assert.assert_eq(total, 385, "results sum with a plain loop")
+
+# ---------- 가변 개수 ----------
+many = pool.map(fn(x) -> x + 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
+assert.assert_eq(len(many), 20, "more arguments than workers all get results")
+assert.assert_eq(len(list(iter.filter(fn(x) -> x == 21, many))), 1, "the largest mapped value is present")
+
+# ---------- 인자 튜플 ----------
+sub = pool.submit(fn(x) -> x * 3, (7))
+assert.assert_eq(wait sub, 21, "submit returns a future and wait gives the value")
+
+subs = []
+for i in [1, 2, 3, 4]
+    subs.add(pool.submit(fn(x) -> x - 1, (i)))
+collected = []
+for s in subs
+    collected.add(wait s)
+assert.assert_eq(len(collected), 4, "every submitted future resolves")
+assert.assert_eq(list(iter.sorted(collected)), [0, 1, 2, 3], "submitted values match")
+
+# ---------- 공유 상태 ----------
+shared = []
+pool.map(fn(x) -> shared.add(x * 2), 1, 2, 3)
+assert.assert_eq(len(shared), 3, "a shared list receives every mapped result")
+
+# ---------- lock ----------
+guard = flow.lock()
+guard.acquire()
+guard.release()
+assert.assert_eq(guard.try_acquire(), true, "try_acquire succeeds after release")
+guard.release()
+
+nested = []
+guard.acquire()
+nested.add("inside")
+guard.release()
+assert.assert_eq(nested, ["inside"], "work runs between acquire and release")
+
+# ---------- go / wait ----------
+fn square(n)
+    -> n * n
+fn spawn_square(n)
+    -> go square(n)
+futs = []
+for i in [1, 2, 3]
+    futs.add(spawn_square(i))
+out = []
+for f in futs
+    out.add(wait f)
+assert.assert_eq(list(iter.sorted(out)), [1, 4, 9], "go futures resolve to the mapped values")
+
+assert.assert_eq(wait go square(10), 100, "go in argument position resolves with wait")
+
+assert.summary()

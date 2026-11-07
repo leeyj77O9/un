@@ -1,0 +1,90 @@
+use io
+use time
+use test.assert as assert
+
+# ============================================================
+# time / date - 시점 값, 연산, 형식화, stopwatch
+# 실행: Un.exe run test/unit/runtime/date.un  (C:\dev\un 에서)
+# ============================================================
+
+dt = time.now()
+
+# ---------- 현재 시점의 범위 ----------
+assert.assert_true(dt.year() > 2000, "current year is sane")
+assert.assert_true(dt.month() >= 1 and dt.month() <= 12, "current month is in range")
+assert.assert_true(dt.day() >= 1 and dt.day() <= 31, "current day is in range")
+assert.assert_true(dt.hour() >= 0 and dt.hour() <= 23, "current hour is in range")
+assert.assert_true(dt.ms() >= 0 and dt.ms() < 1000, "current ms is in range")
+assert.assert_true(dt.day_of_year() >= 1 and dt.day_of_year() <= 366, "day_of_year is in range")
+assert.assert_true(dt.days_in_month() >= 28 and dt.days_in_month() <= 31, "days_in_month is in range")
+
+# ---------- 형 ----------
+assert.assert_eq(type(dt), date, "time.now returns a date")
+assert.assert_eq(type(dt.date()), date, "date.date returns a date")
+assert.assert_eq(type(dt.weekday()), int, "weekday returns int")
+assert.assert_eq(type(dt.is_leap_year()), bool, "is_leap_year returns bool")
+
+# ---------- 고정된 시점 ----------
+fixed = date("2020-03-05")
+assert.assert_eq(fixed.year(), 2020, "date literal year")
+assert.assert_eq(fixed.month(), 3, "date literal month")
+assert.assert_eq(fixed.day(), 5, "date literal day")
+assert.assert_eq(fixed.format("yyyy-MM-dd"), "2020-03-05", "format round trip")
+assert.assert_eq(fixed.format("yyyy"), str(fixed.year()), "format matches the field")
+assert.assert_eq(len(fixed.format("yyyy-MM-dd HH:mm:ss")), 19, "full format has 19 characters")
+
+# ---------- 윤년 ----------
+assert.assert_eq(date("2020-02-01").is_leap_year(), true, "2020 is a leap year")
+assert.assert_eq(date("2021-02-01").is_leap_year(), false, "2021 is not a leap year")
+assert.assert_eq(date("2020-02-01").days_in_month(), 29, "february of a leap year has 29 days")
+assert.assert_eq(date("2021-02-01").days_in_month(), 28, "february of a common year has 28 days")
+assert.assert_eq(date("2020-12-31").day_of_year(), 366, "last day of a leap year is day 366")
+
+# ---------- 비교 ----------
+early = date("2020-01-01")
+late = date("2020-01-02")
+assert.assert_eq(early.compare(early), 0, "compare of the same date is zero")
+assert.assert_eq(early.compare(late), -1, "compare of an earlier date is negative")
+assert.assert_eq(early.before(late), true, "before is true for an earlier date")
+assert.assert_eq(early.after(late), false, "after is false for an earlier date")
+assert.assert_eq(dt.before(dt), false, "a date is not before itself")
+assert.assert_eq(dt.after(dt), false, "a date is not after itself")
+
+# ---------- 가산 ----------
+assert.assert_eq(type(dt.add_days(1)), date, "add_days returns a date")
+assert.assert_eq(dt.add_days(1).after(dt), true, "add_days moves forward")
+assert.assert_eq(dt.add_days(-1).before(dt), true, "add_days with a negative moves backward")
+assert.assert_eq(dt.add_years(1).year(), dt.year() + 1, "add_years increments the year")
+assert.assert_eq(dt.add_hours(1) is date, true, "add_hours returns a date")
+assert.assert_eq(dt.add_seconds(60).after(dt), true, "add_seconds moves forward")
+assert.assert_eq(dt.add_ms(1000).after(dt), true, "add_ms moves forward")
+assert.assert_eq(len(dt.add_months(1).format("MM")), 2, "add_months keeps a two digit month")
+
+# ---------- utc/local ----------
+assert.assert_eq(type(dt.to_utc()), date, "to_utc returns a date")
+assert.assert_eq(type(dt.to_local()), date, "to_local returns a date")
+
+# ---------- 시간 메타데이터는 문자열 비교가 불가능하다 ----------
+assert.assert_err(fn() -> dt == fixed, "unsupported operand type(s) for ==: 'date' and 'date'")
+
+# ---------- timestamp ----------
+assert.assert_true(dt.timestamp() > 0, "timestamp is positive")
+assert.assert_true(dt.timestamp_ms() > 0, "timestamp_ms is positive")
+
+# ---------- stopwatch ----------
+sw = time.stopwatch()
+assert.assert_eq(str(type(sw)), "<type: stopwatch>", "time.stopwatch returns a stopwatch")
+assert.assert_eq(sw.is_running(), false, "a new stopwatch is not running")
+sw.start()
+assert.assert_eq(sw.is_running(), true, "start makes it running")
+assert.assert_true(sw.tick() >= 0, "tick counts elapsed ticks")
+sw.reset()
+assert.assert_eq(sw.tick(), 0, "reset clears the elapsed time")
+
+sleeping = time.stopwatch()
+sleeping.start()
+time.sleep(20)
+assert.assert_true(sleeping.ms() >= 20, "ms measures the elapsed time after a sleep")
+assert.assert_true(sleeping.seconds() >= 0.0, "seconds is a float elapsed time")
+
+assert.summary()

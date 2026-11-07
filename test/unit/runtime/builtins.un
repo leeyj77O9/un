@@ -1,0 +1,82 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# 전역 내장 함수 - hex/bin/oct/chr/ord/ascii/hash/type/len/변환/throw
+# 실행: Un.exe run test/unit/runtime/builtins.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 진법 ----------
+assert.assert_eq(hex(255), "0xff", "hex of 255")
+assert.assert_eq(hex(0), "0x0", "hex of zero")
+assert.assert_eq(bin(10), "0b1010", "bin of 10")
+assert.assert_eq(bin(0), "0b0", "bin of zero")
+assert.assert_eq(oct(8), "0o10", "oct of 8")
+assert.assert_eq(oct(0), "0o0", "oct of zero")
+
+# ---------- 문자 코드 ----------
+assert.assert_eq(chr(65), "A", "chr of 65")
+assert.assert_eq(ord("A"), 65, "ord of A")
+assert.assert_eq(chr(ord("a")), "a", "chr/ord round trip")
+
+# ---------- ascii는 코드값 ----------
+assert.assert_eq(ascii("a"), 97, "ascii code of a")
+assert.assert_eq(ascii("한"), 54620, "ascii code of a unicode character")
+
+# ---------- hash는 문자열만 지원 ----------
+assert.assert_eq(hash("a") == hash("a"), true, "equal strings hash equal")
+assert.assert_eq(hash("abc") != hash("abd"), true, "different strings hash different")
+assert.assert_err(fn() -> hash(1), "cannot hashable object")
+assert.assert_err(fn() -> hash([1]), "cannot hashable object")
+assert.assert_err(fn() -> hash(none), "cannot hashable object")
+
+# ---------- type ----------
+assert.assert_eq(type(1), int, "type of int")
+assert.assert_eq(type("a"), str, "type of str")
+assert.assert_eq(type(1.5), float, "type of float")
+assert.assert_eq(type(true), bool, "type of bool")
+assert.assert_eq(str(type(none)), "<type: none>", "str of the none type")
+assert.assert_eq(type(none) is none, false, "the none type is not the none value")
+assert.assert_eq(type([1]), list, "type of list")
+assert.assert_eq(type({"a": 1}), dict, "type of dict")
+assert.assert_eq(type((1, 2)), tuple, "type of tuple")
+assert.assert_eq(str(type(1)), "<type: int>", "str of a type")
+
+# ---------- len ----------
+assert.assert_eq(len(""), 0, "len of empty string")
+assert.assert_eq(len([]), 0, "len of empty list")
+assert.assert_eq(len({}), 0, "len of empty dict")
+assert.assert_eq(len("abc"), 3, "len of string")
+
+# ---------- 형 변환 ----------
+assert.assert_eq(int(1.9), 1, "int truncates toward zero")
+assert.assert_eq(int(-1.9), -1, "int truncates negative toward zero")
+assert.assert_eq(float(1), 1.0, "float from int")
+assert.assert_eq(str(1), "1", "str from int")
+assert.assert_eq(str(1.5), "1.5", "str from float")
+assert.assert_eq(str(2.0), "2", "str of a whole float drops the fraction")
+assert.assert_eq(str(none), "none", "str from none")
+assert.assert_eq(str(true), "true", "str from bool")
+assert.assert_eq(str([1, 2]), "[1, 2]", "str from list")
+assert.assert_eq(int("42"), 42, "int from string")
+assert.assert_eq(int("-3"), -3, "int from negative string")
+assert.assert_eq(float("1e3"), 1000.0, "float from exponent string")
+
+# ---------- 변환 실패 ----------
+assert.assert_err(fn() -> int("abc"), "cannot convert")
+assert.assert_err(fn() -> int(""), "cannot convert '' to 'int'")
+assert.assert_err(fn() -> float(""), "cannot convert '' to 'float'")
+assert.assert_err(fn() -> float("inf"), "cannot convert 'inf' to 'float'")
+assert.assert_err(fn() -> int(true), "unsupported operand type(s) for int(): 'bool'")
+
+# ---------- repr는 형 이름을 반환한다 ----------
+assert.assert_eq(repr(1), "int", "repr of int is the type name")
+assert.assert_eq(repr("a"), "str", "repr of str is the type name")
+assert.assert_eq(repr(none), "none", "repr of none is none")
+assert.assert_eq(repr([1, 2]), "list", "repr of list is the type name")
+
+# ---------- throw 계열 ----------
+assert.assert_eq(throw_if(false, "no"), none, "throw_if does nothing when the condition is false")
+assert.assert_eq(throw_unless(true, "no"), none, "throw_unless does nothing when the condition is true")
+
+assert.summary()

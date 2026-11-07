@@ -1,8 +1,0 @@
-use io
-use flow
-
-using pool: pool = flow.spawn()
-
-f = fn(x) -> io.write(x * 2)
-
-pool.map(f, 1, 2, 3)

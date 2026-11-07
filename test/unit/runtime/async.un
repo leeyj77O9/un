@@ -1,0 +1,72 @@
+use io
+use fs
+use flow
+use iter
+use time
+use test.assert as assert
+
+# ============================================================
+# flow - pool/lock, go/wait
+# 실행: Un.exe run test/unit/runtime/async.un  (C:\dev\un 에서)
+#
+# 주의:
+#   pool을 using으로 잡지 않으면 프로그램 끝에서 대기하며 멈춘다.
+#   pool.close() 이후 map은 잡히지 않는 예외로 프로세스가 죽는다.
+# ============================================================
+
+using pool = flow.spawn(2)
+
+# ---------- pool.map ----------
+mapped = pool.map(fn(x) -> x * 2, 10, 20, 30)
+assert.assert_eq(len(mapped), 3, "pool.map returns one result per argument")
+sorted_results = list(iter.sorted(mapped))
+assert.assert_eq(sorted_results, [20, 40, 60], "pool.map results match the mapped values")
+
+single = pool.map(fn(x) -> x, 7)
+assert.assert_eq(single, [7], "pool.map with one argument returns a one element list")
+
+# ---------- pool.submit ----------
+submitted = pool.submit(fn(x) -> x + 1, (5))
+assert.assert_eq(str(type(submitted)), "<type: future>", "pool.submit returns a future")
+assert.assert_eq(wait submitted, 6, "wait on a submitted future gives the value")
+
+# ---------- 기저的未来 ----------
+fn double(n)
+    -> n * 3
+fut = go double(4)
+assert.assert_eq(str(type(fut)), "<type: future>", "go returns a future")
+assert.assert_eq(wait fut, 12, "wait on a go future gives the value")
+
+# ---------- 지연 후 결과 ----------
+fn slow(n)
+    time.sleep(50)
+    -> n * 2
+
+sf = go slow(5)
+assert.assert_eq(wait sf, 10, "a future that sleeps resolves after the delay")
+
+# ---------- future는 연산 대상이 아니다 ----------
+assert.assert_err(fn() -> str(fut), "unsupported operand type(s) for str(): 'future'")
+assert.assert_err(fn() -> fut + 1, "unsupported operand type(s) for +: 'future' and 'int'")
+assert.assert_err(fn() -> fut(), "unsupported operand type(s) for (): 'future'")
+
+# ---------- lock ----------
+lock = flow.lock()
+assert.assert_eq(str(type(lock)), "<type: lock>", "flow.lock returns a lock")
+assert.assert_eq(lock.try_acquire(), true, "try_acquire succeeds on an unlocked lock")
+lock.release()
+lock.acquire()
+lock.release()
+assert.assert_eq(lock.try_acquire(), true, "try_acquire succeeds after release")
+lock.release()
+
+# ---------- 잡히지 않는 lock 오류 ----------
+lock2 = flow.lock()
+lock2.acquire()
+lock2.release()
+assert.assert_err(fn() -> lock2.release(), "lock not held")
+
+# ---------- pool은 str 대상이 아니다 ----------
+assert.assert_err(fn() -> str(pool), "unsupported operand type(s) for str(): 'pool'")
+
+assert.summary()

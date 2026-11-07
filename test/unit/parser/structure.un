@@ -1,0 +1,212 @@
+use io
+use fs
+use flow
+use test.assert as assert
+
+# ============================================================
+# Parser structure - 함수/클래스/블록/制御문의 구문 형태
+# 실행: Un.exe run test/unit/parser/structure.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 함수 정의 ----------
+fn add(a, b)
+    -> a + b
+assert.assert_eq(add(1, 2), 3, "function definition with a -> body")
+
+fn side_effect(acc, v)
+    acc.add(v)
+    -> none
+collected = []
+side_effect(collected, 1)
+assert.assert_eq(collected, [1], "function body statements run in order")
+
+fn with_default(a, b = 2, c = 3)
+    -> a + b + c
+assert.assert_eq(with_default(1), 6, "defaults are used when arguments are omitted")
+assert.assert_eq(with_default(1, 10, c = 20), 31, "positional then keyword arguments")
+
+fn with_varargs(first, *rest)
+    -> (first, len(rest))
+pair = with_varargs(1, 2, 3, 4)
+assert.assert_eq(pair[0], 1, "varargs keeps the positional argument")
+assert.assert_eq(pair[1], 3, "varargs collects the rest")
+
+# ---------- 람다 ----------
+lam = fn(x) -> x * 2
+assert.assert_eq(lam(3), 6, "assigned lambda")
+assert.assert_eq((fn(x) -> x + 1)(4), 5, "parenthesized lambda call")
+nested_call = (fn(x) -> fn(y) -> x + y)(1)(2)
+assert.assert_eq(nested_call, 3, "lambda returning a lambda")
+
+# ---------- 여러 값 반환 ----------
+fn three()
+    -> (1, 2, 3)
+multi = three()
+assert.assert_eq(len(multi), 3, "returning a tuple carries three values")
+assert.assert_eq(multi[2], 3, "tuple elements are indexed after the return")
+a1, b1, c1 = (1, 2, 3)
+assert.assert_eq((a1, b1, c1), (1, 2, 3), "tuple destructuring assignment")
+
+# ---------- 클래스 ----------
+class Animal
+    legs = 4
+    fn __init__(name)
+        self.name = name
+    fn speak()
+        -> `{self.name}...`
+a = Animal("cat")
+assert.assert_eq(a.legs, 4, "class field is visible on the instance")
+assert.assert_eq(a.speak(), "cat...", "method uses self")
+
+class Dog: Animal
+    fn speak()
+        -> "woof"
+d = Dog("rex")
+assert.assert_eq(d.legs, 4, "child inherits the parent field")
+assert.assert_eq(d.speak(), "woof", "child overrides the method")
+
+# ---------- 헤더 인자 ----------
+class Pos(x, y)
+    fn __init__(x, y)
+        self.x = x
+        self.y = y
+p = Pos(1, 2)
+assert.assert_eq(p.x + p.y, 3, "class header arguments")
+
+# ----------형 주석 ----------
+typed: int = 5
+assert.assert_eq(typed, 5, "type annotation binds the value")
+
+# ---------- 제어문 형태 ----------
+fn branch(n)
+    if n > 0
+        -> "pos"
+    elif n == 0
+        -> "zero"
+    else
+        -> "neg"
+assert.assert_eq(branch(1), "pos", "if branch")
+assert.assert_eq(branch(0), "zero", "elif branch")
+assert.assert_eq(branch(-1), "neg", "else branch")
+
+sum_of = 0
+for i in [1, 2, 3]
+    sum_of += i
+assert.assert_eq(sum_of, 6, "for body accumulates")
+
+key_seen = []
+for k, v in {"a": 1, "b": 2}
+    key_seen.add(k)
+assert.assert_eq(len(key_seen), 2, "for destructures dict pairs")
+
+matched = []
+for n in [1, 2, 3]
+    r = match n { 1 -> "one", 2 -> "two", _ -> "other" }
+    matched.add(r)
+assert.assert_eq(matched, ["one", "two", "other"], "match arms inside a loop")
+
+# ---------- try/catch/finally ----------
+log = []
+try
+    log.add("try")
+    z = 1 / 0
+    log.add("after")
+catch err_st1
+    log.add("catch")
+finally
+    log.add("finally")
+assert.assert_eq(log, ["try", "catch", "finally"], "try/catch/finally order")
+
+# ---------- defer ----------
+defer_log = []
+fn scoped()
+    defer defer_log.add("deferred")
+    defer_log.add("body")
+scoped()
+assert.assert_eq(defer_log, ["body", "deferred"], "defer runs at scope exit")
+
+# ---------- using ----------
+work = fs.join(fs.temp(), "un_test_parser_using")
+fs.mkdir(work)
+content = fs.join(work, "u.txt")
+fs.write(content, "data")
+using pool = flow.spawn(1)
+assert.assert_eq(len(pool.map(fn(x) -> x, 1)), 1, "using binds a pool and the body runs")
+assert.assert_eq(fs.read(content), "data", "using body executes")
+fs.delete(content)
+fs.rmdir(work)
+
+# ---------- 장식 ----------
+fn upper(target)
+    fn wrapped(x)
+        -> target(x) + "!"
+    -> wrapped
+@upper
+fn greet(name)
+    -> `hello {name}`
+assert.assert_eq(greet("bob"), "hello bob!", "decorator wraps the function result")
+
+# ---------- 장식자 변형 ----------
+fn with_prefix(prefix)
+    fn wrapper(target)
+        fn wrapped(x)
+            -> prefix + target(x)
+        -> wrapped
+    -> wrapper
+
+@with_prefix("> ")
+fn name(n)
+    -> n
+assert.assert_eq(name("a"), "> a", "a decorator that takes arguments")
+
+fn keep(cls)
+    -> cls
+
+@keep
+class Wrapped
+    x = 1
+assert.assert_eq(Wrapped().x, 1, "a decorator on a class keeps the class")
+
+fn passthrough(target)
+    -> target
+
+class WithDeco
+    @passthrough
+    fn bar()
+        -> 123
+assert.assert_eq(WithDeco().bar(), 123, "a decorator on a method keeps the method")
+
+fn forwarding(target)
+    fn wrapper(*args)
+        -> target(*args)
+    -> wrapper
+
+@forwarding
+fn pair(a, b)
+    -> a + b
+assert.assert_eq(pair(3, 4), 7, "a decorator forwards *args")
+
+# ---------- 중첩 표현 ----------
+big = (1 + 2) * (3 + 4)
+assert.assert_eq(big, 21, "parenthesized groups")
+long_expr = (1 +
+    2) * 3
+assert.assert_eq(long_expr, 9, "expression continues on the next line inside parentheses")
+
+assert.assert_eq([1, 2, 3][1:][0], 2, "slice then index chain")
+assert.assert_eq("abcd"[1:3][0], "b", "string slice then index")
+assert.assert_eq(none ?? none ?? 3, 3, "coalesce chain")
+assert.assert_eq(1 ? 2 ? 3 : 4 : 5, 3, "nested ternary")
+
+# ---------- 예약어는 식별자로 쓸 수 없다 ----------
+assert.assert_eq(len("keyword check"), 13, "identifier containing a keyword prefix is fine")
+
+# ---------- 전역 상태 변화 ----------
+counter = 0
+fn bump()
+    counter += 1
+    -> counter
+assert.assert_eq(bump(), 1, "global is read by the function")
+assert.assert_eq(counter, 0, "function assignment creates a local, not a global update")
+
+assert.summary()

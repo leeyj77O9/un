@@ -1,9 +1,0 @@
-use io
-use time
-
-fn slow(x)
-    time.sleep(1.0)
-    -> x * 2
-
-a = go slow(5)
-io.write(wait a)

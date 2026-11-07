@@ -1,0 +1,118 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# str primitive - normal, boundary, empty and invalid input
+# 실행: Un.exe run test/unit/native/str.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- index / slice ----------
+s = "abc"
+assert.assert_eq(s[0], "a", "index 0")
+assert.assert_eq(s[2], "c", "index 2")
+assert.assert_eq(s[-1], "c", "index -1")
+assert.assert_eq(s[-3], "a", "index -3")
+assert.assert_eq(s[0:3], "abc", "slice full")
+assert.assert_eq(s[1:], "bc", "slice start only")
+assert.assert_eq(s[:2], "ab", "slice end only")
+assert.assert_eq(s[-2:], "bc", "slice negative start")
+assert.assert_eq(s[2:0:-1], "cb", "slice reverse step")
+assert.assert_eq("abcdef"[0:6:2], "ace", "slice step 2")
+assert.assert_eq(s[0:3:-1], "", "slice reverse step from low start is empty")
+assert.assert_eq(s[5:10], "", "slice out of range is empty")
+assert.assert_eq(s[0:0], "", "slice empty range")
+
+# ---------- search ----------
+assert.assert_eq("hello world".index_of("world"), 6, "index_of hit")
+assert.assert_eq("abc".index_of("z"), -1, "index_of miss")
+assert.assert_eq("abc".index_of(""), 0, "index_of empty needle")
+assert.assert_true("abc".contains("b"), "contains hit")
+assert.assert_true("abc".contains(""), "contains empty needle is true")
+assert.assert_false("abc".contains("z"), "contains miss")
+assert.assert_eq("abc".find(sub_str="b"), 1, "find hit")
+assert.assert_eq("abc".find(sub_str=""), 0, "find empty needle")
+assert.assert_eq("abc".find(sub_str="abc"), 0, "find whole string")
+assert.assert_eq("abc".find(sub_str="z"), -1, "find miss")
+assert.assert_true("abc".starts_with("a"), "starts_with hit")
+assert.assert_true("abc".starts_with(""), "starts_with empty is true")
+assert.assert_false("abc".starts_with("b"), "starts_with miss")
+assert.assert_true("abc".ends_with("c"), "ends_with hit")
+assert.assert_true("abc".ends_with(""), "ends_with empty is true")
+assert.assert_false("abc".ends_with("b"), "ends_with miss")
+
+# ---------- case / trim / pad ----------
+assert.assert_eq("aBc".to_upper(), "ABC", "to_upper")
+assert.assert_eq("aBc".to_lower(), "abc", "to_lower")
+assert.assert_eq("".to_upper(), "", "to_upper empty")
+assert.assert_eq("  hi  ".trim(" "), "hi", "trim spaces")
+assert.assert_eq("xxabxx".trim("x"), "ab", "trim chars")
+assert.assert_eq(" \t x \t ".trim(" \t"), "x", "trim tabs and spaces")
+assert.assert_eq("ab".center(6, "-"), "--ab--", "center wide")
+assert.assert_eq("ab".left(6, "-"), "ab----", "left wide")
+assert.assert_eq("ab".right(6, "-"), "----ab", "right wide")
+assert.assert_eq("ab".center(5), " ab  ", "center default fill is space")
+assert.assert_eq("abcd".center(2, "-"), "abcd", "center narrow is unchanged")
+assert.assert_eq("abcd".left(2, "-"), "abcd", "left narrow is unchanged")
+assert.assert_eq("abcd".right(2, "-"), "abcd", "right narrow is unchanged")
+
+# ---------- predicates ----------
+assert.assert_true("".is_empty(), "is_empty on empty str")
+assert.assert_false("a".is_empty(), "is_empty on non-empty str")
+assert.assert_true("123".is_number(), "is_number digits")
+assert.assert_true("".is_number(), "is_number empty is true")
+assert.assert_true("abc".is_alphabet(), "is_alphabet letters")
+assert.assert_true("".is_alphabet(), "is_alphabet empty is true")
+
+# ---------- split / join ----------
+assert.assert_eq("a,b,c".split(","), ["a", "b", "c"], "split")
+assert.assert_eq("a b".split(" "), ["a", "b"], "split on space")
+assert.assert_eq("a::b".split("::"), ["a", "b"], "split multi char separator")
+assert.assert_eq("".split(","), [""], "split empty string")
+assert.assert_eq(",".join(["a", "b", "c"]), "a,b,c", "join strs")
+assert.assert_eq(",".join([1, 2]), "1,2", "join ints")
+assert.assert_eq("-".join((1, 2)), "1-2", "join tuple")
+assert.assert_eq(",".join("ab"), "a,b", "join str argument")
+assert.assert_eq(",".join([]), "", "join empty list")
+
+# ---------- replace ----------
+assert.assert_eq(
+    "hello world".replace(old_value="world", new_value="un"),
+    "hello un",
+    "replace hit")
+assert.assert_eq("abc".replace(old_value="a", new_value=""), "bc", "replace to empty")
+assert.assert_eq("aabb".replace(old_value="aa", new_value="b"), "bbb", "replace multi char")
+assert.assert_eq("abc".replace(old_value="z", new_value="-"), "abc", "replace miss is unchanged")
+
+# ---------- arithmetic and comparison ----------
+assert.assert_eq("a" + 1, "a1", "str + int concatenates")
+assert.assert_eq("abc" - "b", "ac", "str - str removes a substring")
+assert.assert_eq("a" + "b", "ab", "str + str")
+assert.assert_true("abc" == "abc", "str equality")
+assert.assert_false("abc" == "abd", "str inequality")
+assert.assert_false("abc" == none, "str == none is false")
+assert.assert_true("a" < "b", "str ordering")
+assert.assert_eq(len("abc"), 3, "len str")
+assert.assert_eq(len(""), 0, "len empty str")
+
+# ---------- interpolation ----------
+name = "un"
+assert.assert_eq(`lang:{name}`, "lang:un", "interpolation with variable")
+assert.assert_eq(`{1 + 2}`, "3", "interpolation with expression")
+assert.assert_eq(`x{"a"}`, "xa", "interpolation with literal")
+assert.assert_eq(`{len("abc")}`, "3", "interpolation with call")
+assert.assert_eq("a\tb\n", "a\tb\n", "escape sequences are decoded")
+assert.assert_eq("한글", "한글", "unicode literal")
+
+# ---------- invalid input ----------
+assert.assert_eq("abc"[0:3][0], "a", "chained slice index")
+assert.assert_err(fn() -> "abc"[3], "str index out of range")
+assert.assert_err(fn() -> "abc"[10], "str index far out of range")
+assert.assert_err(fn() -> "ab" * 2, "str * int is unsupported")
+assert.assert_err(fn() -> "abc".index_of(1), "index_of non-str argument")
+assert.assert_err(fn() -> "abc".contains(1), "contains non-str argument")
+assert.assert_err(fn() -> "abc".find(sub_str=1), "find non-str argument")
+assert.assert_err(fn() -> "abc".starts_with(1), "starts_with non-str argument")
+assert.assert_err(fn() -> "abc".split(1), "split non-str argument")
+assert.assert_err(fn() -> "abc".trim(), "trim requires chars")
+
+assert.summary()
