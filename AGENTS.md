@@ -22,14 +22,16 @@ dotnet run -c Release -- run test/test_suite.un
 # 빌드 산출물로 직접 실행 (Windows)
 .\bin\Release\net8.0\Un.exe run test\test_suite.un
 
-# 전체 테스트 스크립트 (하나의 러너는 없음)
-dotnet run -c Release -- run test/test_all.un
+# 전체 테스트 runner ( Positive + Negative + KnownFailures 집계 )
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
+
+# 벤치마크 runner ( -Group un|node|all, -Rebuild, -NoSave )
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```
 
 - 이 개발 머신에는 .NET 10 런타임만 설치되어 있다. `net8.0` 앱 실행이 실패하면
   `DOTNET_ROLL_FORWARD=Major`를 설정한다(PowerShell: `$env:DOTNET_ROLL_FORWARD='Major'`).
-- 현재 `dotnet build -c Release`는 `src/Core/Global.cs:75`에서 nullable 경고
-  `CS8604` 1개를 낸다. **새 경고를 추가하지 말 것.**
+- 현재 `dotnet build -c Release`는 오류 0개, 경고 0개로 끝난다. **새 경고를 추가하지 말 것.**
 
 ## 디렉터리 구조
 
@@ -67,7 +69,17 @@ C:\dev\un
 │     ├─ Reflection/         # Native/Builtin 어트리뷰트와 바인딩
 │     ├─ Error/              # Error(위치 포함), Panic(전역)
 │     └─ Util/               # ISpan 등
-└─ test/                     # .un 테스트/픽스처 (circular/, rel_test/ 포함)
+ ├─ scripts/                  # test.ps1, bench.ps1 (runner)
+ ├─ bench/                    # 측정 스크립트, bench/node/, bench/results/
+ └─ test/                     # .un 테스트/픽스처
+    ├─ unit/                  # unit/lexer, unit/parser, unit/runtime, unit/native
+    ├─ integration/           # algorithms, concurrency, modules, recursion
+    ├─ regression/            # defects.un (문서화된 동작 기준)
+    ├─ negative/              # exit code + stderr 확인 + manifest.txt
+    ├─ fixtures/              # circular/, rel_test/, dirmod/, dirall/, circular_main.un
+    ├─ MANIFEST.txt           # group|path 행
+    ├─ KnownFailures.txt      # runner가 KNOWN FAIL로 기록하는 파일
+    └─ assert.un              # assert 모듈 (assert_eq / assert_true)
 ```
 
 ## 아키텍처 메모
@@ -142,19 +154,36 @@ public static class MyMod
 3. `Desugarer/Desugarer.cs` — 자식 순회 및 확장 규칙.
 4. `Optimizer/Optimizer.cs` — 상수 폴딩/단순화가 가능한 경우.
 5. `Evaluator/Evaluator.cs` (또는 `Flows.cs`) — 실제 평가.
-6. `test/`에 해당 기능을 검증하는 `.un` 스크립트 추가.
+6. `test/`의 알맞은 그룹(`unit/…`, `integration/`, `regression/`, `negative/`)에 `.un`
+   스크립트를 추가하고, `test/MANIFEST.txt`에 `group|path` 행을 등록한다. exit code와
+   stderr를 확인하는 스크립트는 `test/negative/manifest.txt`에
+   `path|expected exit|expected substring` 행으로 등록한다.
 7. `README.md` + `docs/README.md`의 기능/문법 표 갱신.
 
 ## 테스트와 검증
 
-- 통합 테스트 러너(`.csproj`)는 없다. `test/*.un`을 CLI로 직접 실행한다.
+- 통합 테스트 러너(`.csproj`)는 없다. runner는 PowerShell 스크립트이고, 빌드 산출물로
+  `.un` 스크립트를 실행한다: `scripts/test.ps1`(test), `scripts/bench.ps1`(bench).
+- `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
+  stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 31 files /
+  1150 passed / 0 failed / 0 crashed**, Negative 36 checks 매칭, Known 1 file이다.
+  runner는 `[FAIL]`이 증가하면 exit 1로 끝난다.
+- `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
+  stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).
+- `test/KnownFailures.txt`의 파일은 runner가 KNOWN FAIL로 기록하고 Positive 집계에
+  포함하지 않는다. 현재 1개 파일(`test/regression/defects.un`, 10 assertions)이
+  문서화된 동작과 실제 동작이 다른 결함을 기록한다.
 - `test/test_suite.un`은 가장 넓은 스모크 테스트이며 `test/assert.un`을 모듈로 사용한다.
-  정상 기준 출력은 `92 passed, 0 failed`이고, 실패 시 `[FAIL]` 라인과 `panic`이 발생한다.
-- 상대 import/순환 import 검증용 픽스처는 `test/circular/`, `test/rel_test/`에 있다.
+  정상 기준 출력은 `104 passed, 0 failed`이고, 실패 시 `[FAIL]` 라인이 나온다.
+- 상대 import/순환 import/디렉터리 모듈 검증용 픽스처는 `test/fixtures/circular/`,
+  `test/fixtures/rel_test/`, `test/fixtures/dirmod/`, `test/fixtures/dirall/`에 있다.
+- 벤치마크 스크립트는 `bench/`에 있고, Node.js 상대 스크립트는 `bench/node/`에 있다.
+  측정은 웜업 + 반복 + 통계(최솟값·중위값·평균·최댓값·표준편차·연산 수)를 사용한다.
+  결과와 측정 한계는 `docs/BENCHMARK_GUIDE.md`, `docs/BENCHMARK_LOG.md`를 참고한다.
 - 변경 후 최소한 다음을 수행한다.
   1. `dotnet build -c Release` — 오류 0, 새 경고 0.
-  2. 변경과 관련된 `test/*.un` 실행.
-  3. 가능하면 `test/test_suite.un` 실행 후 `[FAIL]`이 늘지 않았는지 확인.
+  2. 변경과 관련된 `test/**.un` 실행.
+  3. `scripts/test.ps1` 실행 후 `[FAIL]`과 crashed가 늘지 않았는지 확인.
 
 ## 알려진 함정
 

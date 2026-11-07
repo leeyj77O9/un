@@ -10,9 +10,14 @@ class B
 		-> `{type(self)}, [base 2], [{self.m}]`
 
 class C : A, B
-	fn bark()
+	fn __init__(n)
+		super.__init__(n)
+	fn bark()			
 		-> `{type(self)}, [child], [{self.n}], [{none?.m}]`
 
 use io
+use inspect as i
+
+w = io.write
 
 io.write(C(3).bark(), A(1).bark(), B(1).bark(), sep='\n')

@@ -118,6 +118,21 @@ io.write(p.x)      # 10
 io.write(p.len())  # 30
 ```
 
+Inheritance lists the bases after the class name. Multiple inheritance inherits
+every base in declaration order, and the first base wins a name conflict.
+
+```un
+class BaseA
+    a = 1
+class BaseB
+    b = 2
+class C: BaseA, BaseB
+    c = 3
+
+io.write(C().a, C().b, C().c)        # 1 2 3
+io.write(C() is BaseA, C() is BaseB)  # true true
+```
+
 Asynchronous execution:
 
 ```un
@@ -172,6 +187,39 @@ Save as `hello.un` and run:
 dotnet run -c Release -- run hello.un
 ```
 
+### Tests and Benchmarks
+
+Build and run a script directly:
+
+```bash
+dotnet build -c Release
+dotnet run -c Release -- run test/test_suite.un
+```
+
+The full suite runs through a runner. It executes the `group|path` rows of
+`test/MANIFEST.txt` with the built executable, counts exit codes and the
+`N passed, M failed` line on stdout, and runs the rows of
+`test/negative/manifest.txt` that check exit codes and stderr.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
+```
+
+Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
+counted in the Positive pass/fail totals.
+
+The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
+statistics, and saved to `bench/results/<timestamp>/results.csv` and `results.md`.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
+```
+
+`docs/BENCHMARK_GUIDE.md` defines the comparison rules (equal input, algorithm,
+warmup, repeated runs, recorded environment) and `docs/BENCHMARK_LOG.md` records the
+measured values and their limits. `docs/TEST_GUIDE.md` describes the test layout and
+rules.
+
 ## Language Overview
 
 ### Variables and destructuring
@@ -216,7 +264,8 @@ while n < 5
     n += 1
 ```
 
-`break` and `skip` are available inside loops.
+`break` and `skip` are available inside loops. A `->` inside a loop body ends
+the loop and returns from the enclosing function.
 
 ### Pattern matching
 
@@ -355,13 +404,23 @@ Un/
 |       |-- Reflection/
 |       |-- Error/
 |       `-- Util/
-|-- test/                  (.un scripts and fixtures)
+|-- test/                  (.un test scripts and fixtures)
+|   |-- unit/            (unit/lexer, unit/parser, unit/runtime, unit/native)
+|   |-- integration/
+|   |-- regression/
+|   |-- negative/        (scripts checking exit code and stderr, plus manifest.txt)
+|   |-- fixtures/        (circular/, rel_test/, dirmod/, dirall/)
+|   |-- MANIFEST.txt     (group|path rows)
+|   |-- KnownFailures.txt
+|   `-- assert.un        (assert module)
+|-- scripts/             (test.ps1, bench.ps1)
+|-- bench/               (benchmark scripts, bench/node/, bench/results/)
 `-- bin/, obj/             (generated build output)
 ```
 
 ## Examples
 
-Floyd-Warshall (`test/test_floyd.un`):
+Floyd-Warshall (`test/integration/algorithms.un`):
 
 ```un
 n = 4
@@ -374,7 +433,7 @@ for k in range(0,n)
                 graph[i][j] = graph[i][k] + graph[k][j]
 ```
 
-Heap (`test/test_heap.un`):
+Heap (`test/integration/algorithms.un`):
 
 ```un
 class Heap
@@ -390,7 +449,9 @@ class Heap
         -> top
 ```
 
-More examples are available in `test/test_all.un`, `test/test_class.un`, and `test/test_new_features.un`.
+More examples are available in `test/test_suite.un`, `test/integration/algorithms.un`,
+`test/unit/runtime/classes.un`, and `bench/`. The procedures for running them are in
+`docs/TEST_GUIDE.md` and `docs/BENCHMARK_GUIDE.md`.
 
 ## Roadmap
 
@@ -421,7 +482,9 @@ Planned:
 1. Fork and clone the repository.
 2. Build with `dotnet build -c Release` and confirm zero warnings and errors.
 3. Create a branch named `feat/my-feature`.
-4. Add `.un` tests under `test/`.
+4. Add `.un` tests to the right group under `test/` and register a `group|path` row in
+   `test/MANIFEST.txt`. Tests that check exit codes and stderr go in `test/negative/`
+   with a `path|expected exit|expected substring` row in `test/negative/manifest.txt`.
 5. Open a pull request. Commits are made by the contributor; automated tooling does not push to git.
 
 Coding conventions: `ImplicitUsings` and `Nullable` are enabled. Native and built-in members are registered through attributes.

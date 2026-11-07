@@ -118,6 +118,21 @@ io.write(p.x)      # 10
 io.write(p.len())  # 30
 ```
 
+상속은 클래스 이름 뒤에 부모를 적는다. 다중 상속은 선언 순서대로 모든 부모를
+상속하고, 이름이 겹치면 첫 번째 부모가 이긴다.
+
+```un
+class BaseA
+    a = 1
+class BaseB
+    b = 2
+class C: BaseA, BaseB
+    c = 3
+
+io.write(C().a, C().b, C().c)        # 1 2 3
+io.write(C() is BaseA, C() is BaseB)  # true true
+```
+
 비동기 실행:
 
 ```un
@@ -172,6 +187,38 @@ main()
 dotnet run -c Release -- run hello.un
 ```
 
+### 테스트와 벤치마크
+
+빌드와 스크립트 실행:
+
+```bash
+dotnet build -c Release
+dotnet run -c Release -- run test/test_suite.un
+```
+
+전체 테스트는 runner로 실행한다. runner는 `test/MANIFEST.txt`의 `group|path` 행을
+실행 파일로 실행하고 exit code와 stdout의 검사 수를 세고,
+`test/negative/manifest.txt`의 `path|exit|substring` 행으로 stderr와 exit code를
+확인하는 스크립트를 실행한다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
+```
+
+`test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
+Positive 집계의 통과·실패 수에 포함하지 않는다.
+
+벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
+`bench/results/<timestamp>/results.csv`와 `results.md`에 저장한다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
+```
+
+Un과 Node.js를 같은 입력·알고리즘·측정 절차로 비교하는 규칙은
+`docs/BENCHMARK_GUIDE.md`에 있고, 실측 값과 그 한계는 `docs/BENCHMARK_LOG.md`에 있다.
+테스트 구조와 규칙은 `docs/TEST_GUIDE.md`에 있다.
+
 ## 언어 개요
 
 ### 변수와 구조 분해
@@ -216,7 +263,8 @@ while n < 5
     n += 1
 ```
 
-루프 안에서 `break`와 `skip`을 사용할 수 있다.
+루프 안에서 `break`와 `skip`을 사용할 수 있다. 루프 본문 안의 `->`는 루프를
+마치고 그 함수를 반환한다.
 
 ### 패턴 매칭
 
@@ -355,13 +403,23 @@ Un/
 |       |-- Reflection/
 |       |-- Error/
 |       `-- Util/
-|-- test/                  (.un 스크립트와 픽스처)
-`-- bin/, obj/             (생성된 빌드 산출물)
+|-- test/                  (.un 테스트 스크립트와 픽스처)
+|   |-- unit/            (unit/lexer, unit/parser, unit/runtime, unit/native)
+|   |-- integration/
+|   |-- regression/
+|   |-- negative/        (exit code와 stderr를 확인하는 스크립트와 manifest.txt)
+|   |-- fixtures/        (circular/, rel_test/, dirmod/, dirall/)
+|   |-- MANIFEST.txt     (group|path 행)
+|   |-- KnownFailures.txt
+|   `-- assert.un        (assert 실행 검사)
+|-- scripts/             (test.ps1, bench.ps1)
+|-- bench/               (벤치마크 스크립트, bench/node/, bench/results/)
+`-- bin/, obj/           (생성된 빌드 산출물)
 ```
 
 ## 예제
 
-Floyd-Warshall (`test/test_floyd.un`):
+Floyd-Warshall (`test/integration/algorithms.un`):
 
 ```un
 n = 4
@@ -374,7 +432,7 @@ for k in range(0,n)
                 graph[i][j] = graph[i][k] + graph[k][j]
 ```
 
-Heap (`test/test_heap.un`):
+Heap (`test/integration/algorithms.un`):
 
 ```un
 class Heap
@@ -390,7 +448,9 @@ class Heap
         -> top
 ```
 
-더 많은 예제는 `test/test_all.un`, `test/test_class.un`, `test/test_new_features.un`에서 확인할 수 있다.
+더 많은 예제는 `test/test_suite.un`, `test/integration/algorithms.un`,
+`test/unit/runtime/classes.un`, `bench/`에서 확인할 수 있다. 예제를 실행하는 절차는
+`docs/TEST_GUIDE.md`와 `docs/BENCHMARK_GUIDE.md`에 있다.
 
 ## 로드맵
 
@@ -421,7 +481,9 @@ class Heap
 1. 저장소를 포크하고 클론한다.
 2. `dotnet build -c Release`로 빌드하고 경고와 오류가 0개인지 확인한다.
 3. `feat/my-feature` 형식의 브랜치를 만든다.
-4. `test/` 아래에 `.un` 테스트를 추가한다.
+4. `test/`의 알맞은 그룹에 `.un` 테스트를 추가하고 `test/MANIFEST.txt`에 `group|path`
+   행을 등록한다. exit code와 stderr를 확인하는 테스트는
+   `test/negative/manifest.txt`에 `path|expected exit|expected substring` 행으로 등록한다.
 5. 풀 리퀘스트를 연다. 커밋은 기여자가 직접 수행한다. 자동화 도구는 git에 푸시하지 않는다.
 
 코딩 컨벤션: `ImplicitUsings`와 `Nullable`이 활성화되어 있다. 네이티브 및 내장 멤버는 어트리뷰트를 통해 등록한다.
