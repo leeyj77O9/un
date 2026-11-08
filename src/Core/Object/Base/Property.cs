@@ -5,11 +5,6 @@ using Un.Object.Type;
 
 namespace Un.Object;
 
-/// <summary>
-/// Descriptor stored in a class under the property name. A property keeps its
-/// own backing value (keyed by <see cref="BackingKey"/>) so accessors can read
-/// and write storage without going through attribute lookup again.
-/// </summary>
 public sealed class Property(string name) : Obj(UnType.Obj)
 {
     public string Name { get; } = name;
@@ -49,11 +44,6 @@ public sealed class Property(string name) : Obj(UnType.Obj)
         return Setter.Call(new Tup([value]));
     }
 
-    /// <summary>
-    /// Backing storage of <paramref name="instance"/>. The class default is
-    /// materialized per instance on first access, so mutable defaults like a
-    /// list are not shared between instances.
-    /// </summary>
     public Obj Read(Obj instance)
     {
         if (instance.Members.TryGetValue(BackingKey, out var value))
@@ -73,10 +63,6 @@ public sealed class Property(string name) : Obj(UnType.Obj)
     public override Obj Copy() => this;
 }
 
-/// <summary>
-/// Local binding for <c>field</c> inside a property accessor. Reading and
-/// writing through this object targets the property backing storage directly.
-/// </summary>
 public sealed class FieldRef(Obj owner, Property property) : Obj(UnType.Any)
 {
     public Obj Value

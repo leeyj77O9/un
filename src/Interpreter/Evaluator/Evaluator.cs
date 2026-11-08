@@ -391,11 +391,6 @@ public sealed class Evaluator(Context context)
         return result;
     }
 
-    /// <summary>
-    /// Builds a function. <paramref name="bindToScope"/> is false for class
-    /// members: their names belong to the type only, so a method named
-    /// <c>len</c> must not shadow the global <c>len</c>.
-    /// </summary>
     private Obj EvalFunction(Node node, bool bindToScope = true)
     {
         var signature = node.Children[0];

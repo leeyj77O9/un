@@ -6,11 +6,6 @@ public class Scope(Scope? parentScope = null, bool isFunctionScope = false)
 {
     public static readonly Scope Empty = new(null);
 
-    /// <summary>
-    /// Function bodies are isolated scopes: assigning to a name that exists in an
-    /// outer scope creates a local shadow instead of mutating the outer binding.
-    /// Non-function scopes (loops, match/catch blocks) assign through to the parent.
-    /// </summary>
     public bool IsFunctionScope { get; } = isFunctionScope;
 
     private readonly Scope? parentScope = parentScope;

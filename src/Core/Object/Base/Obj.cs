@@ -15,10 +15,6 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual UnType Type { get; set; } = type;
 
-    /// <summary>
-    /// Union of the base object type and this object's type. Built on first use
-    /// because most values never query it, which keeps object creation cheap.
-    /// </summary>
     public virtual BaseType Types
     {
         get => types ??= UnionType.Create(UnType.Obj, declaredType);
@@ -28,21 +24,11 @@ public class Obj(UnType type) : IComparable<Obj>
     public virtual Obj Self { get; set; } = None;
     public virtual Obj Super { get; set; } = None;
 
-    /// <summary>
-    /// Base classes in declaration order. <c>Super</c> is the first entry, so
-    /// single inheritance keeps using the single <c>Super</c> slot and the
-    /// remaining bases are searched after it.
-    /// </summary>
     public virtual List<Obj> Parents { get; set; } = [];
     public virtual Attributes Members { get; set; } = [];
 
-    /// <summary>
-    /// Base objects in lookup order: the first base and its chain, then the
-    /// remaining bases in declaration order. Cycles are ignored.
-    /// </summary>
     public IEnumerable<Obj> BaseChain()
     {
-        // Obj equality is value equality, so cycle detection must be identity-based.
         var seen = new HashSet<Obj>(ReferenceEqualityComparer.Instance);
         var queue = new List<Obj>();
 

@@ -191,7 +191,7 @@ public static class IO
                 ms.Seek(0, SeekOrigin.End);
                 return new Object.IO.Stream(new MemoryFileSystemStream(fullPath, mem, FileMode.Append, ms));
             }
-            else // rw
+            else
             {
                 var existing = mem.FileExists(fullPath) ? mem.ReadAllText(fullPath) : "";
                 var ms = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(existing));
@@ -237,7 +237,7 @@ public static class IO
     )]
     public static Obj Clear()
     {
-        try { Console.Clear(); } catch { /* WASM has no console */ }
+        try { Console.Clear(); } catch { }
         return Obj.None;
     }
 }
