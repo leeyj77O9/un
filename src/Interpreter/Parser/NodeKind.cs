@@ -33,6 +33,7 @@ public enum NodeKind
     QuestionAssign, DoubleQuestionAssign,
 
     Function, Extension,
+    Accessor,
 
     If,
     ElIf,

@@ -241,6 +241,20 @@ assert.assert_true(m is Multi, "multi is own class")
 assert.assert_true(m is BaseA, "multi is first base")
 assert.assert_true(m is BaseB, "multi is second base")
 
+io.write("\n=== property / range operator ===")
+class Prop
+    v = 1
+    get v -> field + 1
+    set v = value - 1
+
+pr = Prop()
+assert.assert_eq(pr.v, 2, "property getter adds one")
+pr.v = 5
+assert.assert_eq(pr.v, 5, "property setter stores the value")
+assert.assert_eq(list(1..4), [1, 2, 3], "the range operator is half-open")
+assert.assert_eq(len(0..10), 10, "range length")
+assert.assert_eq(str(1..4), "1..4", "str of a range")
+
 io.write("\n=== iter / range ===")
 r = iter.range(0, 3)
 lst_r = []

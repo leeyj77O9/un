@@ -79,7 +79,7 @@ public sealed class Evaluator(Context context)
         var name = GetText(node);
 
         if (context.Scope.Get(name, out var value))
-            return value;
+            return value is FieldRef field ? field.Value : value;
 
         if (Global.TryGetGlobalVariable(name, out value))
             return value;
@@ -223,6 +223,7 @@ public sealed class Evaluator(Context context)
             TokenType.DoubleSlash => left.IDiv(right),
             TokenType.Percent => left.Mod(right),
             TokenType.DoubleAsterisk => left.Pow(right),
+            TokenType.DotDot => left.RangeTo(right),
             TokenType.BAnd => left.BAnd(right),
             TokenType.BOr => left.BOr(right),
             TokenType.BXor => left.BXor(right),
@@ -390,7 +391,12 @@ public sealed class Evaluator(Context context)
         return result;
     }
 
-    private Obj EvalFunction(Node node)
+    /// <summary>
+    /// Builds a function. <paramref name="bindToScope"/> is false for class
+    /// members: their names belong to the type only, so a method named
+    /// <c>len</c> must not shadow the global <c>len</c>.
+    /// </summary>
+    private Obj EvalFunction(Node node, bool bindToScope = true)
     {
         var signature = node.Children[0];
         var name = GetText(signature);
@@ -409,7 +415,8 @@ public sealed class Evaluator(Context context)
         
         fn = afn;
 
-        context.Scope.Set(name, fn);
+        if (bindToScope)
+            context.Scope.Set(name, fn);
 
         return fn;
     }
@@ -762,21 +769,107 @@ public sealed class Evaluator(Context context)
             }
         }
 
+        var accessors = new Dictionary<string, (Node? Getter, Node? Setter)>();
+        var accessorOrder = new List<string>();
+
+        foreach (var member in body.Children)
+        {
+            if (member.Kind != NodeKind.Accessor)
+                continue;
+
+            var accessorName = GetText(member.Children[0]);
+            var kind = (string?)member.Value;
+
+            if (!accessors.TryGetValue(accessorName, out var pair))
+            {
+                pair = (null, null);
+                accessorOrder.Add(accessorName);
+            }
+
+            if (kind == "get")
+            {
+                if (pair.Getter is not null)
+                    throw new Error($"duplicate getter for property '{accessorName}'", member, context.Source);
+
+                pair.Getter = member;
+            }
+            else
+            {
+                if (pair.Setter is not null)
+                    throw new Error($"duplicate setter for property '{accessorName}'", member, context.Source);
+
+                pair.Setter = member;
+            }
+
+            accessors[accessorName] = pair;
+        }
+
+        var defaults = new Dictionary<string, Obj>();
+
         foreach (var member in body.Children)
         {
             if (member.Kind == NodeKind.Function)
             {
-                var fn = EvalFunction(member);
-                type.Members.Add(GetText(member.Children[0]), fn);
+                var memberName = GetText(member.Children[0]);
+
+                if (accessors.ContainsKey(memberName))
+                    throw new Error($"property '{memberName}' conflicts with a method", member, context.Source);
+
+                var fn = EvalFunction(member, false);
+                type.Members.Add(memberName, fn);
             }
             else if (member.Kind == NodeKind.Assign)
             {
                 var value = Eval(member.Children[1]);
-                type.Members.Add(GetText(member.Children[0]), value);
+                var memberName = GetText(member.Children[0]);
+
+                if (accessors.ContainsKey(memberName))
+                    defaults[memberName] = value;
+                else
+                    type.Members.Add(memberName, value);
             }
         }
 
+        foreach (var accessorName in accessorOrder)
+        {
+            var (getter, setter) = accessors[accessorName];
+
+            var property = new Property(accessorName);
+
+            if (defaults.TryGetValue(accessorName, out var defaultValue))
+                property.Default = defaultValue;
+            else if (type.Super is not null
+                && type.Super.Members.TryGetValue(accessorName, out var superMember)
+                && superMember is Property superProperty)
+                property.Default = superProperty.Default;
+
+            if (getter is not null)
+                property.Getter = CreateAccessor(getter, $"get {accessorName}", property);
+
+            if (setter is not null)
+                property.Setter = CreateAccessor(setter, $"set {accessorName}", property);
+
+            type.Members[accessorName] = property;
+        }
+
         return type;
+    }
+
+    private LFn CreateAccessor(Node node, string name, Property property)
+    {
+        var body = node.Children[1];
+
+        var fn = new LFn([.. body.Children], context)
+        {
+            Name = name,
+            Closure = context,
+            Property = property
+        };
+
+        if ((string?)node.Value == "set")
+            fn.Args = [new Arg("value") { IsEssential = true }];
+
+        return fn;
     }
 
     private Obj EvalFor(Node node)
@@ -1095,6 +1188,12 @@ public sealed class Evaluator(Context context)
 
     private void BindName(string name, Obj value, bool localOnly)
     {
+        if (!localOnly && context.Scope.Get(name, out var current) && current is FieldRef field)
+        {
+            field.Value = value;
+            return;
+        }
+
         if (localOnly || context.Scope.IsFunctionScope)
             context.Scope.SetLocalOrDeclare(name, value);
         else

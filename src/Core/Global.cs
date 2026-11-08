@@ -31,6 +31,7 @@ public static class Global
     private static readonly Scope scope = new();
     private static readonly Scope classes = new();
     private static readonly Dictionary<string, Attributes> originalClasses = [];
+    private static readonly Dictionary<string, string> originalBaseTypes = [];
     private static readonly Dictionary<string, Type> natives = Assembly.GetExecutingAssembly().GetTypes()!
                                                       .Where(t => t.GetCustomAttribute<NativeModuleAttribute>() is not null)
                                                       .ToDictionary(t => t.GetCustomAttribute<NativeModuleAttribute>()!.Name, t => t);
@@ -76,6 +77,27 @@ public static class Global
             var attr = type.GetCustomAttribute<NativeTypeAttribute>()!;
             if (attr.Name is not null && !originalClasses.ContainsKey(attr.Name))
                 originalClasses[attr.Name] = CreateMethod(type);
+        }
+
+        foreach (var type in Assembly.GetExecutingAssembly().GetTypes()!)
+        {
+            var name = type.GetCustomAttribute<NativeTypeAttribute>()?.Name
+                       ?? type.GetCustomAttribute<BuiltinTypeAttribute>()?.Name;
+
+            if (name is null)
+                continue;
+
+            for (var baseType = type.BaseType; baseType is not null; baseType = baseType.BaseType)
+            {
+                var baseName = baseType.GetCustomAttribute<NativeTypeAttribute>()?.Name
+                               ?? baseType.GetCustomAttribute<BuiltinTypeAttribute>()?.Name;
+
+                if (baseName is null || baseName == name)
+                    continue;
+
+                originalBaseTypes[name] = baseName;
+                break;
+            }
         }
     }
 
@@ -400,11 +422,19 @@ public static class Global
 
     public static bool TryGetOriginalValue(string type, string name, out Obj? value)
     {
-        if (originalClasses.TryGetValue(type, out var original))
-            return original.TryGetValue(name, out value);
+        while (true)
+        {
+            if (originalClasses.TryGetValue(type, out var original) && original.TryGetValue(name, out value))
+                return true;
 
-        value = null!;
-        return false;
+            if (!originalBaseTypes.TryGetValue(type, out var baseType))
+            {
+                value = null!;
+                return false;
+            }
+
+            type = baseType;
+        }
     }
 
     public static bool TryGetOriginalClass(string typeName, out Attributes? attrs)
@@ -442,6 +472,20 @@ public static class Global
             foreach (var key in orig.Keys)
                 if (seen.Add(key))
                     yield return key;
+
+        var baseTypeName = value.Type.Name;
+
+        while (originalBaseTypes.TryGetValue(baseTypeName, out var baseTypeNameNext))
+        {
+            baseTypeName = baseTypeNameNext;
+
+            if (!originalClasses.TryGetValue(baseTypeName, out var baseOrig))
+                continue;
+
+            foreach (var key in baseOrig.Keys)
+                if (seen.Add(key))
+                    yield return key;
+        }
 
         foreach (var baseObj in value.BaseChain())
             foreach (var key in baseObj.Members.Keys)

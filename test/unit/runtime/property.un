@@ -1,0 +1,180 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# Property - 기본 Getter/Setter, 커스텀 접근자, field, 상속, 충돌
+# 실행: Un.exe run test/unit/runtime/property.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 일반 멤버는 기본 Getter/Setter를 쓴다 ----------
+class Person
+    name = "anon"
+    age = 0
+
+p = Person()
+assert.assert_eq(p.name, "anon", "class default is readable")
+p.name = "bob"
+assert.assert_eq(p.name, "bob", "assignment updates the member")
+assert.assert_eq(p.age, 0, "numeric default starts at 0")
+
+q = Person()
+assert.assert_eq(q.name, "anon", "a new instance keeps the class default")
+
+# ---------- mutable default는 인스턴스마다 독립적이다 ----------
+class Bag
+    items = []
+    get items -> field
+
+b1 = Bag()
+b2 = Bag()
+b2.items.add(1)
+assert.assert_eq(len(b1.items), 0, "mutable default is not shared between instances")
+assert.assert_eq(len(b2.items), 1, "the mutated instance keeps its own list")
+
+# ---------- 커스텀 Getter/Setter ----------
+class Temperature
+    celsius = 0.0
+    get fahrenheit -> self.celsius * 9 / 5 + 32
+    set fahrenheit
+        self.celsius = (value - 32) * 5 / 9
+
+t = Temperature()
+assert.assert_close(t.fahrenheit, 32, 0.0001, "getter converts the default value")
+t.fahrenheit = 212
+assert.assert_close(t.celsius, 100, 0.0001, "setter stores the converted value")
+assert.assert_close(t.fahrenheit, 212, 0.0001, "getter reads the stored value back")
+
+# ---------- 단일 행 접근자 ----------
+class Short
+    n = 1
+    get n -> field + 1
+    set n = value * 2
+
+s = Short()
+assert.assert_eq(s.n, 2, "single line getter adds one")
+s.n = 3
+assert.assert_eq(s.n, 7, "single line setter stores the doubled value")
+
+# ---------- getter 전용 ----------
+class GetOnly
+    v = 1
+    get v -> field + 10
+
+g = GetOnly()
+assert.assert_eq(g.v, 11, "getter derives a value from the backing store")
+g.v = 4
+assert.assert_eq(g.v, 14, "assignment updates the backing store the getter reads")
+
+# ---------- setter 전용 ----------
+class SetOnly
+    v = 0
+    set v
+        field = value + 1
+
+z = SetOnly()
+z.v = 7
+assert.assert_eq(z.v, 8, "setter transforms the assigned value")
+
+# ---------- self를 쓰는 접근자 ----------
+class Cal
+    base = 10
+    get total -> self.base + 5
+    set total
+        self.base = value - 5
+
+k = Cal()
+assert.assert_eq(k.total, 15, "getter reads other members through self")
+k.total = 25
+assert.assert_eq(k.base, 20, "setter writes other members through self")
+
+# ---------- getter가 상태를 변경한다 ----------
+class Tick
+    next = 0
+    get next
+        field += 1
+        -> field
+
+tick = Tick()
+assert.assert_eq(tick.next, 1, "getter advances the backing store on the first read")
+assert.assert_eq(tick.next, 2, "getter advances the backing store on the second read")
+
+# ---------- 증감 연산은 Getter -> Setter 순서다 ----------
+class Acc
+    n = 1
+    get n -> field
+    set n
+        field = value * 2
+
+acc = Acc()
+acc.n += 3
+assert.assert_eq(acc.n, 8, "augmented assignment reads through the getter and writes through the setter")
+
+# ---------- 생성자 헤더는 Setter를 거치지 않는다 ----------
+class Header(a)
+    a = 0
+    get a -> field
+    set a
+        field = value + 100
+
+h = Header(7)
+assert.assert_eq(h.a, 7, "header initializer stores the backing value directly")
+
+# ---------- fn __init__의 대입은 Setter를 부른다 ----------
+class Init
+    v = 0
+    set v
+        field = value + 1
+    fn __init__(start)
+        self.v = start
+
+i = Init(5)
+assert.assert_eq(i.v, 6, "__init__ assignment goes through the setter")
+
+# ---------- 상속 ----------
+class Base
+    n = 1
+    get n -> field * 2
+    set n
+        field = value + 1
+
+class Child: Base
+    y = 2
+
+c = Child()
+assert.assert_eq(c.n, 2, "inherited getter uses the inherited default")
+c.n = 10
+assert.assert_eq(c.n, 22, "inherited setter writes the child instance backing store")
+
+class Over: Base
+    n = 1
+    get n -> field * 3
+
+o = Over()
+assert.assert_eq(o.n, 3, "child getter overrides the parent getter")
+o.n = 6
+assert.assert_eq(o.n, 18, "child with no setter stores the value directly")
+
+class Inherit: Base
+    get n -> field + 10
+
+iv = Inherit()
+assert.assert_eq(iv.n, 11, "child accessor inherits the parent default")
+iv.n = 5
+assert.assert_eq(iv.n, 15, "child accessor without a setter stores the value directly")
+
+# ---------- field는 접근자 안에서만 보인다 ----------
+fn outside()
+    -> field
+
+assert.assert_err(fn() -> outside(), "field is not available outside an accessor")
+
+class Shadow
+    v = 0
+    get v
+        inner = 5
+        -> field + inner
+
+sh = Shadow()
+assert.assert_eq(sh.v, 5, "field reads the backing store inside a multi line getter")
+
+assert.summary()

@@ -1,0 +1,4 @@
+use io
+
+x = 1.5..3
+io.write(list(x))

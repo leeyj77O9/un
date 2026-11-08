@@ -40,3 +40,9 @@ test/negative/nested_use.un|0|1 passed, 0 failed
 test/negative/use_as.un|0|as ok
 test/negative/catch_clobbers.un|1|int division by zero
 test/negative/go_loop_var.un|1|undefined variable 'i'
+test/negative/property_conflict.un|1|property 'v' conflicts with a method
+test/negative/property_dup_get.un|1|duplicate getter for property 'v'
+test/negative/property_field.un|1|undefined variable 'field'
+test/negative/property_recursion.un|-1073741571|Stack overflow
+test/negative/range_float.un|1|unsupported operand type(s) for ..: 'float' and 'int'
+test/negative/range_str.un|1|unsupported operand type(s) for ..: 'str' and 'int'

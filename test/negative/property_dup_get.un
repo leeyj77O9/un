@@ -1,0 +1,9 @@
+use io
+
+class Dup
+    v = 0
+    get v -> field
+    get v -> field + 1
+
+d = Dup()
+io.write(d.v)

@@ -34,6 +34,8 @@ Un은 읽기 쉽고 간결한 프로그램을 작성하기 위한 동적 타입 
 - `if` / `elif` / `else`, `for`, `while`, `break`, `skip`
 - 패턴 매칭을 지원하는 `match`
 - 클래스, 상속, `Stru`, `Enu`
+- 클래스 Property: `get`/`set` 접근자와 `field`, `value`
+- 범위 연산자 `a..b` (반개구간, 지연 평가)
 - `use`, 별칭, 선택적 import를 갖는 모듈 시스템
 - `using`과 `defer`를 통한 자원 관리
 - 문자열 보간과 태그드 템플릿
@@ -118,6 +120,23 @@ io.write(p.x)      # 10
 io.write(p.len())  # 30
 ```
 
+클래스의 일반 멤버는 기본 Getter/Setter를 갖고, `get`/`set` 접근자로 재정의할 수
+있다. 접근자 안에서 `field`는 그 멤버의 저장 값, `value`는 setter에 들어온 값이다.
+
+```un
+class Counter
+    count = 0
+    doubled = 0
+    get doubled -> field * 2
+    set doubled = value / 2
+
+c = Counter()
+io.write(c.doubled)   # 0
+c.doubled = 10        # field = 5
+io.write(c.doubled)   # 10
+io.write(c.count)     # 0
+```
+
 상속은 클래스 이름 뒤에 부모를 적는다. 다중 상속은 선언 순서대로 모든 부모를
 상속하고, 이름이 겹치면 첫 번째 부모가 이긴다.
 
@@ -131,6 +150,22 @@ class C: BaseA, BaseB
 
 io.write(C().a, C().b, C().c)        # 1 2 3
 io.write(C() is BaseA, C() is BaseB)  # true true
+```
+
+범위 연산자 `..`는 반개구간이고 값을 즉시 만들지 않는다. 우선순위는 덧셈과 비교
+사이에 있어 `1 + 2..10`은 `(1 + 2)..10`이다. 경계는 정수 또는 정수값을 가진
+float만 허용한다.
+
+```un
+use io
+
+for i in 1..5
+    io.write(i)              # 1 2 3 4
+
+io.write(list(0..3))         # [0, 1, 2]
+io.write(len(0..100))        # 100
+io.write(list(1 + 2..6))     # [3, 4, 5]
+io.write(list((1..10).take(3)))  # [1, 2, 3]
 ```
 
 비동기 실행:
@@ -286,6 +321,58 @@ b: dict[str, int] = {}
 c: int | none = none
 ```
 
+### 클래스와 Property
+
+```un
+class Person
+    name = "anon"            # 일반 멤버는 기본 Getter/Setter
+    older = 1
+    get older -> field + 1   # 단일 행 getter
+    set older = value - 1    # 단일 행 setter
+    get display
+        -> `name={self.name}`
+
+p = Person()
+p.name = "bob"
+io.write(p.older)    # 2
+p.older = 10         # field = 9
+io.write(p.older)    # 10
+io.write(p.display)  # name=bob
+```
+
+접근자는 여러 행 본문을 쓸 수 있고, 접근자 안에서 `field`는 그 프로퍼티의 저장
+값을, `value`는 setter에 들어온 값을 가리킨다. getter는 `self`로 다른 멤버를
+읽고 쓸 수 있다. 프로퍼티의 기본값은 인스턴스마다 복제되므로 `items = []` 같은
+mutable 기본값은 인스턴스 사이에 공유되지 않는다.
+
+`get`만 선언하면 대입은 저장 값에 직접 쓰고, `set`만 선언하면 읽기는 저장 값을
+읽는다. 생성자 헤더(`class Person(name)`)의 초기화는 setter를 거치지 않는다.
+자식 클래스가 접근자를 재정의하면 부모의 기본값을 물려받는다. 같은 이름의
+메서드가 있거나 같은 프로퍼티에 getter를 두 번 선언하면 오류다.
+
+getter가 `self.같은 이름`으로 자기 프로퍼티를 읽으면 getter가 자기 자신을 다시
+부르므로 스택 오버플로로 끝난다. getter는 저장 값을 `field`로 읽어야 한다.
+`test/negative/property_recursion.un`이 이 경계를 종료 코드로 기록한다.
+
+### 범위
+
+```un
+for i in 1..5              # 1 2 3 4 (`..`는 반개구간)
+    io.write(i)
+
+io.write(list(0..3))       # [0, 1, 2]
+io.write(len(0..100))      # 100
+io.write(3 in 1..5)        # true
+io.write(str(1..4))        # 1..4
+io.write(list((1..10).map(fn(x) -> x * 2)))   # [2, 4, 6, 8, 10, 12, 14, 16, 18]
+```
+
+`..`가 만드는 범위는 `iter`의 지연 평가 계열과 같고, `list()`처럼 소비하는
+연산이 있을 때만 값이 만들어진다. `a..b`는 `a.__range__(b)`를 호출하므로
+클래스가 `__range__` 매직 메서드로 범위 생성을 정의할 수 있다. 우선순위는
+덧셈과 비교 사이에 있고, 시작이 끝보다 크면 빈 범위가 된다. 경계는 정수 또는
+정수값을 가진 float만 허용한다.
+
 ### 비동기 실행
 
 ```un
@@ -337,6 +424,8 @@ fn work()
 | `inspect` | `attr`/`hasattr`/`getattr`/`setattr` |
 
 컬렉션 메서드로는 `list.add`/`extend`/`sort`/`reverse`/`hpush`/`hpop`, `dict.get`/`keys`/`values`, `set.add`/`union`/`intersect`, 그리고 `split`/`join`/`trim`/`center`/`replace` 같은 문자열 메서드가 있다.
+
+`iter`의 메서드 체이닝(`(0..10).map(fn(x) -> x * 2).take(3)`)은 지연 평가되어 소비할 때만 실행되고, 전역 `iter.map`/`iter.filter`/`iter.take`은 인자를 즉시 평가해 `list`를 반환한다. `iter.zip`는 두 소스를 같은 속도로 소비하므로 무한 `iter.counter`와 유한 범위를 함께 쓸 수 있다.
 
 ## 아키텍처
 

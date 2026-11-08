@@ -165,16 +165,16 @@ public static class MyMod
 - 통합 테스트 러너(`.csproj`)는 없다. runner는 PowerShell 스크립트이고, 빌드 산출물로
   `.un` 스크립트를 실행한다: `scripts/test.ps1`(test), `scripts/bench.ps1`(bench).
 - `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
-  stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 31 files /
-  1150 passed / 0 failed / 0 crashed**, Negative 36 checks 매칭, Known 1 file이다.
+  stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 33 files /
+  1265 passed / 0 failed / 0 crashed**, Negative 42 checks 매칭, Known 1 file이다.
   runner는 `[FAIL]`이 증가하면 exit 1로 끝난다.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).
 - `test/KnownFailures.txt`의 파일은 runner가 KNOWN FAIL로 기록하고 Positive 집계에
-  포함하지 않는다. 현재 1개 파일(`test/regression/defects.un`, 10 assertions)이
+  포함하지 않는다. 현재 1개 파일(`test/regression/defects.un`, 6 assertions)이
   문서화된 동작과 실제 동작이 다른 결함을 기록한다.
 - `test/test_suite.un`은 가장 넓은 스모크 테스트이며 `test/assert.un`을 모듈로 사용한다.
-  정상 기준 출력은 `104 passed, 0 failed`이고, 실패 시 `[FAIL]` 라인이 나온다.
+  정상 기준 출력은 `109 passed, 0 failed`이고, 실패 시 `[FAIL]` 라인이 나온다.
 - 상대 import/순환 import/디렉터리 모듈 검증용 픽스처는 `test/fixtures/circular/`,
   `test/fixtures/rel_test/`, `test/fixtures/dirmod/`, `test/fixtures/dirall/`에 있다.
 - 벤치마크 스크립트는 `bench/`에 있고, Node.js 상대 스크립트는 `bench/node/`에 있다.

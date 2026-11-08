@@ -34,6 +34,8 @@ Design goals:
 - `if` / `elif` / `else`, `for`, `while`, `break`, `skip`
 - `match` with pattern matching
 - Classes, inheritance, `Stru`, and `Enu`
+- Class properties with `get`/`set` accessors, `field`, and `value`
+- Range operator `a..b` (half-open, lazily evaluated)
 - Modules with `use`, aliases, and selective imports
 - Resource management with `using` and `defer`
 - String interpolation and tagged templates
@@ -118,6 +120,24 @@ io.write(p.x)      # 10
 io.write(p.len())  # 30
 ```
 
+Ordinary class members have a default getter and setter, and `get`/`set`
+accessors override them. Inside an accessor `field` is the stored value of that
+property and `value` is the value handed to the setter.
+
+```un
+class Counter
+    count = 0
+    doubled = 0
+    get doubled -> field * 2
+    set doubled = value / 2
+
+c = Counter()
+io.write(c.doubled)   # 0
+c.doubled = 10        # field = 5
+io.write(c.doubled)   # 10
+io.write(c.count)     # 0
+```
+
 Inheritance lists the bases after the class name. Multiple inheritance inherits
 every base in declaration order, and the first base wins a name conflict.
 
@@ -131,6 +151,22 @@ class C: BaseA, BaseB
 
 io.write(C().a, C().b, C().c)        # 1 2 3
 io.write(C() is BaseA, C() is BaseB)  # true true
+```
+
+The `..` operator builds a half-open range and does not materialize the values
+eagerly. Its precedence sits between addition and comparison, so `1 + 2..10`
+is `(1 + 2)..10`. Bounds must be integers or floats with integer values.
+
+```un
+use io
+
+for i in 1..5
+    io.write(i)              # 1 2 3 4
+
+io.write(list(0..3))         # [0, 1, 2]
+io.write(len(0..100))        # 100
+io.write(list(1 + 2..6))     # [3, 4, 5]
+io.write(list((1..10).take(3)))  # [1, 2, 3]
 ```
 
 Asynchronous execution:
@@ -287,6 +323,62 @@ b: dict[str, int] = {}
 c: int | none = none
 ```
 
+### Classes and properties
+
+```un
+class Person
+    name = "anon"            # ordinary members use the default getter/setter
+    older = 1
+    get older -> field + 1   # single line getter
+    set older = value - 1    # single line setter
+    get display
+        -> `name={self.name}`
+
+p = Person()
+p.name = "bob"
+io.write(p.older)    # 2
+p.older = 10         # field = 9
+io.write(p.older)    # 10
+io.write(p.display)  # name=bob
+```
+
+Accessors may take a multi line body. Inside an accessor `field` is the stored
+value of that property and `value` is the value handed to the setter. A getter
+can read and write other members through `self`. A property default is cloned
+per instance, so a mutable default such as `items = []` is not shared between
+instances.
+
+With only `get`, assignment writes the stored value directly; with only `set`,
+reading returns the stored value. A constructor header (`class Person(name)`)
+initializes the stored value without going through the setter. A child accessor
+inherits the parent default. Declaring a method with the same name as a
+property, or two getters for the same property, is an error.
+
+A getter that reads its own property through `self.name` calls itself again
+with no stop, so it ends in a stack overflow; a getter must reach its storage
+through `field`. `test/negative/property_recursion.un` records this boundary as
+an exit code.
+
+### Ranges
+
+```un
+for i in 1..5              # 1 2 3 4 (`..` is half-open)
+    io.write(i)
+
+io.write(list(0..3))       # [0, 1, 2]
+io.write(len(0..100))      # 100
+io.write(3 in 1..5)        # true
+io.write(str(1..4))        # 1..4
+io.write(list((1..10).map(fn(x) -> x * 2)))   # [2, 4, 6, 8, 10, 12, 14, 16, 18]
+```
+
+The range built by `..` belongs to the same lazy family as `iter`, and values
+are produced only when something such as `list()` consumes them. `a..b` calls
+`a.__range__(b)`, so a class can define range creation through the `__range__`
+magic method. Precedence sits between addition and comparison, and a start
+above the stop gives an empty range. Bounds must be integers or floats with
+integer values.
+
 ### Asynchronous execution
 
 ```un
@@ -338,6 +430,8 @@ fn work()
 | `inspect` | `attr`/`hasattr`/`getattr`/`setattr` |
 
 Collection methods include `list.add`/`extend`/`sort`/`reverse`/`hpush`/`hpop`, `dict.get`/`keys`/`values`, `set.add`/`union`/`intersect`, and string methods such as `split`/`join`/`trim`/`center`/`replace`.
+
+Chaining `iter` methods (`(0..10).map(fn(x) -> x * 2).take(3)`) is lazy: nothing runs until the result is consumed. The global `iter.map`/`iter.filter`/`iter.take` evaluate their arguments immediately and return a `list`. `iter.zip` consumes both sources at the same rate, so an infinite `iter.counter` can be paired with a finite range.
 
 ## Architecture
 

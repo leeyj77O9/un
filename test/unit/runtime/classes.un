@@ -97,6 +97,20 @@ class Dims(x, y)
 dims = Dims(10, 20)
 assert.assert_eq(dims.x, 10, "class header arguments bind the field")
 assert.assert_eq(dims.len(), 30, "a method named len is called on the instance")
+assert.assert_eq(len([1, 2, 3]), 3, "a method named len does not shadow the global len")
+
+# ---------- 메서드 이름은 전역 내장을 가리지 않는다 ----------
+class Shadow
+    fn type()
+        -> 1
+    fn hash()
+        -> 2
+
+sh = Shadow()
+assert.assert_eq(sh.type(), 1, "a method named type is called on the instance")
+assert.assert_eq(sh.hash(), 2, "a method named hash is called on the instance")
+assert.assert_eq(type(1), int, "a method named type does not shadow the global type")
+assert.assert_true(hash("a") == hash("a"), "a method named hash does not shadow the global hash")
 
 # ---------- 상속 ----------
 class Base

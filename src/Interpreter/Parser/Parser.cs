@@ -70,7 +70,11 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
 
         Node statement;
 
-        if (IsAssignmentStart())
+        if (IsAccessorStart())
+        {
+            statement = RequireNoAnnotations(annotations, ParseAccessor);
+        }
+        else if (IsAssignmentStart())
         {
             statement = RequireNoAnnotations(annotations, ParseAssignment);
         }
@@ -649,6 +653,54 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
         var last = items[^1];
 
         return new Node(first.Start, GetLength(first, last), NodeKind.Tuple, children: [.. items]);
+    }
+
+    private bool IsAccessorStart()
+    {
+        if (Current.Type != TokenType.Identifier || position + 1 >= tokens.Count)
+            return false;
+
+        if (tokens[position + 1].Type != TokenType.Identifier)
+            return false;
+
+        return code.AsSpan(Current.Start, Current.Length) is "get" or "set";
+    }
+
+    private Node ParseAccessor()
+    {
+        var keyword = Next();
+        var kind = code.Substring(keyword.Start, keyword.Length);
+        var name = ParseIdentifier();
+
+        Node body;
+
+        if (kind == "get" && Match(TokenType.Return))
+        {
+            var arrow = Previous();
+            var expr = ParseExpression();
+            var ret = new Node(arrow.Start, GetLength(arrow, expr), NodeKind.Return, children: [expr]);
+            body = new Node(ret.Start, ret.Length, NodeKind.Block, children: [ret]);
+        }
+        else if (kind == "set" && Match(TokenType.Assign))
+        {
+            var expr = ParseExpression();
+            var field = new Node(name.Start, name.Length, NodeKind.Identifier)
+            {
+                Value = "field"
+            };
+            var assign = new Node(field.Start, GetLength(field, expr), NodeKind.Assign, TokenType.Assign, field, expr);
+            body = new Node(assign.Start, assign.Length, NodeKind.Block, children: [assign]);
+        }
+        else
+        {
+            SkipNewLines();
+            body = ParseBlock();
+        }
+
+        return new Node(keyword.Start, GetLength(keyword, body), NodeKind.Accessor, children: [name, body])
+        {
+            Value = kind
+        };
     }
 
     private Node ParseAssignment()
@@ -1454,22 +1506,24 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
             TokenType.IsNot => 5,
             TokenType.In => 5,
 
-            TokenType.BOr => 6,
-            TokenType.BXor => 7,
-            TokenType.BAnd => 8,
+            TokenType.BOr => 7,
+            TokenType.BXor => 8,
+            TokenType.BAnd => 9,
 
-            TokenType.LeftShift => 9,
-            TokenType.RightShift => 9,
+            TokenType.DotDot => 6,
 
-            TokenType.Plus => 10,
-            TokenType.Minus => 10,
+            TokenType.LeftShift => 10,
+            TokenType.RightShift => 10,
 
-            TokenType.Asterisk => 11,
-            TokenType.Slash => 11,
-            TokenType.DoubleSlash => 11,
-            TokenType.Percent => 11,
+            TokenType.Plus => 11,
+            TokenType.Minus => 11,
 
-            TokenType.DoubleAsterisk => 12,
+            TokenType.Asterisk => 12,
+            TokenType.Slash => 12,
+            TokenType.DoubleSlash => 12,
+            TokenType.Percent => 12,
+
+            TokenType.DoubleAsterisk => 13,
 
             TokenType.DoubleQuestion => 1,
 

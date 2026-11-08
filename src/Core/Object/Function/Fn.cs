@@ -12,10 +12,19 @@ public class Fn(Context closure) : Obj(UnType.Func)
     public BaseType ReturnType { get; set; } = UnType.Any;
     public Context Closure { get; set; } = closure;
 
+    /// <summary>
+    /// Set when this function is a property accessor. The local <c>field</c>
+    /// then points at the property backing storage of <see cref="Obj.Self"/>.
+    /// </summary>
+    public Property? Property { get; set; }
+
     protected Obj Bind(Scope scope, Tup args)
     {
         scope.SetLocal("self", Self);
         scope.SetLocal("super", Super);
+
+        if (Property is not null)
+            scope.SetLocal("field", new FieldRef(Self, Property));
 
         if (TryBindSimplePositional(scope, args, out var simpleResult))
             return simpleResult;

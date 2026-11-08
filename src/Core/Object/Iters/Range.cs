@@ -28,7 +28,25 @@ public class Range : Iters
 
     public override Range Iter() => this;
 
-    public override Str ToStr() => Repr();
+    public override Str ToStr() => step == 1
+        ? Str.From($"{start}..{stop}")
+        : Str.From($"{start}..{stop}..{step}");
+
+    public override Obj Eq(Obj other) => other is Range range
+        ? Bool.From(start == range.start && stop == range.stop && step == range.step)
+        : base.Eq(other);
+
+    public override Obj In(Obj obj) => obj.As<Int>(out var value)
+        ? Bool.From(Contains(value.Value))
+        : base.In(obj);
+
+    private bool Contains(long value)
+    {
+        if (step > 0)
+            return value >= start && value < stop && (value - start) % step == 0;
+
+        return value <= start && value > stop && (start - value) % -step == 0;
+    }
 
     public override Range Clone() => new(start, stop, step);
 

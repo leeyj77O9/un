@@ -151,7 +151,7 @@ public static class Iter
     {
         if (!obj.Iter().As<Iters>(out var iter))
             return new Err("expected 'obj' argument to be of type 'iter'");
-        return new Reverse(iter.Value);
+        return new Reverse(iter.Value.Reverse());
     }
 
     [Native(
@@ -185,34 +185,55 @@ public static class Iter
     )]
     public static Obj Zip([ArgInfo(Positional = true)] Obj iterables)
     {
-        if (!iterables.As<Iters>(out var arrays))
+        if (!iterables.Iter().As<Iters>(out var arrays))
             return new Err("expected 'iterables' argument to be of type 'iter'");
 
-        if (arrays.Len().ToInt().As<Int>(out var intLen) && intLen.Value == 0)
-            return new Err("expected 'iterables' argument to have a non-zero length");
+        System.Collections.Generic.List<IEnumerator<Obj>> enumerators = [];
 
-        int length = int.MaxValue;
-
-        foreach (var i in arrays.Value)
+        try
         {
-            if (!i.Len().As<Int>(out var arrayLength))
-                return new Err("expected all 'iterables' items to have a valid length");
-            if (arrayLength.Value < length)
-                length = (int)arrayLength.Value;
-        }
-
-        List list = [];
-
-        for (int i = 0; i < length; i++)
-        {
-            List buf = [];
             foreach (var array in arrays.Value)
-                buf.Append(array.GetItem(Int.From(i)));
+            {
+                if (!array.Iter().As<Iters>(out var iter))
+                    return new Err("expected all 'iterables' items to be of type 'iter'");
 
-            list.Append(new Tup([.. buf], new string[buf.Count]));
+                enumerators.Add(iter.Value.GetEnumerator());
+            }
+
+            if (enumerators.Count == 0)
+                return new Err("expected 'iterables' argument to have a non-zero length");
+
+            List list = [];
+
+            while (true)
+            {
+                List buf = [];
+                bool done = false;
+
+                foreach (var enumerator in enumerators)
+                {
+                    if (!enumerator.MoveNext())
+                    {
+                        done = true;
+                        break;
+                    }
+
+                    List.Append(buf, enumerator.Current);
+                }
+
+                if (done)
+                    break;
+
+                List.Append(list, new Tup([.. buf], new string[buf.Count]));
+            }
+
+            return list;
         }
-
-        return list;
+        finally
+        {
+            foreach (var enumerator in enumerators)
+                enumerator.Dispose();
+        }
     }
 
     [Native(
@@ -452,7 +473,7 @@ public static class Iter
     )]
     public static Obj Chain([ArgInfo(Positional = true)] Obj iterables)
     {
-        if (!iterables.As<Iters>(out var arrays))
+        if (!iterables.Iter().As<Iters>(out var arrays))
             return new Err("expected 'iterables' argument to be of type 'iter'");
 
         List list = [];

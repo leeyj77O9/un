@@ -12,7 +12,7 @@ public enum TokenType
     LBrack, RBrack,
 
     DoubleQuestion,
-    Dot, Question,
+    Dot, DotDot, Question,
 
     Assign, ColonAssign, PlusAssign, MinusAssign,
     AsteriskAssign, DoubleAsteriskAssign,

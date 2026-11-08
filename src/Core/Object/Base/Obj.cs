@@ -96,6 +96,20 @@ public class Obj(UnType type) : IComparable<Obj>
 
     public virtual Obj Pow(Obj other) => Binary("__pow__", other, "other", s => s.Pow(other), () => new Err($"unsupported operand type(s) for **: '{Type}' and '{other.Type}'"));
 
+    public virtual Obj RangeTo(Obj other)
+    {
+        if (TryMethod("__range__", out var value, new([other])))
+            return value;
+
+        if (ValidSuper())
+            return Super.RangeTo(other);
+
+        if (TryRangeBound(this, out var start) && TryRangeBound(other, out var stop))
+            return new Iter.Range(start, stop);
+
+        return new Err($"unsupported operand type(s) for ..: '{Type}' and '{other.Type}'");
+    }
+
     public virtual Obj BAnd(Obj other) => Binary("__band__", other, "other", s => s.BAnd(other), () => new Err($"unsupported operand type(s) for &: '{Type}' and '{other.Type}'"));
 
     public virtual Obj BOr(Obj other) => Binary("__bor__", other, "other", s => s.BOr(other), () => new Err($"unsupported operand type(s) for |: '{Type}' and '{other.Type}'"));
@@ -218,28 +232,38 @@ public class Obj(UnType type) : IComparable<Obj>
         return new Err($"unsupported slice for '{Type}'");
     }    
 
-    public virtual Obj SetAttr(string name, Obj value)
+    public virtual Obj SetAttr(string name, Obj value) => SetAttrFrom(name, value, this);
+
+    private Obj SetAttrFrom(string name, Obj value, Obj receiver)
     {
+        if (Members.TryGetValue(name, out var member) && member is Property property)
+            return property.Set(receiver, value);
+
         if (TryMethod("__setattr__", out _, new([Str.From(name), value])))
             return value;
         if (Members.ContainsKey(name))
             return Members[name] = value;
         if (ValidSuper())
-            return Super.SetAttr(name, value);
+            return Super.SetAttrFrom(name, value, receiver);
         if (Type.Name is "int" or "float" or "str" or "bool" or "date" or "none" or "null")
             return new Err($"'{Type}' object has no attribute '{name}'");
         return Members[name] = value;
     }
 
-    public virtual Obj GetAttr(string name)
+    public virtual Obj GetAttr(string name) => GetAttrFrom(name, this);
+
+    private Obj GetAttrFrom(string name, Obj receiver)
     {
+        if (Members.TryGetValue(name, out var member) && member is Property property)
+            return property.Get(receiver);
+
         if (TryMethod("__getattr__", out Obj? value, new([Str.From(name)])))
             goto Found;
         if (Members.TryGetValue(name, out value))
             goto Found;
         if (ValidSuper() && Super.Has(name))
         {
-            value = Super.GetAttr(name);
+            value = Super.GetAttrFrom(name, receiver);
             goto Found;
         }
         if (Global.TryGetOriginalValue(Type.Name, name, out value))
@@ -249,7 +273,7 @@ public class Obj(UnType type) : IComparable<Obj>
         {
             var parent = Parents[i];
             if (!parent.Has(name)) continue;
-            value = parent.GetAttr(name);
+            value = parent.GetAttrFrom(name, receiver);
             goto Found;
         }
 
@@ -261,8 +285,8 @@ public class Obj(UnType type) : IComparable<Obj>
 
         if (value is Function.Fn)
         {
-            value.Self = this;
-            value.Super = Super;
+            value.Self = receiver;
+            value.Super = receiver.Super;
         }
 
         return value;
@@ -395,6 +419,25 @@ public class Obj(UnType type) : IComparable<Obj>
     }
 
     public bool IsNone() => Type == UnType.None;
+
+    private static bool TryRangeBound(Obj obj, out long value)
+    {
+        if (obj is Int i)
+        {
+            value = i.Value;
+            return true;
+        }
+
+        if (obj is Float f && Math.Floor(f.Value) == f.Value &&
+            f.Value >= long.MinValue && f.Value <= long.MaxValue)
+        {
+            value = (long)f.Value;
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
 
     public bool Has(string name)
     {

@@ -332,8 +332,10 @@ public class Lexer(Source source)
             if (!ReadDigits(char.IsDigit))
                 return Error(start, "expected digit");
 
-            if (Consume('.'))
+            if (Peek('.') && PeekAt(1) != '.')
             {
+                index++;
+
                 if (lastUnderscore)
                     return Error(start, "underscore cannot precede decimal point");
 
@@ -474,6 +476,8 @@ public class Lexer(Source source)
         if (Match("??")) return Token(TokenType.DoubleQuestion, 2);
         if (Match("?.")) return Token(TokenType.QuestionDot, 2);
 
+        if (Peek('.') && PeekAt(1) == '.') return Token(TokenType.DotDot, 2);
+
         if (Match("+=")) return Token(TokenType.PlusAssign, 2);
         if (Match("-=")) return Token(TokenType.MinusAssign, 2);
         if (Match("*=")) return Token(TokenType.AsteriskAssign, 2);
@@ -544,6 +548,12 @@ public class Lexer(Source source)
     {
         if (EOF) return '\0';
         return source.Code[index];
+    }
+
+    private char PeekAt(int offset)
+    {
+        int i = index + offset;
+        return i >= source.Code.Length ? '\0' : source.Code[i];
     }
 
     private bool Peek(char c)

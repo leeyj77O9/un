@@ -19,7 +19,12 @@ public class Stru(UnType type, string[] names) : Obj(type)
         int i = 0;
 
         foreach (var name in allNames)
-            Members[name] = args[i++];
+        {
+            if (Members.TryGetValue(name, out var member) && member is Property property)
+                property.Write(this, args[i++]);
+            else
+                Members[name] = args[i++];
+        }
 
         return this;
     }

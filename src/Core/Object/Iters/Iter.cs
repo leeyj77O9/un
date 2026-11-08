@@ -110,7 +110,17 @@ public class Iters(IEnumerable<Obj> value) : Ref<IEnumerable<Obj>>(value, UnType
         if (fn is not Fn)
             return new Err("invalid argument: 'fn'");
 
-        return new Iters(self.Value.Select((x, i) => fn.Call(Tup.Two("", x, "", Int.From(i)))));
+        var argCount = 0;
+
+        foreach (var arg in ((Fn)fn).Args)
+            if (arg.Name is not ("self" or "super"))
+                argCount++;
+
+        var wantsIndex = argCount >= 2;
+
+        return new Iters(self.Value.Select((x, i) => wantsIndex
+            ? fn.Call(Tup.Two("", x, "", Int.From(i)))
+            : fn.Call(new Tup([x]))));
     }
 
     [Native(

@@ -1,0 +1,4 @@
+use io
+
+x = "a"..3
+io.write(list(x))

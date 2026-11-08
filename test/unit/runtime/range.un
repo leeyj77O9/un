@@ -1,0 +1,92 @@
+use io
+use iter
+use test.assert as assert
+
+# ============================================================
+# Range - `a..b` 범위 연산자, 반개구간, 지연 평가
+# 실행: Un.exe run test/unit/runtime/range.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 반개구간 ----------
+assert.assert_eq(list(1..5), [1, 2, 3, 4], "upper bound is excluded")
+assert.assert_eq(list(0..4), [0, 1, 2, 3], "range starting at zero")
+assert.assert_eq(list(-3..1), [-3, -2, -1, 0], "negative bounds")
+assert.assert_eq(len(0..100), 100, "0..100 yields 100 values")
+
+# ---------- 정수값 float 경계 ----------
+assert.assert_eq(list(1.0..4.0), [1.0, 2.0, 3.0], "integer valued float bounds")
+assert.assert_eq(list(1..4.0), [1, 2, 3], "int start with float stop")
+assert.assert_eq(list(1.0..4), [1.0, 2.0, 3.0], "float start with int stop")
+
+# ---------- 빈 범위 ----------
+assert.assert_eq(list(5..5), [], "equal bounds give an empty range")
+assert.assert_eq(list(5..1), [], "start above stop gives an empty range")
+assert.assert_eq(len(5..5), 0, "len of an empty range is 0")
+
+# ---------- 문자열과 형 ----------
+assert.assert_eq(str(1..5), "1..5", "str shows the bounds")
+assert.assert_eq(str(iter.range(0, 10, 2)), "0..10..2", "str shows a non-unit step")
+assert.assert_eq(type(1..5) == type(0..3), true, "range literals share one type")
+
+# ---------- 비교와 소속 ----------
+assert.assert_eq(1..5 == 1..5, true, "ranges with equal bounds are equal")
+assert.assert_eq(1..5 == 0..4, false, "ranges with different bounds are not equal")
+assert.assert_eq(1..5 != 2..5, true, "neq of ranges")
+assert.assert_eq(3 in 1..5, true, "in checks the half-open interval")
+assert.assert_eq(5 in 1..5, false, "the upper bound is not a member")
+assert.assert_eq(0 in 1..5, false, "the lower bound below start is not a member")
+
+# ---------- 반복은 지연 평가된다 ----------
+total = 0
+for x in 1..5
+    total += x
+assert.assert_eq(total, 10, "for loop over a range")
+
+assert.assert_eq(iter.sum(1..5), 10, "sum consumes the range lazily")
+
+# ---------- 범위 객체는 다시 사용할 수 있다 ----------
+r = 1..4
+assert.assert_eq(list(r), [1, 2, 3], "first pass over the same range")
+assert.assert_eq(list(r), [1, 2, 3], "second pass over the same range")
+assert.assert_eq(len(r), 3, "len does not consume the range")
+
+# ---------- 연산자 체이닝 (괄호로 범위를 묶는다) ----------
+assert.assert_eq(list((1..5).map(fn(x) -> x * 2)), [2, 4, 6, 8], "map over a range")
+assert.assert_eq(list((1..5).filter(fn(x) -> x % 2 == 1)), [1, 3], "filter over a range")
+assert.assert_eq(list((1..10).take(3)), [1, 2, 3], "take from a range")
+assert.assert_eq(list(iter.range(1, 5, 2)), [1, 3], "step with the .. type")
+
+# ---------- iter 모듈과 조합 ----------
+assert.assert_eq(list(iter.enumerate(1..4)), [(0, 1), (1, 2), (2, 3)], "enumerate a range")
+assert.assert_eq(list(iter.chain(1..3, 10..12)), [1, 2, 10, 11], "chain two ranges")
+assert.assert_eq(list(iter.zip(1..3, 10..13)), [(1, 10), (2, 11)], "zip stops at the shorter range")
+assert.assert_eq(list(iter.reverse(1..4)), [3, 2, 1], "reverse a range")
+assert.assert_eq(list(iter.sorted(iter.reverse(1..4))), [1, 2, 3], "sorted consumes reverse")
+assert.assert_eq(list(iter.flatten([0..3, [7]])), [0, 1, 2, 7], "flatten mixes ranges and lists")
+assert.assert_eq(list(iter.take(2, iter.counter(0))), [0, 1], "take from an infinite counter")
+
+# ---------- __range__ 훅 ----------
+class Hook
+    n = 0
+    fn __range__(other)
+        -> [self.n, other]
+
+h = Hook()
+assert.assert_eq(h..5, [0, 5], "a class builds a range through __range__")
+
+class HookStru(x, y)
+    fn __range__(other)
+        -> (self.x, self.y, other)
+
+hp = HookStru(1, 2)
+assert.assert_eq(hp..9, (1, 2, 9), "__range__ works on a struct class")
+
+# ---------- 중첩 범위 ----------
+assert.assert_eq(list((1..3).map(fn(x) -> list(0..2))), [[0, 1], [0, 1]], "nested ranges inside a map")
+
+# ---------- 경계값이 정수가 아닌 float ----------
+assert.assert_err(fn() -> list(1.5..3), "fractional start is an error")
+assert.assert_err(fn() -> list(1..2.5), "fractional stop is an error")
+assert.assert_err(fn() -> list("a"..3), "string bounds are an error")
+
+assert.summary()

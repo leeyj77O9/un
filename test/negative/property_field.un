@@ -1,0 +1,12 @@
+use io
+
+class FieldOutside
+    v = 0
+    get v -> field
+
+fn outside()
+    -> field
+
+c = FieldOutside()
+io.write(c.v)
+io.write(outside())

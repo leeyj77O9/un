@@ -68,4 +68,15 @@ assert.assert_eq([[1], [2, [3]]], [[1], [2, [3]]], "nested list literal")
 assert.assert_eq({"a": [1, 2]}["a"][1], 2, "nested literal access")
 assert.assert_eq((1, (2, 3))[1][0], 2, "nested tuple access")
 
+# ---------- `..` 범위 리터럴 ----------
+assert.assert_eq(list(1..4), [1, 2, 3], "dotdot lexes as a range operator")
+assert.assert_eq(len(1..10), 9, "range length is stop minus start")
+assert.assert_eq(str(1..4), "1..4", "str keeps the dotdot text")
+assert.assert_eq(type(1.5), float, "a single dot inside a number stays a float literal")
+assert.assert_eq(list(1.0..4.0), [1.0, 2.0, 3.0], "integer valued float bounds form a range")
+assert.assert_eq(list(1..4.0), [1, 2, 3], "int start with float stop")
+assert.assert_eq(len(1_0..1_3), 3, "underscore literals on both sides of ..")
+assert.assert_eq(len(1e0..3e0), 2, "exponent literals on both sides of ..")
+assert.assert_eq(len(0..0x3), 3, "hex literal as a range bound")
+
 assert.summary()

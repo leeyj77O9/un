@@ -65,5 +65,6 @@ public class LFn(List<Node> body, Context closure) : Fn(closure)
         Self = Self,
         Super = Super,
         Parents = Parents,
+        Property = Property,
     };
 }

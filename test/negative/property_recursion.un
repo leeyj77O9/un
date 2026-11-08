@@ -1,0 +1,10 @@
+use io
+
+# 자기 자신을 읽는 getter는 재귀를 막지 못한다.
+# 접근자는 self.v로 같은 프로퍼티의 getter를 다시 부른다.
+class Rec
+    v = 0
+    get v -> self.v
+
+r = Rec()
+io.write(r.v)

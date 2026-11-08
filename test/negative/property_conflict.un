@@ -1,0 +1,10 @@
+use io
+
+class Conflict
+    v = 0
+    get v -> field
+    fn v()
+        -> 1
+
+c = Conflict()
+io.write(c.v)

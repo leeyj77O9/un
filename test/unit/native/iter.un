@@ -39,6 +39,9 @@ assert.assert_eq(list(iter.map(fn(x) -> x * 2, [1, 2])), [2, 4], "map")
 assert.assert_eq(list(iter.flatten([[1, 2], [3]])), [1, 2, 3], "flatten")
 assert.assert_eq(list(iter.enumerate(["a", "b"])), [(0, "a"), (1, "b")], "enumerate")
 assert.assert_eq(list(iter.sorted([3, 1, 2])), [1, 2, 3], "sorted")
+assert.assert_eq(list(iter.reverse([1, 2, 3])), [3, 2, 1], "iter.reverse yields values in reverse order")
+assert.assert_eq(list(iter.zip([1, 2], [3, 4])), [(1, 3), (2, 4)], "iter.zip pairs the elements")
+assert.assert_eq(list(iter.chain([1], [2])), [1, 2], "iter.chain concatenates iterables")
 assert.assert_eq(list(iter.take(2, [1, 2, 3])), [1, 2], "take")
 assert.assert_eq(list(iter.take(0, [1, 2, 3])), [], "take zero")
 assert.assert_eq(list(iter.array(1, [2, 2])), [[1, 1], [1, 1]], "array with dimensions")
@@ -57,6 +60,61 @@ assert.assert_eq(list(iter.take(3, [])), [], "take from empty")
 # ---------- 중첩 ----------
 nested = [[1, 2], [3, [4, 5]]]
 assert.assert_eq(list(iter.flatten(nested)), [1, 2, 3, [4, 5]], "flatten one level only")
+
+# ---------- 지연 평가 (메서드 체이닝) ----------
+state = {"map": 0, "filter": 0}
+
+fn count_double(x)
+    state["map"] += 1
+    -> x * 2
+
+fn count_odd(x)
+    state["filter"] += 1
+    -> x % 2 == 1
+
+lazy = (1..100).map(count_double).take(3)
+assert.assert_eq(state["map"], 0, "map does not run before the iterator is consumed")
+assert.assert_eq(list(lazy), [2, 4, 6], "take gives the first three mapped values")
+assert.assert_eq(state["map"], 3, "take pulls only three elements through the lazy map")
+
+big_lazy = (1..1000000).map(count_double).take(3)
+assert.assert_eq(list(big_lazy), [2, 4, 6], "take on a large range gives the first three mapped values")
+assert.assert_eq(state["map"], 6, "a million element range runs map only three times")
+
+filtered = (1..10).filter(count_odd)
+assert.assert_eq(state["filter"], 0, "filter does not run before consumption")
+assert.assert_eq(list(filtered), [1, 3, 5, 7, 9], "lazy filter keeps the matching values")
+assert.assert_eq(state["filter"], 9, "filter tests every element of 1..10 once when consumed")
+
+# ---------- 지연된 체이닝은 다시 사용할 수 있다 ----------
+assert.assert_eq(list(lazy), [2, 4, 6], "a chained iterator can be consumed again")
+assert.assert_eq(list(filtered), [1, 3, 5, 7, 9], "a filtered iterator can be consumed again")
+
+# ---------- 전역 iter 함수는 즉시 평가된다 ----------
+eager_state = {"calls": 0}
+
+fn count_id(x)
+    eager_state["calls"] += 1
+    -> x
+
+eager_map = iter.map(count_id, [1, 2, 3])
+assert.assert_eq(eager_state["calls"], 3, "the global iter.map evaluates immediately")
+assert.assert_eq(eager_map, [1, 2, 3], "the global iter.map returns a list")
+
+fn count_odd_eager(x)
+    eager_state["calls"] += 1
+    -> x % 2 == 1
+
+eager_state["calls"] = 0
+eager_filter = iter.filter(count_odd_eager, [1, 2, 3, 4])
+assert.assert_eq(eager_state["calls"], 4, "the global iter.filter evaluates immediately")
+assert.assert_eq(eager_filter, [1, 3], "the global iter.filter returns a list")
+
+# ---------- 무한 소스와 유한 소스 ----------
+assert.assert_eq(list(iter.take(3, iter.counter(0))), [0, 1, 2], "take from an infinite counter")
+assert.assert_eq(list(iter.zip(iter.counter(0), 0..3)), [(0, 0), (1, 1), (2, 2)],
+    "zip with an infinite source stops at the finite one")
+assert.assert_eq(list(iter.take(3, iter.chain(0..3, 10..20))), [0, 1, 2], "chain is lazy on both sides")
 
 # ---------- 없는 멤버 ----------
 assert.assert_err(fn() -> iter.drop(1, [1, 2, 3]), "'module' object has no attribute 'drop'")

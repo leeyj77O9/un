@@ -22,6 +22,8 @@ unit|test/unit/runtime/scope.un
 unit|test/unit/runtime/control_flow.un
 unit|test/unit/runtime/functions.un
 unit|test/unit/runtime/classes.un
+unit|test/unit/runtime/property.un
+unit|test/unit/runtime/range.un
 unit|test/unit/runtime/async.un
 unit|test/unit/runtime/errors.un
 unit|test/unit/runtime/date.un
