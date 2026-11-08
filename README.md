@@ -30,16 +30,17 @@ Un은 읽기 쉽고 간결한 프로그램을 작성하기 위한 동적 타입 
 
 - 변수와 구조 분해 할당
 - 기본값, 키워드, 가변 인자를 갖는 함수
+- `@decorator` 함수 장식
 - 람다와 클로저
 - `if` / `elif` / `else`, `for`, `while`, `break`, `skip`
 - 패턴 매칭을 지원하는 `match`
-- 클래스, 상속, `Stru`, `Enu`
+- 클래스, 상속, 다중 상속, `enum`
 - 클래스 Property: `get`/`set` 접근자와 `field`, `value`
 - 범위 연산자 `a..b` (반개구간, 지연 평가)
 - `use`, 별칭, 선택적 import를 갖는 모듈 시스템
 - `using`과 `defer`를 통한 자원 관리
-- 문자열 보간과 태그드 템플릿
-- `list`, `dict`, `set`, `tuple`, `json` 컬렉션
+- 백틱 문자열 보간 `` `..{expr}..` ``
+- `list`, `dict`, `set`, `tuple` 컬렉션
 - 슬라이싱과 인덱싱
 - 후위 `?`를 통한 null/에러 전파
 - C 스타일 삼항 표현식 `cond ? a : b`
@@ -58,7 +59,7 @@ Un은 읽기 쉽고 간결한 프로그램을 작성하기 위한 동적 타입 
 
 - 백그라운드에서 표현식을 실행하고 `Future`를 반환하는 `go`
 - `Future`를 대기하는 `wait`
-- `map`을 제공하는 `flow.spawn(n)` 워커 풀
+- `map`과 `submit`을 제공하는 `flow.spawn(n)` 워커 풀
 
 ### 계획됨
 
@@ -124,6 +125,8 @@ io.write(p.len())  # 30
 있다. 접근자 안에서 `field`는 그 멤버의 저장 값, `value`는 setter에 들어온 값이다.
 
 ```un
+use io
+
 class Counter
     count = 0
     doubled = 0
@@ -141,6 +144,8 @@ io.write(c.count)     # 0
 상속하고, 이름이 겹치면 첫 번째 부모가 이긴다.
 
 ```un
+use io
+
 class BaseA
     a = 1
 class BaseB
@@ -150,6 +155,19 @@ class C: BaseA, BaseB
 
 io.write(C().a, C().b, C().c)        # 1 2 3
 io.write(C() is BaseA, C() is BaseB)  # true true
+```
+
+`enum`은 회원이 정수 값으로 자동 넘겨지는 타입이다.
+
+```un
+use io
+
+enum Color
+    RED
+    GREEN
+    BLUE
+
+io.write(Color.RED, Color.GREEN, Color.BLUE)   # 0 1 2
 ```
 
 범위 연산자 `..`는 반개구간이고 값을 즉시 만들지 않는다. 우선순위는 덧셈과 비교
@@ -241,7 +259,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
-Positive 집계의 통과·실패 수에 포함하지 않는다.
+Positive 집계의 통과·실패 수에 포함하지 않는다. 현재 기준은 Positive 33 파일 /
+1265 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
+
+`.NET 8` 앱은 `.NET 10` 런타임 위에서 `DOTNET_ROLL_FORWARD=Major`를 설정하면
+실행된다(PowerShell: `$env:DOTNET_ROLL_FORWARD='Major'`).
 
 벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`와 `results.md`에 저장한다.
@@ -277,11 +299,30 @@ fn greet(name = "world")
 mul = fn(a, b) -> a * b
 ```
 
-함수 본문은 들여쓰기된 블록을 사용한다. 람다는 한 줄에 `->`를 사용한다.
+함수 본문은 들여쓰기된 블록을 사용한다. 람다는 한 줄에 `->`를 사용한다. 함수 앞에
+`@decorator`를 적으면 그 장식이 함수를 감싼다.
+
+```un
+use io
+
+fn tag(target)
+    fn wrapped(x)
+        -> target(x)
+    -> wrapped
+
+@tag
+fn tagged(x)
+    -> x + 1
+
+io.write(tagged(1))   # 2
+```
 
 ### 제어 흐름
 
 ```un
+use io
+
+x = 5
 if x > 5
     io.write("big")
 elif x == 5
@@ -304,26 +345,38 @@ while n < 5
 ### 패턴 매칭
 
 ```un
+use io
+
+value = (3, 0)
 res = match value {
     0 -> "zero",
     (x, 0) -> `x={x}`,
     _ -> "other",
 }
+io.write(res)    # x=3
 ```
 
 ### 타입
 
 ```un
+use io
+
 x: int = 10
 y: str = "hi"
 a: list[int] = [1, 2]
 b: dict[str, int] = {}
-c: int | none = none
+c: int | str = 1
+io.write(x, y, a, b, c)   # 10 hi [1, 2] {} 1
 ```
+
+`none`은 예약어이므로 어노테이션의 타입 이름으로 쓰지 못한다. `x: none`이나
+`int | none`은 파싱 오류로 끝난다.
 
 ### 클래스와 Property
 
 ```un
+use io
+
 class Person
     name = "anon"            # 일반 멤버는 기본 Getter/Setter
     older = 1
@@ -357,6 +410,8 @@ getter가 `self.같은 이름`으로 자기 프로퍼티를 읽으면 getter가 
 ### 범위
 
 ```un
+use io
+
 for i in 1..5              # 1 2 3 4 (`..`는 반개구간)
     io.write(i)
 
@@ -376,6 +431,7 @@ io.write(list((1..10).map(fn(x) -> x * 2)))   # [2, 4, 6, 8, 10, 12, 14, 16, 18]
 ### 비동기 실행
 
 ```un
+use io
 use time
 
 fn slow(x)
@@ -383,7 +439,22 @@ fn slow(x)
     -> x * 2
 
 a = go slow(5)
-io.write(wait a)
+io.write(wait a)    # 10
+```
+
+`flow.spawn(n)`은 워커 풀이다. `pool.map`은 인자마다 결과를 만들고, `pool.submit`은
+Future를 돌려준다.
+
+```un
+use io
+use flow
+use iter
+
+using pool = flow.spawn(2)
+r = pool.map(fn(x) -> x * x, 1, 2, 3, 4)
+io.write(list(iter.sorted(r)))   # [1, 4, 9, 16]
+s = pool.submit(fn(x) -> x * 3, (7))
+io.write(wait s)                 # 21
 ```
 
 ### 모듈
@@ -400,12 +471,16 @@ io.write(re.test("\\d+", "abc123"))
 ### 자원 관리
 
 ```un
+use io
+
 using file = io.open("log.txt", "w")
 file.write("hello")
 
 fn work()
     defer io.write("done")
     io.write("start")
+
+work()    # start done
 ```
 
 ## 표준 라이브러리
@@ -413,19 +488,25 @@ fn work()
 | 모듈 | 주요 API |
 |---|---|
 | `io` | `write`, `read`, `open`, `clear` |
-| `fs` | `read`/`write`/`append`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`delete`, `mkdir`/`rmdir`, `join`/`parent`/`name`/`ext` |
+| `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
-| `math` | `abs`/`sqrt`/`pow`/`log`/`sin`/`cos`/`tan`, `gcd`/`lcm`/`clamp`, `pi`/`e`/`tau` |
-| `iter` | `range`/`counter`/`reverse`/`repeat`, `zip`/`enumerate`, `map`/`filter`/`take`/`skip`/`chain`/`flatten`, `sum`/`max`/`min`/`sorted` |
-| `random` | `int`/`float`/`bool`/`choice`/`shuffle`, `sample`/`choices`/`weighted`, `seed`/`uuid` |
-| `os` | `env`/`environ`/`exec`, `pid`/`hostname`/`args`, `sep`/`pathsep` |
+| `math` | `round`/`abs`/`ceil`/`floor`/`trunc`/`sign`, `sqrt`/`cbrt`/`pow`/`exp`/`log`/`log2`/`log10`, `sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`hypot`, `gcd`/`lcm`/`clamp`, `is_nan`/`is_infinite`/`is_finite`, `pi`/`e`/`tau` |
+| `iter` | `array`/`range`/`counter`/`reverse`/`repeat`, `zip`/`enumerate`, `map`/`filter`/`take`/`skip`/`chain`/`flatten`, `sum`/`max`/`min`/`sorted`, `all`/`any`/`count` |
+| `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
+| `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
+| `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
 | `time` | `sleep`/`now`/`stopwatch` |
-| `http`/`ws` | `http.connect().get`/`post`/`put`/`delete`, `ws.connect().send`/`receive` |
-| `inspect` | `attr`/`hasattr`/`getattr`/`setattr` |
+| `flow` | `spawn`(pool)과 `lock` |
+| `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options`와 `_async` 변형, `ws.connect().send`/`receive`/`close`/`is_open` |
+| `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
 
-컬렉션 메서드로는 `list.add`/`extend`/`sort`/`reverse`/`hpush`/`hpop`, `dict.get`/`keys`/`values`, `set.add`/`union`/`intersect`, 그리고 `split`/`join`/`trim`/`center`/`replace` 같은 문자열 메서드가 있다.
+컬렉션 메서드로는 `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, 그리고 `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with` 같은 문자열 메서드가 있다.
+
+모듈 없이 전역에 있는 내장 함수는 `len`/`type`/`hash`/`exit`/`throw`/`throw_if`/`throw_unless`/`chr`/`ord`/`bin`/`oct`/`hex`/`repr`/`ascii`이고, 생성자로는 `int`/`float`/`str`/`bool`/`list`/`set`/`tuple`/`date`가 있다. `math.pi`, `math.e`, `math.tau`, `os.sep`, `os.pathsep`, `os.linesep`, `os.cpuCount`, `os.is64bit` 같은 값은 함수로 노출되므로 호출해서 쓴다.
 
 `iter`의 메서드 체이닝(`(0..10).map(fn(x) -> x * 2).take(3)`)은 지연 평가되어 소비할 때만 실행되고, 전역 `iter.map`/`iter.filter`/`iter.take`은 인자를 즉시 평가해 `list`를 반환한다. `iter.zip`는 두 소스를 같은 속도로 소비하므로 무한 `iter.counter`와 유한 범위를 함께 쓸 수 있다.
+
+`skip`은 예약어이므로 `iter.skip(...)`나 `.skip(...)`는 파싱 오류로 끝나 이름으로 호출할 수 없다. 앞 부분을 잘라내려면 `take`나 슬라이싱을 쓴다.
 
 ## 아키텍처
 
@@ -450,7 +531,7 @@ Optimizer      상수 폴딩, 대수적 단순화, 최대 64패스
 Evaluator      Context / Scope / Frame 기반 실행, go/wait를 위한 Future
   |
   v
-Runtime        Obj / Val / Ref / Enu / Stru / TObj와 타입 시스템
+Runtime        Obj / Val / Ref / Enu / Stru / TObj / Property와 타입 시스템
   |
   v
 Stdlib         NativeModule / NativeType 리플렉션 바인딩
@@ -514,11 +595,38 @@ Floyd-Warshall (`test/integration/algorithms.un`):
 n = 4
 INF = 99999999
 graph = [[0,5,INF,10],[INF,0,3,INF],[INF,INF,0,1],[INF,INF,INF,0]]
-for k in range(0,n)
-    for i in range(0,n)
-        for j in range(0,n)
+for k in 0..n
+    for i in 0..n
+        for j in 0..n
             if graph[i][j] > graph[i][k] + graph[k][j]
                 graph[i][j] = graph[i][k] + graph[k][j]
+```
+
+Property (`test/unit/runtime/property.un`):
+
+```un
+use io
+class Temperature
+    celsius = 0.0
+    get fahrenheit -> self.celsius * 9 / 5 + 32
+    set fahrenheit
+        self.celsius = (value - 32) * 5 / 9
+
+t = Temperature()
+t.fahrenheit = 212
+io.write(t.celsius)
+io.write(t.fahrenheit)
+```
+
+범위와 지연 평가 (`test/unit/runtime/range.un`):
+
+```un
+use io
+total = 0
+for n in 1..10
+    total += n
+io.write(total)
+io.write((0..10).map(fn(x) -> x * 2).take(3))
 ```
 
 Heap (`test/integration/algorithms.un`):
@@ -549,7 +657,9 @@ class Heap
 - 런타임 객체 모델과 타입 시스템
 - 표준 라이브러리 모듈
 - 비동기 실행과 워커 풀
-- 클래스, 상속, enum, struct
+- 클래스, 다중 상속, `enum`, 필드 목록을 받는 클래스(`class Point(x, y)`)
+- 클래스 Property 접근자(`get`/`set`, `field`, `value`)
+- 범위 연산자 `a..b`와 지연 평가 이터레이터 체이닝
 - 패턴 매칭과 구조 분해
 - 모듈과 선택적 import
 - 슬라이싱, 삼항 표현식, null/에러 전파

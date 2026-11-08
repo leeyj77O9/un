@@ -30,16 +30,17 @@ Design goals:
 
 - Variables and destructuring assignment
 - Functions with default, keyword, and variadic parameters
+- Function decorators (`@decorator`)
 - Lambdas and closures
 - `if` / `elif` / `else`, `for`, `while`, `break`, `skip`
 - `match` with pattern matching
-- Classes, inheritance, `Stru`, and `Enu`
+- Classes, inheritance, multiple inheritance, and `enum`
 - Class properties with `get`/`set` accessors, `field`, and `value`
 - Range operator `a..b` (half-open, lazily evaluated)
 - Modules with `use`, aliases, and selective imports
 - Resource management with `using` and `defer`
-- String interpolation and tagged templates
-- Collections: `list`, `dict`, `set`, `tuple`, `json`
+- Backtick string interpolation `` `..{expr}..` ``
+- Collections: `list`, `dict`, `set`, `tuple`
 - Slicing and indexing
 - Null/error propagation with postfix `?`
 - C-style ternary expression `cond ? a : b`
@@ -58,7 +59,7 @@ Design goals:
 
 - `go` to run an expression in the background, returning a `Future`
 - `wait` to await a `Future`
-- `flow.spawn(n)` worker pools with `map`
+- `flow.spawn(n)` worker pools with `map` and `submit`
 
 ### Planned
 
@@ -125,6 +126,8 @@ accessors override them. Inside an accessor `field` is the stored value of that
 property and `value` is the value handed to the setter.
 
 ```un
+use io
+
 class Counter
     count = 0
     doubled = 0
@@ -142,6 +145,8 @@ Inheritance lists the bases after the class name. Multiple inheritance inherits
 every base in declaration order, and the first base wins a name conflict.
 
 ```un
+use io
+
 class BaseA
     a = 1
 class BaseB
@@ -151,6 +156,19 @@ class C: BaseA, BaseB
 
 io.write(C().a, C().b, C().c)        # 1 2 3
 io.write(C() is BaseA, C() is BaseB)  # true true
+```
+
+An `enum` gives its members integer values automatically.
+
+```un
+use io
+
+enum Color
+    RED
+    GREEN
+    BLUE
+
+io.write(Color.RED, Color.GREEN, Color.BLUE)   # 0 1 2
 ```
 
 The `..` operator builds a half-open range and does not materialize the values
@@ -242,7 +260,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
-counted in the Positive pass/fail totals.
+counted in the Positive pass/fail totals. The current baseline is Positive 33
+files / 1265 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
+Known 1 file.
+
+A `.NET 8` app runs on a `.NET 10` runtime when `DOTNET_ROLL_FORWARD=Major` is
+set (PowerShell: `$env:DOTNET_ROLL_FORWARD='Major'`).
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
 statistics, and saved to `bench/results/<timestamp>/results.csv` and `results.md`.
@@ -280,10 +303,29 @@ mul = fn(a, b) -> a * b
 ```
 
 Functions use an indented block for their body. Lambdas use `->` on a single line.
+A `@decorator` line above a function wraps it with that decorator.
+
+```un
+use io
+
+fn tag(target)
+    fn wrapped(x)
+        -> target(x)
+    -> wrapped
+
+@tag
+fn tagged(x)
+    -> x + 1
+
+io.write(tagged(1))   # 2
+```
 
 ### Control flow
 
 ```un
+use io
+
+x = 5
 if x > 5
     io.write("big")
 elif x == 5
@@ -306,26 +348,38 @@ the loop and returns from the enclosing function.
 ### Pattern matching
 
 ```un
+use io
+
+value = (3, 0)
 res = match value {
     0 -> "zero",
     (x, 0) -> `x={x}`,
     _ -> "other",
 }
+io.write(res)    # x=3
 ```
 
 ### Types
 
 ```un
+use io
+
 x: int = 10
 y: str = "hi"
 a: list[int] = [1, 2]
 b: dict[str, int] = {}
-c: int | none = none
+c: int | str = 1
+io.write(x, y, a, b, c)   # 10 hi [1, 2] {} 1
 ```
+
+`none` is a reserved keyword, so it cannot be used as a type name in an
+annotation. `x: none` and `int | none` are parse errors.
 
 ### Classes and properties
 
 ```un
+use io
+
 class Person
     name = "anon"            # ordinary members use the default getter/setter
     older = 1
@@ -362,6 +416,8 @@ an exit code.
 ### Ranges
 
 ```un
+use io
+
 for i in 1..5              # 1 2 3 4 (`..` is half-open)
     io.write(i)
 
@@ -382,6 +438,7 @@ integer values.
 ### Asynchronous execution
 
 ```un
+use io
 use time
 
 fn slow(x)
@@ -389,7 +446,22 @@ fn slow(x)
     -> x * 2
 
 a = go slow(5)
-io.write(wait a)
+io.write(wait a)    # 10
+```
+
+`flow.spawn(n)` is a worker pool. `pool.map` produces one result per argument, and
+`pool.submit` hands back a `Future`.
+
+```un
+use io
+use flow
+use iter
+
+using pool = flow.spawn(2)
+r = pool.map(fn(x) -> x * x, 1, 2, 3, 4)
+io.write(list(iter.sorted(r)))   # [1, 4, 9, 16]
+s = pool.submit(fn(x) -> x * 3, (7))
+io.write(wait s)                 # 21
 ```
 
 ### Modules
@@ -406,12 +478,16 @@ io.write(re.test("\\d+", "abc123"))
 ### Resource management
 
 ```un
+use io
+
 using file = io.open("log.txt", "w")
 file.write("hello")
 
 fn work()
     defer io.write("done")
     io.write("start")
+
+work()    # start done
 ```
 
 ## Standard Library
@@ -419,19 +495,25 @@ fn work()
 | Module | Main API |
 |---|---|
 | `io` | `write`, `read`, `open`, `clear` |
-| `fs` | `read`/`write`/`append`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`delete`, `mkdir`/`rmdir`, `join`/`parent`/`name`/`ext` |
+| `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
-| `math` | `abs`/`sqrt`/`pow`/`log`/`sin`/`cos`/`tan`, `gcd`/`lcm`/`clamp`, `pi`/`e`/`tau` |
-| `iter` | `range`/`counter`/`reverse`/`repeat`, `zip`/`enumerate`, `map`/`filter`/`take`/`skip`/`chain`/`flatten`, `sum`/`max`/`min`/`sorted` |
-| `random` | `int`/`float`/`bool`/`choice`/`shuffle`, `sample`/`choices`/`weighted`, `seed`/`uuid` |
-| `os` | `env`/`environ`/`exec`, `pid`/`hostname`/`args`, `sep`/`pathsep` |
+| `math` | `round`/`abs`/`ceil`/`floor`/`trunc`/`sign`, `sqrt`/`cbrt`/`pow`/`exp`/`log`/`log2`/`log10`, `sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`hypot`, `gcd`/`lcm`/`clamp`, `is_nan`/`is_infinite`/`is_finite`, `pi`/`e`/`tau` |
+| `iter` | `array`/`range`/`counter`/`reverse`/`repeat`, `zip`/`enumerate`, `map`/`filter`/`take`/`skip`/`chain`/`flatten`, `sum`/`max`/`min`/`sorted`, `all`/`any`/`count` |
+| `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
+| `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
+| `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
 | `time` | `sleep`/`now`/`stopwatch` |
-| `http`/`ws` | `http.connect().get`/`post`/`put`/`delete`, `ws.connect().send`/`receive` |
-| `inspect` | `attr`/`hasattr`/`getattr`/`setattr` |
+| `flow` | `spawn` (pool) and `lock` |
+| `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options` and their `_async` variants, `ws.connect().send`/`receive`/`close`/`is_open` |
+| `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
 
-Collection methods include `list.add`/`extend`/`sort`/`reverse`/`hpush`/`hpop`, `dict.get`/`keys`/`values`, `set.add`/`union`/`intersect`, and string methods such as `split`/`join`/`trim`/`center`/`replace`.
+Collection methods include `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, and string methods such as `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with`.
+
+The built-in functions available without a module are `len`/`type`/`hash`/`exit`/`throw`/`throw_if`/`throw_unless`/`chr`/`ord`/`bin`/`oct`/`hex`/`repr`/`ascii`, and the constructors are `int`/`float`/`str`/`bool`/`list`/`set`/`tuple`/`date`. Values such as `math.pi`, `math.e`, `math.tau`, `os.sep`, `os.pathsep`, `os.linesep`, `os.cpuCount`, and `os.is64bit` are exposed as functions, so call them.
 
 Chaining `iter` methods (`(0..10).map(fn(x) -> x * 2).take(3)`) is lazy: nothing runs until the result is consumed. The global `iter.map`/`iter.filter`/`iter.take` evaluate their arguments immediately and return a `list`. `iter.zip` consumes both sources at the same rate, so an infinite `iter.counter` can be paired with a finite range.
+
+`skip` is a reserved keyword, so `iter.skip(...)` and `.skip(...)` are parse errors and cannot be called by name. Use `take` or slicing to drop a leading segment.
 
 ## Architecture
 
@@ -456,7 +538,7 @@ Optimizer      constant folding, algebraic simplification, up to 64 passes
 Evaluator      Context / Scope / Frame based execution, Future for go/wait
   |
   v
-Runtime        Obj / Val / Ref / Enu / Stru / TObj and the type system
+Runtime        Obj / Val / Ref / Enu / Stru / TObj / Property and the type system
   |
   v
 Stdlib         NativeModule / NativeType reflection binding
@@ -520,11 +602,38 @@ Floyd-Warshall (`test/integration/algorithms.un`):
 n = 4
 INF = 99999999
 graph = [[0,5,INF,10],[INF,0,3,INF],[INF,INF,0,1],[INF,INF,INF,0]]
-for k in range(0,n)
-    for i in range(0,n)
-        for j in range(0,n)
+for k in 0..n
+    for i in 0..n
+        for j in 0..n
             if graph[i][j] > graph[i][k] + graph[k][j]
                 graph[i][j] = graph[i][k] + graph[k][j]
+```
+
+Property (`test/unit/runtime/property.un`):
+
+```un
+use io
+class Temperature
+    celsius = 0.0
+    get fahrenheit -> self.celsius * 9 / 5 + 32
+    set fahrenheit
+        self.celsius = (value - 32) * 5 / 9
+
+t = Temperature()
+t.fahrenheit = 212
+io.write(t.celsius)
+io.write(t.fahrenheit)
+```
+
+Ranges and laziness (`test/unit/runtime/range.un`):
+
+```un
+use io
+total = 0
+for n in 1..10
+    total += n
+io.write(total)
+io.write((0..10).map(fn(x) -> x * 2).take(3))
 ```
 
 Heap (`test/integration/algorithms.un`):
@@ -555,7 +664,9 @@ Implemented:
 - Runtime object model and type system
 - Standard library modules
 - Asynchronous execution and worker pools
-- Classes, inheritance, enums, and structs
+- Classes, multiple inheritance, `enum`, and classes with a field list (`class Point(x, y)`)
+- Class property accessors (`get`/`set`, `field`, `value`)
+- The range operator `a..b` and lazy iterator chaining
 - Pattern matching and destructuring
 - Modules and selective imports
 - Slicing, ternary expressions, and null/error propagation

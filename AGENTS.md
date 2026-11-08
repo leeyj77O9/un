@@ -50,7 +50,7 @@ C:\dev\un
 │  │  ├─ IO/IFileSystem.cs   # PhysicalFileSystem / MemoryFileSystem
 │  │  ├─ Native/             # 표준 라이브러리 모듈 (io, fs, re, math, iter, ...)
 │  │  └─ Object/             # 런타임 객체 모델
-│  │     ├─ Base/            # Obj, Val, Ref, Enu, Stru, TObj, Template
+│  │     ├─ Base/            # Obj, Val, Ref, Enu, Stru, TObj, Template, Property, FieldRef
 │  │     ├─ Collections/     # List, Dict, Set, Tup, Json, Spread
 │  │     ├─ Flow/            # Lock, Pool
 │  │     ├─ Function/        # Fn, LFn, NFn, Arg, Future
