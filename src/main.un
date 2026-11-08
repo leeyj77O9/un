@@ -1,23 +1,19 @@
-class A
-	fn __init__(n)
-		self.n = n
-	fn bark()
-		-> `{type(self)}, [base 1], [{self.n}]`
-class B
-	fn __init__(m)
-		self.m = m
-	fn bark()
-		-> `{type(self)}, [base 2], [{self.m}]`
+class vec2
+	x = 0.0
+	y = 0.0
 
-class C : A, B
-	fn __init__(n)
-		super.__init__(n)
-	fn bark()			
-		-> `{type(self)}, [child], [{self.n}], [{none?.m}]`
+	get point -> (self.x, self.y)
+	set x = float(value) 
+	
+	fn __init__(x, y)
+		self.x = x
+		self.y = y
 
 use io
-use inspect as i
 
-w = io.write
 
-io.write(C(3).bark(), A(1).bark(), B(1).bark(), sep='\n')
+
+v = vec2(3, 4)
+v.x = "0.1"
+
+io.write(v.point)
