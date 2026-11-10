@@ -10,6 +10,10 @@ pub enum NodeKind {
     Boolean,
     None,
 
+    /// absent child node (the reference implementation uses `null` children for
+    /// omitted slice bounds, e.g. `a[..2]`); the VM treats it as `None`
+    Null,
+
     Tuple,
     List,
     Dict,

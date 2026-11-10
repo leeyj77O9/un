@@ -32,14 +32,16 @@ impl LangError {
     pub fn display(&self, source: &Source) -> String {
         let line_text = source.get_line_text(self.start);
         let line_start = source.get_line_start(self.start);
-        let mut column = self.start - line_start;
+
+        // the reference uses signed ints, so `column - indent` can go negative
+        let column = self.start as i64 - line_start as i64;
 
         let indent = line_text
             .chars()
             .take_while(|c| c.is_whitespace())
             .count();
         let display: String = line_text.chars().skip(indent).collect();
-        column = column.max(0) - indent;
+        let column = (column - indent as i64).max(0) as usize;
 
         let caret_len = self.length.max(1);
 

@@ -61,7 +61,7 @@ impl Source {
     }
 
     pub fn get_line_start(&self, position: usize) -> usize {
-        let mut position = position;
+        let mut position = position.min(self.code.len());
         while position > 0 && self.code[position - 1] != '\n' {
             position -= 1;
         }
