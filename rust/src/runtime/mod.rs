@@ -3,10 +3,12 @@
 //! `Bool` / `Date` semantics.
 
 pub mod collections;
+pub mod context;
 pub mod date;
 pub mod iters;
 pub mod obj;
 pub mod prims;
+pub mod scope;
 pub mod types;
 pub mod world;
 
