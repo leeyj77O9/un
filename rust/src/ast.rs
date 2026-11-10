@@ -156,6 +156,32 @@ impl Node {
         self
     }
 
+    /// mirrors `Node.WithChildren` (start/length/kind/op/value/annotations are kept).
+    /// named `with_new_children` so the associated function form stays unambiguous
+    pub fn with_new_children(&self, new_children: Vec<Node>) -> Self {
+        Self {
+            start: self.start,
+            length: self.length,
+            kind: self.kind,
+            op: self.op,
+            children: new_children,
+            value: self.value.clone(),
+            annotations: self.annotations.clone(),
+        }
+    }
+
+    /// mirrors `Node.Const(value, start, length)`
+    pub fn konst(value: Const, start: usize, length: usize) -> Self {
+        match value {
+            Const::Int(_) => Node::new(start, length, NodeKind::Integer).with_value(value),
+            Const::Float(_) => Node::new(start, length, NodeKind::Float).with_value(value),
+            Const::Str(_) => Node::new(start, length, NodeKind::String).with_value(value),
+            Const::Bool(_) => Node::new(start, length, NodeKind::Boolean).with_value(value),
+            // `null` becomes a None node and carries no value
+            Const::Null => Node::new(start, length, NodeKind::None),
+        }
+    }
+
     pub fn with_annotations(mut self, annotations: Vec<Node>) -> Self {
         self.annotations = Some(annotations);
         self

@@ -10,7 +10,11 @@ pub struct Source {
 
 impl Source {
     pub fn new(path: impl Into<String>, code: &str) -> Self {
-        let normalized = code.replace("\r\n", "\n");
+        // `Runner.Load` uses `File.ReadAllText`, which strips a leading UTF-8 BOM,
+        // then normalizes `\r\n` and lone `\r` to `\n`
+        let code = code.strip_prefix('\u{feff}').unwrap_or(code);
+        let normalized = code.replace("\r\n", "\n").replace('\r', "\n");
+
         Self {
             path: path.into(),
             code: normalized.chars().collect(),

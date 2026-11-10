@@ -1,6 +1,8 @@
 ﻿pub mod ast;
+pub mod desugar;
 pub mod error;
 pub mod lexer;
+pub mod optimize;
 pub mod parser;
 pub mod source;
 pub mod token;

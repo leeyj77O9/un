@@ -2,7 +2,9 @@
 use std::rc::Rc;
 
 use unvm::ast::{Const, Node};
+use unvm::desugar::desugar;
 use unvm::lexer::lex;
+use unvm::optimize::optimize;
 use unvm::parser::parse;
 use unvm::source::Source;
 
@@ -12,17 +14,26 @@ fn main() {
     match args.first().map(|s| s.as_str()) {
         Some("tokens") => tokens(&args[1..]),
         Some("ast") => ast(&args[1..]),
+        Some("desugar") => desugar_cmd(&args[1..]),
+        Some("opt") => opt_cmd(&args[1..]),
         Some("run") => run(&args[1..]),
         _ => {
-            eprintln!("usage: unvm <tokens|ast|run> <file>");
+            eprintln!("usage: unvm <tokens|ast|desugar|opt|run> <file>");
             exit(2);
         }
     }
 }
 
 fn read_source(path: &str) -> Source {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Source::new(path, &text),
+    // `Runner.Load` appends `.un` when it is missing, so `Source.Name` matches
+    let path = if path.ends_with(".un") {
+        path.to_string()
+    } else {
+        format!("{path}.un")
+    };
+
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Source::new(&path, &text),
         Err(e) => {
             eprintln!("cannot read {}: {}", path, e);
             exit(1);
@@ -53,13 +64,7 @@ fn tokens(args: &[String]) {
     }
 }
 
-fn ast(args: &[String]) {
-    if args.is_empty() {
-        eprintln!("usage: unvm ast <file>");
-        exit(2);
-    }
-
-    let path = &args[0];
+fn parse_file(path: &str) -> (Rc<Source>, Node) {
     let mut source = read_source(path);
 
     let tokens = match lex(&mut source) {
@@ -73,9 +78,50 @@ fn ast(args: &[String]) {
     let source = Rc::new(source);
 
     match parse(tokens, source.clone()) {
-        Ok(node) => print_node(&node, &source, 0),
+        Ok(node) => (source, node),
         Err(err) => {
             eprintln!("{}", err.display(&source));
+            exit(1);
+        }
+    }
+}
+
+fn ast(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("usage: unvm ast <file>");
+        exit(2);
+    }
+
+    let (source, node) = parse_file(&args[0]);
+    print_node(&node, &source, 0);
+}
+
+fn desugar_cmd(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("usage: unvm desugar <file>");
+        exit(2);
+    }
+
+    let (source, node) = parse_file(&args[0]);
+    print_node(&desugar(&node), &source, 0);
+}
+
+fn opt_cmd(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("usage: unvm opt <file>");
+        exit(2);
+    }
+
+    let (source, node) = parse_file(&args[0]);
+    let desugared = desugar(&node);
+
+    match optimize(&desugared) {
+        Ok(result) => {
+            println!("passes: {}", result.pass_count);
+            print_node(&result.root, &source, 0);
+        }
+        Err(panic) => {
+            eprintln!("{}", panic.display());
             exit(1);
         }
     }

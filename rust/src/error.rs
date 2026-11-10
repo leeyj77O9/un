@@ -1,5 +1,39 @@
 ﻿use crate::source::Source;
 
+/// mirrors `Panic` of the reference implementation.
+/// `Panic.ToString()` is `\npanic : {message}` (leading newline included).
+#[derive(Debug, Clone)]
+pub struct Panic {
+    pub name: String,
+    pub message: String,
+}
+
+impl Panic {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            name: "panic".to_string(),
+            message: message.into(),
+        }
+    }
+
+    /// uncaught host exceptions surface as `System.X: message` in the reference
+    /// (`Exception.ToString()`), so the display differs from `Panic`'s own form.
+    pub fn named(name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            message: message.into(),
+        }
+    }
+
+    pub fn display(&self) -> String {
+        if self.name == "panic" {
+            format!("\npanic : {}", self.message)
+        } else {
+            format!("{}: {}", self.name, self.message)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LangError {
     pub start: usize,
