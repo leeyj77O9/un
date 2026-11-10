@@ -29,7 +29,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 3 Desugarer | **완료** | `90226d8` | 83개 파일 desugar 정합, `compound assign` 확장/미확장 케이스 동일(`6`,`4`,`big`,`[1, 2]`,`[2, 3]`), `Operator` 노드 자식 비움 확인 |
 | 4 Optimizer | **완료** | `90226d8` | 83개 파일 pass 카운트 `1x69, 2x8` 동일, 상수 폴딩/오류 문자열 probe 일치, `9223372036854775807 + 1` → `System.OverflowException` exit 1 |
 | 5 Runtime 객체 모델 | **완료** | `a2d2d02` | `cargo test --release` 18/18 green, warning 0. 정수 overflow/wrapping, `pow`, display, UTF-16 index/slice, str add/sub, interning, none/type identity, compare fallback, union canonicalize, attribute lookup |
-| 6~17 | 미착수 | — | — |
+| 7 컬렉션 | **완료** | `b0d96d7` | `cargo test --release` 42/42 green, warning 0. `List`/`Dict`/`Set`/`Tup`/`Spread`/`Json`/`Stru`/`Enu`/`TObj` + JSON 문서 parser. reference probe(`probes7/p3..p8.un`)로 display/메시지 확인 |
+| 6, 8~17 | 미착수 | — | — |
 
 ## Phase 2 정합 데이터
 
@@ -108,6 +109,67 @@ probe(`C:\Users\User\AppData\Local\Temp\opencode\probe5.un`)로 했다.
   `other.ToStr()`를 쓰므로 `str("a") + true`는 `"atrue"`, `str("a") + none`은 `"anone"`.
   `cannot add 'T' to 'Type'` 문구는 ToStr가 Str도 Err도 아닌 경우에만 도달한다.
 
+## Phase 7 정합 데이터 (컬렉션)
+
+`rust/src/runtime/collections.rs` + `collections/tests.rs`(42 tests green, warning 0).
+ground truth는 reference source bytes와 probe `probes7/{p3,p4,p5,p7,p8}.un`에서 취했다.
+
+- collection dispatch 순서: dunder → `valid_super` → payload override → base error.
+  `init`은 dunder chain보다 payload override를 **먼저** 실행한다.
+- `KeyMap`은 insertion-ordered `Vec<(u64 hash, key, value)>`. key 동일성은 `key_eq`
+  (`Eq()`를 bool로 coerce, bool이 아닌 결과는 매칭 아님), bucket은 `hash_code`.
+- `hash_code` arms: `Int`=value, `Str`=FNV(UTF-16), `Float`=bits, `Bool`=0/1,
+  `Date`=ticks, `Enu`=N, `List`/`Tup`=element combine(seed 0,
+  `combine_hash(seed,v)=rotl13(seed)^v` → `hash_code([1])==1`, empty==0), `Json`=inner.
+  `Stru`/`Dict`/`Set`/`Spreads`/`TObj`는 reference에 `GetHashCode()` override가 없다
+  → type-name FNV stand-in.
+- `hash()` builtin: base `Obj.Hash()`는 `cannot hashable object`이고 `Str`만 override한다.
+  `Int`/`Enu`는 `GetHashCode()`만 override하므로 `hash(1)`, `hash(enu)`는 에러다.
+- `List` override: `Init/Eq/GetItem/SetItem/Slice/In/Len/ToBool/ToList/ToTuple/Iter/Copy/
+  Clone/ToStr/Spread/GetHashCode`. `List.Copy`는 `this`, `ToList`는 element `Copy`(deep),
+  `ToTuple`은 이름이 빈 tuple. `Str` 원소는 `'...'`로 감싼다. `List.In` 메시지는
+  `cannot check if '{ot}' is in '{Type}'`; `Overlap`은 모든 needle 원소가 `Eq().As<Bool>()`
+  로 발견되어야 true.
+- `Dict` override: `Init/Len/GetItem/SetItem/In/Copy/Clone/ToStr/ToList/ToTuple/Iter/Spread`.
+  `GetItem` 실패는 `key '{name}' not found in dictionary`(`Str.To(key)`), `Copy`는 `this`,
+  `In`은 dict 상대 `Overlap`·그 외 key membership. `ToList/ToTuple/Iter/Spread`는
+  `Tup([key,value], ["key","value"])`를 만들고 생성자가 이름을 지우므로 display는 `[(a, 1)]` /
+  `((a, 1))`(probe). `Init`은 Tup의 `Name`을 key로 쓰므로 `dict(tuple(key = 1, value = 2))`는
+  `{key:1, value:2}`. 오타 `invaild 'dict' initialize` 유지.
+- `Set` override: `Len/GetItem/Copy/Clone/ToStr/Spread/Add/Sub/BXor`뿐. `In`/`ToBool`/
+  `Iter`/`ToList`/`Hash`는 base 에러. `GetItem` 실패는 `key {Str.To(key)} not found in set`
+  (따옴표 없음), 연산자 메시지의 `'set'`은 hard-coded, display는 `{a, b}`, `repr`는 `set`,
+  `Init`은 dedup(`set(1, 1, 3)` → `{1, 3}`).
+- `Spreads`: `Spread() => this`, `ToStr`/`Len`/`ToBool` override 없음 → display는 base
+  `Repr()` = `spread`, `len` 메시지에 타입 이름이 붙지 않는다
+  (`unsupported operand type(s) for len()`).
+- `Tup`: 생성자는 `Name[i]`를 `string.Empty`로 지운다 → 이름은 construction 후에 부여된다
+  (`tuple(key = 1, value = 2)`는 arguments tuple에서 이름을 유지하고 `t.key`는 1).
+  `GetItem`는 int(`(int)` cast, 음수는 `index + Count`)/str(`tuple has no attribute '{s}'`).
+  `Slice`의 음수 step은 `for i=s; i>e; i+=st`이고 end는 ≥0으로 clamp → tuple 역화는 불가.
+  `s`가 `len`으로 clamp되면 호스 내부에서 `System.IndexOutOfRangeException`(`t[2:0:-1]`).
+  `Copy`는 element `Copy`, `Clone`은 element `Clone`; `Int.Clone()`는 base `new Obj(Type)`
+  → clone된 int cell의 display는 타입 이름(`[1].clone()` → `[int]`).
+- `TObj` 라우팅: `x in y`는 `right.In(left)`, `x is y`는 어느 한쪽이 `TObj`이면
+  `right.Is(left)` 그 외 `left.Is(right)`(`Evaluator.cs`). `TObj.In`은 원소가 target과
+  identity거나 target을 포함하는 union일 때만 true → `int in int|str` true,
+  `int|str in int` false, `1 in int|str` true, `1 is int|str` false, `1 is int` true.
+  `int|str|float` display는 `<type: float | int | str>`(member name 정렬).
+- `Json`은 `UnType.Create("json")`로만 등록된다 → Un 코드에서 `json(...)`는
+  `error: undefined variable 'json'`. display는 `Stringfy`로만 검증(indent `3*depth+1`,
+  list compact, None→`null`, `TrimEnd(',', '\n')`), parse된 문서는 `Json` 래퍼라서
+  display가 inner의 `ToStr`가 아니라 `Stringfy`다(`json("null")` → `null`,
+  `json("\"a\\tb\\u0041\"")` → `"a\tbA"`).
+- 호스 예외(D-024) 재현 문자열: dict duplicate key
+  `System.ArgumentException: An item with the same key has already been added. Key: {clr}`
+  (bool key는 `True`), .NET dict miss
+  `System.Collections.Generic.KeyNotFoundException: The given key '{name}' was not present
+  in the dictionary.`, slice index
+  `System.IndexOutOfRangeException: Index was outside the bounds of the array.`
+  `System.Text.Json.JsonException`은 message의 byte-offset text를 재현하지 않는다.
+- str-key collection 순서는 D-025에 따라 parity target이 아니다. int-key dict는
+  `Val<long>.GetHashCode() == value`라 reference도 insertion 순서 → parity target.
+
 ## 확정한 표현 규칙 (fix하지 말 것)
 
 - `Str` payload는 UTF-16 pair를 보존하므로 `"한글😀"[2:4]`는 round-trip한다.
@@ -127,11 +189,12 @@ probe(`C:\Users\User\AppData\Local\Temp\opencode\probe5.un`)로 했다.
 
 ## 현재 작업
 
-- Phase 6/7 객체 확장: `List`/`Dict`/`Set`/`Tup`/`Json`/`Spread`,
-  `Fn`/`LFn`/`NFn`/`Arg`/`Future`, `Property`/`FieldRef`/`Stru`/`TObj`/`Enu`,
-  `Iter`/`Range`/`Counter`/`Repeat`/`Reverse`.
-  `rust/src/runtime/obj.rs`의 `invoke`, `is_bound_fn`, `is_property`, `range_to`,
-  Str의 `Iter/ToList/ToTuple`은 TODO stub이다.
+- Phase 7 컬렉션 완료(`b0d96d7`). 남은 stub는 함수 계열과 iterator 계열이다:
+  `rust/src/runtime/obj.rs`의 `invoke`, `is_bound_fn`, `is_property`, `property_get`,
+  `property_set`, `range_to`는 `Payload` variant(`Fn`/`LFn`/`NFn`/`Arg`/`Property`/
+  `FieldRef`/`Iter`/`Range`/`Counter`/`Repeat`/`Reverse`)가 없어서 stub이고,
+  `List.Iter`/`Tup.Iter`/`Dict.Iter`는 iterator phase에서 wiring한다.
+- Phase 6 `Scope`/`Context`와 Phase 8 VM core는 미착수(`rust/src/vm/` 없음).
 ## 네이티브 인벤토리 (완료)
 
 `rust\scripts\rust_inventory.ps1`(읽기 전용 parse)이 `docs/rust-migration/NATIVE_INVENTORY.md`를
@@ -144,13 +207,17 @@ probe(`C:\Users\User\AppData\Local\Temp\opencode\probe5.un`)로 했다.
 
 ## 다음 단계
 
-1. Phase 6 컬렉션 + Phase 7 함수/타입 객체.
-2. Phase 8 VM core: 표현식/문장 실행, `unvm run`이 `io.write` 출력, `test/unit/runtime/`
+1. Phase 7 함수 계열(`Fn`/`LFn`/`NFn`/`Arg`/`Future`, `Property`/`FieldRef`)과 iterator
+   계열(`Iter`/`Range`/`Counter`/`Repeat`/`Reverse`) — lazy generator 모델(`IterState`)로
+   `range_to`/`Iter` wiring(`List.Iter`, `Tup.Iter`, `Dict.Iter`, Str `Iter`).
+2. Phase 6 `Scope`/`Context`(slot table, function-scope assign 라우팅, `PopFrame`
+   non-empty, `maximum recursion depth exceeded`).
+3. Phase 8 VM core: 표현식/문장 실행, `unvm run`이 `io.write` 출력, `test/unit/runtime/`
    스모크.
-3. differential harness(`scripts/rust_test.ps1` / `scripts/diff_test.ps1`) 도입 — C#
+4. differential harness(`scripts/rust_test.ps1` / `scripts/diff_test.ps1`) 도입 — C#
    기준선과 stdout/exit/stderr 비교. AST shape 정합은 harness로 증명한다(reference에는
    AST dump가 없고 C# 코드를 수정할 수 없다).
-4. Phase 14 네이티브 바인딩 계층(`NATIVE_INVENTORY.md` 기반).
+5. Phase 14 네이티브 바인딩 계층(`NATIVE_INVENTORY.md` 기반).
 
 ## 보고해야 하는 semantic 차이 (도입 전)
 
@@ -162,3 +229,6 @@ probe(`C:\Users\User\AppData\Local\Temp\opencode\probe5.un`)로 했다.
 4. KnownFailures(6 assertions)는 reference 실제 동작을 기준선으로 삼는다.
 5. surrogate pair를 분리하는 slice의 출력(U+FFFD vs `?`).
 6. str-key collection 순서(FNV-1a vs .NET randomized hash).
+7. `System.Text.Json.JsonException`의 message text(byte offset 정보)는 재현하지 않는다.
+   `System.IndexOutOfRangeException`/`System.ArgumentException`의 .NET stack trace는
+   재현하지 않는다(내부 예외 문자열만 재현, D-024).

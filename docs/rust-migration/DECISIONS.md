@@ -168,3 +168,47 @@ reference는 `throw`한다. Rust에 unwinding이 없으므로 `System.DivideByZe
 호스트 예외는 `Payload::Panic { name, message }`를 반환하고, VM은 문장 경계에서
 Panic을 만나면 stdout에 `\npanic : {msg}`(`name == "panic"`) 또는 `System.X: msg`를
 출력하고 exit 1한다. `Panic::named(name, msg)`가 display를 결정한다.
+
+## D-024 | `.NET` stack trace와 `TargetInvocationException` 래퍼는 재현하지 않는다 | Accepted
+
+reference는 네이티브 호출의 `TargetInvocationException`을 벗겨 inner 예외만 출력하고,
+inner 예외 뒤에는 `.NET` stack trace(`at Un.Object... in C:\dev\un\src\...cs:line N`)가
+따른다. stack trace는 빌드 산출물 경로에 의존하는 문자열이라 재현 대상이 아니다.
+Rust는 inner 예외를 `Payload::Panic { name, message }`로 저장하고 `{name}: {message}`만
+출력한다. 재현한 inner 문자열: dict duplicate key
+`System.ArgumentException: An item with the same key has already been added. Key: {clr}`
+(bool key는 CLR의 `True`), .NET dict miss
+`System.Collections.Generic.KeyNotFoundException: The given key '{name}' was not present
+in the dictionary.`, slice index
+`System.IndexOutOfRangeException: Index was outside the bounds of the array.`,
+`System.DivideByZeroException: Attempted to divide by zero.`,
+`System.OverflowException: Arithmetic operation resulted in an overflow.`.
+`System.Text.Json.JsonException`은 name만 재현하고 message의 byte offset text는 재현하지
+않는다(기록된 divergence).
+
+## D-025 | str-key collection의 iteration order는 parity target이 아니다 | Accepted
+
+reference `Dict`/`Set`은 `Dictionary<Obj,Obj>`/`HashSet<Obj>`이고 `Stru`/`Dict`/`Set`/
+`Spreads`/`TObj`는 `GetHashCode()`를 override하지 않아 `Type.GetHashCode()`(process
+randomised)로 bucket된다. .NET `string.GetHashCode()`도 randomised라 str-key 순서는
+구현 간 재현 불가능하다. Rust는 insertion-ordered `Vec` + FNV-1a(UTF-16 units)로
+deterministic 순서를 쓴다. int-key dictionary는 `Val<long>.GetHashCode() == value`라서
+reference도 insertion 순서 → **int-key 순서는 parity target**이다.
+
+## D-026 | base `Clone()`의 primitive clone quirks를 유지한다 | Accepted
+
+`Int`/`Float`/`Bool`/`Date`/`Str`는 `Clone()`을 override하지 않는다. base
+`Obj.Clone()`은 `new Obj(Type)`를 만들고 payload를 옮기지 않으므로, primitive의 clone은
+**값이 없는 빈 cell**이고 display는 타입 이름이다(`[1].clone()` → `[int]`).
+`List.Clone()`/`Tup.Clone()`는 element의 `Clone()`를 부르므로 이 빈 cell들이 전파된다.
+`List.Copy()`/`Set.Copy()`/`Dict.Copy()`/`Json.Copy()`는 `this`이고, `Tup.Copy()`는
+element의 `Copy()`를 부르므로 list element는 같은 cell로 남는다. reference의 이 동작을
+"fix"하지 말고 그대로 재현한다.
+
+## D-027 | `Tup` 생성자의 name erase와 `Slice` 음수 step clamping을 그대로 재현한다 | Accepted
+
+`Tup(Obj[] values, string[] names)`는 `Name[i] = string.Empty`로 이름을 지운다. tuple의
+이름은 생성 후 assignment(arguments tuple의 `Name`)로만 붙는다. `Tup.Slice`의 음수 step은
+`for i=s; i>e; i+=st`이고 `e`는 ≥0으로 clamp되므로 **tuple은 역화되지 않는다**. `s`가
+`len`으로 clamp되면 reference는 배열 밖을 index해 `System.IndexOutOfRangeException`가
+발생한다(`t[2:0:-1]`). 같은 clamping을 `List.Slice`에도 적용한다.
