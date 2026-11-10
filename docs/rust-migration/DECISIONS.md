@@ -117,3 +117,54 @@ reference에 맞춤**(`start`, `length`, `typ`)해서 error/AST 매핑이 추적
 `unvm tokens`/`unvm ast`/`unvm desugar`/`unvm opt`/`unvm dis`는 Rust 전용 진단 명령이고
 `un run <file>`의 stdout/exit/stderr가 정합 대상이다. reference에 `ast` dump가 없으므로
 Phase 2 정합은 parse 성공/오류 문자열 일치 + 17개 probe로 확인했다(ANALYSIS.md §11).
+
+## D-018 | `Obj`는 `Rc<RefCell<ObjData>>`, payload는 enum | Accepted
+
+`Obj = Rc<RefCell<ObjData>>`이고 `Payload`는 `Plain`/`Error`/`Panic`/`Int`/`Float`/`Bool`/
+`Str`/`Date`를 담는다(Phase 6/7에서 `Fn`/`List`/`Dict`/… variant 추가). `type_name`은
+`World.type_cache`가 interning한다. `Members`는 insertion-ordered `Vec<(String, Obj)>`다
+(C# `Attributes`는 `Dictionary`지만 순서 의존 동작이 존재하므로 순서를 보존한다).
+
+## D-019 | `Super`/`Parents`는 strong `Rc`로 둔다 (D-011의 `Weak` 제안 기각) | Accepted
+
+D-011은 `Super`/`Parents`를 `Weak`로 제안했다. Phase 5 실측: 타입 객체는 `Global`
+registry가 프로세스 lifetime 동안 소유하고, `Fn → self → members → Fn` cycle은 reference의
+C# GC가 수집하는 것과 같은 주기를 Rust가 leaks 한다. 테스트 코퍼스는 수명이 유한하고
+exit 즉시 종료하므로 leak은 관측되지 않는다. `Weak`는 `Super` 접근마다 `upgrade` 실패
+ 케이스를 만들어 reference의 `Super`가 항상 유효하다는 전제를 깨뜨린다.
+ → strong `Rc` 유지. cycle collector는 필요할 때만 추가한다.
+
+## D-020 | `Str` payload는 UTF-8, 문자열 연산은 UTF-16 code unit | Accepted
+
+reference는 `string`을 `char`(UTF-16 code unit)로 index/slice하고 `Length`는 UTF-16 개수다.
+Rust는 `Rc<str>`(UTF-8)에 저장하고 `encode_utf16()`로 연산한다. 결과적으로
+`len("한글😀") == 4`, `s[0] == "한"`, `s[2:4]`는 surrogate pair를 보존한다.
+pair를 분리하는 slice는 lone surrogate가 되고 Rust는 U+FFFD, .NET는 `string`에 lone
+surrogate를 저장하고 콘솔에 `?`로 출력한다. **문서화된 divergence**(surrogate pair를
+째는 스크립트는 코퍼스에 없음). UTF-16 `Vec<u16>` payload는 이 divergence를 없애지만
+모든 네이티브 문자열 연산이 UTF-16 경유가 필요하고, Rust의 `str` 기반 natives
+(`re`, `json`, `fs` path)와 붙을 때마다 변환해야 한다. Phase 14에서 재검토한다.
+
+## D-021 | hash는 `Str`만 있고 FNV-1a를 쓴다 | Accepted
+
+reference는 `Str.Hash()`만 override한다(`Int`/`Float`/`Bool`/`Date`는 없음).
+`Obj.GetHashCode = Hash().As<Int>() ? hash : Type.GetHashCode()`이므로 `hash(5)`는
+`error: cannot hashable object`다. str-key `Dict`/`Set`의 hash는 .NET이 프로세스마다
+randomize하므로 구현 간 순서가 이미 재현 불가능하다. FNV-1a(UTF-16 units)를 deterministic
+stand-in으로 쓴다. **str-key collection의 iteration order는 정합 대상이 아니다.**
+
+## D-022 | `Date` payload는 .NET tick count, 달력은 Hinnant | Accepted
+
+`Date`는 100ns 단위 tick(`TICKS_PER_DAY = 864_000_000_000`, epoch 0001-01-01)을 저장한다.
+`date + date`는 `other.Day`(day-of-month)만큼 더하는 reference quirk를 유지한다.
+`date + str`은 `"yyyy-MM-dd"`, `date - date`는 tick diff, display는
+`"yyyy-MM-dd HH:mm:ss.fff"`. unix epoch 변환은 62135596800 s 오프셋. 달력 계산은
+Howard Hinnant의 `civil_from_days`/`days_from_civil`(proleptic Gregorian, .NET와 동일)을
+쓰며 `yoe` 항은 `doe/146096`이다(`doe/146097`은 2000-02-29가 2000-03-01으로 어긋난다).
+
+## D-023 | 호스트 예외는 `Payload::Panic` 값으로 흐른다 | Accepted
+
+reference는 `throw`한다. Rust에 unwinding이 없으므로 `System.DivideByZeroException` 같은
+호스트 예외는 `Payload::Panic { name, message }`를 반환하고, VM은 문장 경계에서
+Panic을 만나면 stdout에 `\npanic : {msg}`(`name == "panic"`) 또는 `System.X: msg`를
+출력하고 exit 1한다. `Panic::named(name, msg)`가 display를 결정한다.
