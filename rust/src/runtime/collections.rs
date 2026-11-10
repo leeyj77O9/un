@@ -10,6 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::runtime::iters;
 use crate::runtime::obj;
 use crate::runtime::obj::{BinOp, Obj, Payload, UnOp};
 use crate::runtime::prims;
@@ -403,6 +404,9 @@ pub fn list_unop(v: &Rc<RefCell<Vec<Obj>>>, op: UnOp, t: &Rc<str>) -> Obj {
         UnOp::ToList => list(v.borrow().iter().map(|e| obj::copy_obj(e)).collect()),
         UnOp::ToTuple => tup(v.borrow().clone(), vec![String::new(); items]),
         UnOp::Spread => spread(v.borrow().clone()),
+        // `List.Iter() => new(this)`: the enumerator walks the same cell, so items
+        // appended during iteration are seen.
+        UnOp::Iter => iters::seq_live(v),
         _ => obj::err(obj::UnOp::message(&op, t)),
     }
 }
@@ -507,6 +511,8 @@ pub fn dict_unop(km: &Rc<RefCell<KeyMap>>, op: UnOp, t: &Rc<str>) -> Obj {
         UnOp::ToList => list(snapshot.iter().map(|(k, v)| pair(k, v)).collect()),
         UnOp::ToTuple => tup(snapshot.iter().map(|(k, v)| pair(k, v)).collect(), Vec::new()),
         UnOp::Spread => spread(snapshot.iter().map(|(k, v)| pair(k, v)).collect()),
+        // `Dict.Iter() => new([.. key/value pairs])`, materialized at construction
+        UnOp::Iter => iters::seq(snapshot.iter().map(|(k, v)| pair(k, v)).collect()),
         _ => obj::err(UnOp::message(&op, t)),
     }
 }
@@ -778,6 +784,8 @@ pub fn tup_unop(vals: &Rc<Vec<Obj>>, names: &Rc<Vec<String>>, op: UnOp, t: &Rc<s
         UnOp::ToList => list(vals.to_vec()),
         UnOp::ToTuple => tup(vals.to_vec(), names.to_vec()),
         UnOp::Spread => spread(vals.to_vec()),
+        // `Tup.Iter() => new(this)`: walks the tuple's values
+        UnOp::Iter => iters::seq(vals.to_vec()),
         _ => obj::err(UnOp::message(&op, t)),
     }
 }

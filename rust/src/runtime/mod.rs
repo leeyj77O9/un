@@ -4,6 +4,7 @@
 
 pub mod collections;
 pub mod date;
+pub mod iters;
 pub mod obj;
 pub mod prims;
 pub mod types;

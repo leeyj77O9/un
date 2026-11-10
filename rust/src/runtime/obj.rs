@@ -4,6 +4,7 @@ use std::rc::Rc;
 use crate::runtime::collections;
 use crate::runtime::collections::KeyMap;
 use crate::runtime::date;
+use crate::runtime::iters::{self, IterCell};
 use crate::runtime::prims;
 use crate::runtime::types::Types;
 use crate::runtime::world;
@@ -38,6 +39,10 @@ pub enum Payload {
     Stru(Rc<Vec<String>>),
     Enu(i64),
     TObj(Types),
+    /// `Iters` and its subclasses share one cell: the sequence definition is
+    /// immutable and the enumeration position lives inside it, so `Iter()` returns
+    /// the same cell and `Clone()` rebuilds fresh cursors over the same definition.
+    Iter(IterCell),
 }
 
 /// `Payload` is printed as a summary: an `Obj` payload cannot be printed by
@@ -66,6 +71,7 @@ impl std::fmt::Debug for Payload {
             Payload::Stru(n) => write!(f, "Stru({} names)", n.len()),
             Payload::Enu(n) => write!(f, "Enu({n})"),
             Payload::TObj(t) => write!(f, "TObj({})", t.display()),
+            Payload::Iter(st) => write!(f, "Iter({})", st.borrow().kind.name()),
         }
     }
 }
@@ -93,6 +99,7 @@ impl PartialEq for Payload {
             (Stru(a), Stru(b)) => Rc::ptr_eq(a, b),
             (Enu(a), Enu(b)) => a == b,
             (TObj(a), TObj(b)) => a == b,
+            (Iter(a), Iter(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -279,6 +286,9 @@ pub fn hash_code(o: &Obj) -> u64 {
         }
         // `Json` delegates to its wrapped value
         Payload::Json(inner) => hash_code(&inner),
+        // `Ref<T>.GetHashCode() => Value.GetHashCode()`, so an `Iters` hash is the
+        // host enumerator's identity hash. that is process-randomised in .NET, so the
+        // type-name fallback is used instead (D-025: str-key order is not a parity target).
         _ => prims::str_hash(&type_name(o)) as u64,
     }
 }
@@ -413,6 +423,7 @@ pub fn init(o: &Obj, args: &[Obj]) -> Obj {
         Payload::Json(..) => return collections::json_init(o, args),
         Payload::Enu(n) => return collections::enu_init(o, n, args),
         Payload::Stru(_) => return collections::stru_init(o, args),
+        Payload::Iter(st) => return iters::iter_init(o, &st, args),
         _ => {}
     }
     if try_method(o, "__init__", args).is_some() {
@@ -568,6 +579,7 @@ pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
         Payload::Dict(..) => collections::dict_in(o, other),
         Payload::Tup(vals, _) => collections::tup_in(&vals, other),
         Payload::TObj(t) => collections::tobj_in(&t, other),
+        Payload::Iter(st) => iters::iter_in(o, &st, other),
         _ => err(format!(
             "unsupported operand type(s) for in: '{}'",
             type_name(o)
@@ -626,6 +638,7 @@ pub fn clone_obj(o: &Obj) -> Obj {
         // payload cell with the same content.
         Payload::Spread(v) => return collections::spread(v.to_vec()),
         Payload::TObj(t) => return collections::tobj(t),
+        Payload::Iter(st) => return iters::iter_clone(o, &st),
         _ => {}
     }
 
@@ -669,10 +682,11 @@ pub fn copy_obj(o: &Obj) -> Obj {
         Payload::Date(t) => date_obj(t),
         Payload::Tup(vals, names) => collections::tup_copy(&vals, &names),
         Payload::Stru(_) => collections::stru_copy(o),
-        // `List.Copy` / `Dict.Copy` / `Set.Copy` / `Json.Copy` / `Enu.Copy` are all `this`
+        // `List.Copy` / `Dict.Copy` / `Set.Copy` / `Json.Copy` / `Enu.Copy` / `Iters.Copy` are all `this`
         Payload::List(..)
         | Payload::Dict(..)
         | Payload::Set(..)
+        | Payload::Iter(..)
         | Payload::Json(..)
         | Payload::Enu(..)
         | Payload::Spread(..) => o.clone(),
@@ -796,6 +810,7 @@ pub fn to_str(o: &Obj) -> Obj {
         Payload::Stru(_) => collections::stru_to_str(o),
         Payload::Enu(n) => collections::enu_to_str(o, n),
         Payload::TObj(t) => collections::tobj_to_str(&t),
+        Payload::Iter(st) => iters::iter_to_str(o, &st),
         _ => err(format!("unsupported operand type(s) for str(): '{}'", type_name(o))),
     }
 }
@@ -942,8 +957,12 @@ pub fn range_to(o: &Obj, other: &Obj) -> Obj {
     }
 
     if range_bound(o).is_some() && range_bound(other).is_some() {
-        // TODO(phase7): new Iter.Range(start, stop)
-        return err(format!("unsupported operand type(s) for ..: '{}'", type_name(o)));
+        // `new Iter.Range(start, stop)`, an inclusive-lower / exclusive-upper range with step 1
+        return iters::range_new(
+            range_bound(o).unwrap(),
+            range_bound(other).unwrap(),
+            1,
+        );
     }
 
     err(format!(
@@ -1146,6 +1165,7 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         Payload::Stru(..) => collections::stru_binop(o, op, other, &t, &ot),
         Payload::Enu(n) => collections::enu_binop(o, n, op, other, &t, &ot),
         Payload::TObj(ty) => collections::tobj_binop(&ty, op, other, &t, &ot),
+        Payload::Iter(st) => iters::iter_binop(o, &st, op, other, &t, &ot),
         // `Json` delegates every operation to its wrapped value; the dict / spread
         // payloads have no operator override, so they fall through to the base chain.
         Payload::Json(inner) => binop(&inner, op, other),
@@ -1192,8 +1212,10 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
                 Err(_) => boolean(!a.is_empty()),
             },
             UnOp::Hash => int(prims::str_hash(&a) as i64),
-            // TODO(phase6/7): Iter(), ToList(), ToTuple()
-            UnOp::Iter | UnOp::ToList | UnOp::ToTuple => err(op.message(&t)),
+            // one `Str` per UTF-16 code unit, like `Value.Select(c => From($"{c}"))`
+            UnOp::Iter => iters::str_iter(&a),
+            UnOp::ToList => iters::str_list(&a),
+            UnOp::ToTuple => iters::str_tuple(&a),
             _ => err(op.message(&t)),
         },
         Payload::Bool(a) => match op {
@@ -1208,6 +1230,7 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         Payload::Json(inner) => collections::json_unop(&inner, op, &t),
         Payload::Stru(_) => collections::stru_unop(o, op, &t),
         Payload::Enu(n) => collections::enu_unop(n, op, &t),
+        Payload::Iter(st) => iters::iter_unop(o, &st, op, &t),
         // `TObj` has no unop override, so only the base message applies
         Payload::TObj(..) => err(op.message(&t)),
         Payload::Date(_) | Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => {
