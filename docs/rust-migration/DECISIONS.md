@@ -144,6 +144,9 @@ surrogate를 저장하고 콘솔에 `?`로 출력한다. **문서화된 divergen
 째는 스크립트는 코퍼스에 없음). UTF-16 `Vec<u16>` payload는 이 divergence를 없애지만
 모든 네이티브 문자열 연산이 UTF-16 경유가 필요하고, Rust의 `str` 기반 natives
 (`re`, `json`, `fs` path)와 붙을 때마다 변환해야 한다. Phase 14에서 재검토한다.
+Rust의 `String`은 lone surrogate를 저장할 수 없어서 `str_units`의 surrogate fallback
+branch는 `Str` payload에서 도달 불가능하고, `"\u{D83D}"`는 Rust literal로 표기할 수 없다
+→ divergence는 pair를 째는 slice에서만 발생한다.
 
 ## D-021 | hash는 `Str`만 있고 FNV-1a를 쓴다 | Accepted
 
@@ -184,7 +187,8 @@ in the dictionary.`, slice index
 `System.DivideByZeroException: Attempted to divide by zero.`,
 `System.OverflowException: Arithmetic operation resulted in an overflow.`.
 `System.Text.Json.JsonException`은 name만 재현하고 message의 byte offset text는 재현하지
-않는다(기록된 divergence).
+않는다(기록된 divergence). `counter.count()`/`repeat.count()`처럼 무한 sequence의
+`Enumerable.Count()`도 같은 `System.OverflowException` inner 문자열을 낸다.
 
 ## D-025 | str-key collection의 iteration order는 parity target이 아니다 | Accepted
 
@@ -207,8 +211,36 @@ element의 `Copy()`를 부르므로 list element는 같은 cell로 남는다. re
 
 ## D-027 | `Tup` 생성자의 name erase와 `Slice` 음수 step clamping을 그대로 재현한다 | Accepted
 
-`Tup(Obj[] values, string[] names)`는 `Name[i] = string.Empty`로 이름을 지운다. tuple의
-이름은 생성 후 assignment(arguments tuple의 `Name`)로만 붙는다. `Tup.Slice`의 음수 step은
-`for i=s; i>e; i+=st`이고 `e`는 ≥0으로 clamp되므로 **tuple은 역화되지 않는다**. `s`가
-`len`으로 clamp되면 reference는 배열 밖을 index해 `System.IndexOutOfRangeException`가
-발생한다(`t[2:0:-1]`). 같은 clamping을 `List.Slice`에도 적용한다.
+`Tup(Obj[] values)`는 `Name[i] = string.Empty`로 이름을 **지운다**. `Tup(Obj[] values,
+string[] names)`는 `Name = names`를 유지하고 `Members[name] = value`를 등록한다. 따라서
+`Dict.Iter/ToList/ToTuple/Spread`가 만드는 `Tup([key, value], ["key", "value"])`는
+`p.key`/`p.value`가 resolve되고(`Dict` materialize는 display가 `[(a, 1)]`/`((a, 1))`),
+`Tup(Obj[])`는 이름이 없다. `Tup.Slice`의 음수 step은 `for i=s; i>e; i+=st`이고 `e`는
+≥0으로 clamp되므로 **tuple은 역화되지 않는다**. `s`가 `len`으로 clamp되면 reference는
+배열 밖을 index해 `System.IndexOutOfRangeException`가 발생한다(`t[2:0:-1]`). 같은
+clamping을 `List.Slice`에도 적용한다.
+
+## D-028 | iterator는 immutable 정의 트리 + mutable cursor cell로 모델링한다 | Accepted
+
+reference는 `Iters : Ref<IEnumerable<Obj>>`이고 `Value`가 re-enumerable이라
+`foreach`/`Count()`/`ToList()`/`ToStr()`가 매번 새 enumerator를 만든다. C#의 lazy LINQ
+generator를 Rust로 옮기면 borrow 규칙과 충돌하고 재현성이 보장되지 않는다.
+Rust는 정의 트리 `StageDef`(`Source`/`Reverse`/`Range`/`Counter`/`Repeat`/`Take`/`Skip`)를
+`Rc`로 불변 저장하고, enumeration 위치는 `Stage` cell의 `Cursor`(`Pos`/`Val`/`Rem`/`Round`)에
+저장한다. payload는 `Payload::Iter(IterCell)`이고 `Iter()`/`Copy()`는 같은 cell,
+`Clone()`은 fresh cursors로 재구성한다.
+- `Kind`(`Iters`/`Range`/`Counter`/`Repeat`/`Reverse`)가 C# subclass별로 갈리는
+  `ToStr`/`Len`/`Init`/`Clone`/`In`/`Eq` 규칙을 dispatch한다.
+- `Counter.Clone()`는 `new(current)`이고 `current`는 enumerator가 진행하지 않는 생성자
+  필드 → clone은 원래 시작값에서 시작한다(cursor 아님). `Range.Clone()`도
+  `new(start, stop, step)`.
+- `Source::Live(Rc<RefCell<Vec<Obj>>>)`는 `List.Iter()`의 live cell(append가 다음 round에
+  보임), `Source::Fixed`는 snapshot(`Reverse`의 materialized reverse).
+- `Take`/`Skip`는 receiver의 정의를 래핑하므로 receiver의 위치가 보존되고 wrapper는
+  re-enumerable이다. `Map`/`Filter` stage는 `Fn` payload가 필요해서 의도적으로 미착수다.
+- unbounded chain(`Counter`, `Skip` over unbounded, `Repeat` count<0)을 끝까지
+  enumeration하면 Rust는 `panic : iteration is infinite`로 멈추고 reference는 멈추지
+  않는다 → 문서화된 divergence(#8). `Counter.Len()`/`Repeat.Len()`은 formula라 정합.
+- `Range` step 0은 `MoveNext`에서 lazy `panic : step cannot be zero`(display/clone은
+  동작), `Len()`은 `System.DivideByZeroException` inner 문자열. `iter.range` native는
+  construction 시 `Err("step argument must not be zero")`를 낸다(다른 메시지).

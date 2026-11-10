@@ -30,6 +30,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 4 Optimizer | **완료** | `90226d8` | 83개 파일 pass 카운트 `1x69, 2x8` 동일, 상수 폴딩/오류 문자열 probe 일치, `9223372036854775807 + 1` → `System.OverflowException` exit 1 |
 | 5 Runtime 객체 모델 | **완료** | `a2d2d02` | `cargo test --release` 18/18 green, warning 0. 정수 overflow/wrapping, `pow`, display, UTF-16 index/slice, str add/sub, interning, none/type identity, compare fallback, union canonicalize, attribute lookup |
 | 7 컬렉션 | **완료** | `b0d96d7` | `cargo test --release` 42/42 green, warning 0. `List`/`Dict`/`Set`/`Tup`/`Spread`/`Json`/`Stru`/`Enu`/`TObj` + JSON 문서 parser. reference probe(`probes7/p3..p8.un`)로 display/메시지 확인 |
+| 7a Iterator | **완료** | `47a600e` | `cargo test --release` 63/63 green, warning 0. `Range`/`Counter`/`Repeat`/`Reverse`/`Iters` + `List`/`Tup`/`Dict`/`Str`의 `Iter` source. ground truth는 probe `probes7/p9.un`(exit 0)과 `src/Core/Object/Iters/*.cs` |
 | 6, 8~17 | 미착수 | — | — |
 
 ## Phase 2 정합 데이터
@@ -170,6 +171,55 @@ ground truth는 reference source bytes와 probe `probes7/{p3,p4,p5,p7,p8}.un`에
 - str-key collection 순서는 D-025에 따라 parity target이 아니다. int-key dict는
   `Val<long>.GetHashCode() == value`라 reference도 insertion 순서 → parity target.
 
+## Phase 7a 정합 데이터 (iterators)
+
+`rust/src/runtime/iters.rs` + `iters/tests.rs`(21 tests, 총 63 green, warning 0).
+ground truth는 `src/Core/Object/Iters/{Iter,Range,Counter,Repeat,Reverse}.cs`의 source
+bytes와 probe `probes7/p9.un`(exit 0, `io.write` display)에서 취했다. D-028 참조.
+
+- reference는 `Iters : Ref<IEnumerable<Obj>>`이고 `Value`가 re-enumerable이라
+  `foreach`/`Count()`/`ToList()`는 매번 새 enumerator다. Rust는 immutable 정의 트리
+  (`StageDef`) + mutable cursor cell(`Stage`)로 같은 재현성을 준다.
+- `Iter()`는 같은 cell, `Copy()`는 `this`, `Clone()`은 fresh cursors.
+  `Range.Clone()`은 `new(start, stop, step)` → 시작부터 다시.
+  `Counter.Clone()`은 `new(current)`인데 `current`는 enumerator가 진행하지 않는 생성자
+  필드 → clone은 **원래 시작값**에서 시작한다(cursor가 아님).
+- display: `Range`는 `start..stop`(step 1) / `start..stop..step`; `Counter`/`Repeat`는
+  `ToStr()`가 에러라 `Repr()`(`counter`/`repeat`); `Reverse`와 `seq`는 base `Iters.ToStr()`
+  의 `", "` join(`"3, 2, 1"`). `List.ToStr()`는 `Str` 원소를 `'...'`로 감싼다.
+- `Len()`: `Range`는 공집합 0 아니면 `(stop - start + step - (step>0?1:-1)) / step`;
+  `Counter`는 `long.MaxValue`; `Repeat`는 `source.LongCount() * count`(count<0면 음수);
+  base `Iters`는 실제 enumeration 수.
+- `Range`의 step 0은 생성자에서 throw하지 않고 첫 `MoveNext`에서
+  `panic : step cannot be zero`(lazy). `Len()`은 host 안에서
+  `System.DivideByZeroException: Attempted to divide by zero.`.
+  `iter.range(a, b, 0)`은 native module가 construction 시 `Err("step argument must not
+  be zero")`를 반환한다(다른 메시지). `iter.range`은 `start > end && step > 0`이면
+  start/end를 swap한다(`iter.range(10, 0, 1)` → `0..10`, len 10).
+- `Counter`/`Repeat`(count<0)는 `ToStr`/`ToList`/`ToTuple`/`Spread`가
+  `counter is infinite` / `repeat is infinite`. `Reverse`는 materialized snapshot이라
+  원본 list에 append해도 다음 walk가 바뀌지 않는다(lazy LINQ reverse와 divergence).
+- source cell: `List.Iter()`는 **live** cell이라 append가 다음 round에 보인다;
+  `Tup.Iter()`는 values; `Dict.Iter()`는 `tuple(key, value)` **이름 있는** pair
+  (`p.key`/`p.value`.resolve); `Str.Iter()`는 UTF-16 code unit당 `Str` 하나.
+- `Range.Eq`는 3필드를 `Range`와만 비교하고 그 외는 base chain →
+  `range == list`는 `unsupported operand type(s) for ==: 'range' and 'list'`.
+  `x in range`는 int면 step 고려 membership, 그 외
+  `unsupported operand type(s) for in: 'range'`. `1..4`는 lower inclusive/upper exclusive.
+- init 오탈자 유지: `invaild 'iter' initialize`, `invalid 'counter' initialize`,
+  `invalid 'repeat' initialize`, `invalid 'reverse' initialization`.
+- `iter` native module(21 함수) 사실: `take`/`skip`/`chain`/`flatten`/`map`/`filter`/
+  `sorted`/`array`는 **list**를 반환(`io.write`가 `[0, 1]` 출력), `enumerate`는
+  `tuple(index, value)` 이름 있는 pair를 iter로 반환. `counter(start?)` 기본 0,
+  `repeat(obj, count?)` 기본 −1. `max`/`min`은 `'{a} < {b} is not a boolean`,
+  `filter`는 `expected 'predicate' to return a boolean`. `array(value, size)`는
+  `size`가 최소 1 dimension이어야 한다.
+- `take`/`skip`/`clone`/`count`/`to_list`/`to_tuple`/`map`/`filter`/`any`/`all`/`sum`/
+  `first`/`last`는 **`Iters` 멤버**이고, `skip`은 키워드라 `iter.skip(...)`/`r.skip(2)`는
+  parse error(`error: expected identifier`). `counter.count()`는 host
+  `System.OverflowException`(`Enumerable.Count`)을 `TargetInvocationException`으로 감싼다.
+  `clone`은 `set`에만 있는 멤버다. `str`에는 `to_list`/`to_tuple`/`take`/`count`가 없다.
+
 ## 확정한 표현 규칙 (fix하지 말 것)
 
 - `Str` payload는 UTF-16 pair를 보존하므로 `"한글😀"[2:4]`는 round-trip한다.
@@ -180,7 +230,7 @@ ground truth는 reference source bytes와 probe `probes7/{p3,p4,p5,p7,p8}.un`에
 - `use builtin`은 reference에서 실패한다:
   `panic : module 'C:\dev\un\builtin' not found` (builtin은 모듈이 아니다).
 
-## 기준선 (C# reference, 2026-11-10 실측)
+## 기준선 (C# reference, 2026-11-11 실측)
 
 - Positive: 33 files / 1265 passed / 0 failed / 0 crashed
 - Negative: 42 matched / 0 mismatched
@@ -189,12 +239,43 @@ ground truth는 reference source bytes와 probe `probes7/{p3,p4,p5,p7,p8}.un`에
 
 ## 현재 작업
 
-- Phase 7 컬렉션 완료(`b0d96d7`). 남은 stub는 함수 계열과 iterator 계열이다:
+- Phase 7a iterator 완료(`47a600e`). 남은 stub는 함수 계열뿐이다:
   `rust/src/runtime/obj.rs`의 `invoke`, `is_bound_fn`, `is_property`, `property_get`,
-  `property_set`, `range_to`는 `Payload` variant(`Fn`/`LFn`/`NFn`/`Arg`/`Property`/
-  `FieldRef`/`Iter`/`Range`/`Counter`/`Repeat`/`Reverse`)가 없어서 stub이고,
-  `List.Iter`/`Tup.Iter`/`Dict.Iter`는 iterator phase에서 wiring한다.
+  `property_set`, `call`은 `Payload` variant(`Fn`/`LFn`/`NFn`/`Arg`/`Property`/
+  `FieldRef`/`Future`)가 없어서 stub이다. `range_to`와 `Payload::Iter` 계열은 실제
+  구현으로 대체됐다.
+- `Iters` self-methods `map`/`filter`/`any`/`all`/`sum`/`first`/`last`와
+  `map`/`filter` stage는 `Fn` payload + evaluator가 필요해서 보류했다.
 - Phase 6 `Scope`/`Context`와 Phase 8 VM core는 미착수(`rust/src/vm/` 없음).
+- Phase 11/14 scope의 미탐사 source: `Flow/{Lock,Pool}.cs`,
+  `IO/{Stream,HttpClient,WebSocket}.cs`, `Util/{Random,Stopwatch}.cs`,
+  `Base/Template.cs`, `Type/{BaseType,CollectionType}.cs`, `Evaluator.cs`의
+  Try/Match/Class/Enum/Assign, `Runner.cs`.
+- reference runner 기준선 재실측(2026-11-11): Positive 33 files / 1265 passed /
+  0 failed / 0 crashed, Negative 42 matched, Known 1 file, overall exit 0.
+- `read`/`grep` 도구가 존재하지 않는 파일의 내용을 지어낼 때가 있다 → ground truth는
+  shell(`Get-Content`, `Select-String`)로 확인하고, 한국어 문서 텍스트는 `read`로 읽는다
+  (콘솔은 non-ASCII를 `?`로 렌더링). `cargo ... 2>&1`는 성공해도 exit 1을 준다.
+
+## 다음 단계
+
+1. Phase 7 함수 계열: `runtime/function.rs`의 `Arg`, `Fn` payload, `Bind`
+   (`multiple values for argument '{name}'`, `missing required argument '{arg.Name}'`,
+   `too many positional arguments`, `unexpected keyword argument '{keyword.Keys.First()}'`),
+   `LFn`/`NFn` `Call`(`maximum recursion depth exceeded`, defer/using drain),
+   `Property`(backing key `"$"+name`), `FieldRef`, `Future` → 커밋.
+2. Phase 6 `Scope`/`Context`(slot table, function-scope assign 라우팅, `PopFrame`
+   empty → `Panic("stack is empty")`, `maximum recursion depth exceeded`).
+3. Phase 8 VM core: 표현식/문장 실행, `unvm run`이 `io.write` 출력, `test/unit/runtime/`
+   스모크.
+4. differential harness(`scripts/rust_test.ps1` / `scripts/diff_test.ps1`) 도입 — C#
+   기준선과 stdout/exit/stderr 비교. AST shape 정합은 harness로 증명한다(reference에는
+   AST dump가 없고 C# 코드를 수정할 수 없다).
+5. `iter` native module(21 함수) + `Iters` self-methods(`map`/`filter`는 `Fn` 이후) —
+   list 반환 semantics(`take`/`skip`/`chain`/`flatten`/`map`/`filter`/`sorted`),
+   `enumerate`의 named pair, `array(value, dims)`.
+6. Phase 14 네이티브 바인딩 계층(`NATIVE_INVENTORY.md` 기반).
+
 ## 네이티브 인벤토리 (완료)
 
 `rust\scripts\rust_inventory.ps1`(읽기 전용 parse)이 `docs/rust-migration/NATIVE_INVENTORY.md`를
@@ -204,20 +285,6 @@ ground truth는 reference source bytes와 probe `probes7/{p3,p4,p5,p7,p8}.un`에
 `desc`/`example`이고, 오류 문자열은 파일·라인 순 verbatim 목록이다.
 오탈자(`invaild`, `invalid argumnets: index`)와 `ArgInfo`의 `Name`(`old_value`, `sub_str`)을
 그대로 재현해야 한다. `ANALYSIS.md` §10이 이 문서를 가리킨다.
-
-## 다음 단계
-
-1. Phase 7 함수 계열(`Fn`/`LFn`/`NFn`/`Arg`/`Future`, `Property`/`FieldRef`)과 iterator
-   계열(`Iter`/`Range`/`Counter`/`Repeat`/`Reverse`) — lazy generator 모델(`IterState`)로
-   `range_to`/`Iter` wiring(`List.Iter`, `Tup.Iter`, `Dict.Iter`, Str `Iter`).
-2. Phase 6 `Scope`/`Context`(slot table, function-scope assign 라우팅, `PopFrame`
-   non-empty, `maximum recursion depth exceeded`).
-3. Phase 8 VM core: 표현식/문장 실행, `unvm run`이 `io.write` 출력, `test/unit/runtime/`
-   스모크.
-4. differential harness(`scripts/rust_test.ps1` / `scripts/diff_test.ps1`) 도입 — C#
-   기준선과 stdout/exit/stderr 비교. AST shape 정합은 harness로 증명한다(reference에는
-   AST dump가 없고 C# 코드를 수정할 수 없다).
-5. Phase 14 네이티브 바인딩 계층(`NATIVE_INVENTORY.md` 기반).
 
 ## 보고해야 하는 semantic 차이 (도입 전)
 
@@ -232,3 +299,8 @@ ground truth는 reference source bytes와 probe `probes7/{p3,p4,p5,p7,p8}.un`에
 7. `System.Text.Json.JsonException`의 message text(byte offset 정보)는 재현하지 않는다.
    `System.IndexOutOfRangeException`/`System.ArgumentException`의 .NET stack trace는
    재현하지 않는다(내부 예외 문자열만 재현, D-024).
+8. unbounded enumeration(`Counter.to_list()`, `Skip` over `Counter`, `Repeat` count<0를
+   끝까지 enumeration): reference는 무한 루프(또는 `System.OverflowException`)로 멈추지
+   않는다. Rust는 `panic : iteration is infinite`로 멈춘다. `Counter.Len()`은
+   `long.MaxValue` override라 정합이고, reference는 clone 재현도 `Enumerable` 위치로
+   결정된다.
