@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::runtime::collections;
+use crate::runtime::collections::KeyMap;
 use crate::runtime::date;
 use crate::runtime::prims;
 use crate::runtime::types::Types;
@@ -11,7 +13,7 @@ use crate::runtime::world;
 /// interior-mutable cell.
 pub type Obj = Rc<RefCell<ObjData>>;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub enum Payload {
     Plain,
     /// `Err` — `ToStr()` renders `"{header}: {message}"`
@@ -25,6 +27,75 @@ pub enum Payload {
     Bool(bool),
     Str(Rc<str>),
     Date(i64),
+    /// every collection payload is a shared cell, so `b = a` keeps `b` and `a`
+    /// looking at the same items, exactly like the reference's `Ref<T>` cells.
+    List(Rc<RefCell<Vec<Obj>>>),
+    Dict(Rc<RefCell<KeyMap>>),
+    Set(Rc<RefCell<Vec<Obj>>>),
+    Tup(Rc<Vec<Obj>>, Rc<Vec<String>>),
+    Spread(Rc<Vec<Obj>>),
+    Json(Obj),
+    Stru(Rc<Vec<String>>),
+    Enu(i64),
+    TObj(Types),
+}
+
+/// `Payload` is printed as a summary: an `Obj` payload cannot be printed by
+/// recursion (a list holds objects that hold lists), so the count is shown instead.
+impl std::fmt::Debug for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Payload::Plain => f.write_str("Plain"),
+            Payload::Error { header, message } => {
+                write!(f, "Error({header}: {message})")
+            }
+            Payload::Panic { name, message } => {
+                write!(f, "Panic({name}: {message})")
+            }
+            Payload::Int(v) => write!(f, "Int({v})"),
+            Payload::Float(v) => write!(f, "Float({v})"),
+            Payload::Bool(v) => write!(f, "Bool({v})"),
+            Payload::Str(s) => write!(f, "Str({s})"),
+            Payload::Date(t) => write!(f, "Date({t})"),
+            Payload::List(v) => write!(f, "List({} items)", v.borrow().len()),
+            Payload::Dict(km) => write!(f, "Dict({} entries)", km.borrow().len()),
+            Payload::Set(s) => write!(f, "Set({} items)", s.borrow().len()),
+            Payload::Tup(v, n) => write!(f, "Tup({} values, {} names)", v.len(), n.len()),
+            Payload::Spread(v) => write!(f, "Spread({} values)", v.len()),
+            Payload::Json(_) => f.write_str("Json(<value>)"),
+            Payload::Stru(n) => write!(f, "Stru({} names)", n.len()),
+            Payload::Enu(n) => write!(f, "Enu({n})"),
+            Payload::TObj(t) => write!(f, "TObj({})", t.display()),
+        }
+    }
+}
+
+/// payload identity, not Un equality: Un's `==` is the `Eq()` dunder. object payloads
+/// compare by cell identity, the same way the reference's `ReferenceEquals` does.
+impl PartialEq for Payload {
+    fn eq(&self, other: &Self) -> bool {
+        use Payload::*;
+        match (self, other) {
+            (Plain, Plain) => true,
+            (Error { header: a, message: x }, Error { header: b, message: y }) => a == b && x == y,
+            (Panic { name: a, message: x }, Panic { name: b, message: y }) => a == b && x == y,
+            (Int(a), Int(b)) => a == b,
+            (Float(a), Float(b)) => a == b,
+            (Bool(a), Bool(b)) => a == b,
+            (Str(a), Str(b)) => a == b,
+            (Date(a), Date(b)) => a == b,
+            (List(a), List(b)) => Rc::ptr_eq(a, b),
+            (Dict(a), Dict(b)) => Rc::ptr_eq(a, b),
+            (Set(a), Set(b)) => Rc::ptr_eq(a, b),
+            (Tup(a, na), Tup(b, nb)) => Rc::ptr_eq(a, b) && Rc::ptr_eq(na, nb),
+            (Spread(a), Spread(b)) => Rc::ptr_eq(a, b),
+            (Json(a), Json(b)) => Rc::ptr_eq(a, b),
+            (Stru(a), Stru(b)) => Rc::ptr_eq(a, b),
+            (Enu(a), Enu(b)) => a == b,
+            (TObj(a), TObj(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 pub struct ObjData {
@@ -170,6 +241,65 @@ pub fn is_bool(o: &Obj) -> bool {
     matches!(payload(o), Payload::Bool(_))
 }
 
+/// `Obj.Equals` as a collection key test: `Eq()` coerced to a boolean. a non-boolean
+/// result (an `Err`) is `false`, exactly like the reference's `As<Bool>` pattern.
+pub fn key_eq(a: &Obj, b: &Obj) -> bool {
+    matches!(payload(&binop(a, BinOp::Eq, b)), Payload::Bool(true))
+}
+
+/// `Obj.GetHashCode()`. the reference overrides it in `Val<T>` / `Ref<T>` (the CLR value
+/// hash, so an int key hashes to its own value, a `Date` to its tick count), `Str`,
+/// `Enu`, `List` and `Tup`. `Dict`, `Set`, `Stru`, `Spreads` and `Json` keep the default
+/// object hash, and .NET string / reference hashing is process-randomised, so string-key
+/// iteration order is not a parity target (D-025). the type-name FNV stand-in is used for
+/// those, which keeps int keys hashing to their value and int-key dictionaries iterating
+/// in insertion order in the reference too.
+pub fn hash_code(o: &Obj) -> u64 {
+    match payload(o) {
+        Payload::Int(i) => i as u64,
+        Payload::Str(s) => prims::str_hash(&s) as u64,
+        Payload::Float(v) => v.to_bits(),
+        Payload::Bool(b) => b as u64,
+        Payload::Enu(n) => n as u64,
+        // `Val<T>.GetHashCode() => Value.GetHashCode()`, so `Date` hashes its tick count
+        Payload::Date(t) => t as u64,
+        Payload::List(v) => {
+            let mut h = 0u64;
+            for e in v.borrow().iter() {
+                h = combine_hash(h, hash_code(e));
+            }
+            h
+        }
+        Payload::Tup(vals, _) => {
+            let mut h = 0u64;
+            for e in vals.iter() {
+                h = combine_hash(h, hash_code(e));
+            }
+            h
+        }
+        // `Json` delegates to its wrapped value
+        Payload::Json(inner) => hash_code(&inner),
+        _ => prims::str_hash(&type_name(o)) as u64,
+    }
+}
+
+fn combine_hash(seed: u64, value: u64) -> u64 {
+    seed.rotate_left(13) ^ value
+}
+
+pub fn types_of(o: &Obj) -> Types {
+    o.borrow().types.clone()
+}
+
+/// `Members[name]` on a missing key throws inside the host; the inner .NET message is
+/// reproduced verbatim and the `TargetInvocationException` wrapper is dropped (D-024).
+pub fn key_not_found(name: &str) -> Obj {
+    panic(
+        "System.Collections.Generic.KeyNotFoundException",
+        format!("The given key '{name}' was not present in the dictionary."),
+    )
+}
+
 pub fn bool_value(o: &Obj) -> bool {
     matches!(payload(o), Payload::Bool(true))
 }
@@ -182,7 +312,7 @@ fn valid_super(o: &Obj) -> Option<Obj> {
     }
 }
 
-fn find_member(o: &Obj, name: &str) -> Option<Obj> {
+pub fn member(o: &Obj, name: &str) -> Option<Obj> {
     o.borrow()
         .members
         .iter()
@@ -194,7 +324,7 @@ fn has_member(o: &Obj, name: &str) -> bool {
     o.borrow().members.iter().any(|(k, _)| k == name)
 }
 
-fn member_set(o: &Obj, name: &str, value: &Obj) {
+pub fn member_set(o: &Obj, name: &str, value: &Obj) {
     let mut d = o.borrow_mut();
     for slot in &mut d.members {
         if slot.0 == name {
@@ -244,7 +374,7 @@ pub fn base_chain(o: &Obj) -> Vec<Obj> {
 /// `Obj.TryMethod` — bind `Self`/`Super` on the member and call it.
 /// phase 7 makes members callable; until then this always reports "not found".
 fn try_method(o: &Obj, name: &str, args: &[Obj]) -> Option<Obj> {
-    let m = find_member(o, name)?;
+    let m = member(o, name)?;
     {
         let mut d = m.borrow_mut();
         d.self_ = Some(o.clone());
@@ -266,11 +396,25 @@ pub fn call(o: &Obj, args: &[Obj]) -> Obj {
     if let Some(s) = valid_super(o) {
         return call(&s, args);
     }
+    if let Payload::TObj(t) = payload(o) {
+        return collections::tobj_call(&t, args);
+    }
     err(format!("unsupported operand type(s) for (): '{}'", type_name(o)))
 }
 
 /// `Obj.Init`
 pub fn init(o: &Obj, args: &[Obj]) -> Obj {
+    // the builtin collections override `Init`, so their rule runs before the base chain
+    match payload(o) {
+        Payload::List(..) => return collections::list_init(o, args),
+        Payload::Dict(..) => return collections::dict_init(o, args),
+        Payload::Set(..) => return collections::set_init(o, args),
+        Payload::Tup(..) => return collections::tup_init(o, args),
+        Payload::Json(..) => return collections::json_init(o, args),
+        Payload::Enu(n) => return collections::enu_init(o, n, args),
+        Payload::Stru(_) => return collections::stru_init(o, args),
+        _ => {}
+    }
     if try_method(o, "__init__", args).is_some() {
         return o.clone();
     }
@@ -290,7 +434,7 @@ pub fn get_attr(o: &Obj, name: &str) -> Obj {
 /// `Obj.GetAttrFrom` — property, `__getattr__`, members, super, global original
 /// values, `Parents[1..]`, then the missing-attribute error.
 fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
-    if let Some(m) = find_member(o, name) {
+    if let Some(m) = member(o, name) {
         if is_property(&m) {
             return property_get(&m, receiver);
         }
@@ -298,7 +442,7 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__getattr__", &[str(name)]) {
         return bind_self(v, receiver);
     }
-    if let Some(v) = find_member(o, name) {
+    if let Some(v) = member(o, name) {
         return bind_self(v, receiver);
     }
     if let Some(s) = valid_super(o) {
@@ -337,7 +481,7 @@ fn is_bound_fn(o: &Obj) -> bool {
 }
 
 /// phase 7: `member is Property`
-fn is_property(o: &Obj) -> bool {
+pub fn is_property(o: &Obj) -> bool {
     let _ = o;
     false
 }
@@ -349,7 +493,7 @@ fn property_get(member: &Obj, receiver: &Obj) -> Obj {
 }
 
 /// phase 7: `Property.Set(receiver, value)`
-fn property_set(member: &Obj, receiver: &Obj, value: &Obj) -> Obj {
+pub fn property_set(member: &Obj, receiver: &Obj, value: &Obj) -> Obj {
     let _ = (member, receiver, value);
     value.clone()
 }
@@ -358,8 +502,8 @@ pub fn set_attr(o: &Obj, name: &str, value: &Obj) -> Obj {
     set_attr_from(o, name, value, o)
 }
 
-fn set_attr_from(o: &Obj, name: &str, value: &Obj, receiver: &Obj) -> Obj {
-    if let Some(m) = find_member(o, name) {
+pub fn set_attr_from(o: &Obj, name: &str, value: &Obj, receiver: &Obj) -> Obj {
+    if let Some(m) = member(o, name) {
         if is_property(&m) {
             return property_set(&m, receiver, value);
         }
@@ -398,6 +542,9 @@ pub fn obj_is(o: &Obj, other: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__is__", &[other.clone()]) {
         return v;
     }
+    if let Payload::TObj(t) = payload(o) {
+        return collections::tobj_is(&t, other);
+    }
     let types = o.borrow().types.clone();
     let other_type = Types::Single(type_name(other));
     if types.contains(&other_type) {
@@ -413,9 +560,15 @@ pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__in__", &[other.clone()]) {
         return v;
     }
-    match valid_super(o) {
-        Some(s) => obj_in(&s, other),
-        None => err(format!(
+    if let Some(s) = valid_super(o) {
+        return obj_in(&s, other);
+    }
+    match payload(o) {
+        Payload::List(..) => collections::list_in(o, other),
+        Payload::Dict(..) => collections::dict_in(o, other),
+        Payload::Tup(vals, _) => collections::tup_in(&vals, other),
+        Payload::TObj(t) => collections::tobj_in(&t, other),
+        _ => err(format!(
             "unsupported operand type(s) for in: '{}'",
             type_name(o)
         )),
@@ -461,6 +614,21 @@ pub fn clone_obj(o: &Obj) -> Obj {
         }
     }
 
+    match payload(o) {
+        Payload::List(v) => return collections::list_clone(&v),
+        Payload::Dict(km) => return collections::dict_clone(&km),
+        Payload::Set(s) => return collections::set_clone(&s),
+        Payload::Tup(vals, names) => return collections::tup_clone(&vals, &names),
+        Payload::Json(inner) => return collections::json_clone(&inner),
+        Payload::Stru(_) => return collections::stru_clone(o),
+        Payload::Enu(n) => return collections::enu_clone(o, n),
+        // `Spreads` and `TObj` have no `Clone` override, so the base clone rebuilds the
+        // payload cell with the same content.
+        Payload::Spread(v) => return collections::spread(v.to_vec()),
+        Payload::TObj(t) => return collections::tobj(t),
+        _ => {}
+    }
+
     let (type_name, types, members, annotations, self_, parents, super_) = {
         let d = o.borrow();
         (
@@ -499,6 +667,15 @@ pub fn copy_obj(o: &Obj) -> Obj {
         Payload::Bool(b) => boolean(b),
         Payload::Str(s) => str_obj(s, world::str_type(), world::obj_type()),
         Payload::Date(t) => date_obj(t),
+        Payload::Tup(vals, names) => collections::tup_copy(&vals, &names),
+        Payload::Stru(_) => collections::stru_copy(o),
+        // `List.Copy` / `Dict.Copy` / `Set.Copy` / `Json.Copy` / `Enu.Copy` are all `this`
+        Payload::List(..)
+        | Payload::Dict(..)
+        | Payload::Set(..)
+        | Payload::Json(..)
+        | Payload::Enu(..)
+        | Payload::Spread(..) => o.clone(),
         _ => o.clone(),
     }
 }
@@ -611,6 +788,14 @@ pub fn to_str(o: &Obj) -> Obj {
         Payload::Bool(b) => str(if b { "true" } else { "false" }),
         Payload::Date(t) => str(&date::format(t)),
         Payload::Error { header, message } => str(&format!("{header}: {message}")),
+        Payload::List(v) => str(&collections::list_to_str(&v)),
+        Payload::Dict(km) => str(&collections::dict_to_str(&km)),
+        Payload::Set(s) => str(&collections::set_to_str(&s)),
+        Payload::Tup(vals, _) => str(&collections::tup_to_str(&vals)),
+        Payload::Json(inner) => str(&collections::json_to_str(&inner)),
+        Payload::Stru(_) => collections::stru_to_str(o),
+        Payload::Enu(n) => collections::enu_to_str(o, n),
+        Payload::TObj(t) => collections::tobj_to_str(&t),
         _ => err(format!("unsupported operand type(s) for str(): '{}'", type_name(o))),
     }
 }
@@ -638,6 +823,11 @@ pub fn get_item(o: &Obj, key: &Obj) -> Obj {
             }
             _ => err("invalid index type"),
         },
+        Payload::List(v) => collections::list_get_item(&v, key),
+        Payload::Dict(km) => collections::dict_get_item(&km, key),
+        Payload::Set(s) => collections::set_get_item(&s, key),
+        Payload::Tup(vals, names) => collections::tup_get_item(&vals, &names, o, key),
+        Payload::Json(inner) => get_item(&inner, key),
         _ => err(format!("unsupported operand type(s) for []: '{}'", type_name(o))),
     }
 }
@@ -648,6 +838,12 @@ pub fn set_item(o: &Obj, key: &Obj, value: &Obj) -> Obj {
     }
     if let Some(s) = valid_super(o) {
         return set_item(&s, key, value);
+    }
+    match payload(o) {
+        Payload::List(v) => return collections::list_set_item(&v, key, value),
+        Payload::Dict(km) => return collections::dict_set_item(&km, key, value),
+        Payload::Json(inner) => return set_item(&inner, key, value),
+        _ => {}
     }
     err(format!(
         "unsupported operand type(s) for [] = 'value': '{}'",
@@ -730,6 +926,8 @@ pub fn slice(o: &Obj, start: Option<Obj>, end: Option<Obj>, step: Option<Obj>) -
             }
             str(&date::utf16_join(&out))
         }
+        Payload::List(v) => collections::list_slice(&v, &start, &end, &step),
+        Payload::Tup(vals, names) => collections::tup_slice(&vals, &names, &start, &end, &step),
         _ => err(format!("unsupported slice for '{}'", type_name(o))),
     }
 }
@@ -885,7 +1083,7 @@ impl UnOp {
         }
     }
 
-    fn message(&self, t: &str) -> String {
+    pub fn message(&self, t: &str) -> String {
         match self {
             UnOp::Len => "unsupported operand type(s) for len()".to_owned(),
             UnOp::Hash => "cannot hashable object".to_owned(),
@@ -942,6 +1140,16 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         Payload::Str(a) => str_binop(a, op, other, &t, &ot),
         Payload::Bool(a) => bool_binop(a, op, other, &t, &ot),
         Payload::Date(a) => date_binop(a, op, other, &t, &ot),
+        Payload::List(..) => collections::list_binop(o, op, other, &t, &ot),
+        Payload::Tup(..) => collections::tup_binop(o, op, other, &t, &ot),
+        Payload::Set(..) => collections::set_binop(o, op, other, &t, &ot),
+        Payload::Stru(..) => collections::stru_binop(o, op, other, &t, &ot),
+        Payload::Enu(n) => collections::enu_binop(o, n, op, other, &t, &ot),
+        Payload::TObj(ty) => collections::tobj_binop(&ty, op, other, &t, &ot),
+        // `Json` delegates every operation to its wrapped value; the dict / spread
+        // payloads have no operator override, so they fall through to the base chain.
+        Payload::Json(inner) => binop(&inner, op, other),
+        Payload::Dict(..) | Payload::Spread(..) => base_binop(o, op, other, &t, &ot),
         Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => base_binop(o, op, other, &t, &ot),
     }
 }
@@ -992,6 +1200,16 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
             UnOp::ToBool => boolean(a),
             _ => err(op.message(&t)),
         },
+        Payload::List(v) => collections::list_unop(&v, op, &t),
+        Payload::Dict(km) => collections::dict_unop(&km, op, &t),
+        Payload::Set(s) => collections::set_unop(&s, op, &t),
+        Payload::Tup(vals, names) => collections::tup_unop(&vals, &names, op, &t),
+        Payload::Spread(_v) => collections::spread_unop(o, op, &t),
+        Payload::Json(inner) => collections::json_unop(&inner, op, &t),
+        Payload::Stru(_) => collections::stru_unop(o, op, &t),
+        Payload::Enu(n) => collections::enu_unop(n, op, &t),
+        // `TObj` has no unop override, so only the base message applies
+        Payload::TObj(..) => err(op.message(&t)),
         Payload::Date(_) | Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => {
             err(op.message(&t))
         }
@@ -1286,7 +1504,7 @@ fn date_binop(a: i64, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj 
     }
 }
 
-fn base_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
+pub fn base_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     match op {
         BinOp::Eq => {
             if is_none(o) && is_none(other) {
@@ -1337,7 +1555,7 @@ fn base_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj
     }
 }
 
-fn base_binop_of(op: BinOp, t: &str, ot: &str) -> Obj {
+pub fn base_binop_of(op: BinOp, t: &str, ot: &str) -> Obj {
     unsupported(op.symbol(), t, ot)
 }
 
