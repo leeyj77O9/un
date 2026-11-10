@@ -752,9 +752,37 @@ Found 시 value가 Fn이면 value.Self = receiver, value.Super = receiver.Super
 
 ## 10. 네이티브 모듈 인벤토리
 
-`src/Core/Native/`의 `[NativeModule]` 모듈 목록과 각 `[Native]` 함수의
-`Name/Description/Example/ReturnType/ArgumentTypes/ArgInfo`는 서브 에이전트가 수집 중이며
-`docs/rust-migration/NATIVE_INVENTORY.md`에 저장한다 (`TODO-VERIFY` — 수집 완료 후 채움).
+`rust\scripts\rust_inventory.ps1`이 `src/**/*.cs`(reference, 읽기 전용)를 parse해서
+`docs/rust-migration/NATIVE_INVENTORY.md`를 생성한다. C# 코드는 수정하지 않는다.
+
+실측 (main @ `fe05894`, `src` 85개 `.cs` 파일):
+
+- **등록 36개**: `NativeModule` x13(`io`, `fs`, `math`, `iter`, `re`, `random`, `time`,
+  `sys`, `os`, `http`, `ws`, `inspect`, `flow`), `BuiltinModule` x1(`builtin`),
+  `BuiltinType` x11(`int`, `float`, `str`, `bool`, `date`, `list`, `dict`, `set`, `tuple`,
+  `iter`, `template`), `NativeType` x11(`stream`, `http_client`, `web_socket`, `range`,
+  `counter`, `repeat`, `reverse`, `lock`, `pool`, `random`, `stopwatch`).
+- **`[Native]` 함수 345개**: 파일별 표(`fn`/`ret`/`arg types`/`C# params`/`desc`/`example`)로
+  문서에 그대로 기록한다. `ret`은 `inspect` 표시용 문자열이고 VM 타입 검사에는 쓰지 않는다.
+- **오류 문자열 553개**: `new Err` 459 / `new Panic` 27 / `new Error` 67. 파일·라인 순으로
+  verbatim 남긴다. `src/Core/Native/`에는 `Panic`이 없다 — `Panic`은 `Global.cs`(9),
+  `Runner.cs`, `Context.cs`, `Optimizer.cs`, `Evaluator.cs`, `UnType.cs`에만 있다.
+
+재현 시 주의:
+
+1. `[ArgInfo]`의 `Essential/Optional/Positional/Keyword/Name`은 인자 바인딩과 에러
+   문자열에 직접 영향을 준다. `Name`은 C# 파라미터명과 다르다(`Str.replace`의
+   `old_value`/`new_value`, `Str.find`의 `sub_str`) — `inspect`와 에러 문자열이 이 이름을 쓴다.
+2. `[Self]`는 receiver 주입 경로(`fn` 메서드 바인딩과 다른 경로). `Str`/`Stream` 메서드가 이를 쓴다.
+3. 오탈자는 verbatim: `List.cs` L573 `invalid argumnets: index`,
+   `Dict.cs` L22 / `Iter.cs` L17 `invaild '{Type}' initialize`.
+4. 호스트 예외를 `e.Message`로 `Err`에 담는 사이트(`http`, `os`, `ws`, `re`, `HttpClient`,
+   `WebSocket`)는 .NET 예외 텍스트를 재현해야 한다. `Re`는 `invalid regex pattern: {e.Message}`.
+5. `PlaygroundRunner.DefaultAllowed` = `io, math, iter, re, random, time, inspect, builtin, sys`.
+   금지 모듈은 `module '{name}' is not allowed in this environment`로 실패한다.
+6. `NativeModule("x", typeof(T))`는 모듈에 타입을 붙인다(`flow`→`pool`/`lock`,
+   `iter`→`range`/`counter`/`repeat`/`reverse`, `time`→`stopwatch`, `random`→`random`,
+   `http`→`http_client`, `ws`→`web_socket`). Rust는 같은 대응을 같은 이름으로 등록한다.
 
 ## 11. 테스트 baseline (Rust VM이 통과해야 하는 목표)
 

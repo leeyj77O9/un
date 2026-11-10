@@ -132,11 +132,15 @@ probe(`C:\Users\User\AppData\Local\Temp\opencode\probe5.un`)로 했다.
   `Iter`/`Range`/`Counter`/`Repeat`/`Reverse`.
   `rust/src/runtime/obj.rs`의 `invoke`, `is_bound_fn`, `is_property`, `range_to`,
   Str의 `Iter/ToList/ToTuple`은 TODO stub이다.
-- 네이티브 함수 단위 인벤토리(`native_attrs.txt` 997줄)를
-  `docs/rust-migration/NATIVE_INVENTORY.md`로 정리 중(미완). 14개 `NativeModule`
-  (`ws`, `builtin`, `time`, `flow`, `inspect`, `http`, `random`, `fs`, `sys`, `math`,
-  `os`, `re`, `io`, `iter`)의 per-function `Name`/`ArgInfo`/오류 문자열(오탈자
-  `invaild`, `invalid argumnets: index` 포함)을 그대로 옮겨야 한다.
+## 네이티브 인벤토리 (완료)
+
+`rust\scripts\rust_inventory.ps1`(읽기 전용 parse)이 `docs/rust-migration/NATIVE_INVENTORY.md`를
+생성한다. 실측: 등록 36(`NativeModule` x13, `BuiltinModule` x1, `BuiltinType` x11,
+`NativeType` x11), `[Native]` 함수 345, 오류 문자열 553(`new Err` 459 / `new Panic` 27 /
+`new Error` 67), parse한 `.cs` 파일 85개. 표는 파일별 `fn`/`ret`/`arg types`/`C# params`/
+`desc`/`example`이고, 오류 문자열은 파일·라인 순 verbatim 목록이다.
+오탈자(`invaild`, `invalid argumnets: index`)와 `ArgInfo`의 `Name`(`old_value`, `sub_str`)을
+그대로 재현해야 한다. `ANALYSIS.md` §10이 이 문서를 가리킨다.
 
 ## 다음 단계
 
@@ -145,7 +149,7 @@ probe(`C:\Users\User\AppData\Local\Temp\opencode\probe5.un`)로 했다.
    스모크.
 3. differential harness(`scripts/rust_test.ps1` / `scripts/diff_test.ps1`) 도입 — C#
    기준선과 stdout/exit/stderr 비교. AST shape 정합은 harness로 증명한다(reference에는
-   AST dump가 없고 C#를 modification할 수 없다).
+   AST dump가 없고 C# 코드를 수정할 수 없다).
 4. Phase 14 네이티브 바인딩 계층(`NATIVE_INVENTORY.md` 기반).
 
 ## 보고해야 하는 semantic 차이 (도입 전)
