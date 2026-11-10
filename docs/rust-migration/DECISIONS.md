@@ -199,15 +199,22 @@ randomised)로 bucket된다. .NET `string.GetHashCode()`도 randomised라 str-ke
 deterministic 순서를 쓴다. int-key dictionary는 `Val<long>.GetHashCode() == value`라서
 reference도 insertion 순서 → **int-key 순서는 parity target**이다.
 
-## D-026 | base `Clone()`의 primitive clone quirks를 유지한다 | Accepted
+## D-026 | `Clone()`/`Copy()`의 override 집합과 base quirks를 그대로 재현한다 | Accepted
 
-`Int`/`Float`/`Bool`/`Date`/`Str`는 `Clone()`을 override하지 않는다. base
-`Obj.Clone()`은 `new Obj(Type)`를 만들고 payload를 옮기지 않으므로, primitive의 clone은
-**값이 없는 빈 cell**이고 display는 타입 이름이다(`[1].clone()` → `[int]`).
-`List.Clone()`/`Tup.Clone()`는 element의 `Clone()`를 부르므로 이 빈 cell들이 전파된다.
-`List.Copy()`/`Set.Copy()`/`Dict.Copy()`/`Json.Copy()`는 `this`이고, `Tup.Copy()`는
+primitive는 `Clone()`을 override한다(`Int/Float/Bool/Date/Str/Enu`는 **값을 보존**하고
+`Stru/Dict/Json/List/Tup/Set/LFn/NFn/Future/Property/FieldRef/Counter/Iters/Range/Repeat/
+Reverse/Lock`는 각자의 clone 규칙). base `Obj.Clone()`는 dunder `__clone__` → `valid_super`
+→ `new Obj(Type)`이고 payload를 옮기지 않으므로 override 없는 타입의 clone은 **값이 없는
+빈 cell**이다. `List.Clone()`/`Tup.Clone()`는 element의 `Clone()`를 부르므로 빈 cell들이
+전파된다. `List.Copy()`/`Set.Copy()`/`Dict.Copy()`/`Json.Copy()`는 `this`이고, `Tup.Copy()`는
 element의 `Copy()`를 부르므로 list element는 같은 cell로 남는다. reference의 이 동작을
 "fix"하지 말고 그대로 재현한다.
+
+Un 코드에서 `.clone()`/`.copy()`는 **멤버 테이블** lookup이라 `list`/`str`/`tuple`/`dict`
+등에는 멤버가 없어 member-lookup error(`error: 'list' object has no attribute 'clone'`)이고,
+`set(1, 2).clone()`만 성공한다. `1.copy()`는 파싱 단계에서 `error: invalid number format`다.
+(이 항목의 초기 판명은 "`Int.Clone()`는 base `new Obj(Type)` → `[1].clone()`가 `[int]`"였다가
+probe `probes10/{p25,p28,p33,p38}.un`와 source bytes로 반증됐다.)
 
 ## D-027 | `Tup` 생성자의 name erase와 `Slice` 음수 step clamping을 그대로 재현한다 | Accepted
 
@@ -244,3 +251,41 @@ Rust는 정의 트리 `StageDef`(`Source`/`Reverse`/`Range`/`Counter`/`Repeat`/`
 - `Range` step 0은 `MoveNext`에서 lazy `panic : step cannot be zero`(display/clone은
   동작), `Len()`은 `System.DivideByZeroException` inner 문자열. `iter.range` native는
   construction 시 `Err("step argument must not be zero")`를 낸다(다른 메시지).
+
+## D-029 | member dispatch는 멤버 테이블 lookup이고 virtual dispatch가 아니다 | Accepted
+
+Un의 `x.m(args)`는 C#의 `override`가 아니라 `[Native(Name=...)]`로 등록된 **멤버 테이블**
+lookup이다. 멤버에 없는 이름은 `error: '{Type}' object has no attribute '{name}'`(position
+block 포함, exit 1)로 abort한다. C#의 virtual method를 멤버로 착각하면 안 된다.
+실측된 멤버 집합은 `PROGRESS.md` Phase 7b에 verbatim으로 기록돼 있고, 요약하면
+`list` 19개(`add`..`resize`), `dict` 8개(`add`..`values`), `set` 8개(`clone` 포함),
+`Iters` 12개(`take`..`last`), builtin 15개(`len`..`ascii`)다. `next` builtin은 없고
+`list`/`str`/`tuple`/`dict`/`set`/`range`/`counter`에 `iter`/`next`/`copy`/`clone`가 없다.
+`skip`은 키워드라 `.skip(...)`는 parse error다. `iter`는 callable builtin type constructor
+이고 `use iter`가 모듈로 shadow한다. `to_list`/`to_tuple` 멤버는 static materialize
+(`new List([.. self.Value])`)라 virtual `ToList()` override와 결과가 다르다.
+
+## D-030 | `Err`의 capital header와 `Error`의 position block 규약을 유지한다 | Accepted
+
+`Err(message, header = "Error")`의 display는 `"{header}: {message}"` → `Error: msg`.
+`new Error(...)`의 기본 header는 lowercase `error`이고 출력은 position block
+`<file>, line [n], column [c]` + source line(indent 제거) + caret
+(`max(1, Length)` 개 `^`, leading whitespace보정) + `{header}: {message}`다.
+`Evaluator.Unwrap(obj, node)`는 `new Error(err.Message, node, source)` → lowercase
+`error`(`unsupported operand type(s) for in: 'counter'`). `EvalArguments`의 default
+branch는 `new Error(err.Message, arg, source, header: err.Header)` → `Err`가 만든 capital
+`Error`가 남는다(`Error: cannot unpack Counter`, `*` 노드 position block). exit code 1은
+exception이 throw된 경우에만 설정된다. Rust는 `Payload::Error { message, header, start,
+length }`와 Panic/throw 전파로 이 규약을 재현하고, `run`의 error 출력은 position block
+`+ header: message` + frame trace(`trace:`)를 재현한다.
+
+## D-031 | 네이티브 호출의 `map`/`filter`는 item을 단일 arg로 넘긴다 | Accepted
+
+`iter.map`/`iter.filter`/`iter.count`/`iter.any`/`iter.all`은 각 item을
+`predicate.Call(new Tup([item]))`로 **하나의 positional arg**로 넘긴다. 2-arg lambda에
+`enumerate`의 named pair를 넘기면 lambda body의 위치에서 inner
+`error: unsupported operand type(s) for +: 'tuple' and 'int'`가 나고 reference는
+`TargetInvocationException`으로 감싼다. Rust는 wrapper를 벗기고 inner 문자열만
+`Payload::Panic`로 전파한다(D-024). predicate가 bool이 아닌 값을 반환하면
+`error: expected 'predicate' to return a boolean`이고, `iter.max`/`iter.min`의 비교가
+bool이 아니면 `error: {a} < {b} is not a boolean`이다.

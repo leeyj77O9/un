@@ -220,6 +220,73 @@ bytes와 probe `probes7/p9.un`(exit 0, `io.write` display)에서 취했다. D-02
   `System.OverflowException`(`Enumerable.Count`)을 `TargetInvocationException`으로 감싼다.
   `clone`은 `set`에만 있는 멤버다. `str`에는 `to_list`/`to_tuple`/`take`/`count`가 없다.
 
+## Phase 7b 정합 데이터 (members / native iter / spread / error headers)
+
+ground truth는 probe `probes10/{p10..p52}.un`(runner `probes10/run.ps1`, stdout/exit를
+파일로 분리)와 reference source bytes에서 취했다. Rust의 member dispatch는 VM phase 작업이라
+아직 Rust에서 테스트되지 못했다 → 이 사실들은 VM 멤버 테이블 구현의 spec으로 쓴다.
+
+- 멤버 dispatch는 **멤버 테이블 lookup**이고 virtual dispatch가 아니다(D-029). 멤버에 없는
+  이름은 `error: '{Type}' object has no attribute '{name}'` + position block로 abort(exit 1).
+  검증된 멤버 집합(`[Native(Name=...)]` verbatim):
+  `list`: `add extend insert extend_insert remove remove_at index_of contains order sort
+  reverse binary_search lower_bound upper_bound hpush hpop pop map resize`;
+  `dict`: `add remove get contains_key contains_value clear keys values`;
+  `set`: `add remove contains clear clone union intersect difference`;
+  `Iters`: `take skip count to_list to_tuple map filter any all sum first last`;
+  builtin(`BuiltinModule("builtin")`): `len exit type hash throw throw_if throw_unless
+  chr ord bin oct hex repr ascii`. `next` builtin은 **없고** `list`/`str`/`tuple`/`dict`/
+  `set`/`range`/`counter`에 `iter`/`next`/`copy`/`clone` 멤버가 없다.
+  `set(1, 2).clone()` → `{1, 2}`가 유일한 clone 멤버다.
+- `iter.range(0, 4)` 멤버 실측: `to_list` `[0, 1, 2, 3]`, `to_tuple` `(0, 1, 2, 3)`,
+  `count` `4`, `take(2).to_list()` `[0, 1]`, `first` `0`, `last` `3`, `sum` `6`,
+  `any(pred)` `true`, `all(pred)` `false`, `map(fn)` `[0, 2, 4, 6]`,
+  `filter(fn)` `[2, 3]`. 빈 range은 `sum`/`first`/`last` → `none`, `any` → `false`,
+  `all` → `true`. `len(range)`는 element 수. `r.next()` → `error: 'range' object has no
+  attribute 'next'`. `skip`은 키워드라 `r.skip(2)`/`iter.skip(...)`는 parse
+  `error: expected identifier`.
+- `iter` native module의 arg order: `map(transform, iterable)`, `filter(predicate, iterable)`,
+  `count(predicate, iterable)`, `any(predicate, iterable)`, `all(predicate, iterable)`,
+  `take(count, iterable)`, `skip(count, iterable)`. `count`/`any`/`all`을 1Arg로 부르면
+  `error: missing required argument 'iterable'`. predicate가 bool을 안 반환하면
+  `error: expected 'predicate' to return a boolean`; `iter.max`의 non-bool 비교는
+  `error: a < 1 is not a boolean`. `iter.sum/max/min(iterable)`은 단Arg.
+- list를 반환하는 native: `chain`(`[1, 2]`), `flatten`(`[1, 2]`), `zip`(`[(1, 3), (2, 4)]`),
+  `sorted`(`[1, 2, 3]`), `take`(`[0, 1]`). `enumerate`는 `tuple(index, value)` **이름 있는**
+  pair의 iter라 display가 `(0, 5), (1, 6)`.
+- `iter.array(value, dims)`: `iter.array(1)`과 `iter.array(1, [])` →
+  `error: expected 'size' argument to have at least one dimension`; `iter.array(1, 2)` →
+  `[1, 1]`(Int clone은 값 보존); `iter.array(1, [2, 3])` → `[[1, 1, 1], [1, 1, 1]]`;
+  extra positional은 무시(`iter.array(1, 2, 3)` → `[[1, 1, 1], [1, 1, 1]]`);
+  `iter.array(1, 0)`과 `iter.array(1, [0, 3])` → `[]`, `iter.array(1, [1, 2])` → `[[1, 1]]`.
+- `iter.range(a, b, 0)` → `error: step argument must not be zero`. raw constructor는
+  Un에서 도달 불가: `range(0, 5, 0)` → `error: undefined variable 'range'`(exit 1).
+- `iter`는 builtin type constructor이고 `use iter`는 모듈을 바인딩해 shadow한다:
+  `use iter` 후 `iter([1, 2])` → `error: unsupported operand type(s) for (): 'module'`.
+  `set`/`list`/`dict`/`tuple`/`str`는 callable builtin이고 `use set`은 실패한다.
+- `list(x)`/`tuple(x)`는 `List.Init` 규칙(0 args → `this`, 1 arg의 `ToList()`가 List면
+  그 list, 그 외 `args.ToList()`) → `list(iter.repeat([1, 2]))`는 `[repeat]`,
+  `tuple(...)`는 `(repeat)`. `to_list`/`to_tuple` **멤버**는 static
+  `new List([.. self.Value])`라 unbounded source에서 무한 growth → `TargetInvocationException`
+  → inner `System.IndexOutOfRangeException` + `.NET` stack trace, exit 1(stdout).
+  즉 멤버 materialize는 virtual이 아니라 **static** materialize다.
+- call-arg spread: `f(*x)`는 `Spreads`로 unpack → `io.write("A", *[1, 2])` → `A 1 2`,
+  `io.write("A", *iter.range(0, 3))` → `A 0 1 2`. unbounded source는 `*` 노드에
+  `Error: cannot unpack Counter`(capital header) + position block, exit 1.
+  `EvalArguments`는 `Err`를 `header: err.Header`로 재포장하고(`Error:`), `Unwrap`는
+  lowercase `error`를 쓴다(D-030).
+- number literal에 `.clone()`/`.copy()`를 붙이는 것은 파싱에서 `error: invalid number
+  format`(`1.copy()`). variable에 붙이면 member-lookup error(`x = 3` 후 `x.clone()` →
+  `error: 'int' object has no attribute 'clone'`).
+- `dict(a = 1)` → `error: invaild 'dict' initialize`(오탈자 유지);
+  `dict(tuple(a = 1))` → `{a:1}`.
+- reference hazard: `for x in l` 안에서 `l.add(3)`하면 **무한 루프**로 멈추지 않는다
+  (300s timeout 실측). Rust의 live `Source::Live` cell은 같은 동작 → divergence 아님.
+- `iter.enumerate([5, 6]).map(fn(x, i) -> x + i)`는 lambda body 자리에서 inner
+  `error: unsupported operand type(s) for +: 'tuple' and 'int'`가 나고
+  `TargetInvocationException`으로 감싸진다(exit 1, stdout) → Rust는 inner 문자열만
+  Panic으로 전파한다(D-024). `map`은 item을 **단일 arg**로 넘긴다.
+
 ## 확정한 표현 규칙 (fix하지 말 것)
 
 - `Str` payload는 UTF-16 pair를 보존하므로 `"한글😀"[2:4]`는 round-trip한다.
@@ -239,6 +306,10 @@ bytes와 probe `probes7/p9.un`(exit 0, `io.write` display)에서 취했다. D-02
 
 ## 현재 작업
 
+- Phase 7a iterator 완료(`47a600e`). Phase 7b ground truth(멤버 테이블, native `iter`
+  arg order/메시지, call-arg spread, `Err`/`Error` header 규약)를 probe
+  `probes10/{p10..p52}.un`로 실측해서 문서에 기록했다. member dispatch는 VM phase 작업이라
+  Rust에서 아직 테스트되지 못했다.
 - Phase 7a iterator 완료(`47a600e`). 남은 stub는 함수 계열뿐이다:
   `rust/src/runtime/obj.rs`의 `invoke`, `is_bound_fn`, `is_property`, `property_get`,
   `property_set`, `call`은 `Payload` variant(`Fn`/`LFn`/`NFn`/`Arg`/`Property`/
