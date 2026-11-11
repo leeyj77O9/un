@@ -304,9 +304,9 @@ impl Program {
                             break;
                         }
 
-                        // `RETURN` ends the proto, so the code after it is unreachable
-                        // and the walk stops here.
-                        if op == Op::Return {
+                        // `RETURN` and `RAISE` end the proto, so the code after them is
+                        // unreachable and the walk stops here.
+                        if op == Op::Return || op == Op::Raise {
                             break;
                         }
 
@@ -429,7 +429,7 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         | Op::MakeEnum
         | Op::Use => 1,
         Op::Dup2 => 2,
-        Op::StoreName | Op::StoreLocal | Op::StoreUpv | Op::Raise | Op::Return => -1,
+        Op::StoreName | Op::StoreLocal | Op::StoreUpv | Op::Return => -1,
         Op::Pop => -1,
         Op::PopN => -count,
         // `UNPACK` pops `count` values and hands them to the following binders one by one,
@@ -489,6 +489,7 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         | Op::ArgBegin
         | Op::PushTry
         | Op::PopTry
+        | Op::Raise
         | Op::PushDefer
         | Op::PushUsing
         | Op::FlushDefers

@@ -1,7 +1,7 @@
 ﻿use std::collections::HashSet;
 use std::path::Path;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Source {
     pub path: String,
     pub code: Vec<char>,

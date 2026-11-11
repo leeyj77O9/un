@@ -363,6 +363,7 @@ impl<'a> Compiler<'a> {
             NodeKind::If => self.code_if(node)?,
             NodeKind::While => self.code_while(node)?,
             NodeKind::For => self.code_for(node)?,
+            NodeKind::Try => self.code_try(node)?,
             NodeKind::Break => self.code_break(node),
             NodeKind::Skip => self.code_skip(node),
 
@@ -648,6 +649,133 @@ impl<'a> Compiler<'a> {
         let mi = self.msg_index(message);
         self.emit(Op::Unsupported, 0, mi as i32, span);
         self.raises = true;
+    }
+
+    /// `EvalTry` — the try block, the catch clauses and the finally block.
+    ///
+    /// the reference tries the catch clauses in order and the first one that
+    /// completes handles the error, so only the first clause is a handler; the others
+    /// can never run.
+    ///
+    /// the layout is:
+    ///
+    /// ```text
+    /// PUSH_TRY catch        ; the handler of the error
+    /// PUSH_TRY finally      ; the handler of the pending error
+    /// <try block>
+    /// POP_TRY finally
+    /// POP_TRY catch
+    /// <finally block>       ; the normal path
+    /// JMP end
+    /// catch: <catch block>  ; the error variable is bound by the VM
+    /// POP_TRY finally
+    /// <finally block>
+    /// JMP end
+    /// finally: <finally block>
+    /// RAISE                 ; the pending error leaves the block
+    /// end:
+    /// ```
+    fn code_try(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let try_block = &node.children[0];
+
+        let mut catch: Option<&Node> = None;
+        let mut finally_block: Option<&Node> = None;
+
+        for child in node.children.iter().skip(1) {
+            match child.kind {
+                NodeKind::Catch => {
+                    if catch.is_none() {
+                        catch = Some(child);
+                    }
+                }
+                NodeKind::Finally => finally_block = Some(&child.children[0]),
+                _ => {}
+            }
+        }
+
+        let push_catch = self.ip();
+        if catch.is_some() {
+            self.emit(Op::PushTry, 0, 0, span);
+        }
+
+        let push_finally = self.ip();
+        if finally_block.is_some() {
+            self.emit(Op::PushTry, 0, 0, span);
+        }
+
+        let region_start = self.ip();
+        self.code_block(try_block, false, true)?;
+        let region_end = self.ip();
+
+        if finally_block.is_some() {
+            self.emit(Op::PopTry, 0, 0, span);
+        }
+        if catch.is_some() {
+            self.emit(Op::PopTry, 0, 0, span);
+        }
+
+        if let Some(finally) = finally_block {
+            self.code_block(finally, true, true)?;
+        }
+
+        let end_jump = self.emit_jump(Op::Jmp, 0, span);
+
+        if let Some(catch) = catch {
+            let handler = self.ip();
+
+            // the catch scope is a child of the current scope, and the error variable
+            // is bound into it
+            let (var_slot, block) = if catch.children.len() == 2 {
+                let name = self.name_index(&self.text(&catch.children[0]));
+                (Some(name), &catch.children[1])
+            } else {
+                (None, &catch.children[0])
+            };
+
+            self.code_block(block, false, true)?;
+            self.emit(Op::PopScope, 0, 0, span);
+
+            if finally_block.is_some() {
+                self.emit(Op::PopTry, 0, 0, span);
+                let finally = finally_block.expect("finally block");
+                self.code_block(finally, true, true)?;
+            }
+
+            let jump = self.emit_jump(Op::Jmp, 0, span);
+            self.patch(end_jump, self.ip());
+
+            let entry = ExcEntry {
+                kind: ExcKind::Catch,
+                start: region_start,
+                end: region_end,
+                handler,
+                var_slot,
+            };
+            let index = self.add_exc(entry);
+            self.patch_index(push_catch, index);
+            self.patch(jump, self.ip());
+        } else {
+            self.patch(end_jump, self.ip());
+        }
+
+        if let Some(finally) = finally_block {
+            let handler = self.ip();
+            self.code_block(finally, true, true)?;
+            self.emit(Op::Raise, 0, 0, span);
+
+            let entry = ExcEntry {
+                kind: ExcKind::Finally,
+                start: region_start,
+                end: region_end,
+                handler,
+                var_slot: None,
+            };
+            let index = self.add_exc(entry);
+            self.patch_index(push_finally, index);
+        }
+
+        Ok(())
     }
 
     // -----------------------------------------------------------------

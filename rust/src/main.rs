@@ -12,6 +12,7 @@ use unvm::optimize::optimize;
 use unvm::parser::parse;
 use unvm::runtime::context;
 use unvm::runtime::world;
+use unvm::runner;
 use unvm::source::Source;
 use unvm::vm::{err_header, err_message, panic_display, Outcome, VM};
 
@@ -248,20 +249,18 @@ fn run(args: &[String]) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     native::init(cwd.to_str().unwrap_or("."));
 
-    let (source, node) = parse_file(&args[0]);
-    let desugared = desugar(&node);
+    let source = Rc::new(read_source(&args[0]));
 
-    let root = match optimize(&desugared) {
-        Ok(result) => result.root,
-        Err(panic) => {
-            eprintln!("{}", panic.display());
+    // `Runner.RunCore` — parse, desugar, optimize, compile
+    let program = match runner::compile_source(&source) {
+        Ok(program) => program,
+        Err(runner::RunError::Parse(error)) => {
+            // the reference catches the parse `Error` in `Run()` and prints it with
+            // `Console.WriteLine`, so the text goes to stdout with `Environment.NewLine`
+            print!("{}{}", error.display(&source), nl());
             exit(1);
         }
-    };
-
-    let program = match compiler::compile(&source, &root) {
-        Ok(program) => program,
-        Err(panic) => {
+        Err(runner::RunError::Panic(panic)) => {
             eprintln!("{}", panic.display());
             exit(1);
         }
@@ -274,7 +273,6 @@ fn run(args: &[String]) {
             exit(1);
         }
     };
-
     match vm.run() {
         Outcome::Value(_) => {
             world::flush_stdout();

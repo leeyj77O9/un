@@ -14,6 +14,7 @@ use std::rc::Rc;
 use crate::bytecode::instr::*;
 use crate::bytecode::{Constant, ExcKind, Program, Proto};
 use crate::error::{LangError, Panic};
+use crate::module;
 use crate::runtime::collections;
 use crate::runtime::context::{self, Context, Frame};
 use crate::runtime::function::{self, Args};
@@ -51,6 +52,8 @@ pub struct TryEntry {
     pub depth: usize,
     /// the accumulator frame count at region entry
     pub acc_depth: usize,
+    /// the catch variable's name slot, `None` for a bare catch
+    pub var_slot: Option<usize>,
 }
 
 pub struct VM {
@@ -66,6 +69,8 @@ pub struct VM {
     pub tries: Vec<TryEntry>,
     /// the `Error` a `?` region caught, rethrown at top level exactly as `throw;`
     pub pending: Option<LangError>,
+    /// the `Error` a `finally` block is about to rethrow
+    pub pending_finally: Option<LangError>,
 }
 
 impl VM {
@@ -73,8 +78,8 @@ impl VM {
         program.validate()?;
         let proto = program.protos[program.root].clone();
 
-        // the compiled function bodies run in a nested VM, so the program and the
-        // proto executor live in the global state
+        // the compiled function bodies run in a nested VM, so the proto executor lives
+        // in the global state
         world::set_current_program(Some(program.clone()));
         world::set_proto_executor(Some(Rc::new(execute_proto)));
 
@@ -87,7 +92,26 @@ impl VM {
             acc: Vec::new(),
             tries: Vec::new(),
             pending: None,
+            pending_finally: None,
         })
+    }
+
+    /// a VM for a source that runs in an existing context. the file module loader uses
+    /// it, because a module runs in its own scope.
+    pub fn with_context(program: Rc<Program>, _source: Rc<Source>, ctx: Context) -> Self {
+        let proto = program.protos[program.root].clone();
+
+        Self {
+            ctx,
+            program,
+            proto: Rc::new(proto),
+            ip: 0,
+            stack: Vec::new(),
+            acc: Vec::new(),
+            tries: Vec::new(),
+            pending: None,
+            pending_finally: None,
+        }
     }
 
     /// a nested VM for a compiled function body. the callee context carries the
@@ -104,6 +128,7 @@ impl VM {
             acc: Vec::new(),
             tries: Vec::new(),
             pending: None,
+            pending_finally: None,
         }
     }
 
@@ -149,16 +174,54 @@ impl VM {
         };
 
         // innermost region first, which is the last pushed entry
-        for entry in self.tries.iter().rev() {
-            if entry.kind != ExcKind::Propagate {
+        for index in (0..self.tries.len()).rev() {
+            let entry = self.tries[index];
+
+            if entry.start > self.ip || self.ip >= entry.end {
                 continue;
             }
-            if entry.start <= self.ip && self.ip < entry.end {
-                self.stack.truncate(entry.depth);
-                self.acc.truncate(entry.acc_depth);
-                self.pending = Some(e.clone());
-                self.ip = entry.handler;
-                return true;
+
+            match entry.kind {
+                ExcKind::Propagate => {
+                    self.stack.truncate(entry.depth);
+                    self.acc.truncate(entry.acc_depth);
+                    self.pending = Some(e.clone());
+                    self.ip = entry.handler;
+                    return true;
+                }
+                ExcKind::Catch => {
+                    // the handler is inside the region, so the entry has to go first,
+                    // otherwise an error in the catch block would find it again
+                    self.tries.remove(index);
+
+                    self.stack.truncate(entry.depth);
+                    self.acc.truncate(entry.acc_depth);
+
+                    // `EvalTry` binds the error into a child scope of the current one
+                    let parent = context::scope(&self.ctx);
+                    let catch_scope = scope::new(Some(parent), false);
+                    context::set_scope(&self.ctx, catch_scope.clone());
+
+                    if let Some(slot) = entry.var_slot {
+                        let name = self.name(slot);
+                        let error = obj::err_with_header(&e.header, &e.message);
+                        scope::set(&catch_scope, &name, error);
+                    }
+
+                    self.ip = entry.handler;
+                    return true;
+                }
+                ExcKind::Finally => {
+                    // the finally block runs, and the pending error leaves it
+                    self.tries.remove(index);
+
+                    self.stack.truncate(entry.depth);
+                    self.acc.truncate(entry.acc_depth);
+                    self.pending_finally = Some(e.clone());
+
+                    self.ip = entry.handler;
+                    return true;
+                }
             }
         }
 
@@ -453,6 +516,7 @@ impl VM {
                     handler: entry.handler,
                     depth: self.stack.len(),
                     acc_depth: self.acc.len(),
+                    var_slot: entry.var_slot,
                 });
             }
             Op::Propagate => {
@@ -685,6 +749,27 @@ impl VM {
                 let value = self.pop()?;
                 return Err(Outcome::Return(value, span.0, span.1));
             }
+            Op::PushTry => {
+                let entry = self.proto.exc[operand as usize];
+                self.tries.push(TryEntry {
+                    kind: entry.kind,
+                    start: entry.start,
+                    end: entry.end,
+                    handler: entry.handler,
+                    depth: self.stack.len(),
+                    acc_depth: self.acc.len(),
+                    var_slot: entry.var_slot,
+                });
+            }
+            Op::PopTry => {
+                self.tries.pop();
+            }
+            Op::Raise => {
+                // the pending error of a `finally` block leaves it
+                if let Some(error) = self.pending_finally.take() {
+                    return Err(Outcome::Error(error));
+                }
+            }
 
             // ------------------------------------------------------------------
             // function creation
@@ -741,6 +826,7 @@ impl VM {
                     args,
                     Types::single(types::ANY),
                     module_index,
+                    self.program.clone(),
                     self.ctx.clone(),
                 );
 
@@ -802,14 +888,14 @@ impl VM {
                 let last = parts.last().cloned().unwrap_or_default();
 
                 let result = if world::is_native(&last) {
-                    global::include(&last, alias, imports)
+                    global::include(&last, alias, imports).map_err(module::ModuleError::Panic)
                 } else {
                     let source_path = self.ctx.borrow().source.path.clone();
-                    global::import_file(&parts, &source_path, alias, imports)
+                    module::import_file(&parts, &source_path, alias, imports)
                 };
 
-                if let Err(e) = result {
-                    return Err(self.outcome(e));
+                if let Err(error) = result {
+                    return Err(error.into());
                 }
             }
             Op::Unsupported => {
@@ -852,13 +938,13 @@ impl VM {
         args: &Args,
         span: (usize, usize),
     ) -> Result<Obj, Outcome> {
-        let proto_index = function::fn_cell(callable).and_then(|cell| match &cell.borrow().body {
-            function::Body::Proto(index) => Some(*index),
+        let proto = function::fn_cell(callable).and_then(|cell| match &cell.borrow().body {
+            function::Body::Proto { index, program } => Some((*index, program.clone())),
             _ => None,
         });
 
-        match proto_index {
-            Some(index) => self.call_proto(callable, index, args, span),
+        match proto {
+            Some((index, program)) => self.call_proto(callable, program, index, args, span),
             None => Ok(obj::call_args(callable, args)),
         }
     }
@@ -868,6 +954,7 @@ impl VM {
     fn call_proto(
         &mut self,
         callable: &Obj,
+        program: Rc<Program>,
         proto_index: usize,
         args: &Args,
         span: (usize, usize),
@@ -877,7 +964,7 @@ impl VM {
             Err(error) => return Err(self.header_error(&error, span)),
         };
 
-        let flow = world::execute_proto(&frame.ctx, proto_index);
+        let flow = world::execute_proto(&program, &frame.ctx, proto_index);
 
         match flow {
             function::Flow::Return(value) => Ok(function::end_call(&frame, value)),
@@ -1062,27 +1149,11 @@ impl VM {
             _ => self.error(obj::display(err), span),
         }
     }
-
-    /// a host-level `Obj` result that ends the run: `Panic` payload aborts, `Err` becomes
-    /// a `LangError`.
-    fn outcome(&self, obj_value: Obj) -> Outcome {
-        match obj::payload(&obj_value) {
-            Payload::Panic { .. } => Outcome::Panic(obj_value),
-            Payload::Error { header, message } => {
-                Outcome::Error(LangError::new(0, 0, message).with_header(header))
-            }
-            _ => Outcome::Panic(obj_value),
-        }
-    }
 }
 
 /// the proto executor the runtime calls for a compiled function body.
-fn execute_proto(ctx: &Context, proto_index: usize) -> function::Flow {
-    let Some(program) = world::current_program() else {
-        return function::Flow::Normal;
-    };
-
-    let mut vm = VM::new_proto(program, proto_index, ctx.clone());
+fn execute_proto(program: &Rc<Program>, ctx: &Context, proto_index: usize) -> function::Flow {
+    let mut vm = VM::new_proto(program.clone(), proto_index, ctx.clone());
 
     match vm.run() {
         Outcome::Value(value) => function::Flow::Return(value),

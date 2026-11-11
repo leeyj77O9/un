@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::Node;
+use crate::bytecode::Program;
 use crate::error::LangError;
 use crate::runtime::collections;
 use crate::runtime::context::{self, Context};
@@ -95,8 +96,12 @@ pub type FnCell = Rc<RefCell<FnData>>;
 pub enum Body {
     /// `LFn` — the AST body of a user function, run through the VM executor hook
     Nodes(Rc<Vec<Node>>),
-    /// `LFn` — compiled bytecode proto body (proto index in current program)
-    Proto(usize),
+    /// `LFn` — compiled bytecode proto body. the program travels with the function,
+    /// because a file module has its own program.
+    Proto {
+        index: usize,
+        program: Rc<Program>,
+    },
     /// `NFn` — a host function that receives the bound scope
     Native(Rc<dyn Fn(&Scope) -> Obj>),
 }
@@ -105,7 +110,10 @@ impl Clone for Body {
     fn clone(&self) -> Self {
         match self {
             Body::Nodes(n) => Body::Nodes(n.clone()),
-            Body::Proto(i) => Body::Proto(*i),
+            Body::Proto { index, program } => Body::Proto {
+                index: *index,
+                program: program.clone(),
+            },
             Body::Native(f) => Body::Native(f.clone()),
         }
     }
@@ -149,6 +157,7 @@ pub fn proto_fn(
     args: Vec<ArgData>,
     return_type: Types,
     proto_index: usize,
+    program: Rc<Program>,
     closure: Context,
 ) -> Obj {
     obj::obj_new(
@@ -159,7 +168,10 @@ pub fn proto_fn(
             return_type,
             closure,
             property: None,
-            body: Body::Proto(proto_index),
+            body: Body::Proto {
+                index: proto_index,
+                program,
+            },
         }))),
     )
 }
@@ -317,7 +329,7 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {
 
         let host = match &cell.borrow().body {
             Body::Native(g) => g.clone(),
-            Body::Nodes(_) | Body::Proto(_) => unreachable!(),
+            Body::Nodes(_) | Body::Proto { .. } => unreachable!(),
         };
         let value = host(&scope);
         context::set_call_depth(&closure, depth);
@@ -338,9 +350,9 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {
                 _ => obj::none(),
             })
         }
-        Body::Proto(proto_idx) => {
-            let proto_idx = *proto_idx;
-            match world::execute_proto(&frame.ctx, proto_idx) {
+        Body::Proto { index, program } => {
+            let index = *index;
+            match world::execute_proto(program, &frame.ctx, index) {
                 Flow::Return(v) => Ok(v),
                 Flow::Propagate(e) => Ok(e),
                 Flow::Normal => Ok(obj::none()),

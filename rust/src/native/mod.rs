@@ -17,7 +17,10 @@ use crate::runtime::types::Types;
 use crate::runtime::world;
 
 pub mod builtin;
+pub mod inspect;
 pub mod io;
+pub mod math;
+pub mod members;
 
 /// `Global.Init(path)`
 pub fn init(path: &str) {
@@ -30,7 +33,12 @@ pub fn init(path: &str) {
     // so `CallDepth` is shared state across all native calls
     let closure = native_closure();
 
+    // the `[Native]` members of the builtin types live in `Global.originalClasses`
+    members::init_members(&closure);
+
     world::register_native("io", io::members(&closure));
+    world::register_native("inspect", inspect::members(&closure));
+    world::register_native("math", math::members(&closure));
 
     for (name, f) in builtin::members(&closure) {
         world::set_global(&name, f);

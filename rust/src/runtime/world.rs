@@ -12,8 +12,9 @@ use crate::runtime::scope::{self, Scope};
 /// the hook the VM registers so a `function::Body::Nodes` call can run its AST body.
 pub type Executor = Rc<dyn Fn(&Context, &[Node]) -> Flow>;
 
-/// the hook the VM registers so a compiled proto body can be executed.
-pub type ProtoExecutor = Rc<dyn Fn(&Context, usize) -> Flow>;
+/// the hook the VM registers so a compiled proto body can be executed. the program
+/// travels with the call, because a file module has its own program.
+pub type ProtoExecutor = Rc<dyn Fn(&Rc<Program>, &Context, usize) -> Flow>;
 
 /// `Str` interning limits of the reference implementation (`Str.MAX_POOL_SIZE`,
 /// `Str.MAX_POOLED_STRING_LEGNTH` — the typo is the reference's).
@@ -61,6 +62,11 @@ pub struct World {
     log: Rc<RefCell<String>>,
     /// `Global.SetAllowedModules` — `None` allows everything
     allowed: Option<HashSet<String>>,
+    /// `Global._moduleCache` — the loaded module maps, keyed by the full path.
+    module_cache: HashMap<String, Vec<(String, Obj)>>,
+    /// `Global._loading` — the paths that are being loaded right now. a path that is
+    /// already in the set is a circular import.
+    loading: HashSet<String>,
 }
 
 impl World {
@@ -91,6 +97,8 @@ impl World {
             stdout: Rc::new(RefCell::new(String::new())),
             log: Rc::new(RefCell::new(String::new())),
             allowed: None,
+            module_cache: HashMap::new(),
+            loading: HashSet::new(),
         }
     }
 }
@@ -121,6 +129,24 @@ pub fn set_proto_executor(executor: Option<ProtoExecutor>) {
     WORLD.with(|w| w.borrow_mut().proto_executor = executor);
 }
 
+/// `Global._moduleCache` — the loaded module maps.
+pub fn module_cache_get(key: &str) -> Option<Vec<(String, Obj)>> {
+    WORLD.with(|w| w.borrow().module_cache.get(key).cloned())
+}
+
+pub fn module_cache_set(key: &str, map: Vec<(String, Obj)>) {
+    WORLD.with(|w| w.borrow_mut().module_cache.insert(key.to_owned(), map));
+}
+
+/// `Global._loading.Add` — `false` when the path is already being loaded.
+pub fn loading_add(key: &str) -> bool {
+    WORLD.with(|w| w.borrow_mut().loading.insert(key.to_owned()))
+}
+
+pub fn loading_remove(key: &str) {
+    WORLD.with(|w| w.borrow_mut().loading.remove(key));
+}
+
 pub fn set_current_program(program: Option<Rc<Program>>) {
     WORLD.with(|w| w.borrow_mut().current_program = program);
 }
@@ -129,10 +155,12 @@ pub fn current_program() -> Option<Rc<Program>> {
     WORLD.with(|w| w.borrow().current_program.clone())
 }
 
-pub fn execute_proto(ctx: &Context, proto_index: usize) -> Flow {
+/// `execute_proto` runs a compiled function body. the program travels with the
+/// function, because a file module has its own program.
+pub fn execute_proto(program: &Rc<Program>, ctx: &Context, proto_index: usize) -> Flow {
     let executor = WORLD.with(|w| w.borrow().proto_executor.clone());
     match executor {
-        Some(f) => f(ctx, proto_index),
+        Some(f) => f(program, ctx, proto_index),
         None => Flow::Normal,
     }
 }
@@ -283,6 +311,11 @@ pub fn register_original_class(type_name: &str, attrs: Vec<(String, Obj)>) {
             .original_classes
             .insert(type_name.to_owned(), attrs);
     })
+}
+
+/// `Global.TryGetOriginalClass` — the member table of a type's original class.
+pub fn original_class_attrs(type_name: &str) -> Option<Vec<(String, Obj)>> {
+    WORLD.with(|w| w.borrow().original_classes.get(type_name).cloned())
 }
 
 /// `Global.TrySetOriginalClass` — the extension method is only registered when the

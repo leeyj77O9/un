@@ -16,6 +16,10 @@ pub struct ScopeData {
     pub is_function_scope: bool,
     pub parent: Option<Scope>,
     pub symbols: HashMap<String, usize>,
+    /// the insertion order of `symbols`. the reference keeps the symbol table in a
+    /// `Dictionary<string, int>`, and a module's member map is built from it, so the
+    /// order is observable.
+    pub order: Vec<String>,
     pub slots: Vec<Obj>,
 }
 
@@ -24,6 +28,7 @@ pub fn new(parent: Option<Scope>, is_function_scope: bool) -> Scope {
         is_function_scope,
         parent,
         symbols: HashMap::new(),
+        order: Vec::new(),
         slots: Vec::new(),
     }))
 }
@@ -109,7 +114,21 @@ fn declare_new(scope: &Scope, key: &str, value: Obj) {
     let mut d = scope.borrow_mut();
     let idx = d.slots.len();
     d.symbols.insert(key.to_owned(), idx);
+    d.order.push(key.to_owned());
     d.slots.push(value);
+}
+
+/// the scope's own symbols, in the order they were declared. the reference reads the
+/// symbol table of a module scope to build the module's member map.
+pub fn local_symbols(scope: &Scope) -> Vec<(String, Obj)> {
+    let d = scope.borrow();
+    d.order
+        .iter()
+        .filter_map(|name| {
+            let idx = *d.symbols.get(name)?;
+            d.slots.get(idx).map(|value| (name.clone(), value.clone()))
+        })
+        .collect()
 }
 
 /// `Scope.ContainsKey` — walks the whole parent chain.
@@ -131,7 +150,12 @@ pub fn contains_key_in_top(scope: &Scope, key: &str) -> bool {
 
 /// `Scope.Remove(key)` — returns whether a slot name was removed.
 pub fn remove(scope: &Scope, key: &str) -> bool {
-    scope.borrow_mut().symbols.remove(key).is_some()
+    let mut d = scope.borrow_mut();
+    let removed = d.symbols.remove(key).is_some();
+    if removed {
+        d.order.retain(|name| name != key);
+    }
+    removed
 }
 
 pub fn slot_count(scope: &Scope) -> usize {
