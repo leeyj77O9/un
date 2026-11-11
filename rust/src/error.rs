@@ -1,5 +1,17 @@
 ﻿use crate::source::Source;
 
+/// every display line of the reference is printed with `Console.WriteLine`, so its
+/// newline is `Environment.NewLine` (`\r\n` on Windows). `io.write` writes the literal
+/// `"\n"` string, which stays LF on every platform, so the two newline kinds are not
+/// interchangeable.
+pub fn nl() -> &'static str {
+    if cfg!(windows) {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
 /// mirrors `Panic` of the reference implementation.
 /// `Panic.ToString()` is `\npanic : {message}` (leading newline included).
 #[derive(Debug, Clone)]
@@ -27,7 +39,7 @@ impl Panic {
 
     pub fn display(&self) -> String {
         if self.name == "panic" {
-            format!("\npanic : {}", self.message)
+            format!("{}panic : {}", nl(), self.message)
         } else {
             format!("{}: {}", self.name, self.message)
         }
@@ -79,8 +91,11 @@ impl LangError {
 
         let caret_len = self.length.max(1);
 
+        // `Error.cs` is stored with CRLF line endings, so the raw string literal that
+        // builds `ToString()` contains `\r\n` separators on Windows
         format!(
-            "\n<{}>, line [{}], column [{}]\n    {}\n    {}{}\n{}: {}",
+            "{0}<{1}>, line [{2}], column [{3}]{0}    {4}{0}    {5}{6}{0}{7}: {8}",
+            nl(),
             source.name(),
             source.get_line(self.start),
             source.get_column(self.start),
