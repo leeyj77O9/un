@@ -669,13 +669,25 @@ fn str_replace(scope: &Scope) -> Obj {
 
     let new = scope::get(scope, "new_value");
     let new = if obj::is_none(&new) {
-        String::new()
+        // the reference calls `As<Str>` on the missing argument, which throws
+        return obj::panic(
+            "System.NullReferenceException",
+            "Object reference not set to an instance of an object.",
+        );
     } else {
         match obj::payload(&new) {
             Payload::Str(s) => s.to_string(),
             _ => return obj::err("invalid argument: new_value"),
         }
     };
+
+    // `String.Replace` rejects an empty old value
+    if old.is_empty() {
+        return obj::panic(
+            "System.ArgumentException",
+            "String cannot be of zero length.",
+        );
+    }
 
     obj::str(&text.replace(&old, &new))
 }

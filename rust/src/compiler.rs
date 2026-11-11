@@ -1202,9 +1202,30 @@ impl<'a> Compiler<'a> {
             };
 
             if kind == "get" {
+                if entry.1.is_some() {
+                    self.error_node(member, &format!("duplicate getter for property '{name}'"));
+                    return Ok(());
+                }
                 entry.1 = Some(member);
             } else {
+                if entry.2.is_some() {
+                    self.error_node(member, &format!("duplicate setter for property '{name}'"));
+                    return Ok(());
+                }
                 entry.2 = Some(member);
+            }
+        }
+
+        // a method and a property cannot have the same name
+        for member in &body.children {
+            if member.kind != NodeKind::Function {
+                continue;
+            }
+
+            let name = self.text(&member.children[0]);
+            if accessor_names.iter().any(|n| *n == name) {
+                self.error_node(member, &format!("property '{name}' conflicts with a method"));
+                return Ok(());
             }
         }
 
@@ -1658,7 +1679,9 @@ impl<'a> Compiler<'a> {
                 }
                 _ => {
                     self.code(child)?;
-                    self.emit(Op::ArgPos, 0, 0, span_of(child));
+                    // `EvalArguments` rethrows an `Err` argument, the keyword arguments
+                    // are not checked
+                    self.emit(Op::ArgPos, FLAG_ARG_CHECK, 0, span_of(child));
                     entries.push(-1);
                 }
             }
