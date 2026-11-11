@@ -267,6 +267,63 @@ pub fn list_set_item(v: &Rc<RefCell<Vec<Obj>>>, key: &Obj, value: &Obj) -> Obj {
     }
 }
 
+/// `List.Insert` (`List.cs:277`) — the shape `BindPattern`'s slice branch uses.
+/// The tail shift runs from `Count-1` down to `idx`, the stored element is a copy
+/// (`obj.Copy()`), so the caller's object is not aliased into the list.
+/// An index outside `0..=Count` is `Err` here; the reference lets the .NET array indexer
+/// throw `IndexOutOfRange` instead, which is documented as a divergence in phase 14.
+pub fn list_insert(v: &Rc<RefCell<Vec<Obj>>>, value: &Obj, index: &Obj) -> Result<(), Obj> {
+    let idx = match obj::payload(index) {
+        Payload::Int(i) => i as i32 as i64,
+        _ => return Err(obj::err("invalid arguments: index")),
+    };
+
+    let count = v.borrow().len() as i64;
+    if count == 0 {
+        v.borrow_mut().push(value.clone());
+        return Ok(());
+    }
+    if idx < 0 || idx > count {
+        return Err(obj::err("list index out of range"));
+    }
+
+    let mut data = v.borrow_mut();
+    // `List` has spare capacity (`Resize`), so grow before shifting; the reference shifts
+    // from `Count-1` down to `idx` and writes the copy at `idx`.
+    data.push(obj::none());
+    for i in (idx..count).rev() {
+        let moved = data[i as usize].clone();
+        data[i as usize + 1] = moved;
+    }
+    data[idx as usize] = obj::copy_obj(value);
+
+    Ok(())
+}
+
+/// `List.RemoveAt` (`List.cs:358`) — out of range is `Bool.False`, otherwise the tail
+/// shifts left and the count drops. The reference returns `self`, which `BindPattern`
+/// ignores, so the result is dropped here.
+pub fn list_remove_at(v: &Rc<RefCell<Vec<Obj>>>, index: &Obj) -> Result<(), Obj> {
+    let idx = match obj::payload(index) {
+        Payload::Int(i) => i as i32 as i64,
+        _ => return Err(obj::err("invalid arguments: index")),
+    };
+
+    let mut data = v.borrow_mut();
+    let count = data.len() as i64;
+    if idx < 0 || idx >= count {
+        return Ok(());
+    }
+
+    for i in idx..count - 1 {
+        let moved = data[i as usize + 1].clone();
+        data[i as usize] = moved;
+    }
+    data.pop();
+
+    Ok(())
+}
+
 /// `List.Slice`: the `step == 1` fast path is an `Array.Copy`, so it never calls `Add`.
 pub fn list_slice(
     v: &Rc<RefCell<Vec<Obj>>>,

@@ -135,6 +135,11 @@ pub enum Op {
     /// the reference `Eval` throws `unsupported node kind {Kind}` for every kind it has no
     /// case for. the compiler keeps that behaviour observable instead of failing the build.
     Unsupported = 0x5F,
+
+    /// tuple pattern unpack. operand is the number of values to pop, the last one is
+    /// deepest, so the binder runs the targets in reverse.
+    /// `Evaluator.Unpack` (`Evaluator.cs:1309`) is the reference this opcode implements.
+    Unpack = 0x60,
 }
 
 impl Op {
@@ -236,6 +241,7 @@ impl Op {
             0x5D => Some(Op::MakeFunc),
             0x5E => Some(Op::Use),
             0x5F => Some(Op::Unsupported),
+            0x60 => Some(Op::Unpack),
             _ => None,
         }
     }
@@ -362,14 +368,17 @@ mod tests {
         assert_eq!(Op::MakeFunc as u8, 0x5D);
         assert_eq!(Op::Use as u8, 0x5E);
         assert_eq!(Op::Unsupported as u8, 0x5F);
+        assert_eq!(Op::Unpack as u8, 0x60);
     }
 
     #[test]
     fn reserved_area_is_free() {
-        for v in 0x60u8..=0x7F {
+        // `0x60` is the first slot of the reserved extension area, and `UNPACK` takes it.
+        // `0x61..=0x7F` must stay free so a `.unbc` written by an older compiler is readable.
+        for v in 0x61u8..=0x7F {
             assert_eq!(Op::from_u8(v), None, "{v:#04x} must stay reserved");
         }
-        for v in 0x60u8..=0x7F {
+        for v in 0x61u8..=0x7F {
             let bytes = [v, 0, 0, 0, 0, 0, 0];
             let instr = Instr::decode(&bytes);
             assert_eq!(instr.op_code(), None);
@@ -388,7 +397,7 @@ mod tests {
 
     #[test]
     fn every_assigned_opcode_is_decodable() {
-        for v in 0x01u8..=0x5F {
+        for v in 0x01u8..=0x60 {
             assert!(Op::from_u8(v).is_some(), "{v:#04x} is a hole in the opcode table");
         }
         assert_eq!(Op::from_u8(0x00), None);

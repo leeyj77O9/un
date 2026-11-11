@@ -428,19 +428,58 @@ pub fn invoke(f: &Obj, args: &[Obj]) -> Option<Obj> {
 /// `Obj.Call` — `Invoke("__call__", args, s => s.Call(args), fallback)`. a `Func`
 /// payload is `LFn` / `NFn`, whose `Call` override replaces the whole base dispatch.
 pub fn call(o: &Obj, args: &[Obj]) -> Obj {
+    call_args(o, &function::Args::positional(args.to_vec()))
+}
+
+/// `Obj.Call` for the VM: the same dispatch, but the argument names reach `Fn.Call`,
+/// which is what makes `kw` arguments and `**kwargs` spread work at runtime.
+pub fn call_args(o: &Obj, args: &function::Args) -> Obj {
     if let Payload::Func(..) = payload(o) {
-        return function::fn_call(o, &function::Args::positional(args.to_vec()));
+        return function::fn_call(o, args);
     }
-    if let Some(v) = try_method(o, "__call__", args) {
+    if let Some(v) = try_method_named(o, "__call__", args) {
         return v;
     }
     if let Some(s) = valid_super(o) {
-        return call(&s, args);
+        return call_args(&s, args);
     }
     if let Payload::TObj(t) = payload(o) {
-        return collections::tobj_call(&t, args);
+        return collections::tobj_call(&t, &args.values);
     }
     err(format!("unsupported operand type(s) for (): '{}'", type_name(o)))
+}
+
+/// `Invoke` as a function that always returns a value (`Obj.Invoke` is `void` and
+/// overwrites `ref result`; this shape keeps the `Option` dispatch of `TryMethod`).
+pub fn invoke_obj(f: &Obj, args: &function::Args) -> Obj {
+    match payload(f) {
+        Payload::Func(..) => function::fn_call(f, args),
+        _ => err(format!(
+            "unsupported operand type(s) for (): '{}'",
+            type_name(f)
+        )),
+    }
+}
+
+/// `TryMethod` with named arguments. `Self`/`Super` are bound on the member exactly as
+/// the reference does, so a method call carries the receiver's identity.
+pub fn try_method_named(o: &Obj, name: &str, args: &function::Args) -> Option<Obj> {
+    let m = member(o, name)?;
+    {
+        let mut d = m.borrow_mut();
+        d.self_ = Some(o.clone());
+        d.super_ = o.borrow().super_.clone();
+    }
+    invoke_args(&m, args)
+}
+
+/// `method.Call(args)` inside `TryMethod`, named form. a `Func` payload runs `Fn.Call`;
+/// any other payload has no callable override, so the caller continues its own dispatch.
+pub fn invoke_args(f: &Obj, args: &function::Args) -> Option<Obj> {
+    match payload(f) {
+        Payload::Func(..) => Some(function::fn_call(f, args)),
+        _ => None,
+    }
 }
 
 /// `Obj.Init`

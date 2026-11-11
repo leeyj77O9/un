@@ -56,6 +56,50 @@ fn list_display_and_bool() {
 }
 
 #[test]
+fn list_insert_and_remove_match_reference() {
+    let l = list(vec![obj::int(1), obj::int(2), obj::int(3)]);
+    let v = match obj::payload(&l) {
+        Payload::List(v) => v,
+        _ => unreachable!(),
+    };
+
+    // `List.Insert` shifts the tail from `Count-1` down and stores a copy of the value.
+    assert!(list_insert(&v, &obj::int(9), &obj::int(1)).is_ok());
+    assert_eq!(obj::display(&l), "[1, 9, 2, 3]");
+
+    // inserting at `Count` appends
+    assert!(list_insert(&v, &obj::int(5), &obj::int(4)).is_ok());
+    assert_eq!(obj::display(&l), "[1, 9, 2, 3, 5]");
+
+    let bad_index = match list_insert(&v, &obj::int(1), &s("a")) {
+        Ok(()) => obj::none(),
+        Err(e) => e,
+    };
+    assert_eq!(message(&bad_index), "invalid arguments: index");
+    let out_of_range = match list_insert(&v, &obj::int(1), &obj::int(9)) {
+        Ok(()) => obj::none(),
+        Err(e) => e,
+    };
+    assert_eq!(message(&out_of_range), "list index out of range");
+
+    // `List.RemoveAt` shifts the tail left; out of range leaves the list untouched
+    assert!(list_remove_at(&v, &obj::int(1)).is_ok());
+    assert_eq!(obj::display(&l), "[1, 2, 3, 5]");
+    assert!(list_remove_at(&v, &obj::int(9)).is_ok());
+    assert_eq!(obj::display(&l), "[1, 2, 3, 5]");
+    assert!(list_remove_at(&v, &obj::int(-1)).is_ok());
+    assert_eq!(obj::display(&l), "[1, 2, 3, 5]");
+
+    let e = list(vec![obj::int(1)]);
+    let w = match obj::payload(&e) {
+        Payload::List(w) => w,
+        _ => unreachable!(),
+    };
+    assert!(list_insert(&w, &obj::int(7), &obj::int(0)).is_ok());
+    assert_eq!(obj::display(&e), "[7, 1]");
+}
+
+#[test]
 fn list_slice_rules() {
     let l = list(vec![obj::int(1), obj::int(2), obj::int(3), obj::int(4)]);
     assert_eq!(obj::display(&obj::slice(&l, None, None, None)), "[1, 2, 3, 4]");

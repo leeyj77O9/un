@@ -349,6 +349,9 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         Op::StoreName | Op::StoreLocal | Op::StoreUpv | Op::Raise | Op::Return => -1,
         Op::Pop => -1,
         Op::PopN => -count,
+        // `UNPACK` pops `count` values and hands them to the following binders one by one,
+        // so the net depth change is `count - 1` (the count itself lives in the operand).
+        Op::Unpack => count - 1,
         Op::Swap | Op::Rot => 0,
         Op::BuildList | Op::BuildSet | Op::BuildTuple | Op::BuildTupleNamed | Op::FString => 1 - count,
         Op::BuildDict => 1 - 2 * count,

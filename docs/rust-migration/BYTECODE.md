@@ -253,7 +253,28 @@ block의 값**이므로(`EvalBlock`의 `result`), 마지막 문장에는 `POP`�
 
 ## 16. 확장을 위한 자리
 
-- `flags`의 상위 비트, opcode table의 예약 영역(`0x60..0x7F`), `.unbc` footer 섹션은
+- `flags`의 상위 비트, opcode table의 예약 영역(`0x61..0x7F`), `.unbc` footer 섹션은
   추가 필드(dis, profile, coverage, gc metadata)용 예약으로 둔다.
 - serialization을 추가할 때 **proto layout에 필드를 append**하고 version을 bump한다.
   재구축이 필요 없는 이유는 모든 테이블이 count-prefixed이고 instruction이 fixed-size이기 때문이다.
+
+## 17. `UNPACK` (`0x60`)
+
+`UNPACK`은 예약 영역의 첫 slot(`0x60`)을 사용하는 extension opcode다. operand는 pop할
+value 개수(`Tup.Count`), stack effect는 `count - 1`이다. 기준 구현은 `Evaluator.Unpack`
+(`Evaluator.cs:1309`)이고, pop 순서가 기준이다:
+
+```csharp
+for (int i = 0; i < result.Length; i++)
+    result[i] = stack.Pop();
+```
+
+`result[0]`이 stack 가장 깊은 값(마지막 push)이므로, tuple pattern의 binder는
+`UNPACK` 이후 `pattern[Count-1]`, `pattern[Count-2]`, … `pattern[0]` **역순**으로
+emit된다. `Stack`이 LIFO이기 때문이다.
+
+`SET_SLICE`는 `value`, `target`, bounds를 pop하고 **원래 `value`를 push**한다
+(stack effect `-(1+k)`). `BindPattern`의 slice branch는 마지막에
+`BindPattern(pattern.Children[i], result[i])`로 `value`를 재사용하므로 value가
+stack에 남아야 한다.
+
