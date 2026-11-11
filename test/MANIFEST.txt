@@ -35,6 +35,7 @@ unit|test/unit/native/str.un
 unit|test/unit/native/list.un
 unit|test/unit/native/dict.un
 unit|test/unit/native/set.un
+unit|test/unit/native/atomic.un
 unit|test/unit/native/tup.un
 unit|test/unit/native/math.un
 unit|test/unit/native/iter.un

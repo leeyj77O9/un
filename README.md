@@ -271,8 +271,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
-Positive 집계의 통과·실패 수에 포함하지 않는다. 현재 기준은 Positive 34 파일 /
-1281 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
+Positive 집계의 통과·실패 수에 포함하지 않는다. 현재 기준은 Positive 35 파일 /
+1313 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
 
 `.NET 8` 앱은 `.NET 10` 런타임 위에서 `DOTNET_ROLL_FORWARD=Major`를 설정하면
 실행된다(PowerShell: `$env:DOTNET_ROLL_FORWARD='Major'`).
@@ -455,7 +455,17 @@ io.write(wait a)    # 10
 ```
 
 `flow.spawn(n)`은 워커 풀이다. `pool.map`은 인자마다 결과를 만들고, `pool.submit`은
-Future를 돌려준다.
+Future를 돌려준다. 공유 상태를 두고 경쟁이 일어나지 않게 하려면 `atomic.int`/`atomic.bool`
+(예: `counter.inc()`)로 원자 연산을 할 수 있다.
+
+```un
+use atomic
+
+counter = atomic.int(0)
+counter.inc()              # 1
+counter.add(10)            # 11
+counter.compare_and_swap(11, 100)   # true
+```
 
 ```un
 use io
@@ -499,6 +509,7 @@ work()    # start done
 
 | 모듈 | 주요 API |
 |---|---|
+| `atomic` | `atomic.int(초기값?)`/`atomic.bool(초기값?)`로 `atomic_int`/`atomic_bool` 생성. `get`/`set`/`add`(int만)/`inc`/`dec`(int만)/`exchange`/`compare_and_swap`, `Interlocked` 기반 |
 | `io` | `write`, `read`, `open`, `clear` |
 | `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |

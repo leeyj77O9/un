@@ -1,0 +1,75 @@
+use io
+use iter
+use atomic
+use test.assert as assert
+
+# ============================================================
+# atomic - 원자 정수/불리언 연산
+# 실행: Un.exe run test/unit/native/atomic.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- 생성 ----------
+a = atomic.int()
+assert.assert_eq(a.get(), 0, "atomic.int() defaults to 0")
+b = atomic.int(100)
+assert.assert_eq(b.get(), 100, "atomic.int(n) initializes")
+assert.assert_err(fn() -> atomic.int("x"), "expected 'initial' argument to be of type 'int'")
+assert.assert_eq(type(a), type(atomic.int()), "atomic.int returns atomic_int")
+
+# ---------- get / set / inc / dec / add ----------
+b.set(10)
+assert.assert_eq(b.get(), 10, "set replaces the value")
+assert.assert_eq(b.inc(), 11, "inc returns the new value")
+assert.assert_eq(b.get(), 11, "inc mutates the value")
+assert.assert_eq(b.dec(), 10, "dec returns the new value")
+assert.assert_eq(b.add(5), 15, "add returns the new value")
+assert.assert_eq(b.add(-20), -5, "add accepts negatives")
+assert.assert_err(fn() -> b.add("x"), "expected 'value' argument to be of type 'int'")
+
+# ---------- exchange ----------
+assert.assert_eq(b.exchange(999), -5, "exchange returns the old value")
+assert.assert_eq(b.get(), 999, "exchange replaces the value")
+assert.assert_err(fn() -> b.exchange("x"), "expected 'value' argument to be of type 'int'")
+
+# ---------- compare_and_swap ----------
+assert.assert_false(b.compare_and_swap(0, 1), "compare_and_swap keeps value on mismatch")
+assert.assert_eq(b.get(), 999, "compare_and_swap mismatch leaves value")
+assert.assert_true(b.compare_and_swap(999, 123), "compare_and_swap swaps on match")
+assert.assert_eq(b.get(), 123, "compare_and_swap match sets value")
+assert.assert_err(fn() -> b.compare_and_swap(999, "x"), "expected 'new_value' argument to be of type 'int'")
+
+# ---------- bool ----------
+f = atomic.bool()
+assert.assert_eq(f.get(), false, "atomic.bool() defaults to false")
+g = atomic.bool(true)
+assert.assert_eq(g.get(), true, "atomic.bool(true) initializes")
+assert.assert_eq(type(g), type(atomic.bool()), "atomic.bool returns atomic_bool")
+assert.assert_eq(g.exchange(false), true, "bool exchange returns the old value")
+assert.assert_eq(g.get(), false, "bool exchange replaces the value")
+g.set(true)
+assert.assert_eq(g.compare_and_swap(true, false), true, "bool compare_and_swap swaps on match")
+assert.assert_eq(g.get(), false, "bool compare_and_swap match sets value")
+assert.assert_eq(g.compare_and_swap(true, true), false, "bool compare_and_swap mismatch keeps value")
+assert.assert_err(fn() -> g.set("x"), "expected 'value' argument to be of type 'bool'")
+assert.assert_err(fn() -> f.compare_and_swap(false, "x"), "expected 'new_value' argument to be of type 'bool'")
+
+# ---------- 동시성 스트레스 ----------
+counter = atomic.int(0)
+fn bump()
+    for 0..500
+        counter.inc()
+
+futures = []
+for i in iter.range(4)
+    futures.add(go bump())
+
+for fut in futures
+    wait fut
+
+assert.assert_eq(counter.get(), 2000, "concurrent increments are not lost")
+
+# ---------- clone은 금지 ----------
+assert.assert_err(fn() -> a.clone(), "'atomic_int' cannot be cloned")
+assert.assert_err(fn() -> f.clone(), "'atomic_bool' cannot be cloned")
+
+assert.summary()

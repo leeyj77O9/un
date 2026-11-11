@@ -273,8 +273,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
-counted in the Positive pass/fail totals. The current baseline is Positive 34
-files / 1281 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
+counted in the Positive pass/fail totals. The current baseline is Positive 35
+files / 1313 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
 Known 1 file.
 
 A `.NET 8` app runs on a `.NET 10` runtime when `DOTNET_ROLL_FORWARD=Major` is
@@ -463,7 +463,17 @@ io.write(wait a)    # 10
 ```
 
 `flow.spawn(n)` is a worker pool. `pool.map` produces one result per argument, and
-`pool.submit` hands back a `Future`.
+`pool.submit` hands back a `Future`. For shared state that must not race, use
+`atomic.int`/`atomic.bool` (e.g. `counter.inc()`) to perform atomic operations.
+
+```un
+use atomic
+
+counter = atomic.int(0)
+counter.inc()              # 1
+counter.add(10)            # 11
+counter.compare_and_swap(11, 100)   # true
+```
 
 ```un
 use io
@@ -507,6 +517,7 @@ work()    # start done
 
 | Module | Main API |
 |---|---|
+| `atomic` | `atomic.int(initial?)`/`atomic.bool(initial?)` create `atomic_int`/`atomic_bool`. Methods: `get`/`set`/`add` (int only)/`inc`/`dec` (int only)/`exchange`/`compare_and_swap`, backed by `Interlocked` |
 | `io` | `write`, `read`, `open`, `clear` |
 | `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
