@@ -16,6 +16,21 @@ use unvm::source::Source;
 use unvm::vm::{err_header, err_message, panic_display, Outcome, VM};
 
 fn main() {
+    // the VM keeps one Rust frame per Un call, and the reference allows 1000 nested
+    // calls, so the program runs on a thread with a stack big enough for them. the
+    // stack is virtual memory, so the reservation costs nothing until it is used.
+    let worker = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(dispatch)
+        .expect("failed to spawn the worker thread");
+
+    match worker.join() {
+        Ok(()) => exit(0),
+        Err(_) => exit(1),
+    }
+}
+
+fn dispatch() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     match args.first().map(|s| s.as_str()) {
@@ -170,7 +185,7 @@ fn dis(args: &[String]) {
     for (pi, proto) in program.protos.iter().enumerate() {
         println!(
             "proto {pi} name {:?} flags {:#06x} code {}",
-            program.name(proto, proto.name),
+            program.names[proto.name],
             proto.flags,
             proto.code.len()
         );

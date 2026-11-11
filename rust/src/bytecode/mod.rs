@@ -9,9 +9,10 @@ pub mod instr;
 pub use instr::{
     Instr, Op, PARAM_DEFAULT, PARAM_ESSENTIAL, PARAM_KEYWORD, PARAM_OPTIONAL, PARAM_POSITIONAL,
     FLAG_ARG_CHECK, FLAG_CLASS_BASES, FLAG_CLASS_PARAMS, FLAG_FUNC_BIND, FLAG_FUNC_EXT,
-    FLAG_FUNC_PROP, FLAG_JUMP_NONE, FLAG_JUMP_POP, FLAG_JUMP_TRUE, FLAG_LOCAL_ONLY,
-    FLAG_OPT_CHAIN, FLAG_SCOPE_FUNCTION, FLAG_SCOPE_LOOP, FLAG_SLICE_END, FLAG_SLICE_START,
-    FLAG_SLICE_STEP, FLAG_STRICT, PROTO_FUNCTION, PROTO_HAS_SELF, PROTO_HAS_SUPER,
+    FLAG_FUNC_PROP, FLAG_HOST_ERROR, FLAG_JUMP_NONE, FLAG_JUMP_POP, FLAG_JUMP_TRUE,
+    FLAG_LOCAL_ONLY, FLAG_OPT_CHAIN, FLAG_SCOPE_FUNCTION, FLAG_SCOPE_LOOP, FLAG_SLICE_END,
+    FLAG_SLICE_START, FLAG_SLICE_STEP, FLAG_STRICT, PROTO_FUNCTION, PROTO_HAS_SELF,
+    PROTO_HAS_SUPER,
 };
 
 /// `.unbc` magic (BYTECODE.md §13).
@@ -88,6 +89,9 @@ pub struct Proto {
     pub source_map: Vec<(usize, usize)>,
     pub exc: Vec<ExcEntry>,
     pub flags: u16,
+    /// the extended type of an extension method (`fn Type.method()`), a module name
+    /// index. `None` for every other proto.
+    pub ext_type: Option<usize>,
 }
 
 impl Proto {
@@ -105,6 +109,7 @@ impl Proto {
             source_map: Vec::new(),
             exc: Vec::new(),
             flags,
+            ext_type: None,
         }
     }
 
@@ -197,6 +202,28 @@ impl Program {
                     return Err(format!("{label}: proto index {index} out of range"));
                 }
             }
+            for param in &proto.params {
+                if param.name >= self.names.len() {
+                    return Err(format!("{label}: parameter name index {} out of range", param.name));
+                }
+                if let Some(type_name) = param.type_name {
+                    if type_name >= self.names.len() {
+                        return Err(format!(
+                            "{label}: parameter type index {type_name} out of range"
+                        ));
+                    }
+                }
+                if let Some(default) = param.default {
+                    if default >= self.consts.len() {
+                        return Err(format!("{label}: parameter default index {default} out of range"));
+                    }
+                }
+            }
+            if let Some(ext) = proto.ext_type {
+                if ext >= self.names.len() {
+                    return Err(format!("{label}: extension type index {ext} out of range"));
+                }
+            }
             for entry in &proto.exc {
                 if entry.start >= entry.end {
                     return Err(format!("{label}: exception range {} >= {}", entry.start, entry.end));
@@ -274,6 +301,12 @@ impl Program {
                         }
 
                         if matches!(op, Op::Jmp | Op::Break | Op::Skip) {
+                            break;
+                        }
+
+                        // `RETURN` ends the proto, so the code after it is unreachable
+                        // and the walk stops here.
+                        if op == Op::Return {
                             break;
                         }
 
@@ -394,7 +427,6 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         | Op::MakeClass
         | Op::LoadBaseClass
         | Op::MakeEnum
-        | Op::MakeFunc
         | Op::Use => 1,
         Op::Dup2 => 2,
         Op::StoreName | Op::StoreLocal | Op::StoreUpv | Op::Raise | Op::Return => -1,
@@ -467,6 +499,10 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         // and `ADD_METHOD` pops the `MAKE_FUNC` result it consumes.
         Op::Unwrap => 0,
         Op::SetAttr | Op::AddMember | Op::AddMethod => -1,
+        // `MAKE_FUNC` pops the default values the parameter list evaluates at
+        // definition time (the count is in the flags' high byte) and pushes the
+        // created function.
+        Op::MakeFunc => 1 - ((flags >> 8) as i64),
         Op::SetItem => -2,
         Op::MakeProperty => -3,
         Op::RegisterClass => -1,

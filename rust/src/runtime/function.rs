@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::Node;
+use crate::error::LangError;
 use crate::runtime::collections;
 use crate::runtime::context::{self, Context};
 use crate::runtime::obj::{self, Obj, ObjData, Payload};
@@ -77,6 +78,15 @@ impl Args {
 pub enum Flow {
     Return(Obj),
     Propagate(Obj),
+    /// a language error (`Error`) raised inside the body. the reference lets it
+    /// propagate out of the call, so it carries its own position.
+    Error(LangError),
+    /// a host exception raised inside the body
+    Panic(Obj),
+    /// `BreakFlow` — the reference lets it unwind to the enclosing loop
+    Break(usize, usize),
+    /// `SkipFlow` — the reference lets it unwind to the enclosing loop
+    Skip(usize, usize),
     Normal,
 }
 
@@ -85,6 +95,8 @@ pub type FnCell = Rc<RefCell<FnData>>;
 pub enum Body {
     /// `LFn` — the AST body of a user function, run through the VM executor hook
     Nodes(Rc<Vec<Node>>),
+    /// `LFn` — compiled bytecode proto body (proto index in current program)
+    Proto(usize),
     /// `NFn` — a host function that receives the bound scope
     Native(Rc<dyn Fn(&Scope) -> Obj>),
 }
@@ -93,6 +105,7 @@ impl Clone for Body {
     fn clone(&self) -> Self {
         match self {
             Body::Nodes(n) => Body::Nodes(n.clone()),
+            Body::Proto(i) => Body::Proto(*i),
             Body::Native(f) => Body::Native(f.clone()),
         }
     }
@@ -125,6 +138,28 @@ pub fn lfn(name: Option<String>, args: Vec<ArgData>, return_type: Types, body: V
             closure,
             property: None,
             body: Body::Nodes(Rc::new(body)),
+        }))),
+    )
+}
+
+/// `new LFn(...)` for a compiled function: the body is a proto of the running program
+/// and the VM executes it.
+pub fn proto_fn(
+    name: Option<String>,
+    args: Vec<ArgData>,
+    return_type: Types,
+    proto_index: usize,
+    closure: Context,
+) -> Obj {
+    obj::obj_new(
+        "func",
+        Payload::Func(Rc::new(RefCell::new(FnData {
+            name,
+            args: Rc::new(RefCell::new(args)),
+            return_type,
+            closure,
+            property: None,
+            body: Body::Proto(proto_index),
         }))),
     )
 }
@@ -167,6 +202,88 @@ pub fn bind_self(fn_obj: &Obj, receiver: &Obj) {
     }
 }
 
+/// the prepared state of `LFn.Call` — the callee context, the bound scope and the
+/// call depth the epilogue restores.
+pub struct CallFrame {
+    pub ctx: Context,
+    pub scope: Scope,
+    closure: Context,
+    depth: usize,
+}
+
+/// a control transfer that leaves the call. the reference lets the matching C#
+/// exception unwind, so the position stays with the transfer.
+enum Fatal {
+    Error(LangError),
+    Panic(Obj),
+    Break,
+    Skip,
+}
+
+/// `LFn.Call`'s prologue: the recursion check, the function scope, the argument
+/// binding and the callee context. the callee context shares the closure's frame
+/// list, so the `?` operator sees the call frames of the whole chain.
+pub fn begin_call(f: &Obj, args: &Args) -> Result<CallFrame, Obj> {
+    let Some(cell) = fn_cell(f) else {
+        return Err(obj::err(format!(
+            "unsupported operand type(s) for (): '{}'",
+            obj::type_name(f)
+        )));
+    };
+
+    let closure = cell.borrow().closure.clone();
+    let depth = context::call_depth(&closure);
+
+    if depth >= MAX_RECURSION_DEPTH {
+        return Err(obj::err("maximum recursion depth exceeded"));
+    }
+
+    let parent = { closure.borrow().scope.clone() };
+    let scope = scope::new(Some(parent), true);
+
+    let error = bind(f, &scope, args);
+    if !obj::is_none(&error) {
+        return Err(error);
+    }
+
+    context::set_call_depth(&closure, depth + 1);
+
+    let (source, frames) = {
+        let c = closure.borrow();
+        (c.source.clone(), c.frames.clone())
+    };
+    let ctx = context::new(scope.clone(), source, frames);
+
+    Ok(CallFrame {
+        ctx,
+        scope,
+        closure,
+        depth,
+    })
+}
+
+/// `LFn.Call`'s epilogue: the defers drain LIFO through the evaluator, then the usings
+/// drain LIFO through `Exit()`, and the call depth goes back to its old value.
+pub fn end_call(frame: &CallFrame, result: Obj) -> Obj {
+    let mut result = result;
+
+    // `finally`: a flow raised inside the drain escapes the reference's `finally`
+    // block, so its value becomes the call result.
+    while let Some(node) = context::pop_defer(&frame.ctx) {
+        match world::execute(&frame.ctx, std::slice::from_ref(&node)) {
+            Flow::Return(v) | Flow::Propagate(v) => result = v,
+            _ => {}
+        }
+    }
+
+    while let Some(u) = context::pop_using(&frame.ctx) {
+        obj::exit(&u);
+    }
+
+    context::set_call_depth(&frame.closure, frame.depth);
+    result
+}
+
 /// `Fn.Call` on a `Func` payload. the recursion limit is read from the closure's
 /// `CallDepth`, which is shared state of the closure cell.
 pub fn fn_call(f: &Obj, args: &Args) -> Obj {
@@ -179,76 +296,74 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {
 
     let closure = cell.borrow().closure.clone();
     let native = matches!(cell.borrow().body, Body::Native(..));
-    let depth = context::call_depth(&closure);
 
-    // `NFn.Call` increments before the limit test, `LFn.Call` tests first. both reach
-    // the same limit and decrement on every exit path.
     if native {
+        // `NFn.Call` increments before the limit test, `LFn.Call` tests first.
+        let depth = context::call_depth(&closure);
         context::set_call_depth(&closure, depth + 1);
         if depth >= MAX_RECURSION_DEPTH {
             context::set_call_depth(&closure, depth);
             return obj::err("maximum recursion depth exceeded");
         }
-    } else if depth >= MAX_RECURSION_DEPTH {
-        return obj::err("maximum recursion depth exceeded");
-    }
 
-    let parent = { closure.borrow().scope.clone() };
-    let scope = scope::new(Some(parent), true);
+        let parent = { closure.borrow().scope.clone() };
+        let scope = scope::new(Some(parent), true);
 
-    let error = bind(f, &scope, args);
-    if !obj::is_none(&error) {
-        if native {
+        let error = bind(f, &scope, args);
+        if !obj::is_none(&error) {
             context::set_call_depth(&closure, depth);
+            return error;
         }
-        return error;
-    }
 
-    if native {
         let host = match &cell.borrow().body {
             Body::Native(g) => g.clone(),
-            Body::Nodes(_) => unreachable!(),
+            Body::Nodes(_) | Body::Proto(_) => unreachable!(),
         };
         let value = host(&scope);
         context::set_call_depth(&closure, depth);
         return value;
     }
 
-    context::set_call_depth(&closure, depth + 1);
-
-    let (source, frames) = {
-        let c = closure.borrow();
-        (c.source.clone(), c.frames.clone())
+    let frame = match begin_call(f, args) {
+        Ok(frame) => frame,
+        Err(error) => return error,
     };
-    let ctx = context::new(scope, source, frames);
 
-    let nodes = match &cell.borrow().body {
-        Body::Nodes(n) => n.clone(),
+    let outcome = match &cell.borrow().body {
+        Body::Nodes(n) => {
+            let nodes = n.clone();
+            Ok(match world::execute(&frame.ctx, &nodes) {
+                Flow::Return(v) => v,
+                Flow::Propagate(e) => e,
+                _ => obj::none(),
+            })
+        }
+        Body::Proto(proto_idx) => {
+            let proto_idx = *proto_idx;
+            match world::execute_proto(&frame.ctx, proto_idx) {
+                Flow::Return(v) => Ok(v),
+                Flow::Propagate(e) => Ok(e),
+                Flow::Normal => Ok(obj::none()),
+                // a language error leaves the call, so the position stays with the
+                // error itself
+                Flow::Error(e) => Err(Fatal::Error(e)),
+                Flow::Panic(o) => Err(Fatal::Panic(o)),
+                Flow::Break(_, _) => Err(Fatal::Break),
+                Flow::Skip(_, _) => Err(Fatal::Skip),
+            }
+        }
         Body::Native(_) => unreachable!(),
     };
 
-    let mut result = match world::execute(&ctx, &nodes) {
-        Flow::Return(v) => v,
-        Flow::Propagate(e) => e,
-        Flow::Normal => obj::none(),
+    let result = match outcome {
+        Ok(value) => value,
+        Err(Fatal::Error(e)) => obj::err(e.message),
+        Err(Fatal::Panic(o)) => o,
+        Err(Fatal::Break) => obj::err("'break' outside loop"),
+        Err(Fatal::Skip) => obj::err("'skip' outside loop"),
     };
 
-    // `finally`: defers drain LIFO through the evaluator, then usings drain LIFO
-    // through `Exit()`. a flow raised inside the drain escapes the reference's
-    // `finally` block, so its value becomes the call result.
-    while let Some(node) = context::pop_defer(&ctx) {
-        match world::execute(&ctx, std::slice::from_ref(&node)) {
-            Flow::Return(v) | Flow::Propagate(v) => result = v,
-            Flow::Normal => {}
-        }
-    }
-
-    while let Some(u) = context::pop_using(&ctx) {
-        obj::exit(&u);
-    }
-
-    context::set_call_depth(&closure, depth);
-    result
+    end_call(&frame, result)
 }
 
 /// `Fn.Bind` — `self` / `super` / `field` locals, then positional and keyword binding.

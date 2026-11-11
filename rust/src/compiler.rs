@@ -13,7 +13,7 @@
 
 use crate::ast::{Const, Node, NodeKind};
 use crate::bytecode::instr::*;
-use crate::bytecode::{Constant, ExcEntry, ExcKind, Program, Proto};
+use crate::bytecode::{Constant, ExcEntry, ExcKind, Param, Program, Proto};
 use crate::error::Panic;
 use crate::source::Source;
 use crate::token::TokenType;
@@ -31,6 +31,11 @@ pub struct Group {
 pub struct Compiler<'a> {
     pub source: &'a Source,
     pub program: Program,
+    /// the proto the compiler writes into. a nested function proto is appended to
+    /// `program.protos`, so the proto under construction is not always the last one.
+    pub current: usize,
+    /// the proto builder stack, one entry per open nested proto.
+    pub proto_stack: Vec<usize>,
     /// the loop group stack. phase 8 has no loops, so this stays empty; `open_group`
     /// and `close_group` are part of the compiler shape so phase 9 adds `break`/`skip`
     /// patching without restructuring the compiler.
@@ -44,7 +49,7 @@ pub struct Compiler<'a> {
 /// compiles the desugared + optimized root AST. the root is the module's `Block`.
 pub fn compile(source: &Source, ast: &Node) -> Result<Program, Panic> {
     let mut c = Compiler::new(source);
-    c.code_block(ast, false)?;
+    c.code_block(ast, false, true)?;
     c.finish()
 }
 
@@ -63,6 +68,8 @@ impl<'a> Compiler<'a> {
         Self {
             source,
             program,
+            current: 0,
+            proto_stack: Vec::new(),
             groups: Vec::new(),
             raises: false,
         }
@@ -70,7 +77,7 @@ impl<'a> Compiler<'a> {
 
     /// the finished program; the root proto is the module body.
     pub fn finish(self) -> Result<Program, Panic> {
-        if self.program.protos.len() != 1 {
+        if !self.proto_stack.is_empty() {
             return Err(Panic::named("internal", "unbalanced proto stack"));
         }
         Ok(self.program)
@@ -108,11 +115,36 @@ impl<'a> Compiler<'a> {
     }
 
     fn current(&self) -> usize {
-        self.program.protos.len() - 1
+        self.current
     }
 
     fn ip(&self) -> usize {
-        self.program.protos[self.current()].code.len()
+        self.program.protos[self.current].code.len()
+    }
+
+    /// opens a nested proto for a function body. the proto is appended to the flat
+    /// module table, so the builder stack keeps the parent.
+    fn begin_proto(&mut self, name: &str, ext_type: Option<&str>) -> usize {
+        let name_index = push_name(&mut self.program, name);
+        let mut proto = Proto::new(name_index, PROTO_FUNCTION);
+        if let Some(ext) = ext_type {
+            proto.ext_type = Some(push_name(&mut self.program, ext));
+        }
+        self.program.protos.push(proto);
+        let index = self.program.protos.len() - 1;
+        self.proto_stack.push(self.current);
+        self.current = index;
+        index
+    }
+
+    /// closes the nested proto and registers it in the parent's proto table. the
+    /// returned value is the slot `MAKE_FUNC` refers to.
+    fn end_proto(&mut self) -> usize {
+        let index = self.current;
+        self.current = self.proto_stack.pop().expect("proto stack");
+        let parent = self.current;
+        self.program.protos[parent].protos.push(index);
+        self.program.protos[parent].protos.len() - 1
     }
 
     /// name table index for a proto-local name. names are shared through the module
@@ -320,8 +352,13 @@ impl<'a> Compiler<'a> {
             NodeKind::Index => self.code_index(node)?,
             NodeKind::Slice => self.code_slice(node)?,
 
-            NodeKind::Block => self.code_block(node, false)?,
+            NodeKind::Block => self.code_block(node, false, true)?,
             NodeKind::Use => self.code_use(node)?,
+
+            NodeKind::Function => self.code_function(node)?,
+            NodeKind::Extension => self.code_extension(node)?,
+            NodeKind::Lambda => self.code_lambda(node)?,
+            NodeKind::Return => self.code_return(node)?,
 
             NodeKind::If => self.code_if(node)?,
             NodeKind::While => self.code_while(node)?,
@@ -337,7 +374,9 @@ impl<'a> Compiler<'a> {
 
     /// `EvalBlock` unwraps every child and keeps the last value as the block result.
     /// `pop_last` is the `for` / `while` body rule, where the last value is dropped too.
-    pub fn code_block(&mut self, node: &Node, pop_last: bool) -> Result<(), Panic> {
+    /// `unwrap` is the `EvalBlock` unwrap: a function body is not evaluated through
+    /// `EvalBlock` (`LFn.Call` walks the statements itself), so it never unwraps.
+    pub fn code_block(&mut self, node: &Node, pop_last: bool, unwrap: bool) -> Result<(), Panic> {
         let n = node.children.len();
         if n == 0 {
             if !pop_last {
@@ -356,7 +395,9 @@ impl<'a> Compiler<'a> {
                 continue;
             }
 
-            self.emit(Op::Unwrap, 0, 0, span_of(child));
+            if unwrap {
+                self.emit(Op::Unwrap, 0, 0, span_of(child));
+            }
             if i + 1 < n || pop_last {
                 self.emit(Op::Pop, 0, 0, span_of(child));
             }
@@ -530,7 +571,7 @@ impl<'a> Compiler<'a> {
         let jend = self.emit_jump(Op::JmpIf, FLAG_JUMP_POP, span_of(cond));
 
         self.open_group(true);
-        self.code_block(body, true)?;
+        self.code_block(body, true, true)?;
         self.emit(Op::Jmp, 0, (loop_start as i32) - (self.ip() as i32 + 1), span_of(body));
 
         let end = self.ip();
@@ -558,7 +599,7 @@ impl<'a> Compiler<'a> {
         let loop_start = self.ip();
         let jend = self.emit_jump(Op::ForNext, 0, span_of(iterable));
         self.code_pattern(target, true)?;
-        self.code_block(body, true)?;
+        self.code_block(body, true, true)?;
         self.emit(Op::Jmp, 0, (loop_start as i32) - (self.ip() as i32 + 1), span_of(body));
 
         let exhausted = self.ip();
@@ -607,6 +648,183 @@ impl<'a> Compiler<'a> {
         let mi = self.msg_index(message);
         self.emit(Op::Unsupported, 0, mi as i32, span);
         self.raises = true;
+    }
+
+    // -----------------------------------------------------------------
+    // functions
+    // -----------------------------------------------------------------
+
+    /// `EvalFunction` — the body becomes a nested proto, and `MAKE_FUNC` creates the
+    /// `LFn` and binds it into the current scope.
+    fn code_function(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let name = self.text(&node.children[0]);
+        let params = &node.children[1];
+        let body = &node.children[2];
+
+        self.compile_function(&name, None, params, body, span, FLAG_FUNC_BIND)
+    }
+
+    /// `EvalExtension` — `fn Type.method()` registers the method on the type instead
+    /// of binding a name.
+    fn code_extension(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let ext_type = self.text(&node.children[0]);
+        let name = self.text(&node.children[1]);
+        let params = &node.children[2];
+        let body = &node.children[3];
+
+        self.compile_function(&name, Some(&ext_type), params, body, span, FLAG_FUNC_EXT)
+    }
+
+    /// `EvalLambda` — the same body shape, but the function is not bound to a name.
+    fn code_lambda(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let params = &node.children[0];
+        let body = &node.children[1];
+
+        self.compile_function("lambda", None, params, body, span, 0)
+    }
+
+    /// the shared body of the three function forms. the parameter defaults are
+    /// evaluated in the enclosing scope at definition time (`Fn.GetArgs` evaluates
+    /// them when the function is created), so their code sits in the parent proto.
+    fn compile_function(
+        &mut self,
+        name: &str,
+        ext_type: Option<&str>,
+        params: &Node,
+        body: &Node,
+        span: (usize, usize),
+        flags: u16,
+    ) -> Result<(), Panic> {
+        let defaults = self.compile_defaults(params)?;
+
+        // the nested body has its own loop groups and its own control-transfer state
+        let saved_raises = self.raises;
+        let saved_groups = std::mem::take(&mut self.groups);
+
+        self.begin_proto(name, ext_type);
+        self.compile_params(params)?;
+        self.code_function_body(body)?;
+        let slot = self.end_proto();
+
+        self.groups = saved_groups;
+        self.raises = saved_raises;
+
+        let flags = flags | ((defaults as u16) << 8);
+        self.emit(Op::MakeFunc, flags, slot as i32, span);
+
+        Ok(())
+    }
+
+    /// `Fn.GetArgs` evaluates every default expression with the closure context, so
+    /// the defaults are computed when the function is created, not when it is called.
+    /// the compiled form evaluates them in the enclosing proto, right before the
+    /// `MAKE_FUNC` that consumes them.
+    fn compile_defaults(&mut self, params: &Node) -> Result<usize, Panic> {
+        let mut count = 0;
+
+        for param in &params.children {
+            let node = &param.children[0];
+            if node.kind != NodeKind::Assign {
+                continue;
+            }
+
+            let saved = self.raises;
+            self.code(&node.children[1])?;
+            self.raises = saved;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    /// the parameter list of a proto. `Param.name` and `Param.type_name` are module
+    /// name indices, so the table is shared by every proto.
+    fn compile_params(&mut self, params: &Node) -> Result<(), Panic> {
+        for param in &params.children {
+            let node = &param.children[0];
+
+            let (name, type_name, flags) = match node.kind {
+                NodeKind::Identifier => (self.text(node), None, PARAM_ESSENTIAL),
+                NodeKind::Typed => (
+                    self.text(&node.children[0]),
+                    Some(self.text(&node.children[1])),
+                    PARAM_ESSENTIAL,
+                ),
+                NodeKind::Assign => {
+                    let target = &node.children[0];
+                    if target.kind == NodeKind::Typed {
+                        (
+                            self.text(&target.children[0]),
+                            Some(self.text(&target.children[1])),
+                            PARAM_OPTIONAL,
+                        )
+                    } else {
+                        (self.text(target), None, PARAM_OPTIONAL)
+                    }
+                }
+                NodeKind::Unary if node.op == Some(TokenType::Asterisk) => {
+                    (self.text(&node.children[0]), None, PARAM_POSITIONAL)
+                }
+                NodeKind::Unary if node.op == Some(TokenType::DoubleAsterisk) => {
+                    (self.text(&node.children[0]), None, PARAM_KEYWORD)
+                }
+                _ => return Err(Panic::named("internal", "invalid function parameter")),
+            };
+
+            let name_index = push_name(&mut self.program, &name);
+            let type_index = type_name.map(|t| push_name(&mut self.program, &t));
+
+            let current = self.current;
+            self.program.protos[current].params.push(Param {
+                name: name_index,
+                type_name: type_index,
+                flags,
+                default: None,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// `LFn.Call` evaluates the body statements and discards their values, and the
+    /// function returns `none` when no `return` runs.
+    fn code_function_body(&mut self, body: &Node) -> Result<(), Panic> {
+        let span = (body.start, body.length);
+
+        // the statements are not evaluated through `EvalBlock`, so no unwrap happens
+        self.code_block(body, true, false)?;
+        self.emit(Op::LoadNone, 0, 0, span);
+        self.emit(Op::Return, 0, 0, span);
+        self.raises = true;
+
+        Ok(())
+    }
+
+    /// `NodeKind.Return` — the reference throws a `ReturnFlow` with the value, so the
+    /// compiled form leaves the value on the stack and ends the proto.
+    fn code_return(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+
+        match node.children.first() {
+            Some(child) => self.code(child)?,
+            None => {
+                // the reference evaluates `node.Children[0]`, and the list is empty, so
+                // the host throws `ArgumentOutOfRangeException`
+                let message = "System.ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')";
+                let mi = self.msg_index(message);
+                self.emit(Op::Unsupported, FLAG_HOST_ERROR, mi as i32, span);
+                self.raises = true;
+                return Ok(());
+            }
+        }
+
+        self.emit(Op::Return, 0, 0, span);
+        self.raises = true;
+
+        Ok(())
     }
 
     // -----------------------------------------------------------------

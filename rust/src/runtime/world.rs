@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::Node;
+use crate::bytecode::Program;
 use crate::runtime::context::Context;
 use crate::runtime::function::Flow;
 use crate::runtime::obj::Obj;
@@ -10,6 +11,9 @@ use crate::runtime::scope::{self, Scope};
 
 /// the hook the VM registers so a `function::Body::Nodes` call can run its AST body.
 pub type Executor = Rc<dyn Fn(&Context, &[Node]) -> Flow>;
+
+/// the hook the VM registers so a compiled proto body can be executed.
+pub type ProtoExecutor = Rc<dyn Fn(&Context, usize) -> Flow>;
 
 /// `Str` interning limits of the reference implementation (`Str.MAX_POOL_SIZE`,
 /// `Str.MAX_POOLED_STRING_LEGNTH` — the typo is the reference's).
@@ -30,6 +34,8 @@ pub struct World {
     /// in phase 8, so `function.rs` can be tested with a fake executor before the VM
     /// exists, and `reset()` clears the hook with the rest of the global state.
     executor: Option<Executor>,
+    proto_executor: Option<ProtoExecutor>,
+    current_program: Option<Rc<Program>>,
     type_cache: HashMap<String, Rc<str>>,
     str_pool: HashMap<Rc<str>, Obj>,
     str_pool_size: usize,
@@ -66,6 +72,8 @@ impl World {
 
         Self {
             executor: None,
+            proto_executor: None,
+            current_program: None,
             type_cache,
             str_pool: HashMap::new(),
             str_pool_size: 0,
@@ -105,6 +113,26 @@ pub fn execute(ctx: &Context, body: &[Node]) -> Flow {
     let executor = WORLD.with(|w| w.borrow().executor.clone());
     match executor {
         Some(f) => f(ctx, body),
+        None => Flow::Normal,
+    }
+}
+
+pub fn set_proto_executor(executor: Option<ProtoExecutor>) {
+    WORLD.with(|w| w.borrow_mut().proto_executor = executor);
+}
+
+pub fn set_current_program(program: Option<Rc<Program>>) {
+    WORLD.with(|w| w.borrow_mut().current_program = program);
+}
+
+pub fn current_program() -> Option<Rc<Program>> {
+    WORLD.with(|w| w.borrow().current_program.clone())
+}
+
+pub fn execute_proto(ctx: &Context, proto_index: usize) -> Flow {
+    let executor = WORLD.with(|w| w.borrow().proto_executor.clone());
+    match executor {
+        Some(f) => f(ctx, proto_index),
         None => Flow::Normal,
     }
 }
@@ -254,6 +282,25 @@ pub fn register_original_class(type_name: &str, attrs: Vec<(String, Obj)>) {
         w.borrow_mut()
             .original_classes
             .insert(type_name.to_owned(), attrs);
+    })
+}
+
+/// `Global.TrySetOriginalClass` — the extension method is only registered when the
+/// type already has an original class, exactly as the reference does.
+pub fn try_set_original_class(type_name: &str, name: &str, value: Obj) -> bool {
+    WORLD.with(|w| {
+        let mut w = w.borrow_mut();
+        let Some(attrs) = w.original_classes.get_mut(type_name) else {
+            return false;
+        };
+
+        if let Some(entry) = attrs.iter_mut().find(|(k, _)| k == name) {
+            entry.1 = value;
+        } else {
+            attrs.push((name.to_owned(), value));
+        }
+
+        true
     })
 }
 

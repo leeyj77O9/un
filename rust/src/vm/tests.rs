@@ -63,6 +63,18 @@ pub(crate) fn assert_abort(text: &str, expected: &str) {
     assert_eq!(out, "", "stdout of {text} must be empty");
 }
 
+/// the same, on a thread with a big stack. the VM keeps one Rust frame per Un call, so
+/// a recursion that reaches the reference's limit does not fit into the 2 MB stack of
+/// the test harness.
+pub(crate) fn assert_abort_deep(text: &'static str, expected: &'static str) {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || assert_abort(text, expected))
+        .expect("thread")
+        .join()
+        .expect("join");
+}
+
 /// `Console.WriteLine` of the reference prints `io.write`'s text, LF terminated
 #[test]
 fn io_write_writes_the_reference_line() {
@@ -270,4 +282,155 @@ fn the_root_scope_is_the_global_scope() {
     let global = world::global_scope();
     assert_eq!(obj::display(&scope::get(&global, "zz")), "1");
     assert_eq!(obj::display(&scope::get(&context::scope(&vm.ctx), "zz")), "1");
+}
+
+/// `LFn.Call` returns the value of the `->` statement
+#[test]
+fn a_function_returns_its_value() {
+    assert_out(
+        "use io\nfn add(a, b)\n    -> a + b\nio.write(\"r\", add(3, 4))",
+        "r 7\n",
+    );
+}
+
+/// a function without a `->` falls through to the reference's `None`
+#[test]
+fn a_function_without_a_return_returns_none() {
+    assert_out(
+        "use io\nfn f()\n    io.write(\"in\")\nio.write(\"r\", f())",
+        "in\nr none\n",
+    );
+}
+
+/// `Fn.GetArgs` evaluates the default expression when the function is created, so the
+/// default is the value the parameter had at definition time
+#[test]
+fn a_default_parameter_is_used() {
+    assert_out(
+        "use io\nfn greet(name = \"world\")\n    -> name\nio.write(\"g\", greet())",
+        "g world\n",
+    );
+    assert_out(
+        "use io\nfn greet(name = \"world\")\n    -> name\nio.write(\"g\", greet(\"un\"))",
+        "g un\n",
+    );
+}
+
+/// a recursive function calls its own proto
+#[test]
+fn a_function_can_recurse() {
+    assert_out(
+        "use io\nfn fib(n)\n    if n < 2\n        -> 1\n    -> fib(n-1) + fib(n-2)\nio.write(\"f\", fib(10))",
+        "f 89\n",
+    );
+}
+
+/// a lambda is a function value with the same call semantics
+#[test]
+fn a_lambda_is_callable() {
+    assert_out("use io\nmul = fn(a, b) -> a * b\nio.write(\"m\", mul(6, 7))", "m 42\n");
+}
+
+/// a keyword argument binds by name, the positional ones keep their order
+#[test]
+fn a_keyword_argument_binds_by_name() {
+    assert_out(
+        "use io\nfn f(a, b)\n    -> a - b\nio.write(\"k\", f(b = 10, a = 3))",
+        "k -7\n",
+    );
+}
+
+/// `*args` collects the rest of the positional arguments, `**kwargs` the rest of the
+/// keyword ones
+#[test]
+fn a_star_parameter_collects_the_rest() {
+    assert_out("use io\nfn f(a, *rest)\n    -> rest\nio.write(\"r\", f(1, 2, 3))", "r (2, 3)\n");
+    assert_out(
+        "use io\nfn f(**kwargs)\n    -> kwargs\nio.write(\"k\", f(a = 1, b = 2))",
+        "k {a:1, b:2}\n",
+    );
+}
+
+/// a function body reads the enclosing scope, the closure scope is the parent of the
+/// call scope
+#[test]
+fn a_function_reads_the_enclosing_scope() {
+    assert_out("use io\nx = 10\nfn f()\n    -> x\nio.write(\"x\", f())", "x 10\n");
+}
+
+/// a function body assignment creates a local, so the enclosing binding is untouched
+#[test]
+fn a_function_body_assignment_is_local() {
+    assert_out(
+        "use io\ncounter = 0\nfn bump()\n    counter += 1\n    -> counter\nbump()\nio.write(\"c\", counter)",
+        "c 0\n",
+    );
+}
+
+/// `Fn.Bind` reports the missing argument and the extra one
+#[test]
+fn a_wrong_argument_count_is_the_reference_message() {
+    assert_abort(
+        "use io\nfn f(a, b)\n    -> a + b\nio.write(\"v\", f(1))",
+        "missing required argument 'b'",
+    );
+    assert_abort(
+        "use io\nfn f(a)\n    -> a\nio.write(\"v\", f(1, 2))",
+        "too many positional arguments",
+    );
+}
+
+/// `Global.MAXRECURSIONDEPTH` is 1000, and the limit is read from the closure's
+/// `CallDepth`
+#[test]
+fn the_recursion_limit_is_the_reference_one() {
+    assert_abort_deep(
+        "use io\nfn deep(n)\n    -> deep(n + 1)\ndeep(0)",
+        "maximum recursion depth exceeded",
+    );
+}
+
+/// a language error inside a function body keeps its own position, the reference lets
+/// the `Error` exception leave the call
+#[test]
+fn an_error_inside_a_function_keeps_its_position() {
+    let (outcome, out) = run("use io\nfn f()\n    -> undefined_thing\nf()");
+
+    assert!(matches!(outcome, Outcome::Error(_)));
+    assert_eq!(message(&outcome), "undefined variable 'undefined_thing'");
+    assert_eq!(out, "");
+}
+
+/// a bare `->` has no value to evaluate, and the reference indexes an empty child list
+#[test]
+fn a_bare_return_is_the_host_exception() {
+    assert_abort(
+        "use io\nfn f()\n    ->\nf()",
+        "System.ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')",
+    );
+}
+
+/// a `->` outside a function is the reference's `ReturnFlow` at the top level
+#[test]
+fn a_return_outside_a_function_is_an_error() {
+    let (outcome, out) = run("use io\n-> 1");
+
+    assert!(matches!(outcome, Outcome::Return(..)));
+    assert_eq!(out, "");
+}
+
+/// an `Err` value inside a function body is unwrapped at its own node, the reference
+/// reports the division and not the call
+#[test]
+fn an_error_inside_a_function_body_is_reported_at_its_node() {
+    assert_abort(
+        "use io\nfn f()\n    -> 1 / 0\nio.write(\"v\", f())",
+        "int division by zero",
+    );
+}
+
+/// the function value carries its name and its parameter types
+#[test]
+fn a_function_value_prints_its_signature() {
+    assert_out("use io\nfn f(a: int, b: str)\n    -> a\nio.write(\"f\", f)", "f fn(int, str) -> any\n");
 }

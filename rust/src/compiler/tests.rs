@@ -401,3 +401,122 @@ fn slots_resolve_through_the_proto() {
     let (_, _, slot) = at(&program, store);
     assert_eq!(name(&program, slot as usize), "x");
 }
+
+/// a function definition becomes a nested proto, and `MAKE_FUNC` creates the function
+/// and binds its name
+#[test]
+fn a_function_definition_creates_a_nested_proto() {
+    let (program, _) = compile_text("use io\nfn add(a, b)\n    -> a + b");
+
+    assert_eq!(program.protos.len(), 2);
+
+    let root = &program.protos[program.root];
+    assert_eq!(root.protos.len(), 1);
+
+    let nested = &program.protos[root.protos[0]];
+    assert!(nested.is_function());
+    assert_eq!(nested.params.len(), 2);
+    assert_eq!(program.names[nested.params[0].name], "a");
+    assert_eq!(program.names[nested.params[1].name], "b");
+
+    // `MAKE_FUNC` refers to the nested proto by its slot in the parent's proto table
+    let (op, flags, operand) = at(&program, find(&program, Op::MakeFunc));
+    assert_eq!(op, Op::MakeFunc);
+    assert_eq!(flags & FLAG_FUNC_BIND, FLAG_FUNC_BIND);
+    assert_eq!(operand as usize, 0);
+    assert_eq!(root.protos[operand as usize], 1);
+}
+
+/// the body of a function ends with the `none` the reference returns without a `->`,
+/// and the `->` statement ends the proto
+#[test]
+fn a_function_body_ends_with_a_return() {
+    let (program, _) = compile_text("use io\nfn add(a, b)\n    -> a + b");
+    let root = &program.protos[program.root];
+    let nested = &program.protos[root.protos[0]];
+
+    let ops: Vec<(Op, u16, i32)> = (0..nested.code.len())
+        .filter_map(|ip| nested.instruction(ip))
+        .collect();
+
+    // the `-> a + b` ends the proto, the `none` after it is the unreachable epilogue
+    let returns: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, (op, _, _))| *op == Op::Return)
+        .map(|(ip, _)| ip)
+        .collect();
+
+    assert_eq!(returns.len(), 2);
+    assert_eq!(ops.last().unwrap().0, Op::Return);
+    assert!(returns[0] < ops.len() - 1);
+}
+
+/// `LFn.Call` walks the body statements itself, so the block's `Unwrap` does not apply
+/// to a function body
+#[test]
+fn a_function_body_does_not_unwrap_its_statements() {
+    let (program, _) = compile_text("use io\nfn f()\n    x = 1\n    y = 2");
+    let root = &program.protos[program.root];
+    let nested = &program.protos[root.protos[0]];
+
+    let ops: Vec<(Op, u16, i32)> = (0..nested.code.len())
+        .filter_map(|ip| nested.instruction(ip))
+        .collect();
+
+    // the two statements are popped, but neither of them is unwrapped
+    assert!(!ops.iter().any(|(op, _, _)| *op == Op::Unwrap));
+    assert_eq!(ops.iter().filter(|(op, _, _)| *op == Op::Pop).count(), 2);
+}
+
+/// the parameter defaults are evaluated when the function is created, so their code sits
+/// in the enclosing proto, right before the `MAKE_FUNC` that consumes the values
+#[test]
+fn a_default_parameter_is_evaluated_at_definition_time() {
+    let (program, _) = compile_text("use io\nfn greet(name = \"world\")\n    -> name");
+    let ops = code(&program);
+
+    let make = find(&program, Op::MakeFunc);
+    let load = ops
+        .iter()
+        .position(|(op, _, _)| *op == Op::LoadConst)
+        .expect("load");
+
+    assert!(load < make, "the default is evaluated before the function is created");
+
+    // the flags carry the number of default values the `MAKE_FUNC` pops
+    let (_, flags, _) = at(&program, make);
+    assert_eq!(flags >> 8, 1);
+
+    let root = &program.protos[program.root];
+    let nested = &program.protos[root.protos[0]];
+    assert_eq!(nested.params[0].flags & PARAM_OPTIONAL, PARAM_OPTIONAL);
+    assert_eq!(nested.params[0].flags & PARAM_ESSENTIAL, 0);
+}
+
+/// a `*args` parameter is positional and a `**kwargs` parameter is a keyword one
+#[test]
+fn the_star_parameters_have_the_reference_flags() {
+    let (program, _) = compile_text("use io\nfn f(a, *rest, **opts)\n    -> a");
+    let root = &program.protos[program.root];
+    let nested = &program.protos[root.protos[0]];
+
+    assert_eq!(nested.params.len(), 3);
+    assert_eq!(nested.params[0].flags & PARAM_ESSENTIAL, PARAM_ESSENTIAL);
+    assert_eq!(nested.params[1].flags & PARAM_POSITIONAL, PARAM_POSITIONAL);
+    assert_eq!(nested.params[2].flags & PARAM_KEYWORD, PARAM_KEYWORD);
+}
+
+/// a lambda is a function without a name binding
+#[test]
+fn a_lambda_is_a_function_without_a_binding() {
+    let (program, _) = compile_text("use io\nmul = fn(a, b) -> a * b");
+
+    let make = find(&program, Op::MakeFunc);
+    let (_, flags, _) = at(&program, make);
+    assert_eq!(flags & FLAG_FUNC_BIND, 0);
+
+    let root = &program.protos[program.root];
+    let nested = &program.protos[root.protos[0]];
+    assert_eq!(program.names[nested.name], "lambda");
+}

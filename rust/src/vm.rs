@@ -21,7 +21,7 @@ use crate::runtime::global;
 use crate::runtime::obj;
 use crate::runtime::obj::{BinOp, Obj, Payload};
 use crate::runtime::scope;
-use crate::runtime::types::Types;
+use crate::runtime::types::{self, Types};
 use crate::runtime::world;
 use crate::source::Source;
 
@@ -73,6 +73,11 @@ impl VM {
         program.validate()?;
         let proto = program.protos[program.root].clone();
 
+        // the compiled function bodies run in a nested VM, so the program and the
+        // proto executor live in the global state
+        world::set_current_program(Some(program.clone()));
+        world::set_proto_executor(Some(Rc::new(execute_proto)));
+
         Ok(Self {
             ctx: context::new(world::global_scope(), source, context::new_frames()),
             program,
@@ -83,6 +88,23 @@ impl VM {
             tries: Vec::new(),
             pending: None,
         })
+    }
+
+    /// a nested VM for a compiled function body. the callee context carries the
+    /// bound scope and the shared frame list.
+    fn new_proto(program: Rc<Program>, proto_index: usize, ctx: Context) -> Self {
+        let proto = program.protos[proto_index].clone();
+
+        Self {
+            ctx,
+            program,
+            proto: Rc::new(proto),
+            ip: 0,
+            stack: Vec::new(),
+            acc: Vec::new(),
+            tries: Vec::new(),
+            pending: None,
+        }
     }
 
     /// runs the proto until ip leaves the code, then returns the block value.
@@ -593,18 +615,23 @@ impl VM {
                     },
                 );
 
-                let result = obj::call_args(&callable, &Args::named(values, names));
+                let outcome = self.call_value(&callable, &Args::named(values, names), span);
                 let popped = context::pop_frame(&self.ctx);
 
-                // `Unwrap(callable.Call(args), node)` is inside the frame
-                if obj::is_err(&result) {
-                    return Err(self.error(err_message(&result), span));
-                }
-                if popped.is_err() {
-                    return Err(Outcome::Panic(obj::panic("panic", "stack is empty")));
-                }
+                match outcome {
+                    Ok(result) => {
+                        // `Unwrap(callable.Call(args), node)` is inside the frame
+                        if obj::is_err(&result) {
+                            return Err(self.error(err_message(&result), span));
+                        }
+                        if popped.is_err() {
+                            return Err(Outcome::Panic(obj::panic("panic", "stack is empty")));
+                        }
 
-                self.push(result);
+                        self.push(result);
+                    }
+                    Err(outcome) => return Err(outcome),
+                }
             }
 
             // ------------------------------------------------------------------
@@ -652,6 +679,86 @@ impl VM {
             Op::Break | Op::Skip => {
                 self.ip = self.proto.jump_target(self.ip, operand);
                 return Ok(false);
+            }
+            Op::Return => {
+                // `ReturnFlow` — the proto ends here and the value is the result
+                let value = self.pop()?;
+                return Err(Outcome::Return(value, span.0, span.1));
+            }
+
+            // ------------------------------------------------------------------
+            // function creation
+            // ------------------------------------------------------------------
+            Op::MakeFunc => {
+                let slot = operand as usize;
+                let module_index = self.proto.protos[slot];
+                let proto = self.program.protos[module_index].clone();
+
+                // the parameter defaults are evaluated at definition time, so they sit
+                // on the stack right before the function is created
+                let defaults = (flags >> 8) as usize;
+                let mut values = self.take(defaults).into_iter();
+
+                let mut args = Vec::with_capacity(proto.params.len());
+                for param in &proto.params {
+                    let name = self.program.names[param.name].clone();
+                    let type_name = match param.type_name {
+                        Some(index) => Types::single(&self.program.names[index]),
+                        None => Types::single(types::ANY),
+                    };
+
+                    let essential = param.flags & PARAM_ESSENTIAL != 0;
+                    let optional = param.flags & PARAM_OPTIONAL != 0;
+                    let positional = param.flags & PARAM_POSITIONAL != 0;
+                    let keyword = param.flags & PARAM_KEYWORD != 0;
+
+                    let default = if optional {
+                        values.next().unwrap_or_else(obj::none)
+                    } else if positional {
+                        // `*args` collects the rest of the positional arguments
+                        collections::tup(Vec::new(), Vec::new())
+                    } else if keyword {
+                        // `**kwargs` collects the rest of the keyword arguments
+                        collections::dict(Vec::new())
+                    } else {
+                        obj::null()
+                    };
+
+                    args.push(function::ArgData {
+                        name,
+                        type_name,
+                        essential,
+                        optional,
+                        positional,
+                        keyword,
+                        default: Some(default),
+                    });
+                }
+
+                let name = self.program.names[proto.name].clone();
+                let created = function::proto_fn(
+                    Some(name.clone()),
+                    args,
+                    Types::single(types::ANY),
+                    module_index,
+                    self.ctx.clone(),
+                );
+
+                if flags & FLAG_FUNC_BIND != 0 {
+                    // `EvalFunction` binds the name with `Scope.Set`, so an outer
+                    // binding of the same name is updated instead of shadowed
+                    let scope = context::scope(&self.ctx);
+                    scope::set(&scope, &name, created.clone());
+                }
+
+                if flags & FLAG_FUNC_EXT != 0 {
+                    if let Some(ext) = proto.ext_type {
+                        let type_name = self.program.names[ext].clone();
+                        world::try_set_original_class(&type_name, &name, created.clone());
+                    }
+                }
+
+                self.push(created);
             }
 
             // ------------------------------------------------------------------
@@ -707,6 +814,17 @@ impl VM {
             }
             Op::Unsupported => {
                 let message = self.program.message(operand as usize).to_string();
+
+                if flags & FLAG_HOST_ERROR != 0 {
+                    // the host exception text is `Name: Message`, the way
+                    // `Exception.ToString()` prints it
+                    let (name, text) = match message.split_once(": ") {
+                        Some((name, text)) => (name.to_owned(), text.to_owned()),
+                        None => ("System.Exception".to_owned(), message),
+                    };
+                    return Err(Outcome::Panic(obj::panic(name, text)));
+                }
+
                 return Err(self.error(message, span));
             }
 
@@ -725,6 +843,66 @@ impl VM {
     // -----------------------------------------------------------------
     // helpers
     // -----------------------------------------------------------------
+
+    /// `callable.Call(args)`. a compiled function runs its proto in a nested VM, so
+    /// a language error raised inside the body keeps its own position.
+    fn call_value(
+        &mut self,
+        callable: &Obj,
+        args: &Args,
+        span: (usize, usize),
+    ) -> Result<Obj, Outcome> {
+        let proto_index = function::fn_cell(callable).and_then(|cell| match &cell.borrow().body {
+            function::Body::Proto(index) => Some(*index),
+            _ => None,
+        });
+
+        match proto_index {
+            Some(index) => self.call_proto(callable, index, args, span),
+            None => Ok(obj::call_args(callable, args)),
+        }
+    }
+
+    /// `LFn.Call` for a compiled body: the prologue binds the arguments, the proto
+    /// runs in its own VM, and the epilogue drains the defers and the usings.
+    fn call_proto(
+        &mut self,
+        callable: &Obj,
+        proto_index: usize,
+        args: &Args,
+        span: (usize, usize),
+    ) -> Result<Obj, Outcome> {
+        let frame = match function::begin_call(callable, args) {
+            Ok(frame) => frame,
+            Err(error) => return Err(self.header_error(&error, span)),
+        };
+
+        let flow = world::execute_proto(&frame.ctx, proto_index);
+
+        match flow {
+            function::Flow::Return(value) => Ok(function::end_call(&frame, value)),
+            // `LFn.Call` catches the propagation and returns the error object, so the
+            // caller unwraps it at the call site
+            function::Flow::Propagate(error) => Ok(function::end_call(&frame, error)),
+            function::Flow::Normal => Ok(function::end_call(&frame, obj::none())),
+            function::Flow::Error(error) => {
+                function::end_call(&frame, obj::none());
+                Err(Outcome::Error(error))
+            }
+            function::Flow::Panic(value) => {
+                function::end_call(&frame, obj::none());
+                Err(Outcome::Panic(value))
+            }
+            function::Flow::Break(start, length) => {
+                function::end_call(&frame, obj::none());
+                Err(Outcome::Break(start, length))
+            }
+            function::Flow::Skip(start, length) => {
+                function::end_call(&frame, obj::none());
+                Err(Outcome::Skip(start, length))
+            }
+        }
+    }
 
     fn bin(&mut self, op: BinOp) -> Result<(), Outcome> {
         let right = self.pop()?;
@@ -898,8 +1076,26 @@ impl VM {
     }
 }
 
-pub fn err_message(o: &Obj) -> String {
-    match obj::payload(o) {
+/// the proto executor the runtime calls for a compiled function body.
+fn execute_proto(ctx: &Context, proto_index: usize) -> function::Flow {
+    let Some(program) = world::current_program() else {
+        return function::Flow::Normal;
+    };
+
+    let mut vm = VM::new_proto(program, proto_index, ctx.clone());
+
+    match vm.run() {
+        Outcome::Value(value) => function::Flow::Return(value),
+        Outcome::Return(value, _, _) => function::Flow::Return(value),
+        Outcome::Propagate(error, _, _) => function::Flow::Propagate(error),
+        Outcome::Error(error) => function::Flow::Error(error),
+        Outcome::Panic(value) => function::Flow::Panic(value),
+        Outcome::Break(start, length) => function::Flow::Break(start, length),
+        Outcome::Skip(start, length) => function::Flow::Skip(start, length),
+    }
+}
+
+pub fn err_message(o: &Obj) -> String {    match obj::payload(o) {
         Payload::Error { message, .. } => message,
         Payload::Panic { name, message } => format!("{name}: {message}"),
         _ => obj::display(o),

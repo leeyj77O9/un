@@ -273,6 +273,11 @@ pub const FLAG_LOCAL_ONLY: u16 = 1 << 5;
 /// not check, so they emit `ARG_POS` without this flag.
 pub const FLAG_ARG_CHECK: u16 = 1 << 6;
 
+/// `UNSUPPORTED` raises a host exception instead of a language error. the message
+/// table entry is the .NET text `Name: Message`, the way `Exception.ToString()` prints
+/// it. the reference reaches this state when it indexes a missing child node.
+pub const FLAG_HOST_ERROR: u16 = 1 << 7;
+
 /// slice bound presence, bit0 = start, bit1 = end, bit2 = step
 pub const FLAG_SLICE_START: u16 = 1 << 0;
 pub const FLAG_SLICE_END: u16 = 1 << 1;
