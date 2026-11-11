@@ -32,6 +32,12 @@ pub fn init_members(closure: &Context) {
     world::register_original_class("stopwatch", crate::native::stopwatch::members(closure));
     world::register_original_class("random", crate::native::random::object_members(closure));
 
+    // the `http_client` and `web_socket` tables are the `[NativeType]` names of the client
+    // and the socket, and the objects' type names are `http` and `socket`, so the lookup
+    // never reaches these tables. they are registered because `Global.Init` registers them.
+    world::register_original_class("http_client", crate::native::http::client_members(closure));
+    world::register_original_class("web_socket", crate::native::ws::socket_members(closure));
+
     // the iterator subclasses have their own type name, and the members live in the
     // `iter` table. the reference walks the `originalBaseTypes` chain for them.
     for name in ["range", "counter", "repeat", "reverse"] {

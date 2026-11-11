@@ -53,6 +53,14 @@ pub enum Payload {    Plain,
     /// `Ref<System.Random>`. the cell is shared by `Clone()`, so the clone keeps drawing
     /// from the same sequence.
     Random(Rc<RefCell<crate::native::random::Rng>>),
+    /// `HttpClient` — the client object, the `Value` of the reference's
+    /// `Ref<System.Net.Http.HttpClient>`. the `http_client` member table is unreachable,
+    /// because the object's type name is `http`.
+    HttpClient(Rc<RefCell<crate::native::net::HttpState>>),
+    /// `WebSocket` — the socket object, the `Value` of the reference's
+    /// `Ref<ClientWebSocket>`. the `web_socket` member table is unreachable, because the
+    /// object's type name is `socket`.
+    WebSocket(Rc<RefCell<crate::native::net::WsState>>),
     /// every collection payload is a shared cell, so `b = a` keeps `b` and `a`
     /// looking at the same items, exactly like the reference's `Ref<T>` cells.
     List(Rc<RefCell<Vec<Obj>>>),
@@ -99,6 +107,8 @@ impl std::fmt::Debug for Payload {
             Payload::Stopwatch(_) => f.write_str("Stopwatch"),
             Payload::Stream(_) => f.write_str("Stream"),
             Payload::Random(_) => f.write_str("Random"),
+            Payload::HttpClient(_) => f.write_str("HttpClient"),
+            Payload::WebSocket(_) => f.write_str("WebSocket"),
             Payload::Future(_) => f.write_str("Future"),
             Payload::Pool(_) => f.write_str("Pool"),
             Payload::Lock(_) => f.write_str("Lock"),
@@ -154,6 +164,8 @@ impl PartialEq for Payload {
             (TObj(a), TObj(b)) => a == b,
             (Iter(a), Iter(b)) => Rc::ptr_eq(a, b),
             (Random(a), Random(b)) => Rc::ptr_eq(a, b),
+            (HttpClient(a), HttpClient(b)) => Rc::ptr_eq(a, b),
+            (WebSocket(a), WebSocket(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -852,7 +864,10 @@ pub fn clone_obj(o: &Obj) -> Obj {
         Payload::Iter(st) => return iters::iter_clone(o, &st),
         // `Property.Clone()` / `FieldRef.Clone()` are `this`: every instance shares the
         // same property object, and the field view is not detachable from its owner.
+        // `HttpClient.Clone()` and `WebSocket.Clone()` are `this` too, so the client and the
+        // socket keep the same host connection.
         Payload::Property(_) | Payload::FieldRef(_) => return o.clone(),
+        Payload::HttpClient(_) | Payload::WebSocket(_) => return o.clone(),
         Payload::Func(_) => return function::fn_clone(o),
         _ => {}
     }
@@ -1022,6 +1037,8 @@ pub fn class_name(o: &Obj) -> &'static str {
         Payload::Stopwatch(..) => "Stopwatch",
         Payload::Stream(..) => "Stream",
         Payload::Random(..) => "Random",
+        Payload::HttpClient(..) => "HttpClient",
+        Payload::WebSocket(..) => "WebSocket",
         Payload::Future(..) => "Future",
         Payload::Pool(..) => "Pool",
         Payload::Lock(..) => "Lock",
@@ -1090,6 +1107,9 @@ pub fn to_str(o: &Obj) -> Obj {
         Payload::TObj(t) => collections::tobj_to_str(&t),
         Payload::Iter(st) => iters::iter_to_str(o, &st),
         Payload::Func(_) => str(&function::fn_to_str(o)),
+        // `WebSocket.ToStr()` is the .NET state name inside the angle brackets. `HttpClient`
+        // has no `ToStr` override, so it falls through to the base message.
+        Payload::WebSocket(state) => str(&format!("<socket {}>", state.borrow().state)),
         _ => err(format!("unsupported operand type(s) for str(): '{}'", type_name(o))),
     }
 }
@@ -1461,6 +1481,19 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         | Payload::Lock(_)
         | Payload::Stream(_)
         | Payload::Random(_) => base_binop(o, op, other, &t, &ot),
+        // `HttpClient.Eq()` and `WebSocket.Eq()` compare the host client by reference, so a
+        // client or a socket equals only itself. every other operator has no override, so
+        // the base chain message applies.
+        Payload::HttpClient(state) => match op {
+            BinOp::Eq => boolean(matches!(payload(other), Payload::HttpClient(o) if Rc::ptr_eq(&state, &o))),
+            BinOp::NEq => boolean(!matches!(payload(other), Payload::HttpClient(o) if Rc::ptr_eq(&state, &o))),
+            _ => base_binop(o, op, other, &t, &ot),
+        },
+        Payload::WebSocket(state) => match op {
+            BinOp::Eq => boolean(matches!(payload(other), Payload::WebSocket(o) if Rc::ptr_eq(&state, &o))),
+            BinOp::NEq => boolean(!matches!(payload(other), Payload::WebSocket(o) if Rc::ptr_eq(&state, &o))),
+            _ => base_binop(o, op, other, &t, &ot),
+        },
     }
 }
 
@@ -1546,6 +1579,13 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         },
         // `TObj` has no unop override, so only the base message applies. function,
         // property, and field payloads behave the same way.
+        // `WebSocket.ToBool()` is the `State == Open` check, the only operator the socket
+        // payload answers. `HttpClient` has no operator override, so the base message
+        // applies to it.
+        Payload::WebSocket(state) => match op {
+            UnOp::ToBool => boolean(state.borrow().state == "Open"),
+            _ => err(op.message(&t)),
+        },
         Payload::TObj(..)
         | Payload::Func(_)
         | Payload::Property(_)
@@ -1553,7 +1593,8 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         | Payload::Stopwatch(_)
         | Payload::Future(_)
         | Payload::Stream(_)
-        | Payload::Random(_) => err(op.message(&t)),
+        | Payload::Random(_)
+        | Payload::HttpClient(_) => err(op.message(&t)),
         Payload::Date(_) | Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => {
             err(op.message(&t))
         }

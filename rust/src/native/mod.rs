@@ -25,6 +25,7 @@ pub mod io;
 pub mod iter;
 pub mod math;
 pub mod members;
+pub mod net;
 pub mod os;
 pub mod random;
 pub mod re;
@@ -33,6 +34,8 @@ pub mod stopwatch;
 pub mod stream;
 pub mod sys;
 pub mod time;
+pub mod ws;
+pub mod http;
 
 /// `Global.Init(path)`
 pub fn init(path: &str) {
@@ -59,6 +62,8 @@ pub fn init(path: &str) {
     world::register_native("random", random::members(&closure));
     world::register_native("flow", flow::members(&closure));
     world::register_native("re", re::members(&closure));
+    world::register_native("http", http::members(&closure));
+    world::register_native("ws", ws::members(&closure));
 
     for (name, f) in builtin::members(&closure) {
         world::set_global(&name, f);
