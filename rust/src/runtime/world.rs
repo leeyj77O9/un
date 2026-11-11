@@ -1,11 +1,12 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::Node;
 use crate::runtime::context::Context;
 use crate::runtime::function::Flow;
 use crate::runtime::obj::Obj;
+use crate::runtime::scope::{self, Scope};
 
 /// the hook the VM registers so a `function::Body::Nodes` call can run its AST body.
 pub type Executor = Rc<dyn Fn(&Context, &[Node]) -> Flow>;
@@ -40,6 +41,17 @@ pub struct World {
     original_classes: HashMap<String, Vec<(String, Obj)>>,
     original_base_types: HashMap<String, String>,
     classes: Vec<(String, Obj)>,
+    /// `Global.PATH`, the module search root. file-module imports (phase 11) read it.
+    path: String,
+    /// `Global.scope` — the module/global scope the root `Context` runs in.
+    global_scope: Scope,
+    /// `Global.natives`: native module name -> member map, in registration order
+    natives: Vec<(String, Vec<(String, Obj)>)>,
+    /// sandbox stdout of the reference: each `io.write` flushes after writing, so the
+    /// buffer is flushed to the real stdout at the same points.
+    stdout: Rc<RefCell<String>>,
+    /// `Global.SetAllowedModules` — `None` allows everything
+    allowed: Option<HashSet<String>>,
 }
 
 impl World {
@@ -62,6 +74,11 @@ impl World {
             original_classes: HashMap::new(),
             original_base_types: HashMap::new(),
             classes: Vec::new(),
+            path: String::new(),
+            global_scope: scope::new(None, false),
+            natives: Vec::new(),
+            stdout: Rc::new(RefCell::new(String::new())),
+            allowed: None,
         }
     }
 }
@@ -242,6 +259,104 @@ pub fn register_original_base(type_name: &str, base: &str) {
             .original_base_types
             .insert(type_name.to_owned(), base.to_owned());
     })
+}
+
+// ---------------------------------------------------------------------------
+// global scope, native module registry, sandbox stdout
+// ---------------------------------------------------------------------------
+
+/// `Global.GetGlobalScope()` — the root `Context` scope is this scope, so a top-level
+/// assignment and a global function live in the same slot table.
+pub fn global_scope() -> Scope {
+    WORLD.with(|w| w.borrow().global_scope.clone())
+}
+
+/// `Global.scope.Set(name, value)`
+pub fn set_global(name: &str, value: Obj) {
+    scope::set(&global_scope(), name, value);
+}
+
+/// `Global.TryGetGlobalVariable`
+pub fn try_get_global(name: &str) -> Option<Obj> {
+    scope::get_opt(&global_scope(), name)
+}
+
+pub fn contains_global(name: &str) -> bool {
+    scope::contains_key(&global_scope(), name)
+}
+
+pub fn set_path(path: &str) {
+    WORLD.with(|w| w.borrow_mut().path = path.to_owned());
+}
+
+pub fn path() -> String {
+    WORLD.with(|w| w.borrow().path.clone())
+}
+
+/// `Global.natives` is keyed by `NativeModuleAttribute.Name`, and `BuildNativeMap` is the
+/// member map. the map order is the reflection order of the reference, so entries stay in
+/// registration order.
+pub fn register_native(name: &str, members: Vec<(String, Obj)>) {
+    WORLD.with(|w| {
+        let mut w = w.borrow_mut();
+        for slot in &mut w.natives {
+            if slot.0 == name {
+                slot.1 = members;
+                return;
+            }
+        }
+        w.natives.push((name.to_owned(), members));
+    })
+}
+
+pub fn is_native(name: &str) -> bool {
+    WORLD.with(|w| w.borrow().natives.iter().any(|(k, _)| k == name))
+}
+
+pub fn native_members(name: &str) -> Option<Vec<(String, Obj)>> {
+    WORLD.with(|w| w.borrow().natives.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()))
+}
+
+/// `Global.SetAllowedModules`
+pub fn set_allowed(names: Vec<String>) {
+    WORLD.with(|w| w.borrow_mut().allowed = Some(names.into_iter().collect()));
+}
+
+pub fn is_allowed(name: &str) -> bool {
+    WORLD.with(|w| match &w.borrow().allowed {
+        None => true,
+        Some(set) => set.contains(name),
+    })
+}
+
+pub fn stdout() -> Rc<RefCell<String>> {
+    WORLD.with(|w| w.borrow().stdout.clone())
+}
+
+pub fn stdout_text() -> String {
+    WORLD.with(|w| w.borrow().stdout.clone()).borrow().clone()
+}
+
+pub fn stdout_clear() {
+    stdout().borrow_mut().clear();
+}
+
+/// the reference stream flushes after every write, so the buffer is handed to the real
+/// stdout at the same points and the byte order of a run is preserved
+pub fn flush_stdout() {
+    use std::io::Write;
+
+    let text = stdout_text();
+    stdout_clear();
+
+    if text.is_empty() {
+        return;
+    }
+
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    let _ = out.write_all(text.as_bytes());
+    let _ = out.flush();
 }
 
 pub fn set_class(name: &str, obj: Obj) {
