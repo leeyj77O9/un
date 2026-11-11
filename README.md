@@ -272,7 +272,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
 Positive 집계의 통과·실패 수에 포함하지 않는다. 현재 기준은 Positive 34 파일 /
-1275 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
+1281 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
 
 `.NET 8` 앱은 `.NET 10` 런타임 위에서 `DOTNET_ROLL_FORWARD=Major`를 설정하면
 실행된다(PowerShell: `$env:DOTNET_ROLL_FORWARD='Major'`).

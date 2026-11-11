@@ -166,7 +166,7 @@ public static class MyMod
   `.un` 스크립트를 실행한다: `scripts/test.ps1`(test), `scripts/bench.ps1`(bench).
 - `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 34 files /
-  1275 passed / 0 failed / 0 crashed**, Negative 42 checks 매칭, Known 1 file이다.
+  1281 passed / 0 failed / 0 crashed**, Negative 42 checks 매칭, Known 1 file이다.
   runner는 `[FAIL]`이 증가하면 exit 1로 끝난다.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).

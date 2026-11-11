@@ -35,6 +35,8 @@ public class Set(HashSet<Obj> value) : Ref<HashSet<Obj>>(value, UnType.Set)
 
     public override Int Len() => Int.From(Value.Count);
 
+    public override Obj In(Obj other) => Bool.From(Value.Contains(other));
+
     public override Obj GetItem(Obj key) => Value.TryGetValue(key, out var value) ? value : new Err($"key {Str.To(key).Value} not found in set");
 
     public override Set Copy() => this;

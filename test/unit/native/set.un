@@ -6,6 +6,14 @@ use test.assert as assert
 # 실행: Un.exe run test/unit/native/set.un  (C:\dev\un 에서)
 # ============================================================
 
+# ---------- 리터럴 ----------
+lit = {1, 2, 3, 4}
+assert.assert_eq(len(lit), 4, "set literal len")
+assert.assert_true(lit.contains(2), "set literal member")
+assert.assert_eq(len({1, 1, 2}), 2, "set literal dedups")
+assert.assert_true(type({}) is dict, "empty braces are a dict")
+assert.assert_true(type({"a": 1}) is dict, "braces with pairs are a dict")
+
 # ---------- 생성 ----------
 s = set(1, 2, 3)
 assert.assert_eq(len(s), 3, "set len")
@@ -55,5 +63,6 @@ assert.assert_eq(len(set().union(set())), 0, "union of empty sets")
 
 # ---------- 비교 연산 ----------
 assert.assert_err(fn() -> set(1) == set(1), "unsupported operand type(s) for ==: 'set' and 'set'")
-assert.assert_err(fn() -> 1 in set(1, 2), "unsupported operand type(s) for in: 'set'")
+assert.assert_true(1 in set(1, 2), "set supports `in` (hit)")
+assert.assert_false(9 in set(1, 2), "set supports `in` (miss)")
 assert.summary()

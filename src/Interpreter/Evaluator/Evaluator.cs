@@ -49,6 +49,7 @@ public sealed class Evaluator(Context context)
             NodeKind.Tuple => EvalTuple(node),
             NodeKind.List => EvalList(node),
             NodeKind.Dict => EvalDict(node),
+            NodeKind.Set => EvalSet(node),
 
             NodeKind.Block => EvalBlock(node),
 
@@ -590,6 +591,16 @@ public sealed class Evaluator(Context context)
         }
 
         return dict;
+    }
+
+    private Set EvalSet(Node node)
+    {
+        var set = new Set();
+
+        foreach (var child in node.Children)
+            set.Value.Add(Eval(child));
+
+        return set;
     }
 
     private Obj EvalBlock(Node node)
