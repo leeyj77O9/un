@@ -616,6 +616,28 @@ impl Parser {
 
     fn parse_for(&mut self) -> Result<Node, LangError> {
         let keyword = self.expect(TokenType::For, "expected 'for' keyword")?;
+
+        // `for <iterable>` with no binding target: the header has no `In` at bracket
+        // depth 0, so the iterable is parsed as an expression and the target slot is a
+        // zero-length `Wildcard` at the iterable's start. The body is unchanged.
+        if !self.has_for_header_in() {
+            let iterable_expr = self.parse_expression()?;
+            self.skip_new_lines();
+            let no_target_body = self.parse_block()?;
+
+            return Ok(Node::with_children(
+                keyword.start,
+                len(t(&keyword), n(&no_target_body)),
+                NodeKind::For,
+                None,
+                vec![
+                    Node::new(iterable_expr.start, 0, NodeKind::Wildcard),
+                    iterable_expr,
+                    no_target_body,
+                ],
+            ));
+        }
+
         let target = self.parse_pattern()?;
 
         self.expect(TokenType::In, "expected 'in' after for target")?;
@@ -631,6 +653,29 @@ impl Parser {
             None,
             vec![target, iterable, body],
         ))
+    }
+
+    /// `HasForHeaderIn` looks ahead over the header tokens without consuming them,
+    /// counting bracket depth. `In` at depth 0 is the binding form; a newline, indent
+    /// or dedent at depth 0 (or the end of the token list) is the iterable-only form.
+    /// `for x in f(a, b) : ...` keeps depth > 0, so the `In` inside brackets never
+    /// makes the header look like a binding form.
+    fn has_for_header_in(&self) -> bool {
+        let mut depth: i32 = 0;
+
+        for tok in self.tokens[self.position..].iter() {
+            match tok.typ {
+                TokenType::LParen | TokenType::LBrack | TokenType::LBrace => depth += 1,
+                TokenType::RParen | TokenType::RBrack | TokenType::RBrace => depth -= 1,
+                TokenType::In if depth == 0 => return true,
+                TokenType::NewLine | TokenType::Indent | TokenType::Dedent if depth == 0 => {
+                    return false
+                }
+                _ => {}
+            }
+        }
+
+        false
     }
 
     fn parse_while(&mut self) -> Result<Node, LangError> {
