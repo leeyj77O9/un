@@ -36,10 +36,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 8a bytecode contract + world/global/native | **완료** | `3f053f0`, `e97bc8c`, `a064047`, `f88c580` | 124 tests green, warning 0. opcode/Proto/Program/validate, `World`/`Global`/native `io` + builtins 14 |
 | 8b compiler + stack VM + `run`/`dis` | **완료** | `633ae20`, `248338c`, `000870c`, `600d8cb`, `508b51d` | `cargo test --release` 167/167, build 0 warnings. differential `cmp3.ps1` 29 probes: PASS 27 / DIFF 2(p11,p28 = .NET stack trace only, D-034). reference baseline 불변 |
 | 9 control flow | **완료** | `9921c75` | `cargo test --release` 167/167 green, warning 0. `if`/`while`/`for`/`break`/`skip` 구현 + validator의 worklist CFG 깊이 검증. differential `cmp3.ps1` 27 PASS / 2 DIFF 유지 |
-| 10 functions/lambda/return | **완료** | `849d224` | `cargo test --release` 189/189 green, warning 0. nested proto + `MAKE_FUNC`/`RETURN` + `begin_call`/`end_call` + 중첩 VM. differential 42 probes: 41 PASS / 1 DIFF(호스트 예외 stack trace만 차이) || 11~17 | 미착수 | — | — |
-| 11 file modules | **?꾨즺** | `d83eee0` | `use`媛 ?뚯씪 紐⑤뱢???쎈뒗???뚯씪 / `mod.un` / ?붾젆?곕━??紐⑤뱺 `.un`). 紐⑤뱢 罹먯떆 + `circular import detected`. `test/integration/modules.un` reference? ?숈씪 |
-| 12 classes/exceptions/native modules | **?꾨즺** | `fca187e`, `6568c37`, `81ff74a`, `5e520e7`, `18fd0b9` | class/enum/property/match/defer/using/decorator + native 12媛?紐⑤뱢 + stream/future/pool/lock. differential 34 ?뚯씪: 33 PASS / 1 DIFF(異쒕젰 ?숈씪, ?ㅽ뻾 ?쒓컙留? |
-| 13~17 defer/using/stream/tagged/go-wait/.unbc | **?꾨즺** | `18fd0b9`, `43a8f7e`, `fab032b` | `defer`/`using`/`stream`/tagged template/`go`/`wait`/`.unbc` 而⑦뀒?대꼫. differential 34 ?뚯씪: 33 PASS / 1 DIFF, negative 42 ?뚯씪: 38 PASS / 4 DIFF(臾몄꽌?붾맂 李⑥씠) |
+| 10 functions/lambda/return | **완료** | `849d224` | `cargo test --release` 189/189 green, warning 0. nested proto + `MAKE_FUNC`/`RETURN` + `begin_call`/`end_call` + 중첩 VM. differential 42 probes: 41 PASS / 1 DIFF(호스트 예외 stack trace만 차이) |
+| 11 file modules | **완료** | `d83eee0` | `use`와 파일 모듈(파일 / 디렉터리의 `mod.un` / 디렉터리의 모든 `.un`), 캐시 + `circular import detected`, `test/integration/modules.un` reference와 동일 |
+| 12 classes/exceptions/native modules | **완료** | `fca187e`, `6568c37`, `81ff74a`, `5e520e7`, `18fd0b9` | class/enum/property/match/defer/using/decorator + native 12개 모듈 + stream/future/pool/lock. differential 34개 파일: 33 PASS / 1 DIFF(출력 동일, 실행 시간만 차이) |
+| 13~17 defer/using/stream/tagged/go-wait/.unbc | **완료** | `18fd0b9`, `43a8f7e`, `fab032b` | `defer`/`using`/`stream`/tagged template/`go`/`wait`/`.unbc`까지 구현. differential 34개 파일: 33 PASS / 1 DIFF, negative 42개 파일: 38 PASS / 4 DIFF(문서화된 차이) |
+| 18 random object / http / ws | **완료** | `91cf755`, `1f30012`, `bbdb954` | `random()` 생성 객체(공유/개별 생성기) + `http` client와 `ws` socket payload(plain TCP, RFC 6455 handshake, TLS는 범위 밖 D-057). network probe 13개: 13 PASS / 0 DIFF, differential 34개 파일: 34 PASS / 0 DIFF, negative 38 PASS / 4 DIFF, reference baseline 불변 |
 
 ## Phase 2 정합 데이터
 
@@ -635,8 +636,59 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
   .NET 스택 오버플로(Rust는 재귀 한도), `go`의 타이밍(D-054), .NET `Array.Sort`의
   일관성 검사.
 
-### 남은 차이
+## Phase 18 종합 검증(random 객체 / http / ws)
+
+- **Phase 18a** `random()` 객체 ✓: `random()`가 생성자 객체를 만들고 타입 이름은 `random`이다.
+  모듈 함수는 공유 생성기를 쓰고, 객체의 멤버 16개(`next`/`int`/`float`/`bool`/`bytes`/
+  `shuffle`/`choice`/`choices`/`sample`/`chance`/`seed`/`uuid`/`str`/`weighted`/`range`/
+  `value`)는 자기 자신의 생성기를 쓴다. `seed`는 양쪽에서 생성기를 교체하므로 같은 시드는
+  같은 값을 낸다. `Clone()`은 같은 cell을 공유하므로 시드도 계속 공유된다(D-059).
+- **Phase 18b** `http` client ✓: `http.connect()`는 host client payload를 담는다. 타입
+  이름은 `http`, display는 `http`, `==`는 host client reference 비교(자기 자신만 true),
+  `str`/`bool`/`len`/`()`는 base 메시지를 답한다.
+- **Phase 18c** `ws` socket ✓: `ws.connect(url)`은 plain TCP 위에서 RFC 6455 handshake를
+  한다(SHA-1 + base64 accept 검증, magic GUID는 RFC의 `258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).
+  타입 이름은 `socket`, display는 `<socket {state}>`이고 state는 .NET `WebSocketState`의
+  이름(`Open`/`Closing`/`Closed`), `bool`은 `state == Open`, `==`는 socket reference 비교다.
+- `ws.connect`의 URI 검증은 `System.Uri`의 문구를 그대로 재현한다(ground truth `refw3.txt`):
+  빈 URI(`Invalid URI: The URI is empty.`), 형식 불능, host parse 불가, `ws://`의 hostname,
+  invalid port(`Invalid URI: Invalid port specified.`), ws가 아닌 scheme
+  (`Only Uris starting with 'ws://' or 'wss://' are supported. (Parameter 'uri')`),
+  연결 실패(`Unable to connect to the remote server`).
+- TLS(`https`/`wss`)는 범위 밖이다(D-057): std 전용·무의존 구현이라 TLS가 없고, connect
+  실패는 reference의 `Unable to connect to the remote server`로 답한다.
+- `http_client`/`web_socket` 멤버 표는 등록하지만 도달할 수 없다(D-058): `[NativeType]`
+  이름은 `originalClasses`에만 등록되고 객체의 타입 이름은 `http`/`socket`이므로 멤버
+  접근은 `'http' object has no attribute 'get'` / `'socket' object has no attribute 'send'`로
+  실패하고 `inspect.attr`는 `[]`다. 그래서 request/frame I/O는 Un 코드에서 관측할 수 없고
+  parity 대상이 아니다(D-060).
+
+### 검증
+
+- `cargo build --release` 0 errors / 0 warnings, `cargo test --release` **192 passed / 0 failed**.
+- network probe suite(`p10\wscmp.ps1`, `ws1..ws6` + `http1..http7`): **13 PASS / 0 DIFF**
+  (stdout과 exit code가 byte-identical). `ws` probe는 Node `ws` package의 echo server
+  (port 19085)에 실제 handshake와 send/receive를 한다. ground truth는 `refw3.txt`(URI
+  메시지표), `refw5.txt`(live socket 객체의 표), `refw6.txt`(interpolation/`str`/`bool`/
+  `not`/`==`/globals), `refh7.txt`(http 객체의 표).
+- differential suite(MANIFEST 34개 파일): **34 PASS / 0 DIFF**. `test/unit/native/set.un`의
+  실행 시간 한도 초과(flake)는 단독 실행이 0.03초에 끝나서 해소됐다.
+- negative suite(42개 파일): **38 PASS / 4 DIFF**.
+- reference baseline(`scripts/test.ps1`) 불변: Positive 33 files / 1265 passed / 0 failed /
+  0 crashed, Negative 42 matched, Known 1(`test/regression/defects.un`, 6 assertions).
+
+### 남은 차이(총집합)
 
 - 함수 안의 `break`/`skip`이 호출자의 반복문까지 unwind 하지 않는다(D-049).
-- `os.tickCount`는 epoch 밀리초(D-051), `fs.hidden`은 점 접두사(D-052).
+- `os.tickCount`는 epoch 밀리초(D-051), `fs.hidden`는 점 접두사(D-052).
 - 정규식은 자체 엔진(D-053), `go`/`pool`은 단일 스레드(D-054).
+- 스택 오버플로: reference는 .NET의 실제 overflow로 exit `-1073741571` + stderr
+  `Stack overflow`를 내고, Rust는 재귀 한도(1000)가 `maximum recursion depth exceeded`로
+  exit 1을 낸다. `test/negative/depth_limit_crash.un`와 `test/negative/property_recursion.un`
+  가 이 차이이고(D-034), .NET의 overflow 값은 parity target이 아니다.
+- `go`의 타이밍: `go`가 호출 스레드에서 즉시 평가하므로 `for`의 loop var를 captured한
+  future가 reference와 다른 값을 낸다(`test/negative/go_loop_var.un`, D-054).
+- .NET `Array.Sort`는 비교 일관성 위반을 `inconsistent results`로 throw하고 exit 1을 낸다
+  (`test/negative/order_crash.un`). Rust는 같은 정렬에 같은 비교를 쓰므로 throw하지 않는다.
+- TLS(`https`/`wss`)는 지원하지 않는다(D-057). `http`/`ws`의 request/frame I/O는 Un 코드에서
+  관측할 수 없어 parity 대상이 아니다(D-060).

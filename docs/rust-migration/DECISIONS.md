@@ -593,3 +593,43 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - reference의 `Stru.Clone()`은 `Members = Members.New()`로 멤버 표를 복사한다. Rust
   구현이 멤버를 복사하지 않아서 클래스의 메서드가 인스턴스에서 사라졌다.
 - `stru_copy`가 멤버 표를 복사하도록 고쳤다.
+
+## D-057 | 네트워크는 plain TCP만 지원한다(TLS는 범위 밖) | Accepted
+
+- reference는 `System.Net.Http.HttpClient`와 `System.Net.WebSockets.ClientWebSocket`를
+  쓴다. `https`와 `wss`는 host의 TLS handshake(SSL 스택)를 탄다.
+- Rust runtime은 std 전용·무의존 구현이고(외부 crate를 추가하지 않는다) TLS 스택이 없다.
+  그래서 `https`/`wss`는 연결이 실패하고, reference의 연결 실패 문구
+  `Unable to connect to the remote server`를 그대로 답한다.
+- `http://`와 `ws://`만 parity target이다. 연결/핸드셰이크 실패는 전부 같은 문구로
+  답한다(refused, DNS 실패, timeout, TLS 요청 포함).
+
+## D-058 | `http_client`/`web_socket` 멤버 표는 등록만 한다 | Accepted
+
+- reference의 `[NativeType]` 이름은 `http_client`와 `web_socket`이고 `Global.Init`는 그
+  표를 `originalClasses`에만 등록한다. `originalClasses`는 attribute lookup이 참고하는
+  표이지 `Global.GetAttr`가 직접 보는 표가 아니다.
+- 객체의 타입 이름은 `http`와 `socket`이므로 멤버 접근은 `'http' object has no attribute
+  'get'` / `'socket' object has no attribute 'send'`로 실패하고 `inspect.attr`는 `[]`다.
+  `http_client()`와 `web_socket()`는 `undefined variable`이다(`[NativeType]`은 전역
+  생성자를 만들지 않는다).
+- 그래서 16개 http 멤버와 4개 ws 멤버는 reference와 같은 상태로 등록하되 Un 코드에서
+  도달할 수 없다.
+
+## D-059 | `random`의 값은 parity target이 아니다 | Accepted
+
+- reference는 `System.Random`를 쓰고, 그 값 순서는 .NET 버전의 내부 알고리즘에 의존한다.
+  값 순서는 언어의 의미와 무관하다.
+- 그래서 xorshift 생성기를 쓴다. target은 재현성이다: 같은 `seed`는 같은 값을 낸다.
+  공유 생성기(모듈 함수)와 객체별 생성기(`random()` 객체)의 구별, `seed`가 생성기를
+  교체하는 성질, `Clone()`이 생성기 cell을 공유하는 성질은 재현한다.
+
+## D-060 | http/ws의 request/frame I/O는 parity 대상이 아니다 | Accepted
+
+- D-058 때문에 멤버가 도달할 수 없어서 HTTP request와 WebSocket frame의 입출력은 Un
+  코드에서 관측할 수 없다. `test/**.un`의 어떤 파일도 `http`/`ws`를 `use`하지 않고
+  `PlaygroundRunner.DefaultAllowed`에도 없다.
+- 그래서 검증은 probe suite로만 한다(`p10\ws1..ws6.un` + `p10\http1..http7.un`,
+  **13 PASS / 0 DIFF**). probe는 URI 검증표, 연결 실패 문구, 객체의 타입/display/
+  비교/`bool`, `inspect.attr`를 reference와 byte-identical로 비교하고, frame 송수신은
+  Node `ws` package의 echo server(port 19085)에 대한 실제 handshake와 echo로 확인한다.
