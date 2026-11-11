@@ -8,6 +8,18 @@ namespace Un.Native;
 [NativeModule("fs")]
 public static class Fs
 {
+    static bool GetBlockedPath(Obj obj, out string path, out Obj err)
+    {
+        if (Global.FileSystem is not PhysicalFileSystem)
+        {
+            path = "";
+            err = new Err("fs module is not available in this environment");
+            return false;
+        }
+
+        return GetPath(obj, out path, out err);
+    }
+
     static bool GetPath(Obj obj, out string path, out Obj err)
     {
         if (!obj.As<Str>(out var value))
@@ -31,7 +43,7 @@ public static class Fs
     )]
     public static Obj Exists([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         return Bool.From(File.Exists(p) || Directory.Exists(p));
@@ -46,7 +58,7 @@ public static class Fs
     )]
     public static Obj FileExists([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         return Bool.From(File.Exists(p));
@@ -61,7 +73,7 @@ public static class Fs
     )]
     public static Obj DirectoryExists([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         return Bool.From(Directory.Exists(p));
@@ -76,7 +88,7 @@ public static class Fs
     )]
     public static Obj Read([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!File.Exists(p))
@@ -96,7 +108,7 @@ public static class Fs
         [ArgInfo(Essential = true)] Obj path,
         [ArgInfo(Essential = true)] Obj text)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!text.As<Str>(out var value))
@@ -118,7 +130,7 @@ public static class Fs
         [ArgInfo(Essential = true)] Obj path,
         [ArgInfo(Essential = true)] Obj text)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!text.As<Str>(out var value))
@@ -138,7 +150,7 @@ public static class Fs
     )]
     public static Obj Delete([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (File.Exists(p))
@@ -160,10 +172,10 @@ public static class Fs
         [ArgInfo(Essential = true)] Obj source,
         [ArgInfo(Essential = true)] Obj destination)
     {
-        if (!GetPath(source, out var src, out var err))
+        if (!GetBlockedPath(source, out var src, out var err))
             return err;
 
-        if (!GetPath(destination, out var dst, out err))
+        if (!GetBlockedPath(destination, out var dst, out err))
             return err;
 
         File.Copy(src, dst, true);
@@ -182,10 +194,10 @@ public static class Fs
         [ArgInfo(Essential = true)] Obj source,
         [ArgInfo(Essential = true)] Obj destination)
     {
-        if (!GetPath(source, out var src, out var err))
+        if (!GetBlockedPath(source, out var src, out var err))
             return err;
 
-        if (!GetPath(destination, out var dst, out err))
+        if (!GetBlockedPath(destination, out var dst, out err))
             return err;
 
         File.Move(src, dst, true);
@@ -204,7 +216,7 @@ public static class Fs
         [ArgInfo(Essential = true)] Obj path,
         [ArgInfo(Essential = true)] Obj name)
     {
-        if (!GetPath(path, out var src, out var err))
+        if (!GetBlockedPath(path, out var src, out var err))
             return err;
 
         if (!name.As<Str>(out var value))
@@ -227,7 +239,7 @@ public static class Fs
     )]
     public static Obj Touch([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!File.Exists(p))
@@ -245,7 +257,7 @@ public static class Fs
     )]
     public static Obj Mkdir([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         Directory.CreateDirectory(p);
@@ -264,7 +276,7 @@ public static class Fs
         [ArgInfo(Essential = true)] Obj path,
         [ArgInfo(Optional = true)] Obj recursive = null!)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         bool value = true;
@@ -291,7 +303,7 @@ public static class Fs
     )]
     public static Obj List([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!Directory.Exists(p))
@@ -309,7 +321,7 @@ public static class Fs
     )]
     public static Obj Files([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!Directory.Exists(p))
@@ -327,7 +339,7 @@ public static class Fs
     )]
     public static Obj Dirs([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!Directory.Exists(p))
@@ -345,7 +357,7 @@ public static class Fs
     )]
     public static Obj Walk([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!Directory.Exists(p))
@@ -363,7 +375,7 @@ public static class Fs
     )]
     public static Obj Size([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!File.Exists(p))
@@ -381,7 +393,7 @@ public static class Fs
     )]
     public static Obj Created([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         DateTime time = File.Exists(p) ? File.GetCreationTimeUtc(p) : Directory.GetCreationTimeUtc(p);
@@ -398,7 +410,7 @@ public static class Fs
     )]
     public static Obj Modified([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         DateTime time = File.Exists(p) ? File.GetLastWriteTimeUtc(p) : Directory.GetLastWriteTimeUtc(p);
@@ -415,7 +427,7 @@ public static class Fs
     )]
     public static Obj Accessed([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         DateTime time = File.Exists(p)
@@ -434,7 +446,7 @@ public static class Fs
     )]
     public static Obj Readonly([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!File.Exists(p))
@@ -452,7 +464,7 @@ public static class Fs
     )]
     public static Obj Hidden([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!File.Exists(p) && !Directory.Exists(p))
@@ -613,7 +625,7 @@ public static class Fs
     )]
     public static Obj Chdir([ArgInfo(Essential = true)] Obj path)
     {
-        if (!GetPath(path, out var p, out var err))
+        if (!GetBlockedPath(path, out var p, out var err))
             return err;
 
         if (!Directory.Exists(p))

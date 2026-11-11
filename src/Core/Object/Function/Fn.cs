@@ -106,6 +106,13 @@ public class Fn(Context closure) : Obj(UnType.Func)
         return None;
     }
 
+    // 바인딩 불변조건 (두 경로 모두 동일하게 적용해야 한다):
+    //   1. self/super는 바인딩하지 않는다. 2. 위치 인자는 선언 순서대로 채운다.
+    //   3. '*args'/'**kwargs'가 있거나 기본값이 없는 선택 인자를 건너뛰어야 하면 일반 경로가 필요하다.
+    //   4. 누락/중복/알 수 없는 인자 오류 메시지는 일반 경로와 동일한 규칙을 따라야 한다.
+    // TryBindSimplePositional은 이를 만족하는 좁은 경우에만 성공을 반환하는 "보수적 사전 검사"이며,
+    // 판정이 애매하면 반드시 false를 반환해 Bind(일반 경로)에 넘겨야 한다.
+    // 두 경로 중 한쪽만 수정하면 조용히 어긋나므로 규칙 변경 시 반드시 양쪽을 함께 수정할 것.
     private bool TryBindSimplePositional(Scope scope, Tup args, out Obj result)
     {
         for (var i = 0; i < args.Count; i++)

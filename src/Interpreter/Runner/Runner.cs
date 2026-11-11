@@ -40,7 +40,7 @@ public sealed class Runner(Context context, Context? parentContext = null)
         catch (PropagateFlow pf)
         {
             var err = pf.Error as Err;
-            throw new Error(err?.Message ?? "propagated error", pf.Start, pf.Length, Context.Source, header: err?.Header ?? "error");
+            throw new Error(err?.Message ?? "propagated error", pf.Start, pf.Length, Context.Source, header: err?.Header ?? "error", inner: pf);
         }
         catch (BreakFlow bf)
         {

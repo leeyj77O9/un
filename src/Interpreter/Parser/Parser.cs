@@ -1041,7 +1041,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
         }
         catch (Error error)
         {
-            throw new Error(error.Message, start + error.Start, error.Lenght, this.source, error.Header, error.InnerException);
+            throw new Error(error.Message, start + error.Start, error.Length, this.source, error.Header, error.InnerException);
         }
 
         for (int i = 0; i < tokens.Count; i++)

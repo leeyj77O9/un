@@ -19,6 +19,8 @@ public static class PlaygroundRunner
         var originalOut = Native.IO.GetStdout();
         var originalIn = Native.IO.GetStdin();
         var originalAllowed = Global.GetAllowedModules();
+        var originalAllowExit = Global.AllowProcessExit;
+        var snapshot = Global.CaptureState();
 
         var stdoutMem = new MemoryStream();
         var stdoutStream = new Object.IO.Stream(stdoutMem);
@@ -28,6 +30,7 @@ public static class PlaygroundRunner
             Global.FileSystem = memFs;
             Global.SetPath("memory://");
             Global.SetAllowedModules(allowedModules ?? DefaultAllowed);
+            Global.AllowProcessExit = false;
 
             Native.IO.SetStdout(stdoutStream);
 
@@ -102,9 +105,11 @@ public static class PlaygroundRunner
         }
         finally
         {
+            Global.RestoreState(snapshot);
             Global.FileSystem = originalFs;
             Global.SetPath(originalPath);
             Global.SetAllowedModules(originalAllowed);
+            Global.AllowProcessExit = originalAllowExit;
             Native.IO.SetStdout(originalOut);
             Native.IO.SetStdin(originalIn);
         }

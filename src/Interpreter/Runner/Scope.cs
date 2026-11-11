@@ -111,4 +111,26 @@ public class Scope(Scope? parentScope = null, bool isFunctionScope = false)
 
     public IReadOnlyDictionary<string, int> GetSymbolTable() => symbols;
     public IReadOnlyList<Obj> GetSlots() => slots;
+
+    public Dictionary<string, Obj> Snapshot()
+    {
+        var snapshot = new Dictionary<string, Obj>(symbols.Count);
+
+        foreach (var (key, index) in symbols)
+            snapshot[key] = slots[index];
+
+        return snapshot;
+    }
+
+    public void Restore(Dictionary<string, Obj> snapshot)
+    {
+        symbols.Clear();
+        slots.Clear();
+
+        foreach (var (key, value) in snapshot)
+        {
+            symbols[key] = slots.Count;
+            slots.Add(value);
+        }
+    }
 }

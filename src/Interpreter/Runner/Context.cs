@@ -12,6 +12,8 @@ public class Context(Scope scope, Source source, List<Frame> frames)
 
     public int CallDepth { get; set; }
 
+    public object Gate { get; } = new();
+
     public void PushFrame(Frame frame) => Frames.Add(frame);
 
     public void PopFrame()
@@ -21,4 +23,11 @@ public class Context(Scope scope, Source source, List<Frame> frames)
 
         Frames.RemoveAt(Frames.Count - 1);
     }
+
+    public Context Fresh() => new(Scope, Source, Frames)
+    {
+        Defers = Defers,
+        Usings = Usings,
+        CallDepth = 0,
+    };
 }

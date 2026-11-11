@@ -103,8 +103,8 @@ public static class Optimizer
         {
             if (child.Kind == NodeKind.IfCase)
             {
-                var condition = OptimizePass(child.Children[0]);
-                var body = OptimizePass(child.Children[1]);
+                var condition = child.Children[0];
+                var body = child.Children[1];
 
                 if (IsConst(condition, out var v) && v is bool b)
                 {
@@ -129,7 +129,7 @@ public static class Optimizer
             }
             else
             {
-                var body = OptimizePass(child.Children[0]);
+                var body = child.Children[0];
 
                 if (!ReferenceEquals(body, child.Children[0]))
                 {

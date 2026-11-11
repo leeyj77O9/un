@@ -26,6 +26,9 @@ public static class Builtin
     )]
     public static Obj Exit([ArgInfo(Optional = true)] Obj code)
     {
+        if (!Un.Global.AllowProcessExit)
+            throw new Panic("exit() is not allowed in this environment");
+
         Environment.Exit(code.As<Int>(out var codeObj) ? (int)codeObj.Value : 0);
         return Obj.None;
     }

@@ -311,7 +311,7 @@ public class Obj(UnType type) : IComparable<Obj>
     public virtual Str Repr()
     {
         if (TryMethod("__repr__", out Obj? value, []))
-            return (Str)value;
+            return value is Str str ? str : Str.From(Type.Name);
 
         if (ValidSuper() && Super.Repr().As<Str>(out var repr))
         {
@@ -331,10 +331,10 @@ public class Obj(UnType type) : IComparable<Obj>
         {
             Types = Types,
             Members = Members.New(),
-            Annotations = Annotations,
+            Annotations = new(Annotations),
             Self = Self,
             Super = Super is null ? None : !Super.IsNone() ? Super.Clone() : Super,
-            Parents = Parents,
+            Parents = [.. Parents],
         };
     }
 

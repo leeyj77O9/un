@@ -12,6 +12,8 @@ public sealed class Node(int start, int length, NodeKind kind, TokenType op = de
     public object? Value { get; init; }
     public IReadOnlyList<Node>? Annotations { get; init; }
 
+    internal string? CachedText { get; set; }
+
     public Node WithChildren(IReadOnlyList<Node> newChildren) => new(Start, Length, Kind, Operator, children: [.. newChildren])
     {
         Annotations = Annotations,

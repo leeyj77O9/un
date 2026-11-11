@@ -73,7 +73,6 @@ public class HttpClient(System.Net.Http.HttpClient value) : Ref<System.Net.Http.
 
     [Native(
         Name = "get_async",
-        Async = true,
         Description = "Asynchronously sends a GET request and returns its response text.",
         Example = "body = client.get_async(\"https://example.com\")",
         ReturnType = "str",
@@ -127,7 +126,6 @@ public class HttpClient(System.Net.Http.HttpClient value) : Ref<System.Net.Http.
 
     [Native(
         Name = "delete_async",
-        Async = true,
         Description = "Asynchronously sends a DELETE request and returns its response text.",
         Example = "body = client.delete_async(\"https://example.com/item\")",
         ReturnType = "str",
@@ -183,7 +181,6 @@ public class HttpClient(System.Net.Http.HttpClient value) : Ref<System.Net.Http.
 
     [Native(
         Name = "post_async",
-        Async = true,
         Description = "Asynchronously sends a POST request with text content.",
         Example = "body = client.post_async(\"https://example.com\", \"data\")",
         ReturnType = "str",
@@ -248,7 +245,6 @@ public class HttpClient(System.Net.Http.HttpClient value) : Ref<System.Net.Http.
 
     [Native(
         Name = "put_async",
-        Async = true,
         Description = "Asynchronously sends a PUT request with text content.",
         Example = "body = client.put_async(\"https://example.com\", \"data\")",
         ReturnType = "str",
@@ -325,7 +321,6 @@ public class HttpClient(System.Net.Http.HttpClient value) : Ref<System.Net.Http.
 
     [Native(
         Name = "patch_async",
-        Async = true,
         Description = "Asynchronously sends a PATCH request with text content.",
         Example = "body = client.patch_async(\"https://example.com\", \"data\")",
         ReturnType = "str",
@@ -388,7 +383,6 @@ public class HttpClient(System.Net.Http.HttpClient value) : Ref<System.Net.Http.
 
     [Native(
         Name = "head_async",
-        Async = true,
         Description = "Asynchronously sends a HEAD request and returns its status code.",
         Example = "status = client.head_async(\"https://example.com\")",
         ReturnType = "int",
@@ -448,7 +442,6 @@ public class HttpClient(System.Net.Http.HttpClient value) : Ref<System.Net.Http.
 
     [Native(
         Name = "options_async",
-        Async = true,
         Description = "Asynchronously lists HTTP methods allowed by an endpoint.",
         Example = "methods = client.options_async(\"https://example.com\")",
         ReturnType = "list",
