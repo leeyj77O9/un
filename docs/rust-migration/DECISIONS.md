@@ -335,3 +335,35 @@ bool이 아니면 `error: {a} < {b} is not a boolean`이다.
 - `Payload::Func/Property/FieldRef` 추가에 따라 `clone_obj`의 primitive arm을 넣었다:
   `Int.Clone()`/`Bool.Clone()`는 `From(Value)`(cached cell 유지),
   `Str/Float/Date Clone()`는 pool을 우회한 fresh object → D-026의 교정을 code에 적용했다.
+
+## D-033 | `chr`의 surrogate range는 inner .NET 문자열만 재현한다 | Accepted
+
+`chr(55296)`은 reference에서 `System.Reflection.TargetInvocationException`으로 감싸진
+`System.ArgumentOutOfRangeException`다. inner message는
+`A valid UTF32 value is between 0x000000 and 0x10ffff, inclusive, and should not include
+surrogate codepoint values (0x00d800 ~ 0x00dfff). (Parameter 'utf32')`이고 wrapper와
+stack trace는 재현하지 않는다(D-024). Rust는 `Payload::Panic { name, message }`로 같은
+inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {message}`로 출력한다.
+`chr`의 range check(`0..1114111`)는 `Err("chr: code point out of range (0..1114111)")`로
+먼저 잡히고, surrogate는 그 뒤의 host throw다.
+
+## D-034 | 네이티브 레이어는 공유 closure + world stdout buffer를 쓴다 | Accepted
+
+- 모든 native는 `Context(Global.GetGlobalScope(), null, null)` 위에 만들어진다. Rust는
+  `native::init`가 만든 **단일** `Context(global_scope, empty Source, new_frames())`를
+  모든 native가 공유 → `CallDepth`가 native 호출 전체의 공유 상태다.
+- `Arg.DefaultValue`는 native 인자에 설정되지 않는다. reference는 C# slot이 `null`이라
+  `sep ??= " "` 같은 `??=`가 발동하고 `GetArgs`는 `Obj defaultValue = Null`을 쓴다.
+  Rust는 unbound optional을 `obj::none()`으로 bind하고 host가 `is_none`으로 `??=`를
+  흉내 낸다. native의 `[ArgInfo]` flag는 Essential/Optional/Positional뿐이고
+  `IsKeyword`는 항상 false다.
+- `*values` positional collector는 `Tup`로 bind되고 `io.write`는 `sep` `" "` /
+  `end` `"\n"` / `ToStr()` → `Repr()` fallback / flush per write를 따른다.
+  `stream` payload가 Phase 14이므로 explicit `stream`/`input`/`output` 인자는
+  reference의 type-check 메시지로 reject한다.
+- stdout는 world-owned buffered `String`이고 `world::flush_stdout()`가 reference의
+  flush 시점(`cw.Write(...)` 후 `cw.Flush()`)에서 real stdout에 넘긴다 → run의 byte
+  순서가 유지되고 sandbox는 buffer를 캡처한다. `exit`는 `process::exit` 전에 flush한다.
+- `Global.Init`는 `io`를 bind하지 않는다. 모든 probe/test 스크립트는 `use io`로 시작한다.
+- `Str`은 `Repr()`를 override하지 않으므로 `repr("a")`는 base form의 type name `str`이다
+  (`type(1)` → `<type: int>`, `len([1,2,3])` → `3`, `chr(65)` → `A`와 실측 비교).

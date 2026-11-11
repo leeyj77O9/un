@@ -362,13 +362,86 @@ ground truth는 `src/Core/Object/Function/{Fn,LFn,NFn,Arg}.cs`, `Base/Property.c
 - Known: `test/regression/defects.un` (6 assertions) KNOWN FAIL
 - `test/test_suite.un`: `109 passed, 0 failed`
 
+## Phase 8a 정합 데이터 (bytecode contract + global/native 레이어)
+
+`rust/src/bytecode/`(`3f053f0`), `rust/src/runtime/world.rs` 확장(`e97bc8c`),
+`rust/src/runtime/global.rs` + `rust/src/native/`(`a064047`). 총 **124 tests green,
+warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
+`src/Program.cs`, `src/Interpreter/Runner/Runner.cs`, `src/Core/Global.cs`,
+`src/Core/Native/{Builtin,IO}.cs`의 source bytes에서 취했다. D-033, D-034 참조.
+
+### bytecode contract가 code에 고정됐다
+
+- `Op`는 explicit `#[repr(u8)]` discriminant로 고정된다: loads/stores `0x01..0x0B`,
+  stack shuffle `0x0C..0x11`, builders `0x12..0x18`, arithmetic `0x19..0x25`,
+  comparisons `0x26..0x2F`(`XOR`가 마지막), unary `0x30..0x35`,
+  `JMP_IF 0x36 / JMP 0x37 / PUSH_TRY_PROP 0x38 / PROPAGATE 0x39`,
+  attr/item/slice `0x3A..0x3F`, args `0x40..0x45` + `UNWRAP 0x46`,
+  `NEW_SCOPE 0x47 / POP_SCOPE 0x48`, loop `0x49..0x4D`, try/defer/using `0x4E..0x54`,
+  class/enum `0x55..0x5C`, `MAKE_FUNC 0x5D / USE 0x5E / UNSUPPORTED 0x5F`.
+  `0x60..0x7F`는 §16 확장 영역, `0x00`은 unused sentinel.
+- `Instr { op: u8, flags: u16, operand: i32 }`는 7-byte LE 인코딩이고
+  `Proto`는 `code/consts/names/protos/call_names/source_map/exc/flags/locals/params/
+  arity/name`를 owns, `Program`은 `source_path/names/consts/protos/msgs/root`를 owns.
+  `source_map.len() == code.len()`이 validate의 1번 규칙이고 `stack_effect`는 `i64`를
+  돌려주며 `JMP_IF`는 `FLAG_JUMP_POP`이 세트일 때만 pop한다(`and`/`or`는 short-circuit
+ 한 쪽을 남기기 때문).
+- name index는 operand에, count/flag는 flags에 들어간다:
+  `GET_ATTR/SET_ATTR/ARG_KW/ADD_MEMBER/MAKE_CLASS/LOAD_BASE_CLASS/REGISTER_CLASS/
+  MAKE_ENUM`. `BUILD_TUPLE_NAMED`는 names-table index를 flags에, count를 operand에
+  둔다. `CALL`은 flags = `call_names` index, operand = arg count.
+- `Program.msgs`는 `UNSUPPORTED` 메시지 테이블이고 module-level append-only → `.unbc`
+  container도 append-only로 유지된다. `Param`(`name/type_name/flags/default`)는 Phase 10
+  restructure를 피하려고 지금 넣었다.
+
+### world/global/native
+
+- `World`는 `path`, `global_scope`, `natives`, `stdout`, `allowed`를 owns한다.
+  root `Context`의 scope는 global scope 그 자체다(reference는
+  `new Context(Global.GetGlobalScope(), null, null)`).
+- `native::init(path)` = `world::reset()` + `set_path` + `init_classes()` +
+  `register_native("io", io::members())` + builtins 14개 global scope bind +
+  `__name__ = "__main__"`. `Global.Init`는 `io`를 bind하지 않는다 → 모든 스크립트는
+  `use io`로 시작해야 한다.
+- `builtin`은 `[BuiltinModule]`이고 `[NativeModule]`이 아니다 → `natives`에 없고
+  `use builtin`은 `Global.Import`로 가서 file-not-found Panic가 난다(확정된 동작).
+- `init_classes`는 `[BuiltinType]` instance(`int` Int(0), `float`, `bool` false,
+  `str` "", `date` 0, `list`, `tuple`, `set`, `dict`, `iter` seq([]))만 등록하고
+  `originalClasses` entry는 **빈 member table**으로 등록한다. builtin `[Native]` member
+  테이블(`list.add`, `str.to_upper`, ...)은 native-member 단계에서 채우므로, 지금은
+  `Property`가 `'str' object has no attribute 'to_upper'`를 준다 → 기록된 Phase 8
+  divergence.
+- `use`의 4가지 binding shape(alias rebuild via `UnType.Create(alias)`,
+  `'{k}' already exists in module '{alias}'`, wildcard copy,
+  `module '{name}' has no member '{name}'`,
+  `module '{name}' is not allowed in this environment`,
+  `native module '{name}' not found`)를 verbatim 재현한다. file-module import
+  (`Global.Import`)는 Phase 11이다.
+- 11 tests: `use io`, `use io as myio`, `use io(write)`, `use io(write) as myio`,
+  existing alias rebuild(타입이 alias 이름으로 바뀜), missing member Panic,
+  unregistered module Panic, disallowed module Panic, wildcard duplicate Panic,
+  builtin class registry, builtin 결과 shape(`type(1)` → `<type: int>`,
+  `len([1,2,3])` → `3`, `repr("a")` → `str`, `chr(65)` → `A`,
+  `throw("boom")` → header `error`).
+
+### 남은 stub
+
+- CLI `run`은 아직 stub이고 `rust/src/compiler/`, `rust/src/vm/`가 없다.
+- `stream` payload(`io.open`, `io.lines`, file 함수들)는 Phase 14.
+  `stream/lock/pool/http_client/web_socket/random/stopwatch` payload는 미착수.
+  `template`는 `Payload` variant가 없다.
+- `fn_call`/`obj::call`은 positional `&[Obj]`만 받는다. Phase 10은 `Args`/`Flow`로
+  refactor하고 compiled-proto executor hook를 추가해야 `LFn` call이 VM에 연결된다
+  (`Break`/`Skip`이 `LFn.Call`를 **잡지 않고** 탈출해야 하므로 필수).
+
 ## 현재 작업
 
 - Phase 7c 함수 계열 완료(`f966a1f`). `rust/src/runtime/obj.rs`의 `invoke`, `call`,
   `is_bound_fn`, `is_property`, `property_get`, `property_set`은 `Payload::Func`/
   `Property`/`FieldRef`에 연결돼 실 구현됐다. 남는 stub은 `Future` payload뿐이다
   (Phase 16 scheduler 작업).
-- Phase 6 `Scope`/`Context` 완료(`6f92fe4`). Phase 8 VM core는 미착수(`rust/src/vm/` 없음)
+- Phase 8a(bytecode contract + world/global/native) 완료(`3f053f0`/`e97bc8c`/`a064047`).
+  Phase 6 `Scope`/`Context` 완료(`6f92fe4`). Phase 8 VM core는 미착수(`rust/src/vm/` 없음)
   이고 `unvm run`은 stub다.
 - `Iters` self-methods `map`/`filter`/`any`/`all`/`sum`/`first`/`last`와 `map`/`filter`
   stage는 `Fn` payload가 생겼으니 VM member dispatch가 준비되면 구현한다.
