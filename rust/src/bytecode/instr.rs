@@ -152,6 +152,12 @@ pub enum Op {
     /// boolean. the pattern binds its names in the current scope when it matches.
     /// `0x62` is the third slot of the §16 extension area.
     MatchPattern = 0x62,
+
+    /// `go expr` — the value on the stack becomes a future.
+    MakeFuture = 0x63,
+
+    /// `wait expr` — the future on the stack is replaced by its value.
+    Await = 0x64,
 }
 
 impl Op {
@@ -256,6 +262,8 @@ impl Op {
             0x60 => Some(Op::Unpack),
             0x61 => Some(Op::ToStr),
             0x62 => Some(Op::MatchPattern),
+            0x63 => Some(Op::MakeFuture),
+            0x64 => Some(Op::Await),
             _ => None,
         }
     }
@@ -399,17 +407,20 @@ mod tests {
         assert_eq!(Op::Unpack as u8, 0x60);
         assert_eq!(Op::ToStr as u8, 0x61);
         assert_eq!(Op::MatchPattern as u8, 0x62);
+        assert_eq!(Op::MakeFuture as u8, 0x63);
+        assert_eq!(Op::Await as u8, 0x64);
     }
 
     #[test]
     fn reserved_area_is_free() {
-        // `0x60`, `0x61` and `0x62` are the first slots of the reserved extension area,
-        // and `UNPACK` / `TO_STR` / `MATCH_PATTERN` take them. `0x63..=0x7F` must stay
-        // free so a `.unbc` written by an older compiler is readable.
-        for v in 0x63u8..=0x7F {
+        // `0x60` .. `0x64` are the first slots of the reserved extension area, and
+        // `UNPACK` / `TO_STR` / `MATCH_PATTERN` / `MAKE_FUTURE` / `AWAIT` take them.
+        // `0x65..=0x7F` must stay free so a `.unbc` written by an older compiler is
+        // readable.
+        for v in 0x65u8..=0x7F {
             assert_eq!(Op::from_u8(v), None, "{v:#04x} must stay reserved");
         }
-        for v in 0x63u8..=0x7F {
+        for v in 0x65u8..=0x7F {
             let bytes = [v, 0, 0, 0, 0, 0, 0];
             let instr = Instr::decode(&bytes);
             assert_eq!(instr.op_code(), None);

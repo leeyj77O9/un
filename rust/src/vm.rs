@@ -1031,6 +1031,19 @@ impl VM {
                 let matched = self.match_pattern(&pattern, &value, &scope);
                 self.push(world::bool_obj(matched));
             }
+            Op::MakeFuture => {
+                // `go expr` — the value becomes a future
+                let value = self.pop()?;
+                self.push(crate::native::flow::future_of(value));
+            }
+            Op::Await => {
+                // `wait expr` — the future is replaced by its value
+                let value = self.pop()?;
+                match crate::native::flow::future_value(&value) {
+                    Some(result) => self.push(result),
+                    None => return Err(self.error("'wait' requires Future", span)),
+                }
+            }
             Op::PushDefer => {
                 // the deferred block is a nested proto of the running program
                 let slot = operand as usize;

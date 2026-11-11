@@ -65,7 +65,13 @@ impl Args {
         Self { values, names }
     }
 
-    pub fn named(values: Vec<Obj>, names: Vec<String>) -> Self {
+    pub fn named(values: Vec<Obj>, mut names: Vec<String>) -> Self {
+        // the name list has the length of the value list, the missing names are the
+        // positional ones
+        while names.len() < values.len() {
+            names.push(String::new());
+        }
+
         Self { values, names }
     }
 

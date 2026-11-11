@@ -41,6 +41,12 @@ pub enum Payload {    Plain,
     Date(i64),
     /// `Stopwatch` — the elapsed ticks, the running flag and the lap of the timer
     Stopwatch(Rc<RefCell<StopwatchState>>),
+    /// `Future` — the value the work produced
+    Future(Rc<RefCell<crate::native::flow::FutureState>>),
+    /// `Pool` — the worker count and the closed flag
+    Pool(Rc<RefCell<crate::native::flow::PoolState>>),
+    /// `Lock` — the held flag
+    Lock(Rc<RefCell<crate::native::flow::LockState>>),
     /// every collection payload is a shared cell, so `b = a` keeps `b` and `a`
     /// looking at the same items, exactly like the reference's `Ref<T>` cells.
     List(Rc<RefCell<Vec<Obj>>>),
@@ -85,6 +91,9 @@ impl std::fmt::Debug for Payload {
             Payload::Str(s) => write!(f, "Str({s})"),
             Payload::Date(t) => write!(f, "Date({t})"),
             Payload::Stopwatch(_) => f.write_str("Stopwatch"),
+            Payload::Future(_) => f.write_str("Future"),
+            Payload::Pool(_) => f.write_str("Pool"),
+            Payload::Lock(_) => f.write_str("Lock"),
             Payload::List(v) => write!(f, "List({} items)", v.borrow().len()),
             Payload::Dict(km) => write!(f, "Dict({} entries)", km.borrow().len()),
             Payload::Set(s) => write!(f, "Set({} items)", s.borrow().len()),
@@ -1002,6 +1011,9 @@ pub fn class_name(o: &Obj) -> &'static str {
         Payload::Bool(..) => "Bool",
         Payload::Str(..) => "Str",
         Payload::Stopwatch(..) => "Stopwatch",
+        Payload::Future(..) => "Future",
+        Payload::Pool(..) => "Pool",
+        Payload::Lock(..) => "Lock",
         Payload::Date(..) => "Date",
         Payload::List(..) => "List",
         Payload::Dict(..) => "Dict",
@@ -1432,7 +1444,10 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         Payload::Func(_)
         | Payload::Property(_)
         | Payload::FieldRef(_)
-        | Payload::Stopwatch(_) => base_binop(o, op, other, &t, &ot),
+        | Payload::Stopwatch(_)
+        | Payload::Future(_)
+        | Payload::Pool(_)
+        | Payload::Lock(_) => base_binop(o, op, other, &t, &ot),
     }
 }
 
@@ -1498,13 +1513,32 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         Payload::Stru(_) => collections::stru_unop(o, op, &t),
         Payload::Enu(n) => collections::enu_unop(n, op, &t),
         Payload::Iter(st) => iters::iter_unop(o, &st, op, &t),
+        // `Pool.Entry()` and `Lock.Entry()` return the object itself, and their exit
+        // closes the pool or releases the lock
+        Payload::Pool(state) => match op {
+            UnOp::Entry => o.clone(),
+            UnOp::Exit => {
+                state.borrow_mut().closed = true;
+                none()
+            }
+            _ => err(op.message(&t)),
+        },
+        Payload::Lock(state) => match op {
+            UnOp::Entry => o.clone(),
+            UnOp::Exit => {
+                state.borrow_mut().held = false;
+                none()
+            }
+            _ => err(op.message(&t)),
+        },
         // `TObj` has no unop override, so only the base message applies. function,
         // property, and field payloads behave the same way.
         Payload::TObj(..)
         | Payload::Func(_)
         | Payload::Property(_)
         | Payload::FieldRef(_)
-        | Payload::Stopwatch(_) => err(op.message(&t)),
+        | Payload::Stopwatch(_)
+        | Payload::Future(_) => err(op.message(&t)),
         Payload::Date(_) | Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => {
             err(op.message(&t))
         }

@@ -468,6 +468,10 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         Op::PrepIter => 0,
         // `MATCH_PATTERN` reads the value on the stack and pushes the result
         Op::MatchPattern => 1,
+        // `MAKE_FUTURE` replaces the value with a future, `AWAIT` replaces the future
+        // with its value
+        Op::MakeFuture => 0,
+        Op::Await => 0,
         // `FOR_NEXT` pushes the next value on the fall-through path (+1) and pops the
         // iterator on the exhausted path (-1). the validator special-cases it.
         Op::ForNext => 1,

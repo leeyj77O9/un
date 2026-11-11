@@ -1520,6 +1520,22 @@ impl<'a> Compiler<'a> {
         let span = (node.start, node.length);
         let op = node.op.unwrap_or(TokenType::Error);
 
+        // `go expr` — the reference starts a task that evaluates the expression, the
+        // Rust runtime runs the work on the calling thread (D-012), so the value is
+        // computed right away and the future holds it.
+        if op == TokenType::Go {
+            self.code(&node.children[0])?;
+            self.emit(Op::MakeFuture, 0, 0, span);
+            return Ok(());
+        }
+
+        // `wait expr` — the value has to be a future
+        if op == TokenType::Wait {
+            self.code(&node.children[0])?;
+            self.emit(Op::Await, 0, 0, span);
+            return Ok(());
+        }
+
         // `EvalUnary`'s `?` form: the region is `[PUSH, PROPAGATE)`, the handler is
         // `PROPAGATE`, and the spans the propagation carries are the `?` node's spans.
         // `catch (Error e)` is the VM `handle`, and the original `LangError` is kept so
