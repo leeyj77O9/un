@@ -8,7 +8,7 @@
 - **Un**: 들여쓰기 기반 문법, 패턴 매칭, `go`/`wait` 비동기 실행을 제공하는 동적 타입 스크립팅 언어.
 - **구현**: C# / .NET 8 트리 워킹 인터프리터. 바이트코드나 별도 VM은 없다.
 - **파이프라인**: `Lexer -> Parser -> Desugarer -> Optimizer -> Evaluator`
-- **규모**: C# 약 83개 파일 / 11,750줄, `test/` 아래 `.un` 스크립트 28개.
+- **규모**: C# 88개 파일 / 약 15,500줄, `test/` 아래 `.un` 스크립트 86개.
 
 ## 빠른 명령
 
@@ -140,7 +140,7 @@ public static class MyMod
 ```
 
 - 메서드는 `Obj`를 반환하고, 인자는 `Obj`로 받는다. `self`가 필요하면 `[Self]`를 쓴다.
-- 인자 메타데이터는 `[ArgInfo(Name=..., Essential=..., Optional=..., Positional=..., Keyword=...)]`.
+- 인자 메타데이터는 `[ArgInfo(Name=..., Essential=..., Optional=..., Positional=...)]`.
 - 전역 내장 함수는 `[BuiltinModule("name")]`, 내장 타입은 `[BuiltinType("name")]`,
   네이티브 타입은 `[NativeType("name")]`으로 등록한다.
 - 샌드박스(`PlaygroundRunner.DefaultAllowed`)에서 새 모듈을 허용할지는 별도로 판단한다.
@@ -165,8 +165,8 @@ public static class MyMod
 - 통합 테스트 러너(`.csproj`)는 없다. runner는 PowerShell 스크립트이고, 빌드 산출물로
   `.un` 스크립트를 실행한다: `scripts/test.ps1`(test), `scripts/bench.ps1`(bench).
 - `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
-  stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 33 files /
-  1265 passed / 0 failed / 0 crashed**, Negative 42 checks 매칭, Known 1 file이다.
+  stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 36 files /
+  1330 passed / 0 failed / 0 crashed**, Negative 42 checks 매칭, Known 1 file이다.
   runner는 `[FAIL]`이 증가하면 exit 1로 끝난다.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).

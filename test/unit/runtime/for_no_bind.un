@@ -1,0 +1,66 @@
+use io
+use iter
+use test.assert as assert
+
+# ============================================================
+# for 바인딩 생략 - `for <iterable>` 형태는 요소를 바인딩하지 않고
+# 이터러블을 순회한다. 기존 `for i in <iterable>`과 동일하게 동작한다.
+# ============================================================
+
+count = 0
+for 0..5
+    count += 1
+assert.assert_eq(count, 5, "range is iterated without a binding")
+
+out = []
+for (0..4).map(fn(x) -> x * x)
+    out.add("tick")
+assert.assert_eq(out, ["tick", "tick", "tick", "tick"], "lazy iterator chain iterates")
+
+n = 0
+for [10, 20, 30]
+    n += 1
+assert.assert_eq(n, 3, "list iterates")
+
+vals = []
+for iter.range(3)
+    vals.add(1)
+assert.assert_eq(vals, [1, 1, 1], "native range iterates")
+
+# skip / break 는 기존 for 와 동일하게 동작한다
+total = 0
+for 0..6
+    skip
+    total += 1
+assert.assert_eq(total, 0, "skip skips the iteration")
+
+total2 = 0
+for 0..10
+    break
+    total2 += 1
+assert.assert_eq(total2, 0, "break exits the loop")
+
+# 바인딩 없이 순회해도 외부 스코프 변수는 유지된다
+x = "keep"
+for 0..3
+    x = "overwritten"
+assert.assert_eq(x, "overwritten", "body runs for each element")
+
+# 기존 바인딩 형태는 그대로 동작한다
+acc = 0
+for i in 0..5
+    acc += i
+assert.assert_eq(acc, 10, "bound for still works")
+
+items = []
+for v in ["a", "b"]
+    items.add(v)
+assert.assert_eq(items, ["a", "b"], "bound list for still works")
+
+# 요소를 바꾸지 않는 바인딩은 for _ 로도 쓸 수 있다
+wild = 0
+for _ in 0..3
+    wild += 1
+assert.assert_eq(wild, 3, "underscore binding still works")
+
+assert.summary()

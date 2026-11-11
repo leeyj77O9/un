@@ -41,18 +41,18 @@ public class Stru(UnType type, string[] names) : Obj(type)
 
     public override Obj Copy() => new Stru(Type, [.. names])
     {
-        Annotations = Annotations,
+        Annotations = new(Annotations),
         Members = Members.New(),
         Super = Super,
-        Parents = Parents
+        Parents = [.. Parents]
     };
 
     public override Stru Clone() => new(Type, [.. names])
     {
-        Annotations = Annotations,
+        Annotations = new(Annotations),
         Members = Members.New(),
         Super = Super,
-        Parents = Parents
+        Parents = [.. Parents]
     };
 
     public override Obj Len() => Int.From(GetAllNames(this).Length);

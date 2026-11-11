@@ -31,13 +31,6 @@ public sealed class UnType : BaseType
     public static readonly UnType Type = Register("type");
     public static readonly UnType Module = Register("module");
 
-    public static readonly UnType TGeneric = Register("T");
-    public static readonly UnType UGeneric = Register("U");
-    public static readonly UnType Infinity = Register("...");
-
-    public static readonly UnType Skip = Register("skip");
-    public static readonly UnType Break = Register("break");
-
     public string Name { get; }
 
     private UnType(string name)

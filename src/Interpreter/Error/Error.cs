@@ -4,7 +4,7 @@ public class Error(string message, int start, int length, Source source, string 
 {
     public string Header { get; } = header;
     public int Start { get; } = start;
-    public int Lenght { get; } = length;
+    public int Length { get; } = length;
     public Source File { get; } = source;
 
     public Error(string message, Node node, Source source, string header = "error", Exception? inner = null) :
@@ -30,7 +30,7 @@ public class Error(string message, int start, int length, Source source, string 
 
 <{File.Name}>, line [{File.GetLine(Start)}], column [{File.GetColumn(Start)}]
     {display}
-    {new string(' ', column)}{new string('^', Math.Max(1, Lenght))}
+    {new string(' ', column)}{new string('^', Math.Max(1, Length))}
 {Header}: {Message}
 """;
     }

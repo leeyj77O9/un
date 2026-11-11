@@ -439,6 +439,16 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
     private Node ParseFor()
     {
         var keyword = Expect(TokenType.For, "expected 'for' keyword");
+
+        if (!HasForHeaderIn())
+        {
+            var iterableExpr = ParseExpression();
+            SkipNewLines();
+            var noTargetBody = ParseBlock();
+            return new Node(keyword.Start, GetLength(keyword, noTargetBody), NodeKind.For,
+                children: [new Node(iterableExpr.Start, 0, NodeKind.Wildcard), iterableExpr, noTargetBody]);
+        }
+
         var target = ParsePattern();
 
         Expect(TokenType.In, "expected 'in' after for target");
@@ -448,6 +458,36 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
         var body = ParseBlock();
 
         return new Node(keyword.Start, GetLength(keyword, body), NodeKind.For, children: [target, iterable, body]);
+    }
+
+    private bool HasForHeaderIn()
+    {
+        var depth = 0;
+
+        for (int i = position; i < tokens.Count; i++)
+        {
+            switch (tokens[i].Type)
+            {
+                case TokenType.LParen:
+                case TokenType.LBrack:
+                case TokenType.LBrace:
+                    depth++;
+                    break;
+                case TokenType.RParen:
+                case TokenType.RBrack:
+                case TokenType.RBrace:
+                    depth--;
+                    break;
+                case TokenType.In when depth == 0:
+                    return true;
+                case TokenType.NewLine when depth == 0:
+                case TokenType.Indent when depth == 0:
+                case TokenType.Dedent when depth == 0:
+                    return false;
+            }
+        }
+
+        return false;
     }
 
     private Node ParseWhile()
@@ -1041,7 +1081,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, Context context)
         }
         catch (Error error)
         {
-            throw new Error(error.Message, start + error.Start, error.Lenght, this.source, error.Header, error.InnerException);
+            throw new Error(error.Message, start + error.Start, error.Length, this.source, error.Header, error.InnerException);
         }
 
         for (int i = 0; i < tokens.Count; i++)

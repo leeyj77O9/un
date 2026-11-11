@@ -8,18 +8,25 @@ public class LFn(List<Node> body, Context closure) : Fn(closure)
 
     public override Obj Call(Tup args)
     {
-        if (Closure.CallDepth >= (int)Global.MAXRECURSIONDEPTH)
-            return new Err("maximum recursion depth exceeded");
+        lock (Closure.Gate)
+        {
+            if (Closure.CallDepth >= (int)Global.MAXRECURSIONDEPTH)
+                return new Err("maximum recursion depth exceeded");
+
+            Closure.CallDepth++;
+        }
 
         var scope = new Scope(Closure.Scope ?? Scope.Empty, isFunctionScope: true);
         var error = Bind(scope, args);
 
         if (!error.IsNone())
+        {
+            lock (Closure.Gate)
+                Closure.CallDepth--;
             return error;
+        }
 
-        Closure.CallDepth++;
-
-        var context = new Context(scope, Closure.Source, Closure.Frames);
+        var context = new Context(scope, Closure.Source, [.. Closure.Frames]);
         var evaluator = new Evaluator(context);
 
         try
@@ -50,21 +57,24 @@ public class LFn(List<Node> body, Context closure) : Fn(closure)
             }
             finally
             {
-                Closure.CallDepth--;
+                lock (Closure.Gate)
+                    Closure.CallDepth--;
             }
         }
 
         return None;
     }
 
-    public override LFn Clone() => new(body, Closure)
+    public override LFn Clone() => new(body, Closure.Fresh())
     {
         Name = Name,
         Args = Args,
         ReturnType = ReturnType,
         Self = Self,
         Super = Super,
-        Parents = Parents,
+        Parents = [.. Parents],
         Property = Property,
+        Types = Types,
+        Annotations = new(Annotations),
     };
 }

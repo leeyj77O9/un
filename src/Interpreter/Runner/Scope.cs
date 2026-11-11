@@ -64,18 +64,6 @@ public class Scope(Scope? parentScope = null, bool isFunctionScope = false)
         slots.Add(value);
     }
 
-    public void SetLocalOrDeclare(string key, Obj value)
-    {
-        if (symbols.TryGetValue(key, out var idx))
-        {
-            slots[idx] = value;
-            return;
-        }
-
-        symbols[key] = slots.Count;
-        slots.Add(value);
-    }
-
     public void SetLocal(string key, Obj value)
     {
         if (symbols.TryGetValue(key, out var idx))
@@ -96,19 +84,30 @@ public class Scope(Scope? parentScope = null, bool isFunctionScope = false)
         return parentScope != null && parentScope.ContainsKey(key);
     }
 
-    public bool ContainsKeyInTop(string key) => symbols.ContainsKey(key);
-
-    public void Declare(string key, Obj? initial = null)
-    {
-        if (symbols.ContainsKey(key))
-            return;
-
-        symbols[key] = slots.Count;
-        slots.Add(initial ?? Obj.None);
-    } 
-
     public bool Remove(string key) => symbols.Remove(key);
 
     public IReadOnlyDictionary<string, int> GetSymbolTable() => symbols;
     public IReadOnlyList<Obj> GetSlots() => slots;
+
+    public Dictionary<string, Obj> Snapshot()
+    {
+        var snapshot = new Dictionary<string, Obj>(symbols.Count);
+
+        foreach (var (key, index) in symbols)
+            snapshot[key] = slots[index];
+
+        return snapshot;
+    }
+
+    public void Restore(Dictionary<string, Obj> snapshot)
+    {
+        symbols.Clear();
+        slots.Clear();
+
+        foreach (var (key, value) in snapshot)
+        {
+            symbols[key] = slots.Count;
+            slots.Add(value);
+        }
+    }
 }

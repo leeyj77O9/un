@@ -181,10 +181,23 @@ use io
 for i in 1..5
     io.write(i)              # 1 2 3 4
 
+for 0..5
+    io.write("tick")         # iterate without binding
+
 io.write(list(0..3))         # [0, 1, 2]
 io.write(len(0..100))        # 100
 io.write(list(1 + 2..6))     # [3, 4, 5]
 io.write(list((1..10).take(3)))  # [1, 2, 3]
+```
+
+When `for` is followed by just an iterable and no `in` target, the loop
+iterates without binding each element — the same as discarding with `_`,
+but written with the iterable alone.
+
+```un
+wild = 0
+for 0..3
+    wild += 1                # iterates 3 times
 ```
 
 Asynchronous execution:
@@ -260,8 +273,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
-counted in the Positive pass/fail totals. The current baseline is Positive 33
-files / 1265 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
+counted in the Positive pass/fail totals. The current baseline is Positive 36
+files / 1330 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
 Known 1 file.
 
 A `.NET 8` app runs on a `.NET 10` runtime when `DOTNET_ROLL_FORWARD=Major` is
@@ -450,7 +463,17 @@ io.write(wait a)    # 10
 ```
 
 `flow.spawn(n)` is a worker pool. `pool.map` produces one result per argument, and
-`pool.submit` hands back a `Future`.
+`pool.submit` hands back a `Future`. For shared state that must not race, use
+`atomic.int`/`atomic.bool` (e.g. `counter.inc()`) to perform atomic operations.
+
+```un
+use atomic
+
+counter = atomic.int(0)
+counter.inc()              # 1
+counter.add(10)            # 11
+counter.compare_and_swap(11, 100)   # true
+```
 
 ```un
 use io
@@ -494,6 +517,7 @@ work()    # start done
 
 | Module | Main API |
 |---|---|
+| `atomic` | `atomic.int(initial?)`/`atomic.bool(initial?)` create `atomic_int`/`atomic_bool`. Methods: `get`/`set`/`add` (int only)/`inc`/`dec` (int only)/`exchange`/`compare_and_swap`, backed by `Interlocked` |
 | `io` | `write`, `read`, `open`, `clear` |
 | `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
@@ -502,7 +526,7 @@ work()    # start done
 | `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
-| `time` | `sleep`/`now`/`stopwatch` |
+| `time` | `sleep` (int=ms, float=s)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` |
 | `flow` | `spawn` (pool) and `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options` and their `_async` variants, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
@@ -625,7 +649,7 @@ io.write(t.celsius)
 io.write(t.fahrenheit)
 ```
 
-Ranges and laziness (`test/unit/runtime/range.un`):
+Ranges and laziness (`test/unit/runtime/range.un`), for without a binding (`test/unit/runtime/for_no_bind.un`):
 
 ```un
 use io

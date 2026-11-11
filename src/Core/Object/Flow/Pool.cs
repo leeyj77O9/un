@@ -23,7 +23,10 @@ public class Pool : Obj
             {
                 foreach (var future in queue.GetConsumingEnumerable())
                     future.Run();
-            });
+            })
+            {
+                IsBackground = true,
+            };
             thread.Start();
             threads.Add(thread);
         }
@@ -48,7 +51,7 @@ public class Pool : Obj
 
     public override Obj Copy() => this;
 
-    public override Obj Clone() => new Err("'lock' cannot be cloned");
+    public override Obj Clone() => new Err("'pool' cannot be cloned");
 
     [Native(
         Name = "submit",
@@ -92,18 +95,17 @@ public class Pool : Obj
             return new Err("expected 'iterable' argument to be of type 'iterable'");
 
         var len = vargsTup.Count;
-        var result = new List<Obj>();
+        var result = new Obj[len];
         var countdown = new CountdownEvent(len);
 
-        foreach (var varg in vargsTup.Value)
+        for (int i = 0; i < len; i++)
         {
+            var varg = vargsTup.Value[i];
+            var index = i;
+
             self.queue.Add(new Future(new Task<Obj>(() =>
             {
-                var res = fn.Call(varg is Tup t ? t : new([varg]));
-                lock (result)
-                {
-                    result.Add(res);
-                }
+                result[index] = fn.Call(varg is Tup t ? t : new([varg]));
                 countdown.Signal();
                 return None;
             })));
@@ -111,7 +113,7 @@ public class Pool : Obj
 
         countdown.Wait();
 
-        return new List([.. result]);
+        return new List(result);
     }
 
     [Native(

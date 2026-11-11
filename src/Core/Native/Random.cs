@@ -1,5 +1,4 @@
 ﻿using Un.Object;
-using Un.Object.Collections;
 using Un.Object.Primitive;
 using Un.Reflection;
 
@@ -8,7 +7,7 @@ namespace Un.Native;
 [NativeModule("random", typeof(Object.Util.Random))]
 public static class Random
 {
-    private static System.Random shared = new();
+    private static Object.Util.Random shared = new();
 
     [Native(
         Name = "random",
@@ -24,28 +23,19 @@ public static class Random
         Example = "write(next())",
         ReturnType = "int"
     )]
-    public static Int Next() => Object.Primitive.Int.From(shared.Next());
+    public static Object.Primitive.Int Next() => Object.Util.Random.Next(shared);
 
     [Native(
         Name = "int",
         Description = "Returns a random integer in an inclusive range.",
         Example = "value = int(1, 6)",
-        ReturnType = "random",
+        ReturnType = "int",
         ArgumentTypes = new[] { "int", "int" }
     )]
     public static Obj Int(
         [ArgInfo(Essential = true)] Obj min,
         [ArgInfo(Essential = true)] Obj max)
-    {
-        if (!min.As<Int>(out var minValue))
-            return new Err("expected 'random.int' argument 'min' is int");
-        if (!max.As<Int>(out var maxValue))
-            return new Err("expected 'random.int' argument 'max' is int");
-        if (minValue.Value > maxValue.Value)
-            return new Err("'min' cannot be greater than 'max'");
-
-        return Object.Primitive.Int.From(shared.Next((int)minValue.Value, (int)maxValue.Value + 1));
-    }
+        => Object.Util.Random.Int(shared, min, max);
 
     [Native(
         Name = "float",
@@ -57,22 +47,7 @@ public static class Random
     public static Obj Float(
         [ArgInfo(Optional = true)] Obj min = null!,
         [ArgInfo(Optional = true)] Obj max = null!)
-    {
-        if (min == null && max == null)
-            return new Float(shared.NextDouble());
-
-        if (min == null || max == null)
-            return new Err("'min' and 'max' must be specified together");
-
-        if (!min.As<Float>(out var minValue))
-            return new Err("expected 'random.float' argument 'min' is float");
-        if (!max.As<Float>(out var maxValue))
-            return new Err("expected 'random.float' argument 'max' is float");
-        if (minValue.Value > maxValue.Value)
-            return new Err("'min' cannot be greater than 'max'");
-
-        return new Float(shared.NextDouble() * (maxValue.Value - minValue.Value) + minValue.Value);
-    }
+        => Object.Util.Random.Float(shared, min, max);
 
     [Native(
         Name = "bool",
@@ -80,7 +55,7 @@ public static class Random
         Example = "write(bool())",
         ReturnType = "bool"
     )]
-    public static Bool Bool() => Object.Primitive.Bool.From(shared.Next(2) == 0);
+    public static Object.Primitive.Bool Bool() => Object.Util.Random.Bool(shared);
 
     [Native(
         Name = "bytes",
@@ -90,17 +65,7 @@ public static class Random
         ArgumentTypes = new[] { "int" }
     )]
     public static Obj Bytes([ArgInfo(Essential = true)] Obj length)
-    {
-        if (!length.As<Int>(out var lengthValue))
-            return new Err("expected 'random.bytes' argument 'length' is int");
-        if (lengthValue.Value < 0)
-            return new Err("'length' cannot be negative");
-
-        var bytes = new byte[lengthValue.Value];
-        shared.NextBytes(bytes);
-
-        return new List([.. bytes.Select(b => Object.Primitive.Int.From(b))]);
-    }
+        => Object.Util.Random.Bytes(shared, length);
 
     [Native(
         Name = "shuffle",
@@ -110,12 +75,7 @@ public static class Random
         ArgumentTypes = new[] { "list" }
     )]
     public static Obj Shuffle([ArgInfo(Essential = true)] Obj obj)
-    {
-        if (!obj.As<List>(out var list))
-            return new Err("expected 'random.shuffle' argument to be a list");
-        shared.Shuffle(list.Value.AsSpan(0, list.Count));
-        return Obj.None;
-    }
+        => Object.Util.Random.Shuffle(shared, obj);
 
     [Native(
         Name = "choice",
@@ -125,12 +85,7 @@ public static class Random
         ArgumentTypes = new[] { "list" }
     )]
     public static Obj Choice([ArgInfo(Essential = true)] Obj obj)
-    {
-        if (obj.As<List>(out var list))
-            return list[shared.Next(0, list.Count)];
-
-        return new Err("expected 'random.choice' argument to be a list");
-    }
+        => Object.Util.Random.Choice(shared, obj);
 
     [Native(
         Name = "choices",
@@ -142,19 +97,7 @@ public static class Random
     public static Obj Choices(
         [ArgInfo(Essential = true)] Obj obj,
         [ArgInfo(Essential = true)] Obj count)
-    {
-        if (!obj.As<List>(out var list))
-            return new Err("expected 'random.choices' argument 'obj' is list");
-        if (!count.As<Int>(out var countValue))
-            return new Err("expected 'random.choices' argument 'count' is int");
-
-        var indexes = new List<int>();
-
-        for (int i = 0; i < countValue.Value; i++)
-            indexes.Add(shared.Next(0, list.Count));
-
-        return new List([.. indexes.Select(i => list[i])]);
-    }
+        => Object.Util.Random.Choices(shared, obj, count);
 
     [Native(
         Name = "sample",
@@ -166,19 +109,7 @@ public static class Random
     public static Obj Sample(
         [ArgInfo(Essential = true)] Obj obj,
         [ArgInfo(Essential = true)] Obj count)
-    {
-        if (!obj.As<List>(out var list))
-            return new Err("expected 'random.sample' argument 'obj' is list");
-        if (!count.As<Int>(out var countValue))
-            return new Err("expected 'random.sample' argument 'count' is int");
-        if (countValue.Value > list.Count)
-            return new Err("'random.sample' argument 'count' cannot be greater than the length of 'obj'");
-
-        var clone = (List)list.Clone();
-        Shuffle(clone);
-
-        return new List([.. clone.Value.Take((int)countValue.Value)]);
-    }
+        => Object.Util.Random.Sample(shared, obj, count);
 
     [Native(
         Name = "chance",
@@ -188,14 +119,7 @@ public static class Random
         ArgumentTypes = new[] { "float" }
     )]
     public static Obj Chance([ArgInfo(Essential = true)] Obj probability)
-    {
-        if (!probability.As<Float>(out var value))
-            return new Err("expected 'random.chance' argument 'probability' is float");
-        if (value.Value < 0 || value.Value > 1)
-            return new Err("'probability' must be between 0 and 1");
-
-        return Object.Primitive.Bool.From(shared.NextDouble() < value.Value);
-    }
+        => Object.Util.Random.Chance(shared, probability);
 
     [Native(
         Name = "seed",
@@ -205,13 +129,7 @@ public static class Random
         ArgumentTypes = new[] { "int" }
     )]
     public static Obj Seed([ArgInfo(Essential = true)] Obj seed)
-    {
-        if (!seed.As<Int>(out var value))
-            return new Err("expected 'random.seed' argument 'seed' is int");
-
-        shared = new System.Random((int)value.Value);
-        return Obj.None;
-    }
+        => Object.Util.Random.Seed(shared, seed);
 
     [Native(
         Name = "uuid",
@@ -229,16 +147,7 @@ public static class Random
         ArgumentTypes = new[] { "int" }
     )]
     public static Obj String([ArgInfo(Essential = true)] Obj length)
-    {
-        const string Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-        if (!length.As<Int>(out var value))
-            return new Err("expected 'random.string' argument 'length' is int");
-        if (value.Value < 0)
-            return new Err("'length' cannot be negative");
-
-        return Str.From(new string([.. Enumerable.Range(0, (int)value.Value).Select(_ => Chars[shared.Next(Chars.Length)])]));
-    }
+        => Object.Util.Random.String(shared, length);
 
     [Native(
         Name = "weighted",
@@ -250,45 +159,7 @@ public static class Random
     public static Obj Weighted(
         [ArgInfo(Essential = true)] Obj values,
         [ArgInfo(Essential = true)] Obj weights)
-    {
-        if (!values.As<List>(out var valueList))
-            return new Err("expected 'values' is list");
-
-        if (!weights.As<List>(out var weightList))
-            return new Err("expected 'weights' is list");
-
-        if (valueList.Count != weightList.Count)
-            return new Err("'values' and 'weights' must have the same length");
-
-        double total = 0;
-        var nums = new double[weightList.Count];
-
-        for (int i = 0; i < weightList.Count; i++)
-        {
-            if (!weightList[i].As<Float>(out var weight))
-                return new Err("weights must be float");
-
-            if (weight.Value < 0)
-                return new Err("weights must be non-negative");
-
-            nums[i] = weight.Value;
-            total += weight.Value;
-        }
-
-        if (total == 0)
-            return new Err("sum of weights must be greater than zero");
-
-        double r = shared.NextDouble() * total;
-
-        for (int i = 0; i < nums.Length; i++)
-        {
-            r -= nums[i];
-            if (r <= 0)
-                return valueList[i];
-        }
-
-        return valueList[^1];
-    }
+        => Object.Util.Random.Weighted(shared, values, weights);
 
     [Native(
         Name = "range",
@@ -300,35 +171,7 @@ public static class Random
     public static Obj Range(
         [ArgInfo(Essential = true)] Obj start,
         [ArgInfo(Optional = true)] Obj end = null!)
-    {
-        if (!start.As<Int>(out var startValue))
-            return new Err("expected 'random.range' argument 'start' is int");
-
-        int min, max;
-
-        if (end == null)
-        {
-            min = 0;
-            max = (int)startValue.Value - 1;
-        }
-        else
-        {
-            if (!end.As<Int>(out var endValue))
-                return new Err("expected 'random.range' argument 'end' is int");
-
-            min = (int)startValue.Value;
-            max = (int)endValue.Value;
-        }
-
-        if (min > max)
-            return new Err("'start' cannot be greater than 'end'");
-
-        var list = new List([.. Enumerable.Range(min, max - min + 1).Select(x => Object.Primitive.Int.From(x))]);
-
-        Shuffle(list);
-
-        return list;
-    }
+        => Object.Util.Random.Range(shared, start, end);
 
     [Native(
         Name = "value",
@@ -337,19 +180,5 @@ public static class Random
         ReturnType = "enum",
         ArgumentTypes = new[] { "enum" }
     )]
-    public static Obj Value([ArgInfo(Essential = true)] Obj obj)
-    {
-        if (!obj.As<TObj>(out var t))
-            return new Err("expected 'random.value' argument is enum");
-
-        if (!Global.TryGetClass(t.Value, out var cla) || cla is not Enu e)
-            return new Err("expected 'random.value' argument is enum");
-
-        var value = shared.Next(0, e.Members.Count);
-        var enu = e.Clone();
-
-        enu.Init(Tup.One("", Object.Primitive.Int.From(value)));
-
-        return enu;
-    }
+    public static Obj Value([ArgInfo(Essential = true)] Obj obj) => Object.Util.Random.Values(shared, obj);
 }

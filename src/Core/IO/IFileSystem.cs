@@ -6,9 +6,6 @@ public interface IFileSystem
     bool DirectoryExists(string path);
     string ReadAllText(string path);
     string[] GetFiles(string path, string pattern);
-    IEnumerable<string> EnumerateFileSystemEntries(string path);
-    IEnumerable<string> EnumerateFiles(string path);
-    IEnumerable<string> EnumerateDirectories(string path);
 }
 
 public sealed class PhysicalFileSystem : IFileSystem
@@ -17,9 +14,6 @@ public sealed class PhysicalFileSystem : IFileSystem
     public bool DirectoryExists(string path) => Directory.Exists(path);
     public string ReadAllText(string path) => File.ReadAllText(path);
     public string[] GetFiles(string path, string pattern) => Directory.GetFiles(path, pattern);
-    public IEnumerable<string> EnumerateFileSystemEntries(string path) => Directory.EnumerateFileSystemEntries(path);
-    public IEnumerable<string> EnumerateFiles(string path) => Directory.EnumerateFiles(path);
-    public IEnumerable<string> EnumerateDirectories(string path) => Directory.EnumerateDirectories(path);
 }
 
 public sealed class MemoryFileSystem : IFileSystem
@@ -41,9 +35,6 @@ public sealed class MemoryFileSystem : IFileSystem
         var ext = pattern == "*.un" ? ".un" : "";
         return _files.Keys.Where(k => k.StartsWith(dir + "/") && k.EndsWith(ext, StringComparison.OrdinalIgnoreCase)).ToArray();
     }
-    public IEnumerable<string> EnumerateFileSystemEntries(string path) => GetFiles(path, "*");
-    public IEnumerable<string> EnumerateFiles(string path) => GetFiles(path, "*");
-    public IEnumerable<string> EnumerateDirectories(string path) => [];
 
     private static string Normalize(string path) => path.Replace("\\", "/").TrimEnd('/').ToLowerInvariant();
 }

@@ -20,6 +20,7 @@ unit|test/unit/parser/structure.un
 unit|test/unit/runtime/operators.un
 unit|test/unit/runtime/scope.un
 unit|test/unit/runtime/control_flow.un
+unit|test/unit/runtime/for_no_bind.un
 unit|test/unit/runtime/functions.un
 unit|test/unit/runtime/classes.un
 unit|test/unit/runtime/property.un
@@ -34,6 +35,8 @@ unit|test/unit/native/str.un
 unit|test/unit/native/list.un
 unit|test/unit/native/dict.un
 unit|test/unit/native/set.un
+unit|test/unit/native/atomic.un
+unit|test/unit/native/time.un
 unit|test/unit/native/tup.un
 unit|test/unit/native/math.un
 unit|test/unit/native/iter.un

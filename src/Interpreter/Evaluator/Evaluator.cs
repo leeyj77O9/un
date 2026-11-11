@@ -49,6 +49,7 @@ public sealed class Evaluator(Context context)
             NodeKind.Tuple => EvalTuple(node),
             NodeKind.List => EvalList(node),
             NodeKind.Dict => EvalDict(node),
+            NodeKind.Set => EvalSet(node),
 
             NodeKind.Block => EvalBlock(node),
 
@@ -446,7 +447,9 @@ public sealed class Evaluator(Context context)
 
         return new Future(Task.Run(() =>
         {
-            var eval = new Evaluator(context);
+            var goScope = new Scope(context.Scope);
+            var goContext = new Context(goScope, context.Source, []);
+            var eval = new Evaluator(goContext);
             return eval.Eval(expr);
         }));
     }
@@ -458,7 +461,7 @@ public sealed class Evaluator(Context context)
         if (value is not Future future)
             throw new Error("'wait' requires Future", node, context.Source);
 
-        return future.Wait();
+        return Unwrap(future.Wait(), node);
     }
 
     private bool MatchPattern(Node pattern, Obj value, Scope scope)
@@ -533,8 +536,17 @@ public sealed class Evaluator(Context context)
 
             if (MatchPattern(pattern, value, scope))
             {
+                var prevScope = context.Scope;
                 context.Scope = scope;
-                return Eval(body);
+
+                try
+                {
+                    return Eval(body);
+                }
+                finally
+                {
+                    context.Scope = prevScope;
+                }
             }
         }
 
@@ -579,6 +591,16 @@ public sealed class Evaluator(Context context)
         }
 
         return dict;
+    }
+
+    private Set EvalSet(Node node)
+    {
+        var set = new Set();
+
+        foreach (var child in node.Children)
+            set.Value.Add(Eval(child));
+
+        return set;
     }
 
     private Obj EvalBlock(Node node)
@@ -1019,7 +1041,8 @@ public sealed class Evaluator(Context context)
                 }
                 catch (Error)
                 {
-                    hasError = true;
+                    hasError = false;
+                    pendingError = null;
                     throw;
                 }
                 finally
@@ -1045,9 +1068,6 @@ public sealed class Evaluator(Context context)
                 }
                 if (hasError && pendingError != null)
                     throw pendingError;
-            }
-            else if (hasError && pendingError != null)
-            {
             }
         }
 
@@ -1190,7 +1210,7 @@ public sealed class Evaluator(Context context)
         }
 
         if (localOnly || context.Scope.IsFunctionScope)
-            context.Scope.SetLocalOrDeclare(name, value);
+            context.Scope.SetLocal(name, value);
         else
             context.Scope.Set(name, value);
     }
@@ -1304,8 +1324,8 @@ public sealed class Evaluator(Context context)
         }
     }
 
-    private string GetText(Node node) => (string)(node.Value ?? context.Source.Code.Substring(node.Start, node.Length));
-
+    private string GetText(Node node) =>
+        (string)(node.Value ?? (node.CachedText ??= context.Source.Code.Substring(node.Start, node.Length)));
     private Obj[] Unpack(Obj obj)
     {
         return obj switch

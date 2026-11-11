@@ -1,0 +1,51 @@
+use io
+use time
+use test.assert as assert
+
+# ============================================================
+# time - now/utc_now/epoch/from_epoch/monotonic, sleep
+# 실행: Un.exe run test/unit/native/time.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- utc_now / epoch ----------
+assert.assert_eq(type(time.now()), date, "time.now returns a date")
+assert.assert_eq(type(time.utc_now()), date, "time.utc_now returns a date")
+assert.assert_true(time.epoch() > 1600000000, "epoch is after 2020")
+assert.assert_true(time.epoch_ms() >= time.epoch() * 1000, "epoch_ms is at least epoch * 1000")
+assert.assert_true(time.epoch_ms() - time.epoch() * 1000 < 1000, "epoch_ms is within one second of epoch")
+
+# ---------- epoch <-> date 왕복 ----------
+d = time.from_epoch(970000000)
+assert.assert_eq(d.timestamp(), 970000000, "from_epoch round trips through timestamp")
+d2 = time.from_epoch_ms(970000000000)
+assert.assert_eq(d2.timestamp_ms(), 970000000000, "from_epoch_ms round trips through timestamp_ms")
+assert.assert_err(fn() -> time.from_epoch("x"), "expected 'seconds' argument to be of type 'int'")
+assert.assert_err(fn() -> time.from_epoch_ms("x"), "expected 'milliseconds' argument to be of type 'int'")
+assert.assert_true(time.from_epoch(time.epoch()).year() >= 2020, "from_epoch(now) stays in this decade")
+
+# ---------- monotonic ----------
+a = time.monotonic()
+time.sleep(5)
+b = time.monotonic()
+assert.assert_true(b >= a, "monotonic does not go backwards")
+m = time.monotonic_ms()
+time.sleep(5)
+assert.assert_true(time.monotonic_ms() >= m, "monotonic_ms does not go backwards")
+assert.assert_eq(type(a), float, "monotonic returns float")
+assert.assert_eq(type(m), int, "monotonic_ms returns int")
+
+# ---------- sleep ----------
+start = time.monotonic()
+time.sleep(20)
+time.sleep(0.02)
+elapsed = time.monotonic() - start
+assert.assert_true(elapsed >= 0.035, "both int(ms) and float(s) sleep durations are applied")
+
+# ---------- stopwatch ----------
+sw = time.stopwatch()
+sw.start()
+time.sleep(10)
+assert.assert_true(sw.ms() >= 0, "stopwatch measures elapsed ms")
+assert.assert_eq(type(sw), type(time.stopwatch()), "time.stopwatch returns stopwatch")
+
+assert.summary()

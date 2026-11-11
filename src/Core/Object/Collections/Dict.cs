@@ -40,13 +40,19 @@ public class Dict(Dictionary<Obj, Obj> value) : Ref<Dictionary<Obj, Obj>>(value,
 
     public override Str ToStr() => Str.From($"{{{string.Join(", ", Value.Select(x => $"{Str.To(x.Key).Value}:{Str.To(x.Value).Value}"))}}}");
 
-    public override List ToList() => new([.. Value.Keys.Zip(Value.Values).Select(x => new Tup([x.First, x.Second], ["key", "value"]))]);
+    public override List ToList() => new([.. Pairs()]);
 
-    public override Tup ToTuple() => new([.. Value.Keys.Zip(Value.Values).Select(x => new Tup([x.First, x.Second], ["key", "value"]))], []);
+    public override Tup ToTuple() => new([.. Pairs()], []);
 
-    public override Iters Iter() => new([.. Value.Keys.Zip(Value.Values).Select(x => new Tup([x.First, x.Second], ["key", "value"]))]);
+    public override Iters Iter() => new([.. Pairs()]);
 
-    public override Spreads Spread() => new([.. Value.Select(i => new Tup([i.Key, i.Value], ["key", "value"]))]);
+    public override Spreads Spread() => new([.. Pairs()]);
+
+    private IEnumerable<Tup> Pairs()
+    {
+        foreach (var (key, value) in Value)
+            yield return new Tup([key, value], ["key", "value"]);
+    }
 
     private bool Overlap(Dict dict)
     {

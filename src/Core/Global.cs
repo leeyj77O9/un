@@ -18,6 +18,8 @@ public static class Global
 
     public static IFileSystem FileSystem { get; set; } = new PhysicalFileSystem();
 
+    public static bool AllowProcessExit { get; set; } = true;
+
     public static void SetPath(string path) => PATH = path;
 
     private static HashSet<string>? _allowedNatives = null;
@@ -49,7 +51,9 @@ public static class Global
 
     private static void Builtin()
     {
-        var functions = Assembly.GetExecutingAssembly().GetTypes()!.Where(t => t.GetCustomAttribute<BuiltinModuleAttribute>() is not null);
+        var allTypes = Assembly.GetExecutingAssembly().GetTypes()!;
+
+        var functions = allTypes.Where(t => t.GetCustomAttribute<BuiltinModuleAttribute>() is not null);
 
         foreach (var type in functions)
         {
@@ -59,7 +63,7 @@ public static class Global
                 scope.Set(name, fn);
         }
 
-        var primitives = Assembly.GetExecutingAssembly().GetTypes()!.Where(t => t.GetCustomAttribute<BuiltinTypeAttribute>() is not null);
+        var primitives = allTypes.Where(t => t.GetCustomAttribute<BuiltinTypeAttribute>() is not null);
 
         foreach (var type in primitives)
         {
@@ -70,7 +74,7 @@ public static class Global
             classes.Set(attr.Name, instance);
         }
 
-        var nativeTypes = Assembly.GetExecutingAssembly().GetTypes()!.Where(t => t.GetCustomAttribute<NativeTypeAttribute>() is not null);
+        var nativeTypes = allTypes.Where(t => t.GetCustomAttribute<NativeTypeAttribute>() is not null);
 
         foreach (var type in nativeTypes)
         {
@@ -79,7 +83,7 @@ public static class Global
                 originalClasses[attr.Name] = CreateMethod(type);
         }
 
-        foreach (var type in Assembly.GetExecutingAssembly().GetTypes()!)
+        foreach (var type in allTypes)
         {
             var name = type.GetCustomAttribute<NativeTypeAttribute>()?.Name
                        ?? type.GetCustomAttribute<BuiltinTypeAttribute>()?.Name;
@@ -118,7 +122,7 @@ public static class Global
         if (currentDir != null)
         {
             var rel = Path.Combine(currentDir, Path.Combine(path));
-            if (File.Exists(rel + ".un") || File.Exists(Path.Combine(rel, "mod.un")) || Directory.Exists(rel))
+            if (FileSystem.FileExists(rel + ".un") || FileSystem.FileExists(Path.Combine(rel, "mod.un")) || FileSystem.DirectoryExists(rel))
                 fullPath = rel;
             else
                 fullPath = Path.Combine(PATH, Path.Combine(path));
@@ -129,13 +133,6 @@ public static class Global
         }
 
         var map = Load(fullPath);
-
-        ImportMap(map, string.Join('.', path), path[^1], moduleAlias, imports);
-    }
-
-    public static void Import(string[] path, string? moduleAlias = null, IReadOnlyList<(string Name, string Alias)>? imports = null)
-    {
-        var map = Load(Path.Combine(PATH, Path.Combine(path)));
 
         ImportMap(map, string.Join('.', path), path[^1], moduleAlias, imports);
     }
@@ -322,12 +319,14 @@ public static class Global
             if (native is null)
                 continue;
 
+            var parameters = method.GetParameters();
+            var isAsyncTask = method.ReturnType == typeof(Task<Obj>);
+
             var fn = new NFn
             {
                 Name = native.Name ?? method.Name,
                 Func = args =>
                 {
-                    var parameters = method.GetParameters();
                     var values = new object?[parameters.Length];
 
                     for (int i = 0; i < parameters.Length; i++)
@@ -345,11 +344,26 @@ public static class Global
                             values[i] = args[p.Name!];
                     }
 
-                    return (Obj)method.Invoke(null, values)!;
+                    if (isAsyncTask)
+                        return ((Task<Obj>)Invoke()!).GetAwaiter().GetResult();
+
+                    return (Obj)Invoke()!;
+
+                    object? Invoke()
+                    {
+                        try
+                        {
+                            return method.Invoke(null, values);
+                        }
+                        catch (TargetInvocationException ex) when (ex.InnerException is not null)
+                        {
+                            throw ex.InnerException;
+                        }
+                    }
                 }
             };
 
-            foreach (var parameter in method.GetParameters())
+            foreach (var parameter in parameters)
             {
                 if (parameter.GetCustomAttribute<SelfAttribute>() is not null)
                     continue;
@@ -383,33 +397,34 @@ public static class Global
         return new Err($"class '{name}' not found");
     }
 
-    public static Obj GetClass(TObj type) => GetClass(type.Value);
-
-    public static Obj GetClass(BaseType type)
+    public static Obj GetClass(TObj type)
     {
-        if (type is UnType unType)        
-            return GetClass(unType.Name);        
-        else if (type is CollectionType colType)
-            return GetClass(colType.Kind);
-
-        return new Err($"type '{type}' is not a class");
+        var name = GetClassName(type.Value);
+        return name is null ? new Err($"type '{type.Value}' is not a class") : GetClass(name);
     }
 
-    public static bool TryGetClass(string name, out Obj obj)
+    private static string? GetClassName(BaseType type) => type switch
     {
-        if (classes.Get(name, out obj))
+        UnType unType => unType.Name,
+        CollectionType colType => colType.Kind.Name,
+        _ => null,
+    };
+
+    internal static bool TryGetClass(BaseType type, out Obj obj)
+    {
+        var name = GetClassName(type);
+
+        if (name is not null && TryGetClass(name, out obj))
             return true;
 
         obj = null!;
         return false;
     }
 
-    public static bool TryGetClass(BaseType type, out Obj obj)
+    public static bool TryGetClass(string name, out Obj obj)
     {
-        if (type is UnType unType)
-            return classes.Get(unType.Name, out obj);
-        else if (type is CollectionType colType)
-            return classes.Get(colType.Kind.Name, out obj);
+        if (classes.Get(name, out obj))
+            return true;
 
         obj = null!;
         return false;
@@ -523,7 +538,45 @@ public static class Global
 
     public static Obj GetGlobalVariable(string name) => scope.Get(name, out var value) ? value : new Err($"global variable '{name}' not found");
 
-    public static void SetGlobalVariable(string name, Obj obj) => scope.Set(name, obj);
+    public static void ClearModuleCache() => _moduleCache.Clear();
+
+    public sealed record PlaygroundState(
+        Dictionary<string, Obj> GlobalScope,
+        Dictionary<string, Obj> Classes,
+        Dictionary<string, Attributes> OriginalClasses,
+        Dictionary<string, string> OriginalBaseTypes,
+        Dictionary<string, Map> ModuleCache,
+        HashSet<string> Loading);
+
+    public static PlaygroundState CaptureState() => new(
+        scope.Snapshot(),
+        classes.Snapshot(),
+        originalClasses.ToDictionary(kvp => kvp.Key, kvp => new Attributes(kvp.Value)),
+        new Dictionary<string, string>(originalBaseTypes),
+        _moduleCache.ToDictionary(kvp => kvp.Key, kvp => new Map(kvp.Value)),
+        new HashSet<string>(_loading));
+
+    public static void RestoreState(PlaygroundState state)
+    {
+        scope.Restore(state.GlobalScope);
+        classes.Restore(state.Classes);
+
+        originalClasses.Clear();
+        foreach (var (key, value) in state.OriginalClasses)
+            originalClasses[key] = new Attributes(value);
+
+        originalBaseTypes.Clear();
+        foreach (var (key, value) in state.OriginalBaseTypes)
+            originalBaseTypes[key] = value;
+
+        _moduleCache.Clear();
+        foreach (var (key, value) in state.ModuleCache)
+            _moduleCache[key] = new Map(value);
+
+        _loading.Clear();
+        foreach (var key in state.Loading)
+            _loading.Add(key);
+    }
 
     public static bool TryGetGlobalVariable(string name, out Obj obj) => scope.Get(name, out obj);
 

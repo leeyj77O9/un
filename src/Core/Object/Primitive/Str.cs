@@ -10,7 +10,7 @@ namespace Un.Object.Primitive;
 public class Str : Ref<string>
 {
     private const int MAX_POOL_SIZE = 10000;
-    private const int MAX_POOLED_STRING_LEGNTH = 1000;
+    private const int MAX_POOLED_STRING_LENGTH = 1000;
 
     public static readonly Str Empty = new();
     private static readonly ConcurrentDictionary<string, Str> pool = [];
@@ -154,17 +154,14 @@ public class Str : Ref<string>
 
     public static Str From(string value)
     {
-        if (value.Length > MAX_POOLED_STRING_LEGNTH)
+        if (value.Length > MAX_POOLED_STRING_LENGTH)
             return new Str(value);
 
         if (pool.TryGetValue(value, out var cached))
             return cached;
 
         if (Volatile.Read(ref poolSize) >= MAX_POOL_SIZE)
-        {
-            pool.Clear();
-            Volatile.Write(ref poolSize, 0);
-        }
+            return new Str(value);
 
         var created = new Str(value);
 

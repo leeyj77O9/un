@@ -4,7 +4,7 @@ public record RunResult(string Stdout, string? Error, bool TimedOut, int ExitCod
 
 public static class PlaygroundRunner
 {
-    private static readonly string[] DefaultAllowed = ["io", "math", "iter", "re", "random", "time", "inspect", "builtin", "sys"];
+    private static readonly string[] DefaultAllowed = ["io", "math", "iter", "re", "random", "time", "inspect", "builtin", "sys", "atomic"];
 
     public static RunResult RunCode(string code, string fileName = "playground.un", int timeoutMs = 3000, string[]? allowedModules = null)
     {
@@ -19,6 +19,8 @@ public static class PlaygroundRunner
         var originalOut = Native.IO.GetStdout();
         var originalIn = Native.IO.GetStdin();
         var originalAllowed = Global.GetAllowedModules();
+        var originalAllowExit = Global.AllowProcessExit;
+        var snapshot = Global.CaptureState();
 
         var stdoutMem = new MemoryStream();
         var stdoutStream = new Object.IO.Stream(stdoutMem);
@@ -28,13 +30,14 @@ public static class PlaygroundRunner
             Global.FileSystem = memFs;
             Global.SetPath("memory://");
             Global.SetAllowedModules(allowedModules ?? DefaultAllowed);
+            Global.AllowProcessExit = false;
 
             Native.IO.SetStdout(stdoutStream);
 
             var source = new Source($"memory://{fileName}", code);
             var scope = new Scope(Global.GetGlobalScope());
             var context = new Context(scope, source, []);
-            var runner = new Runner(context, null);
+            var runner = new Runner(context);
 
             string? error = null;
             bool timedOut = false;
@@ -102,9 +105,11 @@ public static class PlaygroundRunner
         }
         finally
         {
+            Global.RestoreState(snapshot);
             Global.FileSystem = originalFs;
             Global.SetPath(originalPath);
             Global.SetAllowedModules(originalAllowed);
+            Global.AllowProcessExit = originalAllowExit;
             Native.IO.SetStdout(originalOut);
             Native.IO.SetStdin(originalIn);
         }

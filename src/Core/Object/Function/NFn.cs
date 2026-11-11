@@ -10,10 +10,12 @@ public class NFn(Context context) : Fn(context)
 
     public override Obj Call(Tup args)
     {
-        if (Closure.CallDepth++ >= (int)Global.MAXRECURSIONDEPTH)
+        lock (Closure.Gate)
         {
-            Closure.CallDepth--;
-            return new Err("maximum recursion depth exceeded");
+            if (Closure.CallDepth >= (int)Global.MAXRECURSIONDEPTH)
+                return new Err("maximum recursion depth exceeded");
+
+            Closure.CallDepth++;
         }
 
         var scope = new Scope(Closure.Scope ?? Scope.Empty, isFunctionScope: true);
@@ -21,7 +23,8 @@ public class NFn(Context context) : Fn(context)
 
         if (!error.IsNone())
         {
-            Closure.CallDepth--;
+            lock (Closure.Gate)
+                Closure.CallDepth--;
             return error;
         }
 
@@ -32,11 +35,12 @@ public class NFn(Context context) : Fn(context)
         }
         finally
         {
-            Closure.CallDepth--;
+            lock (Closure.Gate)
+                Closure.CallDepth--;
         }
     }
     
-    public override NFn Clone() => new(Closure)
+    public override NFn Clone() => new(Closure.Fresh())
     {
         Name = Name,
         Args = Args,
@@ -44,6 +48,8 @@ public class NFn(Context context) : Fn(context)
         Func = Func,
         Self = Self,
         Super = Super,
-        Parents = Parents,
+        Parents = [.. Parents],
+        Types = Types,
+        Annotations = new(Annotations),
     };
 }

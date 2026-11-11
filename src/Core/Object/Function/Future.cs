@@ -11,7 +11,17 @@ public class Future(Task<Obj> state) : Obj(UnType.Future)
         State.Start();
     }
 
-    public Obj Wait() => State.Result;
+    public Obj Wait()
+    {
+        try
+        {
+            return State.Result;
+        }
+        catch (AggregateException ex)
+        {
+            throw ex.Flatten().InnerExceptions[0];
+        }
+    }
 
     public override Future Clone() => new(State);
 }
