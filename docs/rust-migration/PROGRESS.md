@@ -31,7 +31,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 5 Runtime 객체 모델 | **완료** | `a2d2d02` | `cargo test --release` 18/18 green, warning 0. 정수 overflow/wrapping, `pow`, display, UTF-16 index/slice, str add/sub, interning, none/type identity, compare fallback, union canonicalize, attribute lookup |
 | 7 컬렉션 | **완료** | `b0d96d7` | `cargo test --release` 42/42 green, warning 0. `List`/`Dict`/`Set`/`Tup`/`Spread`/`Json`/`Stru`/`Enu`/`TObj` + JSON 문서 parser. reference probe(`probes7/p3..p8.un`)로 display/메시지 확인 |
 | 7a Iterator | **완료** | `47a600e` | `cargo test --release` 63/63 green, warning 0. `Range`/`Counter`/`Repeat`/`Reverse`/`Iters` + `List`/`Tup`/`Dict`/`Str`의 `Iter` source. ground truth는 probe `probes7/p9.un`(exit 0)과 `src/Core/Object/Iters/*.cs` |
-| 6, 8~17 | 미착수 | — | — |
+| 6 Scope/Context | **완료** | `6f92fe4` | `cargo test --release` green. slot table에서 `Set`은 declaring scope에 write(`for` body의 `sum += v` 축적), `SetLocal`/`SetLocalOrDeclare`는 local 전용, `Declare`는 덮지 않음, `Remove`는 name만 제거(slot index 유지), missing `Get` → `variable '{key}' not found`, `PopFrame` empty → `panic : stack is empty`, `PrintError` trace는 `Frames.Skip(1).Reverse()` + 10-line cap + `truncated [{Count-11}+]` |
+| 7c 함수 계열 | **완료** | `f966a1f` | `cargo test --release` 108/108 green, warning 0. `Bind`의 4가지 메시지, positional fast path, `*`/`**` swallow, spread unpack의 name 상속, recursion limit(1000) 증감 순서, defer/using LIFO drain, `Property` backing key `"$"+name`, `FieldRef`, `fn` display/repr, clone이 closure/Args cell 공유. ground truth는 `src/Core/Object/Function/{Fn,LFn,NFn,Arg}.cs`와 `Base/Property.cs` |
+| 8~17 | 미착수 | — | — |
 
 ## Phase 2 정합 데이터
 
@@ -287,6 +289,62 @@ ground truth는 probe `probes10/{p10..p52}.un`(runner `probes10/run.ps1`, stdout
   `TargetInvocationException`으로 감싸진다(exit 1, stdout) → Rust는 inner 문자열만
   Panic으로 전파한다(D-024). `map`은 item을 **단일 arg**로 넘긴다.
 
+## Phase 7c 정합 데이터 (functions / properties / fields)
+
+`rust/src/runtime/function.rs` + `function/tests.rs`(22 tests, 총 108 green, warning 0).
+ground truth는 `src/Core/Object/Function/{Fn,LFn,NFn,Arg}.cs`, `Base/Property.cs`,
+`LFn.cs`/`NFn.cs`의 source bytes에서 취했다. D-032 참조.
+
+- `Fn`은 `Obj(UnType.Func)`이고 `self`/`super`/`members`는 `Obj`에 있다. Rust는
+  `Payload::Func(FnData cell)`로 표현하고, closure `Context` / `Args` list /
+  `ReturnType` / `Property` link는 cell에 넣는다. `LFn`은 AST body, `NFn`은 host closure.
+- `Bind`는 `self`, `super`를 local로 먼저 넣고, `Property`가 있으면 `field`에
+  `new FieldRef(Self, Property)`를 넣는다. 파라미터 중 `self`/`super` 이름은
+  **arg 바인딩에서 건너뛴다**(이미 local로 들어갔기 때문).
+- `TryBindSimplePositional`은 args에 keyword name이 없고 `Spreads`가 없으며 파라미터에
+  `*`/`**`가 없을 때만 적용된다. fast path가 적용되면 general binding은 실행되지 않는다.
+- general binding 메시지 verbatim: `missing required argument '{arg.Name}'`,
+  `too many positional arguments`, `multiple values for argument '{name}'`,
+  `unexpected keyword argument '{keyword.Keys.First()}'`.
+  **required parameter 검사가 keyword leftover 검사보다 먼저** 돈다:
+  `f(k=1, j=2)`에 파라미터 `a`가 essential이면 `missing required argument 'a'`다.
+- `*args`는 남은 positional을 `Tup`로, `**kwargs`는 남은 keyword를 `Dict`(key는 `Str`)로
+  받는다. `UnpackArgs`는 `Spreads` item을 flatten하고 각 unpacked 값이 **원래 arg의
+  name을 상속**한다(`f(*x)`의 name는 비어 있다).
+- recursion limit: `Global.MAXRECURSIONDEPTH = 1000`이고 depth는 **closure의
+  `CallDepth`**다. `LFn.Call`은 `CallDepth >= limit`를 먼저 검사하고 increment한다.
+  `NFn.Call`은 `CallDepth++ >= limit`를 검사하고 실패 경로에서도 decrement한다.
+  둘 다 같은 1000에서 `Err("maximum recursion depth exceeded")`를 준다.
+  `Clone()`은 closure cell과 `Args` list를 **공유**하므로 clone은 limit을 공유한다.
+- `finally` drain: defers는 LIFO로 evaluator에 넘기고, usings는 LIFO로 `Exit()`를
+  호출한다. drain 중에 flow가 올라오면 reference의 `finally`를 **탈출**해서 그 값이
+  call 결과가 된다(`defer`의 `return`이 body return을 덮치는 quirk → 유지).
+- `Property`는 `BackingKey = "$" + Name`이고 `Read`는 backing member를
+  `Default.Clone()`로 **lazy materialize**한다. getter/setter는 `Self`/`Super`/
+  `Property`가 바인딩된 채로 `Tup.Empty`/`Tup([value])`로 호출되고, `field` local을
+  통해 backing member에 write-through한다. `Property.Clone()`/`Copy()`는 `this` →
+  모든 instance가 같은 property object를 본다.
+- `FieldRef`는 owner의 backing member에 대한 view이고 `Clone()`/`Copy()`는 `this`다.
+  `Evaluator.Unwrap`은 `value is FieldRef`면 `field.Value`로 unwrap한다(VM phase 작업).
+- display(`ToStr()`)은 `fn({arg types}) -> {return type}`, `Repr()`는
+  `fn {Name}({arg name}: {arg type}) -> {return type}` → `fn(int) -> any` /
+  `fn add(a: int) -> any`.
+- `LFn`/`NFn`은 `Call`을 override했기 때문에 `__call__` dunder를 **참조하지 않는다**.
+  Rust는 payload dispatch로 같은 순서를 만든다(`Func` payload면 바로 `Fn.Call`).
+  callable이 아닌 object는 `unsupported operand type(s) for (): '{Type}'`.
+- `Payload::Func/Property/FieldRef` 추가에 따라 `clone_obj`에 primitive arm을 넣었다:
+  `Int.Clone()`/`Bool.Clone()`는 `From(Value)`(cached cell 유지),
+  `Str/Float/Date Clone()`는 pool을 우회한 fresh object → D-026 교정을 code에 적용했다.
+  stale한 `collections` test expectation(`[int]`)을 `[1]`으로 고쳤다.
+- `Future` payload는 Phase 16(scheduler)에 추가한다. `Future.cs`는 `Task<Obj>` wrapper이고
+  `Run()`/`Wait()`만 있다.
+- VM이 없어도 `LFn`을 테스트할 수 있게 `world`에 executor hook
+  (`set_executor(Option<Executor>)`, `Executor = Rc<dyn Fn(&Context, &[Node]) -> Flow>`)를
+  넣었다. `reset()`은 hook을 다른 global 상태와 함께 clears한다.
+- `Context`의 frames는 shared `Rc<RefCell<Vec<Frame>>>` cell이다(reference는
+  `new Context(scope, Closure.Source, Closure.Frames)`로 frame stack을 물려준다) →
+  nested call이 전체 frame chain을 본다.
+
 ## 확정한 표현 규칙 (fix하지 말 것)
 
 - `Str` payload는 UTF-16 pair를 보존하므로 `"한글😀"[2:4]`는 round-trip한다.
@@ -306,18 +364,14 @@ ground truth는 probe `probes10/{p10..p52}.un`(runner `probes10/run.ps1`, stdout
 
 ## 현재 작업
 
-- Phase 7a iterator 완료(`47a600e`). Phase 7b ground truth(멤버 테이블, native `iter`
-  arg order/메시지, call-arg spread, `Err`/`Error` header 규약)를 probe
-  `probes10/{p10..p52}.un`로 실측해서 문서에 기록했다. member dispatch는 VM phase 작업이라
-  Rust에서 아직 테스트되지 못했다.
-- Phase 7a iterator 완료(`47a600e`). 남은 stub는 함수 계열뿐이다:
-  `rust/src/runtime/obj.rs`의 `invoke`, `is_bound_fn`, `is_property`, `property_get`,
-  `property_set`, `call`은 `Payload` variant(`Fn`/`LFn`/`NFn`/`Arg`/`Property`/
-  `FieldRef`/`Future`)가 없어서 stub이다. `range_to`와 `Payload::Iter` 계열은 실제
-  구현으로 대체됐다.
-- `Iters` self-methods `map`/`filter`/`any`/`all`/`sum`/`first`/`last`와
-  `map`/`filter` stage는 `Fn` payload + evaluator가 필요해서 보류했다.
-- Phase 6 `Scope`/`Context`와 Phase 8 VM core는 미착수(`rust/src/vm/` 없음).
+- Phase 7c 함수 계열 완료(`f966a1f`). `rust/src/runtime/obj.rs`의 `invoke`, `call`,
+  `is_bound_fn`, `is_property`, `property_get`, `property_set`은 `Payload::Func`/
+  `Property`/`FieldRef`에 연결돼 실 구현됐다. 남는 stub은 `Future` payload뿐이다
+  (Phase 16 scheduler 작업).
+- Phase 6 `Scope`/`Context` 완료(`6f92fe4`). Phase 8 VM core는 미착수(`rust/src/vm/` 없음)
+  이고 `unvm run`은 stub다.
+- `Iters` self-methods `map`/`filter`/`any`/`all`/`sum`/`first`/`last`와 `map`/`filter`
+  stage는 `Fn` payload가 생겼으니 VM member dispatch가 준비되면 구현한다.
 - Phase 11/14 scope의 미탐사 source: `Flow/{Lock,Pool}.cs`,
   `IO/{Stream,HttpClient,WebSocket}.cs`, `Util/{Random,Stopwatch}.cs`,
   `Base/Template.cs`, `Type/{BaseType,CollectionType}.cs`, `Evaluator.cs`의
@@ -330,22 +384,21 @@ ground truth는 probe `probes10/{p10..p52}.un`(runner `probes10/run.ps1`, stdout
 
 ## 다음 단계
 
-1. Phase 7 함수 계열: `runtime/function.rs`의 `Arg`, `Fn` payload, `Bind`
-   (`multiple values for argument '{name}'`, `missing required argument '{arg.Name}'`,
-   `too many positional arguments`, `unexpected keyword argument '{keyword.Keys.First()}'`),
-   `LFn`/`NFn` `Call`(`maximum recursion depth exceeded`, defer/using drain),
-   `Property`(backing key `"$"+name`), `FieldRef`, `Future` → 커밋.
-2. Phase 6 `Scope`/`Context`(slot table, function-scope assign 라우팅, `PopFrame`
-   empty → `Panic("stack is empty")`, `maximum recursion depth exceeded`).
-3. Phase 8 VM core: 표현식/문장 실행, `unvm run`이 `io.write` 출력, `test/unit/runtime/`
-   스모크.
-4. differential harness(`scripts/rust_test.ps1` / `scripts/diff_test.ps1`) 도입 — C#
+1. Phase 8 VM core: `vm/ctx.rs`, `vm/tools.rs`, `vm/vm.rs` + `pub mod vm;` → 표현식/문장
+   실행, `unvm run`이 `io.write` 출력, `test/unit/runtime/` 스모크. `EvalArguments`의
+   `Err`를 `header: err.Header`로 재포장(`Error:`), `Unwrap`는 lowercase `error`,
+   position block, member-table lookup(멤버는 static materialize), `FieldRef` unwrap,
+   frame trace를 함께 구현한다.
+2. differential harness(`scripts/rust_test.ps1` / `scripts/diff_test.ps1`) 도입 — C#
    기준선과 stdout/exit/stderr 비교. AST shape 정합은 harness로 증명한다(reference에는
    AST dump가 없고 C# 코드를 수정할 수 없다).
-5. `iter` native module(21 함수) + `Iters` self-methods(`map`/`filter`는 `Fn` 이후) —
+3. member error case probe 개별 실측(각 case는 abort한다): `str`의 `to_upper`/`split`/
+   `replace`, `dict`의 `get`/`keys`/`values`, `list`의 `pop`/`sort`/`order`/
+   `binary_search`, `set`의 `union`/`intersect`/`difference`, `str`의 `copy`.
+4. `iter` native module(21 함수) + `Iters` self-methods(`map`/`filter`는 `Fn` 이후) —
    list 반환 semantics(`take`/`skip`/`chain`/`flatten`/`map`/`filter`/`sorted`),
    `enumerate`의 named pair, `array(value, dims)`.
-6. Phase 14 네이티브 바인딩 계층(`NATIVE_INVENTORY.md` 기반).
+5. Phase 14 네이티브 바인딩 계층(`NATIVE_INVENTORY.md` 기반).
 
 ## 네이티브 인벤토리 (완료)
 

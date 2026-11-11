@@ -289,3 +289,49 @@ length }`와 Panic/throw 전파로 이 규약을 재현하고, `run`의 error �
 `Payload::Panic`로 전파한다(D-024). predicate가 bool이 아닌 값을 반환하면
 `error: expected 'predicate' to return a boolean`이고, `iter.max`/`iter.min`의 비교가
 bool이 아니면 `error: {a} < {b} is not a boolean`이다.
+
+## D-032 | 함수 계열은 `Payload::Func` cell + `Bind`의 reference 메시지를 그대로 재현한다 | Accepted
+
+- `Fn(Context closure)`는 `Obj(UnType.Func)`이고 `Name` / `Args` / `ReturnType` /
+  `Property`를 owns. Rust는 `Payload::Func(FnData cell)`로 표현하고 closure `Context`,
+  `Args` list, `ReturnType`, `Property` link, body를 cell에 넣는다. `LFn`은 AST body,
+  `NFn`은 host closure. `Clone()`은 `Args`를 **같은 list object로 assign**하므로
+  `Args` cell과 closure cell이 공유되고, 따라가서 **recursion limit이 공유**된다.
+- `Bind`는 `self`를 local로, `Property`가 있으면 `field`(= `new FieldRef(Self, Property)`)을
+  local로 먼저 넣고, 파라미터 중 `self`/`super` 이름은 arg 바인딩에서 **건너뛴다**.
+  `TryBindSimplePositional`은 args에 keyword name이 없고 `Spreads`가 없으며 파라미터에
+  `*`/`**`가 없을 때만 적용된다.
+- general binding 메시지는 verbatim 유지: `missing required argument '{arg.Name}'`,
+  `too many positional arguments`, `multiple values for argument '{name}'`,
+  `unexpected keyword argument '{keyword.Keys.First()}'`.
+  **required parameter 검사가 keyword leftover 검사보다 먼저** 실행된다(파라미터 순회
+  우선). `Arg.IsEssential = !optional && !positional && !keyword`.
+- `UnpackArgs`는 `Spreads` item을 flatten하고 각 unpacked 값이 **원래 arg의 name을
+  상속**한다. `*args`는 남은 positional을 `Tup`로, `**kwargs`는 남은 keyword를
+  `Dict`(`Str` key)로 받는다.
+- recursion limit: `Global.MAXRECURSIONDEPTH = 1000`이고 depth는 **closure의
+  `CallDepth`**다. `LFn.Call`은 `CallDepth >= limit`를 먼저 검사하고 increment하고,
+  `NFn.Call`은 `CallDepth++ >= limit`를 검사하고 실패 경로에서도 decrement한다.
+  둘 다 같은 1000에서 `Err("maximum recursion depth exceeded")`를 준다.
+- `finally` drain: defers는 LIFO로 evaluator에 넘기고, usings는 LIFO로 `Exit()`를
+  호출한다. drain 중
+  flow가 올라오면 reference의 `finally`를 **탈출**해서 그 값이 call 결과가 된다
+  (`defer`의 `return`이 body return을 덮치는 quirk 유지).
+- `Property`는 `BackingKey = "$" + Name`이고 `Read`는 backing member를
+  `Default.Clone()`로 lazy materialize한다. getter/setter는 `Self`/`Super`/`Property`가
+  바인딩된 채로 호출되고 `field` local로 write-through한다. `Property.Clone()/Copy()`와
+  `FieldRef.Clone()/Copy()`는 `this` → 모든 instance가 같은 property object를 본다.
+  `Evaluator.Unwrap`는 `value is FieldRef`면 `field.Value`로 unwrap한다(VM phase 작업).
+- display는 `fn({arg types}) -> {return type}`, `Repr()`는
+  `fn {Name}({arg name}: {arg type}) -> {return type}`. `LFn`/`NFn`은 `Call`을
+  override해서 `__call__` dunder를 **참조하지 않는다** → Rust는 payload dispatch로 같은
+  순서를 만든다. callable이 아닌 object는 `unsupported operand type(s) for (): '{Type}'`.
+- `Future` payload는 Phase 16 scheduler에 추가한다(`Future.cs`는 `Task<Obj>` wrapper의
+  `Run()`/`Wait()`).
+- `world`에는 VM이 없어도 `LFn`을 테스트하는 executor hook
+  (`set_executor(Option<Executor>)`)가 있고 `reset()`이 다른 global 상태와 함께 clears한다.
+  `Context`의 frames는 shared `Rc<RefCell<Vec<Frame>>>` cell → nested call이 전체 frame
+  chain을 본다(reference `new Context(scope, Closure.Source, Closure.Frames)`).
+- `Payload::Func/Property/FieldRef` 추가에 따라 `clone_obj`의 primitive arm을 넣었다:
+  `Int.Clone()`/`Bool.Clone()`는 `From(Value)`(cached cell 유지),
+  `Str/Float/Date Clone()`는 pool을 우회한 fresh object → D-026의 교정을 code에 적용했다.
