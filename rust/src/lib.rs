@@ -3,6 +3,7 @@ pub mod bytecode;
 pub mod desugar;
 pub mod error;
 pub mod lexer;
+pub mod native;
 pub mod optimize;
 pub mod parser;
 pub mod runtime;
