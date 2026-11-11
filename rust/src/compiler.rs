@@ -328,6 +328,8 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::FString, 0, node.children.len() as i32, span);
             }
 
+            NodeKind::Tagged => self.code_tagged(node)?,
+
             NodeKind::Tuple => self.code_tuple(node)?,
             NodeKind::List => self.code_container(node, Op::BuildList)?,
             // `Eval` has no `Set` case, so `{1, 2}` is observable as
@@ -818,6 +820,53 @@ impl<'a> Compiler<'a> {
         self.code(&node.children[0])?;
         self.emit(Op::Dup, 0, 0, span);
         self.emit(Op::PushUsing, 0, 0, span);
+
+        Ok(())
+    }
+
+    /// `EvalTaggedTemplate` — the tag is called with the values and the strings of the
+    /// template: `fn(values, strings)`.
+    fn code_tagged(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let tag = &node.children[0];
+        let template = &node.children[1];
+
+        // the tag is the callable, the arguments are built above it
+        self.code(tag)?;
+
+        let mut values: Vec<&Node> = Vec::new();
+        let mut strings: Vec<String> = Vec::new();
+
+        for child in &template.children {
+            if child.kind == NodeKind::String {
+                strings.push(self.text(child));
+            } else {
+                values.push(child);
+            }
+        }
+
+        // the values list
+        self.emit(Op::ArgBegin, 0, values.len() as i32, span);
+        for child in &values {
+            self.code(child)?;
+            self.emit(Op::ArgPos, 0, 0, span_of(child));
+        }
+        self.emit(Op::BuildList, 0, values.len() as i32, span);
+
+        // the strings list
+        self.emit(Op::ArgBegin, 0, strings.len() as i32, span);
+        for text in &strings {
+            let ci = self.const_index(Constant::Str(text.clone()));
+            self.emit(Op::LoadConst, 0, ci as i32, span);
+            self.emit(Op::ArgPos, 0, 0, span);
+        }
+        self.emit(Op::BuildList, 0, strings.len() as i32, span);
+
+        // the call
+        self.emit(Op::ArgBegin, 0, 2, span);
+        self.emit(Op::ArgPos, 0, 0, span);
+        self.emit(Op::ArgPos, 0, 0, span);
+        self.emit(Op::Call, 0, 2, span);
 
         Ok(())
     }

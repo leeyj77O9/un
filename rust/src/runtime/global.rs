@@ -29,6 +29,7 @@ pub fn init_classes() {
         ("set", collections::set(vec![])),
         ("dict", collections::dict(vec![])),
         ("iter", iters::seq(vec![])),
+        ("template", obj::plain(world::intern_type("template"), world::obj_type())),
     ];
 
     for (name, instance) in instances {
