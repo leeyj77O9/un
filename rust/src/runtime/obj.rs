@@ -494,6 +494,9 @@ pub fn init(o: &Obj, args: &[Obj]) -> Obj {
         Payload::Enu(n) => return collections::enu_init(o, n, args),
         Payload::Stru(_) => return collections::stru_init(o, args),
         Payload::Iter(st) => return iters::iter_init(o, &st, args),
+        Payload::Int(_) | Payload::Float(_) | Payload::Bool(_) | Payload::Str(_) | Payload::Date(_) => {
+            return prim_init(o, args);
+        }
         _ => {}
     }
     if try_method(o, "__init__", args).is_some() {
@@ -506,6 +509,100 @@ pub fn init(o: &Obj, args: &[Obj]) -> Obj {
         }
     }
     o.clone()
+}
+
+/// the `Init` the primitive types override: a builtin type call converts its arguments
+/// directly. every message is the reference string.
+fn prim_init(o: &Obj, args: &[Obj]) -> Obj {
+    let t = type_name(o);
+
+    match payload(o) {
+        // `Int.Init`: 0 → 0, 1 → `ToInt()`, (str, int) → base parse
+        Payload::Int(_) => match args.len() {
+            0 => int(0),
+            1 => to_int(&args[0]),
+            2 => {
+                if let (Payload::Str(s), Payload::Int(b)) = (payload(&args[0]), payload(&args[1])) {
+                    return parse_with_base(&s, b);
+                }
+                err("int: expected (str, int) for base conversion")
+            }
+            _ => err(format!("cannot convert to '{t}'")),
+        },
+        Payload::Float(_) => match args.len() {
+            0 => float(0.0),
+            1 => to_float(&args[0]),
+            _ => err(format!("cannot convert to '{t}'")),
+        },
+        // `Bool.Init` answers `False` for every extra argument
+        Payload::Bool(_) => match args.len() {
+            0 => boolean(false),
+            1 => to_bool(&args[0]),
+            _ => boolean(false),
+        },
+        Payload::Str(_) => match args.len() {
+            0 => str(""),
+            1 => to_str(&args[0]),
+            2 => {
+                if let (Payload::Str(s), Payload::Int(i)) = (payload(&args[0]), payload(&args[1])) {
+                    // `Math.Min(i, int.MaxValue)`, and `Enumerable.Repeat` of a negative
+                    // count is an empty sequence
+                    let n = i.min(i32::MAX as i64);
+                    let text = if n > 0 { s.repeat(n as usize) } else { String::new() };
+                    return str(&text);
+                }
+                err("too many arguments")
+            }
+            _ => err("too many arguments"),
+        },
+        // `DateTime.TryParse` is phase 14, so a string argument reports the reference's
+        // parse-failure message. `new Date()` is `DateTime.Now`, a time the VM cannot fix.
+        Payload::Date(_) => match args.len() {
+            0 => date_obj(0),
+            1 => match payload(&args[0]) {
+                Payload::Str(_) => err("invalid date str"),
+                _ => err(format!("cannot convert '{}' to 'date'", type_name(&args[0]))),
+            },
+            _ => err("cannot convert to 'date'"),
+        },
+        _ => o.clone(),
+    }
+}
+
+/// `Int.ParseWithBase`. `Convert.ToInt64(text, base)` reports
+/// `Input string was not in a correct format.` on a format failure.
+fn parse_with_base(text: &str, base: i64) -> Obj {
+    let base = base as i32;
+    if base < 2 || base > 36 {
+        return err("int: base must be between 2 and 36");
+    }
+
+    let mut text = text.trim().to_string();
+    let lower = text.to_lowercase();
+    if base == 2 && lower.starts_with("0b") {
+        text = text[2..].to_string();
+    } else if base == 8 && lower.starts_with("0o") {
+        text = text[2..].to_string();
+    } else if base == 16 && lower.starts_with("0x") {
+        text = text[2..].to_string();
+    }
+
+    let mut sign = 1i64;
+    if text.starts_with('-') {
+        sign = -1;
+        text = text[1..].to_string();
+    } else if text.starts_with('+') {
+        text = text[1..].to_string();
+    }
+
+    if text.is_empty() {
+        return err(format!("int: invalid literal for base {base}"));
+    }
+
+    match i64::from_str_radix(&text, base as u32) {
+        Ok(v) => int(sign * v),
+        Err(_) => err("int: Input string was not in a correct format."),
+    }
 }
 
 pub fn get_attr(o: &Obj, name: &str) -> Obj {
@@ -846,6 +943,53 @@ pub fn exit(o: &Obj) -> Obj {
 
 pub fn spread(o: &Obj) -> Obj {
     unary(o, UnOp::Spread)
+}
+
+/// `Evaluator.Unpack(Obj)` (`Evaluator.cs:1309`). `Tup` / `List` / `Spreads` are the direct
+/// forms; anything else goes through `Spread()`, and a result that is not `Spreads` becomes
+/// `[Err("cannot unpack {Class}")]`. The reference prints `obj.GetType().Name`, the .NET
+/// class name, so `int` shows as `Int` in the message.
+pub fn unpack_items(o: &Obj) -> Vec<Obj> {
+    match payload(o) {
+        Payload::Tup(v, _) => v.to_vec(),
+        Payload::List(v) => v.borrow().clone(),
+        Payload::Spread(v) => v.to_vec(),
+        _ => {
+            let s = spread(o);
+            match payload(&s) {
+                Payload::Spread(v) => v.to_vec(),
+                _ => vec![err(format!("cannot unpack {}", class_name(o)))],
+            }
+        }
+    }
+}
+
+/// the .NET class name of an object payload, the string the reference uses in
+/// `cannot unpack {Name}`.
+pub fn class_name(o: &Obj) -> &'static str {
+    match payload(o) {
+        Payload::Plain => "Obj",
+        Payload::Error { .. } => "Err",
+        Payload::Panic { .. } => "Panic",
+        Payload::Int(..) => "Int",
+        Payload::Float(..) => "Float",
+        Payload::Bool(..) => "Bool",
+        Payload::Str(..) => "Str",
+        Payload::Date(..) => "Date",
+        Payload::List(..) => "List",
+        Payload::Dict(..) => "Dict",
+        Payload::Set(..) => "Set",
+        Payload::Tup(..) => "Tup",
+        Payload::Spread(..) => "Spreads",
+        Payload::Json(..) => "Json",
+        Payload::Stru(..) => "Stru",
+        Payload::Enu(..) => "Enum",
+        Payload::TObj(..) => "TObj",
+        Payload::Iter(..) => "Iters",
+        Payload::Func(..) => "Fn",
+        Payload::Property(..) => "Property",
+        Payload::FieldRef(..) => "FieldRef",
+    }
 }
 
 pub fn to_int(o: &Obj) -> Obj {

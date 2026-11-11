@@ -50,6 +50,9 @@ pub struct World {
     /// sandbox stdout of the reference: each `io.write` flushes after writing, so the
     /// buffer is flushed to the real stdout at the same points.
     stdout: Rc<RefCell<String>>,
+    /// everything handed to the real stdout since the last reset. `stdout` is drained by
+    /// each flush, so a test reads the whole output of a run from here.
+    log: Rc<RefCell<String>>,
     /// `Global.SetAllowedModules` — `None` allows everything
     allowed: Option<HashSet<String>>,
 }
@@ -78,6 +81,7 @@ impl World {
             global_scope: scope::new(None, false),
             natives: Vec::new(),
             stdout: Rc::new(RefCell::new(String::new())),
+            log: Rc::new(RefCell::new(String::new())),
             allowed: None,
         }
     }
@@ -353,10 +357,21 @@ pub fn flush_stdout() {
         return;
     }
 
+    WORLD.with(|w| w.borrow().log.borrow_mut().push_str(&text));
+
     let out = std::io::stdout();
     let mut out = out.lock();
     let _ = out.write_all(text.as_bytes());
     let _ = out.flush();
+}
+
+/// the whole stdout text of the current world, `stdout` drained by each flush
+pub fn log_text() -> String {
+    WORLD.with(|w| w.borrow().log.clone()).borrow().clone()
+}
+
+pub fn log_clear() {
+    WORLD.with(|w| w.borrow().log.borrow_mut().clear());
 }
 
 pub fn set_class(name: &str, obj: Obj) {

@@ -47,6 +47,74 @@ pub fn module_object(members: Vec<(String, Obj)>) -> Obj {
 }
 
 /// `Global.Include` — native modules only. file modules are phase 11.
+/// `Global.Import` — the `use` form for file modules. the current source's directory is
+/// tried first, then `Global.PATH`; a location that exists in neither answers
+/// `module '{fullPath}' not found`, and that message is observable in phase 8.
+///
+/// a module that does exist is loaded by phase 11 (`Runner.Load` of the file, of
+/// `mod.un`, or of every `.un` in the directory), so reaching the second arm is the
+/// documented divergence point.
+pub fn import_file(
+    parts: &[String],
+    source_path: &str,
+    _module_alias: Option<String>,
+    _imports: Option<Vec<(String, String)>>,
+) -> Result<(), Obj> {
+    let mut joined = std::path::PathBuf::new();
+    for part in parts {
+        joined.push(part);
+    }
+
+    let full = match resolve_module(&joined, source_path) {
+        Some(p) => p,
+        None => {
+            // `Global.Load` reports `Path.Combine(PATH, path)`, the PATH-based location,
+            // when the relative lookup finds nothing
+            let message = std::path::Path::new(&world::path())
+                .join(&joined)
+                .display()
+                .to_string();
+            return Err(obj::panic("panic", format!("module '{message}' not found")));
+        }
+    };
+
+    Err(obj::panic(
+        "panic",
+        format!("file module '{full}' is not loaded (phase 11)"),
+    ))
+}
+
+/// `Global.Import`'s location rule: `Path.Combine(currentDir, path)` when `<rel>.un`,
+/// `<rel>/mod.un`, or the directory itself exists, otherwise `Path.Combine(PATH, path)`.
+fn resolve_module(joined: &std::path::Path, source_path: &str) -> Option<String> {
+    if let Some(dir) = std::path::Path::new(source_path).parent() {
+        let rel = dir.join(joined);
+        if module_exists(&rel) {
+            return Some(rel.display().to_string());
+        }
+    }
+
+    let full = std::path::Path::new(&world::path()).join(joined);
+    if module_exists(&full) {
+        return Some(full.display().to_string());
+    }
+
+    None
+}
+
+/// `FileSystem.FileExists(fullPath + ".un") || FileSystem.DirectoryExists(fullPath)`.
+/// a `fullPath` already ending in `.un` is not extended again.
+fn module_exists(p: &std::path::Path) -> bool {
+    let text = p.display().to_string();
+    let file = if text.ends_with(".un") {
+        std::path::PathBuf::from(&text)
+    } else {
+        std::path::PathBuf::from(text + ".un")
+    };
+
+    file.is_file() || p.is_dir()
+}
+
 pub fn include(
     name: &str,
     alias: Option<String>,

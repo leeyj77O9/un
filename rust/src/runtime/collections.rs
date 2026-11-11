@@ -376,14 +376,16 @@ pub fn list_slice(
         return list(mine[a..a + count as usize].to_vec());
     }
 
-    let mut out: Vec<Obj> = Vec::new();
+    // `new List()` has capacity 0, so every `Add` in the step loop answers `Err` and
+    // `Slice` drops it: any step != 1 gives an empty list. the `this[i]` evaluation is
+    // kept, because a negative step with `s == len` throws
+    // `IndexOutOfRangeException` out of the host.
     if st > 0 {
         let mut i = a as i64;
         while i < b as i64 {
             if i >= len {
                 return index_out_of_range();
             }
-            out.push(mine[i as usize].clone());
             i += st;
         }
     } else {
@@ -394,11 +396,10 @@ pub fn list_slice(
             if i >= len {
                 return index_out_of_range();
             }
-            out.push(mine[i as usize].clone());
             i += st;
         }
     }
-    list(out)
+    list(Vec::new())
 }
 
 /// `List.In`: the argument must be a list or a tuple.

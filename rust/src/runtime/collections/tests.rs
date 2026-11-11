@@ -108,9 +108,11 @@ fn list_slice_rules() {
         obj::display(&obj::slice(&l, Some(obj::int(-2)), Some(obj::int(-1)), None)),
         "[3]"
     );
+    // a step != 1 list is `new List()`, capacity 0, so every `Add` answers `Err` and the
+    // result stays empty. the reference proves it: `[1, 2, 3, 4][3:0:-2]` prints `[]`.
     assert_eq!(
         obj::display(&obj::slice(&l, Some(obj::int(3)), Some(obj::int(0)), Some(obj::int(-2)))),
-        "[4, 2]"
+        "[]"
     );
     assert_eq!(obj::display(&obj::slice(&l, Some(obj::int(2)), Some(obj::int(2)), None)), "[]");
     assert_eq!(
