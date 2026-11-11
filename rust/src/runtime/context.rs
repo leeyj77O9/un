@@ -19,10 +19,18 @@ pub struct Frame {
     pub length: usize,
 }
 
+/// the reference passes `Closure.Frames` into the new `Context` of a call, so the
+/// frame stack is shared by every nested call and the trace sees the whole chain.
+pub type Frames = Rc<RefCell<Vec<Frame>>>;
+
+pub fn new_frames() -> Frames {
+    Rc::new(RefCell::new(Vec::new()))
+}
+
 pub struct ContextData {
     pub scope: Scope,
     pub source: Rc<Source>,
-    pub frames: Vec<Frame>,
+    pub frames: Frames,
     /// `Stack<Node>` — the reference pops in LIFO order at exit.
     pub defers: Vec<Node>,
     /// `Stack<Obj>` — each entry is disposed by `Exit()` at exit.
@@ -32,7 +40,7 @@ pub struct ContextData {
 
 pub type Context = Rc<RefCell<ContextData>>;
 
-pub fn new(scope: Scope, source: Rc<Source>, frames: Vec<Frame>) -> Context {
+pub fn new(scope: Scope, source: Rc<Source>, frames: Frames) -> Context {
     Rc::new(RefCell::new(ContextData {
         scope,
         source,
@@ -55,22 +63,27 @@ pub fn source(ctx: &Context) -> Rc<Source> {
     ctx.borrow().source.clone()
 }
 
+pub fn frames(ctx: &Context) -> Frames {
+    ctx.borrow().frames.clone()
+}
+
 pub fn push_frame(ctx: &Context, frame: Frame) {
-    ctx.borrow_mut().frames.push(frame);
+    frames(ctx).borrow_mut().push(frame);
 }
 
 /// `Context.PopFrame` — an empty frame stack is `Panic("stack is empty")`. the reference
 /// throws; Rust has no unwinding, so the panic travels as a value.
 pub fn pop_frame(ctx: &Context) -> Result<Frame, Obj> {
-    let mut d = ctx.borrow_mut();
-    if d.frames.is_empty() {
+    let frames = frames(ctx);
+    let mut stack = frames.borrow_mut();
+    if stack.is_empty() {
         return Err(obj::panic("panic", "stack is empty"));
     }
-    Ok(d.frames.pop().expect("checked"))
+    Ok(stack.pop().expect("checked"))
 }
 
 pub fn frame_count(ctx: &Context) -> usize {
-    ctx.borrow().frames.len()
+    frames(ctx).borrow().len()
 }
 
 pub fn call_depth(ctx: &Context) -> usize {
@@ -109,12 +122,13 @@ pub fn using_count(ctx: &Context) -> usize {
 /// plus the truncation note the reference prints whenever `Frames.Count > 10`
 /// (`truncated [{Frames.Count - 11}+]`).
 pub fn trace_lines(ctx: &Context) -> (Vec<String>, usize) {
-    let d = ctx.borrow();
-    if d.frames.len() <= 1 {
+    let frames = frames(ctx);
+    let stack = frames.borrow();
+    if stack.len() <= 1 {
         return (Vec::new(), 0);
     }
 
-    let skipped = &d.frames[1..];
+    let skipped = &stack[1..];
     let shown = if skipped.len() > 10 { &skipped[..10] } else { skipped };
 
     let lines = shown
@@ -129,7 +143,7 @@ pub fn trace_lines(ctx: &Context) -> (Vec<String>, usize) {
         })
         .collect();
 
-    (lines, d.frames.len().saturating_sub(11))
+    (lines, stack.len().saturating_sub(11))
 }
 
 #[cfg(test)]

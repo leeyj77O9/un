@@ -2,7 +2,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::ast::Node;
+use crate::runtime::context::Context;
+use crate::runtime::function::Flow;
 use crate::runtime::obj::Obj;
+
+/// the hook the VM registers so a `function::Body::Nodes` call can run its AST body.
+pub type Executor = Rc<dyn Fn(&Context, &[Node]) -> Flow>;
 
 /// `Str` interning limits of the reference implementation (`Str.MAX_POOL_SIZE`,
 /// `Str.MAX_POOLED_STRING_LEGNTH` — the typo is the reference's).
@@ -19,6 +25,10 @@ const REGISTERED_TYPES: &[&str] = &[
 /// mirrors the process-wide static state of `Global`: interned type names, the
 /// `Str` pool, the small `Int` cache and the original class registries.
 pub struct World {
+    /// the body executor the `LFn` payload calls. the VM registers its own evaluator
+    /// in phase 8, so `function.rs` can be tested with a fake executor before the VM
+    /// exists, and `reset()` clears the hook with the rest of the global state.
+    executor: Option<Executor>,
     type_cache: HashMap<String, Rc<str>>,
     str_pool: HashMap<Rc<str>, Obj>,
     str_pool_size: usize,
@@ -40,6 +50,7 @@ impl World {
         }
 
         Self {
+            executor: None,
             type_cache,
             str_pool: HashMap::new(),
             str_pool_size: 0,
@@ -61,6 +72,20 @@ thread_local! {
 
 pub fn reset() {
     WORLD.with(|w| *w.borrow_mut() = World::new());
+}
+
+/// the VM registers its evaluator here. an unregistered hook yields `Flow::Normal`,
+/// which is what the pre-VM tests use to check bind / depth / defer behaviour.
+pub fn set_executor(executor: Option<Executor>) {
+    WORLD.with(|w| w.borrow_mut().executor = executor);
+}
+
+pub fn execute(ctx: &Context, body: &[Node]) -> Flow {
+    let executor = WORLD.with(|w| w.borrow().executor.clone());
+    match executor {
+        Some(f) => f(ctx, body),
+        None => Flow::Normal,
+    }
 }
 
 /// `UnType.Create(name)` — the cache is keyed by name, so two lookups of the same

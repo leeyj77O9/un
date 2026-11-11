@@ -4,6 +4,7 @@ use std::rc::Rc;
 use crate::runtime::collections;
 use crate::runtime::collections::KeyMap;
 use crate::runtime::date;
+use crate::runtime::function::{self, FieldCell, FnCell, PropCell};
 use crate::runtime::iters::{self, IterCell};
 use crate::runtime::prims;
 use crate::runtime::types::Types;
@@ -43,6 +44,15 @@ pub enum Payload {
     /// immutable and the enumeration position lives inside it, so `Iter()` returns
     /// the same cell and `Clone()` rebuilds fresh cursors over the same definition.
     Iter(IterCell),
+    /// `Fn` / `LFn` / `NFn` share one payload. the closure `Context`, the `Args` list,
+    /// and the `Property` link live in the `FnData` cell.
+    Func(FnCell),
+    /// `Property` — the accessor pair plus the `$name` backing member. `Clone` / `Copy`
+    /// are `this`, so every instance shares the same property object.
+    Property(PropCell),
+    /// `FieldRef` — the `field` local of a bound accessor, a view on the backing member
+    /// of its owner. `Clone` / `Copy` are `this`.
+    FieldRef(FieldCell),
 }
 
 /// `Payload` is printed as a summary: an `Obj` payload cannot be printed by
@@ -72,6 +82,19 @@ impl std::fmt::Debug for Payload {
             Payload::Enu(n) => write!(f, "Enu({n})"),
             Payload::TObj(t) => write!(f, "TObj({})", t.display()),
             Payload::Iter(st) => write!(f, "Iter({})", st.borrow().kind.name()),
+            Payload::Func(c) => write!(
+                f,
+                "Func({} args)",
+                c.borrow().args.borrow().len()
+            ),
+            Payload::Property(p) => write!(f, "Property({})", p.borrow().name),
+            Payload::FieldRef(fr) => {
+                let fr = fr.borrow();
+                match function::prop_cell(&fr.prop) {
+                    Some(p) => write!(f, "FieldRef({})", p.borrow().name),
+                    None => f.write_str("FieldRef(<property>)"),
+                }
+            }
         }
     }
 }
@@ -393,13 +416,21 @@ fn try_method(o: &Obj, name: &str, args: &[Obj]) -> Option<Obj> {
     invoke(&m, args)
 }
 
-/// the reference dispatches through `Obj.Call`; function payloads arrive in phase 7.
+/// `method.Call(args)` inside `TryMethod`. a `Func` payload runs `Fn.Call`; any other
+/// payload has no callable override, so the caller continues with its own dispatch.
 pub fn invoke(f: &Obj, args: &[Obj]) -> Option<Obj> {
-    let _ = (f, args);
-    None
+    match payload(f) {
+        Payload::Func(..) => Some(function::fn_call(f, &function::Args::positional(args.to_vec()))),
+        _ => None,
+    }
 }
 
+/// `Obj.Call` — `Invoke("__call__", args, s => s.Call(args), fallback)`. a `Func`
+/// payload is `LFn` / `NFn`, whose `Call` override replaces the whole base dispatch.
 pub fn call(o: &Obj, args: &[Obj]) -> Obj {
+    if let Payload::Func(..) = payload(o) {
+        return function::fn_call(o, &function::Args::positional(args.to_vec()));
+    }
     if let Some(v) = try_method(o, "__call__", args) {
         return v;
     }
@@ -485,28 +516,24 @@ fn bind_self(value: Obj, receiver: &Obj) -> Obj {
     value
 }
 
-/// phase 7: `value is Function.Fn`
+/// `value is Function.Fn`
 fn is_bound_fn(o: &Obj) -> bool {
-    let _ = o;
-    false
+    function::is_func(o)
 }
 
-/// phase 7: `member is Property`
+/// `member is Property`
 pub fn is_property(o: &Obj) -> bool {
-    let _ = o;
-    false
+    function::is_property(o)
 }
 
-/// phase 7: `Property.Get(receiver)`
+/// `Property.Get(receiver)`
 fn property_get(member: &Obj, receiver: &Obj) -> Obj {
-    let _ = (member, receiver);
-    none()
+    function::prop_get(member, receiver)
 }
 
-/// phase 7: `Property.Set(receiver, value)`
+/// `Property.Set(receiver, value)`
 pub fn property_set(member: &Obj, receiver: &Obj, value: &Obj) -> Obj {
-    let _ = (member, receiver, value);
-    value.clone()
+    function::prop_set(member, receiver, value.clone())
 }
 
 pub fn set_attr(o: &Obj, name: &str, value: &Obj) -> Obj {
@@ -600,6 +627,12 @@ pub fn repr(o: &Obj) -> Obj {
             return r;
         }
     }
+    // `Fn.Repr()` / `Property.Repr()` are overrides, so they live in the payload dispatch
+    match payload(o) {
+        Payload::Func(_) => return str(&function::fn_repr(o)),
+        Payload::Property(_) => return str(&function::prop_repr(o)),
+        _ => {}
+    }
     str(&type_name(o))
 }
 
@@ -627,6 +660,14 @@ pub fn clone_obj(o: &Obj) -> Obj {
     }
 
     match payload(o) {
+        // every primitive overrides `Clone()` and keeps its value. `Int` / `Bool` go
+        // through `From`, so small values and the shared booleans stay identical cells;
+        // `Str` / `Float` / `Date` build a fresh object, bypassing the string pool.
+        Payload::Int(v) => return int(v),
+        Payload::Float(v) => return float(v),
+        Payload::Bool(b) => return boolean(b),
+        Payload::Str(s) => return str_obj(s, world::str_type(), world::obj_type()),
+        Payload::Date(t) => return date_obj(t),
         Payload::List(v) => return collections::list_clone(&v),
         Payload::Dict(km) => return collections::dict_clone(&km),
         Payload::Set(s) => return collections::set_clone(&s),
@@ -639,6 +680,10 @@ pub fn clone_obj(o: &Obj) -> Obj {
         Payload::Spread(v) => return collections::spread(v.to_vec()),
         Payload::TObj(t) => return collections::tobj(t),
         Payload::Iter(st) => return iters::iter_clone(o, &st),
+        // `Property.Clone()` / `FieldRef.Clone()` are `this`: every instance shares the
+        // same property object, and the field view is not detachable from its owner.
+        Payload::Property(_) | Payload::FieldRef(_) => return o.clone(),
+        Payload::Func(_) => return function::fn_clone(o),
         _ => {}
     }
 
@@ -811,6 +856,7 @@ pub fn to_str(o: &Obj) -> Obj {
         Payload::Enu(n) => collections::enu_to_str(o, n),
         Payload::TObj(t) => collections::tobj_to_str(&t),
         Payload::Iter(st) => iters::iter_to_str(o, &st),
+        Payload::Func(_) => str(&function::fn_to_str(o)),
         _ => err(format!("unsupported operand type(s) for str(): '{}'", type_name(o))),
     }
 }
@@ -1171,6 +1217,11 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         Payload::Json(inner) => binop(&inner, op, other),
         Payload::Dict(..) | Payload::Spread(..) => base_binop(o, op, other, &t, &ot),
         Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => base_binop(o, op, other, &t, &ot),
+        // function, property, and field payloads have no operator override, so the base
+        // chain message is what the reference produces for them too
+        Payload::Func(_) | Payload::Property(_) | Payload::FieldRef(_) => {
+            base_binop(o, op, other, &t, &ot)
+        }
     }
 }
 
@@ -1231,8 +1282,12 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         Payload::Stru(_) => collections::stru_unop(o, op, &t),
         Payload::Enu(n) => collections::enu_unop(n, op, &t),
         Payload::Iter(st) => iters::iter_unop(o, &st, op, &t),
-        // `TObj` has no unop override, so only the base message applies
-        Payload::TObj(..) => err(op.message(&t)),
+        // `TObj` has no unop override, so only the base message applies. function,
+        // property, and field payloads behave the same way.
+        Payload::TObj(..)
+        | Payload::Func(_)
+        | Payload::Property(_)
+        | Payload::FieldRef(_) => err(op.message(&t)),
         Payload::Date(_) | Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => {
             err(op.message(&t))
         }

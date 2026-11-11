@@ -432,12 +432,12 @@ fn tup_init_copy_clone() {
     let copied_inner = obj::get_item(&copied, &obj::int(0));
     assert!(Rc::ptr_eq(&copied_inner, &inner));
     assert!(Rc::ptr_eq(&obj::get_item(&outer, &obj::int(0)), &inner));
-    // `Clone` copies through `Clone`, and `Int.Clone()` is the base `new Obj(Type)`,
-    // so the cloned element is a bare int cell whose display is the type name
+    // `Clone` copies through `Clone`, and `Int.Clone()` keeps its value, so the cloned
+    // element is a fresh int cell holding the same number (D-026)
     let cloned = obj::clone_obj(&outer);
     let cloned_inner = obj::get_item(&cloned, &obj::int(0));
     assert!(!Rc::ptr_eq(&cloned_inner, &inner));
-    assert_eq!(obj::display(&cloned_inner), "[int]");
+    assert_eq!(obj::display(&cloned_inner), "[1]");
 }
 
 // ---------------------------------------------------------------------------

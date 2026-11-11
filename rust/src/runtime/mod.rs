@@ -5,6 +5,7 @@
 pub mod collections;
 pub mod context;
 pub mod date;
+pub mod function;
 pub mod iters;
 pub mod obj;
 pub mod prims;
