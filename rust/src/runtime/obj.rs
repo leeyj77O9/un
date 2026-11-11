@@ -964,6 +964,16 @@ pub fn unpack_items(o: &Obj) -> Vec<Obj> {
     }
 }
 
+/// the spellings `double.TryParse` accepts for an infinite value. the Rust parser also
+/// accepts the short "inf", so the extra spellings are rejected here.
+fn is_dotnet_infinity(text: &str) -> bool {
+    let text = text.trim().to_ascii_lowercase();
+    matches!(
+        text.as_str(),
+        "infinity" | "+infinity" | "-infinity" | "∞" | "+∞" | "-∞"
+    )
+}
+
 /// the .NET class name of an object payload, the string the reference uses in
 /// `cannot unpack {Name}`.
 pub fn class_name(o: &Obj) -> &'static str {
@@ -1385,7 +1395,7 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
     match payload(o) {
         Payload::Int(a) => int_binop(a, op, other, &ot),
         Payload::Float(a) => float_binop(a, op, other, &ot),
-        Payload::Str(a) => str_binop(a, op, other, &t, &ot),
+        Payload::Str(a) => str_binop(o, a, op, other, &t, &ot),
         Payload::Bool(a) => bool_binop(a, op, other, &t, &ot),
         Payload::Date(a) => date_binop(a, op, other, &t, &ot),
         Payload::List(..) => collections::list_binop(o, op, other, &t, &ot),
@@ -1439,6 +1449,10 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
                 Err(_) => err(format!("cannot convert '{a}' to 'int'")),
             },
             UnOp::ToFloat => match a.trim().parse::<f64>() {
+                // `double.TryParse` accepts "Infinity", but not the short "inf"
+                Ok(v) if v.is_infinite() && !is_dotnet_infinity(&a) => {
+                    err(format!("cannot convert '{a}' to 'float'"))
+                }
                 Ok(v) => float(v),
                 Err(_) => err(format!("cannot convert '{a}' to 'float'")),
             },
@@ -1696,7 +1710,7 @@ fn float_binop(a: f64, op: BinOp, other: &Obj, ot: &Rc<str>) -> Obj {
     }
 }
 
-fn str_binop(a: Rc<str>, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
+fn str_binop(o: &Obj, a: Rc<str>, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     match op {
         BinOp::Add | BinOp::Sub => {
             let s = to_str(other);
@@ -1737,7 +1751,9 @@ fn str_binop(a: Rc<str>, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> O
             Payload::Str(v) => boolean(a < v),
             _ => unsupported("<", t, ot),
         },
-        _ => base_binop_of(op, t, ot),
+        // `Str` does not override `>`, `<=` and `>=`, so the base class answers them
+        // with the `<` and `==` results
+        _ => base_binop(o, op, other, t, ot),
     }
 }
 

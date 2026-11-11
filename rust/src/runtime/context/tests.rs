@@ -80,16 +80,16 @@ fn defers_drain_lifo() {
 
     push_defer(
         &ctx,
-        Node::new(0, 1, crate::ast::NodeKind::Identifier),
+        Defer::Node(Node::new(0, 1, crate::ast::NodeKind::Identifier)),
     );
     push_defer(
         &ctx,
-        Node::new(1, 1, crate::ast::NodeKind::Identifier),
+        Defer::Node(Node::new(1, 1, crate::ast::NodeKind::Identifier)),
     );
 
     assert_eq!(defer_count(&ctx), 2);
-    assert_eq!(pop_defer(&ctx).expect("pop").start, 1);
-    assert_eq!(pop_defer(&ctx).expect("pop").start, 0);
+    assert!(matches!(pop_defer(&ctx), Some(Defer::Node(node)) if node.start == 1));
+    assert!(matches!(pop_defer(&ctx), Some(Defer::Node(node)) if node.start == 0));
     assert!(pop_defer(&ctx).is_none());
 }
 

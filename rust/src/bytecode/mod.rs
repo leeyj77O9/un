@@ -6,13 +6,13 @@
 
 pub mod instr;
 
-pub use instr::{
+    pub use instr::{
     Instr, Op, PARAM_DEFAULT, PARAM_ESSENTIAL, PARAM_KEYWORD, PARAM_OPTIONAL, PARAM_POSITIONAL,
     FLAG_ARG_CHECK, FLAG_CLASS_BASES, FLAG_CLASS_PARAMS, FLAG_FUNC_BIND, FLAG_FUNC_EXT,
     FLAG_FUNC_PROP, FLAG_HOST_ERROR, FLAG_JUMP_NONE, FLAG_JUMP_POP, FLAG_JUMP_TRUE,
     FLAG_LOCAL_ONLY, FLAG_OPT_CHAIN, FLAG_SCOPE_FUNCTION, FLAG_SCOPE_LOOP, FLAG_SLICE_END,
-    FLAG_SLICE_START, FLAG_SLICE_STEP, FLAG_STRICT, PROTO_FUNCTION, PROTO_HAS_SELF,
-    PROTO_HAS_SUPER,
+    FLAG_SLICE_START, FLAG_SLICE_STEP, FLAG_STRICT, FLAG_SCOPE_SET, PROTO_FUNCTION,
+    PROTO_HAS_SELF, PROTO_HAS_SUPER,
 };
 
 /// `.unbc` magic (BYTECODE.md §13).
@@ -66,6 +66,20 @@ pub struct ExcEntry {
     pub var_slot: Option<usize>,
 }
 
+/// a match pattern (`Evaluator.MatchPattern`). the pattern table of a proto holds
+/// them, and `MATCH_PATTERN` tests the value on the stack against one.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    /// `case _` — every value matches
+    Wildcard,
+    /// `case name` — the value is bound to the name, a module name index
+    Bind(usize),
+    /// `case 1` — the literal is compared with the value, a module constant index
+    Literal(usize),
+    /// `case (a, b)` — the value is unpacked and the items are matched
+    Tuple(Vec<Pattern>),
+}
+
 /// a compiled code unit: the module and every nested function. `protos` is the flat
 /// function table `.unbc` stores; nested protos are reached by index.
 #[derive(Debug, Clone, PartialEq)]
@@ -89,6 +103,8 @@ pub struct Proto {
     pub source_map: Vec<(usize, usize)>,
     pub exc: Vec<ExcEntry>,
     pub flags: u16,
+    /// the match patterns of the proto
+    pub patterns: Vec<Pattern>,
     /// the extended type of an extension method (`fn Type.method()`), a module name
     /// index. `None` for every other proto.
     pub ext_type: Option<usize>,
@@ -109,6 +125,7 @@ impl Proto {
             source_map: Vec::new(),
             exc: Vec::new(),
             flags,
+            patterns: Vec::new(),
             ext_type: None,
         }
     }
@@ -390,6 +407,7 @@ fn check_indices(
         Op::Use => index_range(label, "name", operand, proto.names.len()),
         Op::PushTry | Op::PushTryProp => index_range(label, "exception entry", operand, proto.exc.len()),
         Op::MakeFunc => index_range(label, "proto", operand, proto.protos.len()),
+        Op::MatchPattern => index_range(label, "pattern", operand, proto.patterns.len()),
         Op::Unsupported => index_range(label, "message", operand, program.msgs.len()),
         Op::PrepIter => index_range(label, "message", operand, program.msgs.len()),
         Op::Jmp | Op::JmpIf | Op::ForNext | Op::Break | Op::Skip => Ok(()),
@@ -429,7 +447,15 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         | Op::MakeEnum
         | Op::Use => 1,
         Op::Dup2 => 2,
-        Op::StoreName | Op::StoreLocal | Op::StoreUpv | Op::Return => -1,
+        Op::StoreLocal | Op::StoreUpv | Op::Return => -1,
+        // `Scope.Set` does not consume the value
+        Op::StoreName => {
+            if flags & FLAG_SCOPE_SET != 0 {
+                0
+            } else {
+                -1
+            }
+        }
         Op::Pop => -1,
         Op::PopN => -count,
         // `SET_BASES` pops the base classes, the type object stays on the stack
@@ -440,6 +466,8 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         // so the net depth change is `count - 1` (the count itself lives in the operand).
         Op::Unpack => count - 1,
         Op::PrepIter => 0,
+        // `MATCH_PATTERN` reads the value on the stack and pushes the result
+        Op::MatchPattern => 1,
         // `FOR_NEXT` pushes the next value on the fall-through path (+1) and pops the
         // iterator on the exhausted path (-1). the validator special-cases it.
         Op::ForNext => 1,

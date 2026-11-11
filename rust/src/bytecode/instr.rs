@@ -146,6 +146,12 @@ pub enum Op {
     /// conversion is an opcode and the check is part of `FSTRING`.
     /// `0x61` is the second slot of the §16 extension area.
     ToStr = 0x61,
+
+    /// match pattern test. the operand is the index of the pattern in the proto's
+    /// pattern table, the value is on the stack and stays there, and the result is a
+    /// boolean. the pattern binds its names in the current scope when it matches.
+    /// `0x62` is the third slot of the §16 extension area.
+    MatchPattern = 0x62,
 }
 
 impl Op {
@@ -249,6 +255,7 @@ impl Op {
             0x5F => Some(Op::Unsupported),
             0x60 => Some(Op::Unpack),
             0x61 => Some(Op::ToStr),
+            0x62 => Some(Op::MatchPattern),
             _ => None,
         }
     }
@@ -267,6 +274,10 @@ pub const FLAG_OPT_CHAIN: u16 = 1 << 4;
 
 /// `STORE_NAME` with `localOnly: true` — the `for`/`match`/`catch` loop variable form
 pub const FLAG_LOCAL_ONLY: u16 = 1 << 5;
+
+/// `STORE_NAME` with the `Scope.Set` rule — the chain of the scopes is walked and the
+/// binding is updated where the name is declared. the function definitions use it.
+pub const FLAG_SCOPE_SET: u16 = 1 << 8;
 
 /// `ARG_POS` inside a call site: `EvalArguments` checks `value is Err` and rethrows with
 /// the header preserved. container literals (`EvalList` / `EvalDict` / `EvalTuple`) do
@@ -387,17 +398,18 @@ mod tests {
         assert_eq!(Op::Unsupported as u8, 0x5F);
         assert_eq!(Op::Unpack as u8, 0x60);
         assert_eq!(Op::ToStr as u8, 0x61);
+        assert_eq!(Op::MatchPattern as u8, 0x62);
     }
 
     #[test]
     fn reserved_area_is_free() {
-        // `0x60` and `0x61` are the first two slots of the reserved extension area, and
-        // `UNPACK` / `TO_STR` take them. `0x62..=0x7F` must stay free so a `.unbc`
-        // written by an older compiler is readable.
-        for v in 0x62u8..=0x7F {
+        // `0x60`, `0x61` and `0x62` are the first slots of the reserved extension area,
+        // and `UNPACK` / `TO_STR` / `MATCH_PATTERN` take them. `0x63..=0x7F` must stay
+        // free so a `.unbc` written by an older compiler is readable.
+        for v in 0x63u8..=0x7F {
             assert_eq!(Op::from_u8(v), None, "{v:#04x} must stay reserved");
         }
-        for v in 0x62u8..=0x7F {
+        for v in 0x63u8..=0x7F {
             let bytes = [v, 0, 0, 0, 0, 0, 0];
             let instr = Instr::decode(&bytes);
             assert_eq!(instr.op_code(), None);

@@ -48,6 +48,14 @@ pub enum StageDef {
     Repeat { inner: Rc<StageDef>, count: i64 },
     Take { inner: Rc<StageDef>, n: i64 },
     Skip { inner: Rc<StageDef>, n: i64 },
+    /// `Iters.Map` — the transform runs while the sequence is consumed
+    Map {
+        inner: Rc<StageDef>,
+        func: Obj,
+        wants_index: bool,
+    },
+    /// `Iters.Filter` — the predicate runs while the sequence is consumed
+    Filter { inner: Rc<StageDef>, func: Obj },
 }
 
 /// the enumeration position of one stage.
@@ -66,6 +74,8 @@ fn init_cursor(def: &StageDef) -> Cursor {
         StageDef::Counter { start } => Cursor::Val(*start),
         StageDef::Repeat { .. } => Cursor::Round(0),
         StageDef::Take { n, .. } | StageDef::Skip { n, .. } => Cursor::Rem(*n),
+        StageDef::Map { .. } => Cursor::Val(0),
+        StageDef::Filter { .. } => Cursor::Pos(0),
     }
 }
 
@@ -80,9 +90,11 @@ pub type Stage = Rc<RefCell<StageCell>>;
 
 fn build(def: &Rc<StageDef>) -> Stage {
     let inner = match def.as_ref() {
-        StageDef::Repeat { inner, .. } | StageDef::Take { inner, .. } | StageDef::Skip { inner, .. } => {
-            Some(build(inner))
-        }
+        StageDef::Repeat { inner, .. }
+        | StageDef::Take { inner, .. }
+        | StageDef::Skip { inner, .. }
+        | StageDef::Map { inner, .. }
+        | StageDef::Filter { inner, .. } => Some(build(inner)),
         _ => None,
     };
     Rc::new(RefCell::new(StageCell {
@@ -214,6 +226,47 @@ fn next(stage: &Stage) -> Step {
             }
             next(&inner)
         }
+        StageDef::Map { func, wants_index, .. } => {
+            let inner = inner.expect("map has an inner stage");
+            match next(&inner) {
+                Step::Value(o) => {
+                    // the index of the mapped value, the reference counts the values
+                    // of the inner sequence
+                    let index = cursor_val(cursor);
+                    stage.borrow_mut().cursor = Cursor::Val(index + 1);
+
+                    let args = if *wants_index {
+                        vec![o, obj::int(index)]
+                    } else {
+                        vec![o]
+                    };
+
+                    let value = crate::runtime::function::fn_call(
+                        func,
+                        &crate::runtime::function::Args::positional(args),
+                    );
+                    Step::Value(value)
+                }
+                other => other,
+            }
+        }
+        StageDef::Filter { func, .. } => {
+            let inner = inner.expect("filter has an inner stage");
+            loop {
+                match next(&inner) {
+                    Step::Value(o) => {
+                        let keep = crate::runtime::function::fn_call(
+                            func,
+                            &crate::runtime::function::Args::positional(vec![o.clone()]),
+                        );
+                        if matches!(obj::payload(&keep), Payload::Bool(true)) {
+                            return Step::Value(o);
+                        }
+                    }
+                    other => return other,
+                }
+            }
+        }
     }
 }
 
@@ -260,6 +313,15 @@ fn count(stage: &Stage) -> Obj {
             let inner_count = count(&inner.expect("skip has an inner stage"));
             combine(inner_count, |c| c.saturating_sub(*n))
         }
+        StageDef::Map { inner: def, .. } => count(&build(def)),
+        StageDef::Filter { .. } => {
+            // the predicate decides how many values survive, so the sequence is walked
+            let values = match collect(stage) {
+                Ok(values) => values,
+                Err(e) => return e,
+            };
+            obj::int(values.len() as i64)
+        }
     }
 }
 
@@ -279,6 +341,8 @@ fn bounded(def: &Rc<StageDef>) -> bool {
         StageDef::Repeat { inner, count } => *count >= 0 && bounded(inner),
         StageDef::Take { .. } => true,
         StageDef::Skip { inner, .. } => bounded(inner),
+        StageDef::Map { inner, .. } => bounded(inner),
+        StageDef::Filter { inner, .. } => bounded(inner),
     }
 }
 
@@ -386,6 +450,46 @@ pub fn reverse_new(values: Vec<Obj>) -> Obj {
 
 pub fn take_new(inner: Rc<StageDef>, n: i64) -> Obj {
     iter_new(Kind::Iters, Rc::new(StageDef::Take { inner, n }))
+}
+
+/// `Iters.Map` — a lazy transform over a sequence definition.
+pub fn map_new(inner: Rc<StageDef>, func: Obj, wants_index: bool) -> Rc<StageDef> {
+    Rc::new(StageDef::Map {
+        inner,
+        func,
+        wants_index,
+    })
+}
+
+/// `Iters.Filter` — a lazy predicate over a sequence definition.
+pub fn filter_new(inner: Rc<StageDef>, func: Obj) -> Rc<StageDef> {
+    Rc::new(StageDef::Filter { inner, func })
+}
+
+/// an iterator object over a sequence definition.
+pub fn seq_obj(def: Rc<StageDef>) -> Obj {
+    iter_new(Kind::Iters, def)
+}
+
+/// a fresh enumerator over a sequence definition. the reference's `Zip` walks several
+/// enumerators in parallel, so the enumerators are independent of the shared position.
+pub struct Enumerator {
+    stage: Stage,
+}
+
+impl Enumerator {
+    pub fn new(def: &Rc<StageDef>) -> Self {
+        Self { stage: build(def) }
+    }
+
+    /// the next value, `None` when the sequence ended
+    pub fn next(&mut self) -> Option<Obj> {
+        match next(&self.stage) {
+            Step::Value(value) => Some(value),
+            Step::End => None,
+            Step::Panic(p) => Some(p),
+        }
+    }
 }
 
 pub fn skip_new(inner: Rc<StageDef>, n: i64) -> Obj {

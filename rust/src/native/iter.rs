@@ -232,7 +232,8 @@ fn iter_values(value: &Obj) -> Result<Vec<Obj>, Obj> {
 
 /// `NormalizeToTuple` — the values of a tuple or a list. a single element is
 /// unwrapped: a list or a range becomes its values, a tuple stays, and an iterator
-/// that is not a tuple is an error.
+/// that is not a tuple is an error. the result is converted with `ToTuple()` again, so
+/// a string becomes its characters.
 fn normalize_to_tuple(value: &Obj) -> Result<Vec<Obj>, Obj> {
     let raw = obj::to_tuple(value);
     let raw_values = match obj::payload(&raw) {
@@ -246,29 +247,36 @@ fn normalize_to_tuple(value: &Obj) -> Result<Vec<Obj>, Obj> {
         ));
     }
 
-    if raw_values.len() > 1 {
-        return Ok(raw_values);
-    }
+    let values: Obj = if raw_values.len() > 1 {
+        collections::tup(raw_values, Vec::new())
+    } else {
+        let item = &raw_values[0];
+        match obj::payload(item) {
+            Payload::List(values) => collections::tup(values.borrow().clone(), Vec::new()),
+            Payload::Tup(values, _) => collections::tup((*values).clone(), Vec::new()),
+            Payload::Iter(st) => {
+                // only a range carries its values, the other iterators are an error
+                let (kind, _) = iters::head(&st);
+                if kind != iters::Kind::Range {
+                    return Err(obj::err("invalid argument type of 'iterable'"));
+                }
 
-    let item = &raw_values[0];
-    match obj::payload(item) {
-        Payload::List(values) => Ok(values.borrow().clone()),
-        Payload::Tup(values, _) => Ok((*values).clone()),
-        Payload::Iter(st) => {
-            // only a range carries its values, the other iterators are an error
-            let (kind, _) = iters::head(&st);
-            if kind != iters::Kind::Range {
-                return Err(obj::err("invalid argument type of 'iterable'"));
+                let tuple = obj::unary(item, obj::UnOp::ToTuple);
+                match obj::payload(&tuple) {
+                    Payload::Tup(_, _) => tuple,
+                    Payload::Error { message, .. } => return Err(obj::err(message)),
+                    _ => return Err(obj::err("invalid argument type of 'iterable'")),
+                }
             }
-
-            let tuple = obj::unary(item, obj::UnOp::ToTuple);
-            match obj::payload(&tuple) {
-                Payload::Tup(values, _) => Ok((*values).clone()),
-                Payload::Error { message, .. } => Err(obj::err(message)),
-                _ => Err(obj::err("invalid argument type of 'iterable'")),
-            }
+            _ => item.clone(),
         }
-        _ => Ok(vec![item.clone()]),
+    };
+
+    // the final `values.ToTuple()`
+    let tuple = obj::to_tuple(&values);
+    match obj::payload(&tuple) {
+        Payload::Tup(values, _) => Ok((*values).clone()),
+        _ => Err(obj::err("expected 'iterable' argument to be a tuple")),
     }
 }
 
@@ -417,31 +425,36 @@ fn zip_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
 
-    let mut lists: Vec<Vec<Obj>> = Vec::new();
+    // the reference walks the enumerators in parallel, so an infinite sequence is fine
+    let mut enumerators: Vec<iters::Enumerator> = Vec::new();
     for array in &arrays {
-        match iter_values(array) {
-            Ok(values) => lists.push(values),
-            Err(e) => return e,
+        let iter = obj::unary(array, obj::UnOp::Iter);
+        match obj::payload(&iter) {
+            Payload::Iter(st) => {
+                let def = iters::def_of(&st);
+                enumerators.push(iters::Enumerator::new(&def));
+            }            _ => return obj::err("expected all 'iterables' items to be of type 'iter'"),
         }
     }
 
-    if lists.is_empty() {
+    if enumerators.is_empty() {
         return obj::err("expected 'iterables' argument to have a non-zero length");
     }
 
     let mut result: Vec<Obj> = Vec::new();
-    let mut index = 0usize;
 
     loop {
         let mut buffer: Vec<Obj> = Vec::new();
         let mut done = false;
 
-        for list in &lists {
-            if index >= list.len() {
-                done = true;
-                break;
+        for enumerator in enumerators.iter_mut() {
+            match enumerator.next() {
+                Some(value) => buffer.push(value),
+                None => {
+                    done = true;
+                    break;
+                }
             }
-            buffer.push(list[index].clone());
         }
 
         if done {
@@ -449,7 +462,6 @@ fn zip_impl(scope: &Scope) -> Obj {
         }
 
         result.push(collections::tup(buffer, Vec::new()));
-        index += 1;
     }
 
     collections::list(result)

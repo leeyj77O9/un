@@ -163,7 +163,7 @@ fn iter_to_tuple(scope: &Scope) -> Obj {
 }
 
 fn iter_map(scope: &Scope) -> Obj {
-    let Some(_st) = iter_self(scope) else {
+    let Some(st) = iter_self(scope) else {
         return obj::err("expected 'iter' object");
     };
     let func = scope::get(scope, "fn");
@@ -176,30 +176,15 @@ fn iter_map(scope: &Scope) -> Obj {
     // passed as well
     let wants_index = function::arg_count(&func) >= 2;
 
-    let values = match iter_values(&scope::get(scope, "self")) {
-        Ok(values) => values,
-        Err(e) => return e,
-    };
+    // the sequence stays lazy, the transform runs while it is consumed
+    let def = iters::def_of(&st);
+    let mapped = iters::map_new(def, func, wants_index);
 
-    let mut result: Vec<Obj> = Vec::with_capacity(values.len());
-    for (index, item) in values.into_iter().enumerate() {
-        let args = if wants_index {
-            vec![item, obj::int(index as i64)]
-        } else {
-            vec![item]
-        };
-        let value = function::fn_call(&func, &function::Args::positional(args));
-        if obj::is_err(&value) {
-            return value;
-        }
-        result.push(value);
-    }
-
-    iters::seq(result)
+    iters::seq_obj(mapped)
 }
 
 fn iter_filter(scope: &Scope) -> Obj {
-    let Some(_st) = iter_self(scope) else {
+    let Some(st) = iter_self(scope) else {
         return obj::err("expected 'iter' object");
     };
     let func = scope::get(scope, "fn");
@@ -208,22 +193,10 @@ fn iter_filter(scope: &Scope) -> Obj {
         return obj::err("invalid argument: 'fn'");
     }
 
-    let values = match iter_values(&scope::get(scope, "self")) {
-        Ok(values) => values,
-        Err(e) => return e,
-    };
+    let def = iters::def_of(&st);
+    let filtered = iters::filter_new(def, func);
 
-    let mut result: Vec<Obj> = Vec::new();
-    for item in values {
-        let value = function::fn_call(&func, &function::Args::positional(vec![item.clone()]));
-        match obj::payload(&value) {
-            Payload::Bool(true) => result.push(item),
-            Payload::Bool(false) => {}
-            _ => {}
-        }
-    }
-
-    iters::seq(result)
+    iters::seq_obj(filtered)
 }
 
 fn iter_any(scope: &Scope) -> Obj {
@@ -1345,7 +1318,7 @@ fn list_binary_search(scope: &Scope) -> Obj {
     }
 
     // `Array.BinarySearch` returns `~insertionPoint` when the value is missing
-    obj::int(!(low + 1))
+    obj::int(!low)
 }
 
 fn list_lower_bound(scope: &Scope) -> Obj {

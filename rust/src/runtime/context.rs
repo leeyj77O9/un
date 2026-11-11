@@ -27,12 +27,23 @@ pub fn new_frames() -> Frames {
     Rc::new(RefCell::new(Vec::new()))
 }
 
+/// a deferred block. the reference keeps the AST node of the block on the stack and
+/// evaluates it when the function exits. the compiled form keeps the proto of the
+/// block, so the VM runs it.
+#[derive(Clone)]
+pub enum Defer {
+    /// the AST body of a defer
+    Node(Node),
+    /// the compiled block, the proto index of the running program
+    Proto { index: usize, program: Rc<crate::bytecode::Program> },
+}
+
 pub struct ContextData {
     pub scope: Scope,
     pub source: Rc<Source>,
     pub frames: Frames,
     /// `Stack<Node>` — the reference pops in LIFO order at exit.
-    pub defers: Vec<Node>,
+    pub defers: Vec<Defer>,
     /// `Stack<Obj>` — each entry is disposed by `Exit()` at exit.
     pub usings: Vec<Obj>,
     pub call_depth: usize,
@@ -94,11 +105,11 @@ pub fn set_call_depth(ctx: &Context, depth: usize) {
     ctx.borrow_mut().call_depth = depth;
 }
 
-pub fn push_defer(ctx: &Context, node: Node) {
-    ctx.borrow_mut().defers.push(node);
+pub fn push_defer(ctx: &Context, defer: Defer) {
+    ctx.borrow_mut().defers.push(defer);
 }
 
-pub fn pop_defer(ctx: &Context) -> Option<Node> {
+pub fn pop_defer(ctx: &Context) -> Option<Defer> {
     ctx.borrow_mut().defers.pop()
 }
 

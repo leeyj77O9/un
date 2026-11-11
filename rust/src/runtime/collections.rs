@@ -151,8 +151,15 @@ pub fn set(items: Vec<Obj>) -> Obj {
     obj::obj_new("set", Payload::Set(Rc::new(RefCell::new(kept))))
 }
 
-/// `Tup(values, names)`: non-empty names are mirrored into `Members`.
+/// `Tup(values, names)`: non-empty names are mirrored into `Members`. the reference's
+/// name array always has the length of the value array, so the missing names are
+/// empty strings here too.
 pub fn tup(values: Vec<Obj>, names: Vec<String>) -> Obj {
+    let mut names = names;
+    while names.len() < values.len() {
+        names.push(String::new());
+    }
+
     let o = obj::obj_new("tuple", Payload::Tup(Rc::new(values), Rc::new(names)));
     let pairs: Vec<(String, Obj)> = {
         let d = o.borrow();

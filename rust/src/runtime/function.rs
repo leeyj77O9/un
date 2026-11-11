@@ -281,10 +281,27 @@ pub fn end_call(frame: &CallFrame, result: Obj) -> Obj {
 
     // `finally`: a flow raised inside the drain escapes the reference's `finally`
     // block, so its value becomes the call result.
-    while let Some(node) = context::pop_defer(&frame.ctx) {
-        match world::execute(&frame.ctx, std::slice::from_ref(&node)) {
-            Flow::Return(v) | Flow::Propagate(v) => result = v,
-            _ => {}
+    while let Some(defer) = context::pop_defer(&frame.ctx) {
+        match defer {
+            context::Defer::Node(node) => {
+                match world::execute(&frame.ctx, std::slice::from_ref(&node)) {
+                    Flow::Return(v) | Flow::Propagate(v) => result = v,
+                    _ => {}
+                }
+            }
+            context::Defer::Proto { index, program } => {
+                match world::execute_proto(&program, &frame.ctx, index) {
+                    // the compiled block ends with `none`, the reference discards the
+                    // value of the deferred block
+                    Flow::Return(v) => {
+                        if !obj::is_none(&v) {
+                            result = v;
+                        }
+                    }
+                    Flow::Propagate(v) => result = v,
+                    _ => {}
+                }
+            }
         }
     }
 

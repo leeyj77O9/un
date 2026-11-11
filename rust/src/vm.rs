@@ -12,7 +12,7 @@
 use std::rc::Rc;
 
 use crate::bytecode::instr::*;
-use crate::bytecode::{Constant, ExcKind, Program, Proto};
+use crate::bytecode::{Constant, ExcKind, Pattern, Program, Proto};
 use crate::error::{LangError, Panic};
 use crate::module;
 use crate::runtime::collections;
@@ -70,7 +70,11 @@ pub struct VM {
     /// the `Error` a `?` region caught, rethrown at top level exactly as `throw;`
     pub pending: Option<LangError>,
     /// the `Error` a `finally` block is about to rethrow
-    pub pending_finally: Option<LangError>,
+    pub pending_finally_error: Option<LangError>,
+    /// the value a `finally` block is about to return
+    pub pending_return: Option<Obj>,
+    /// the propagation a `finally` block is about to continue
+    pub pending_propagate: Option<Outcome>,
 }
 
 impl VM {
@@ -92,7 +96,9 @@ impl VM {
             acc: Vec::new(),
             tries: Vec::new(),
             pending: None,
-            pending_finally: None,
+            pending_finally_error: None,
+            pending_return: None,
+            pending_propagate: None,
         })
     }
 
@@ -110,7 +116,9 @@ impl VM {
             acc: Vec::new(),
             tries: Vec::new(),
             pending: None,
-            pending_finally: None,
+            pending_finally_error: None,
+            pending_return: None,
+            pending_propagate: None,
         }
     }
 
@@ -128,7 +136,9 @@ impl VM {
             acc: Vec::new(),
             tries: Vec::new(),
             pending: None,
-            pending_finally: None,
+            pending_finally_error: None,
+            pending_return: None,
+            pending_propagate: None,
         }
     }
 
@@ -217,7 +227,7 @@ impl VM {
 
                     self.stack.truncate(entry.depth);
                     self.acc.truncate(entry.acc_depth);
-                    self.pending_finally = Some(e.clone());
+                    self.pending_finally_error = Some(e.clone());
 
                     self.ip = entry.handler;
                     return true;
@@ -266,7 +276,14 @@ impl VM {
                 }
             }
             Op::StoreName => {
-                let value = self.pop()?;
+                let scope_set = flags & FLAG_SCOPE_SET != 0;
+                // `Scope.Set` does not consume the value, the binding of a function
+                // definition leaves it as the value of the statement
+                let value = if scope_set {
+                    self.peek()?.clone()
+                } else {
+                    self.pop()?
+                };
                 let name = self.name(operand as usize);
                 let local_only = flags & FLAG_LOCAL_ONLY != 0;
                 let scope = context::scope(&self.ctx);
@@ -281,7 +298,10 @@ impl VM {
                     }
                 }
 
-                if local_only || scope::is_function_scope(&scope) {
+                if scope_set {
+                    // `Scope.Set` — the chain of the scopes is walked
+                    scope::set(&scope, &name, value);
+                } else if local_only || scope::is_function_scope(&scope) {
                     scope::set_local(&scope, &name, value);
                 } else {
                     scope::set(&scope, &name, value);
@@ -297,6 +317,14 @@ impl VM {
             }
             Op::Pop => {
                 self.pop()?;
+            }
+            Op::Swap => {
+                // the top two values are exchanged, the stack order of a call's
+                // callable and its argument
+                let top = self.pop()?;
+                let below = self.pop()?;
+                self.push(top);
+                self.push(below);
             }
             Op::Unpack => {
                 let count = operand as usize;
@@ -535,7 +563,15 @@ impl VM {
                 if let Some(e) = self.pending.take() {
                     if frames > 0 {
                         let err = obj::err_with_header(e.header.clone(), e.message.clone());
-                        return Err(Outcome::Propagate(err, span.0, span.1));
+                        let outcome = Outcome::Propagate(err, span.0, span.1);
+                        if let Some(index) = self.pending_finally() {
+                            let entry = self.tries[index];
+                            self.tries.truncate(index);
+                            self.pending_propagate = Some(outcome);
+                            self.ip = entry.handler;
+                            return Ok(false);
+                        }
+                        return Err(outcome);
                     }
                     // `catch (Error e) { ... } throw;` rethrows the original error
                     return Err(Outcome::Error(e));
@@ -544,7 +580,15 @@ impl VM {
                 let top = self.peek()?.clone();
                 if obj::is_err(&top) {
                     if frames > 0 {
-                        return Err(Outcome::Propagate(top, span.0, span.1));
+                        let outcome = Outcome::Propagate(top, span.0, span.1);
+                        if let Some(index) = self.pending_finally() {
+                            let entry = self.tries[index];
+                            self.tries.truncate(index);
+                            self.pending_propagate = Some(outcome);
+                            self.ip = entry.handler;
+                            return Ok(false);
+                        }
+                        return Err(outcome);
                     }
                     return Err(self.header_error(&top, span));
                 }
@@ -747,6 +791,16 @@ impl VM {
             Op::Return => {
                 // `ReturnFlow` — the proto ends here and the value is the result
                 let value = self.pop()?;
+
+                // the finally blocks run before the function returns
+                if let Some(index) = self.pending_finally() {
+                    let entry = self.tries[index];
+                    self.tries.truncate(index);
+                    self.pending_return = Some(value);
+                    self.ip = entry.handler;
+                    return Ok(false);
+                }
+
                 return Err(Outcome::Return(value, span.0, span.1));
             }
             Op::PushTry => {
@@ -766,8 +820,18 @@ impl VM {
             }
             Op::Raise => {
                 // the pending error of a `finally` block leaves it
-                if let Some(error) = self.pending_finally.take() {
+                if let Some(error) = self.pending_finally_error.take() {
                     return Err(Outcome::Error(error));
+                }
+
+                // the pending return of a `finally` block leaves it
+                if let Some(value) = self.pending_return.take() {
+                    return Err(Outcome::Return(value, span.0, span.1));
+                }
+
+                // the pending propagation of a `finally` block leaves it
+                if let Some(outcome) = self.pending_propagate.take() {
+                    return Err(outcome);
                 }
             }
 
@@ -894,6 +958,9 @@ impl VM {
                     bases.push(self.pop()?);
                 }
 
+                // the stack is LIFO, so the last base is the first one
+                bases.reverse();
+
                 let created = self.peek()?.clone();
 
                 for (index, base) in bases.iter().enumerate() {
@@ -955,6 +1022,35 @@ impl VM {
                 let name = self.name(operand as usize);
                 let created = collections::enu(&name, 0);
                 self.push(created);
+            }
+            Op::MatchPattern => {
+                // the value stays on the stack, the result is a boolean
+                let pattern = self.proto.patterns[operand as usize].clone();
+                let value = self.peek()?.clone();
+                let scope = context::scope(&self.ctx);
+                let matched = self.match_pattern(&pattern, &value, &scope);
+                self.push(world::bool_obj(matched));
+            }
+            Op::PushDefer => {
+                // the deferred block is a nested proto of the running program
+                let slot = operand as usize;
+                let module_index = self.proto.protos[slot];
+                context::push_defer(
+                    &self.ctx,
+                    context::Defer::Proto {
+                        index: module_index,
+                        program: self.program.clone(),
+                    },
+                );
+            }
+            Op::PushUsing => {
+                // `Obj.Entry()` — the value that is exited at the function's exit
+                let value = self.pop()?;
+                let entry = obj::entry(&value);
+                if obj::is_err(&entry) {
+                    return Err(self.error(err_message(&entry), span));
+                }
+                context::push_using(&self.ctx, entry);
             }
 
             // ------------------------------------------------------------------
@@ -1097,6 +1193,62 @@ impl VM {
             function::Flow::Skip(start, length) => {
                 function::end_call(&frame, obj::none());
                 Err(Outcome::Skip(start, length))
+            }
+        }
+    }
+
+    /// the innermost `finally` handler that covers the current instruction. the
+    /// reference runs the finally block before a return or a propagation leaves the
+    /// try block.
+    fn pending_finally(&self) -> Option<usize> {
+        for index in (0..self.tries.len()).rev() {
+            let entry = self.tries[index];
+            if entry.kind == ExcKind::Finally && entry.start <= self.ip && self.ip < entry.end {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    /// `Evaluator.MatchPattern` — a wildcard matches everything, a name binds the value,
+    /// a literal is compared with the value and a tuple unpacks it.
+    fn match_pattern(&self, pattern: &Pattern, value: &Obj, scope: &scope::Scope) -> bool {
+        match pattern {
+            Pattern::Wildcard => true,
+            Pattern::Bind(name) => {
+                let name = self.program.names[*name].clone();
+                scope::set(scope, &name, value.clone());
+                true
+            }
+            Pattern::Literal(index) => {
+                let literal = materialize(&self.program.consts[*index]);
+                let equal = obj::binop(&literal, obj::BinOp::Eq, value);
+                matches!(obj::payload(&equal), Payload::Bool(true))
+            }
+            Pattern::Tuple(items) => {
+                let values = obj::unpack_items(value);
+
+                if values.is_empty() {
+                    return false;
+                }
+
+                if let Some(first) = values.first() {
+                    if obj::is_err(first) {
+                        return false;
+                    }
+                }
+
+                if values.len() != items.len() {
+                    return false;
+                }
+
+                for (item, item_value) in items.iter().zip(values.iter()) {
+                    if !self.match_pattern(item, item_value, scope) {
+                        return false;
+                    }
+                }
+
+                true
             }
         }
     }

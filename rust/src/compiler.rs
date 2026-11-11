@@ -13,7 +13,7 @@
 
 use crate::ast::{Const, Node, NodeKind};
 use crate::bytecode::instr::*;
-use crate::bytecode::{Constant, ExcEntry, ExcKind, Param, Program, Proto};
+use crate::bytecode::{Constant, ExcEntry, ExcKind, Param, Pattern, Program, Proto};
 use crate::error::Panic;
 use crate::source::Source;
 use crate::token::TokenType;
@@ -364,6 +364,9 @@ impl<'a> Compiler<'a> {
             NodeKind::While => self.code_while(node)?,
             NodeKind::For => self.code_for(node)?,
             NodeKind::Try => self.code_try(node)?,
+            NodeKind::Match => self.code_match(node)?,
+            NodeKind::Defer => self.code_defer(node)?,
+            NodeKind::Using => self.code_using(node)?,
             NodeKind::Class => self.code_class(node)?,
             NodeKind::Enum => self.code_enum(node)?,
             NodeKind::Break => self.code_break(node),
@@ -696,13 +699,15 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        let push_catch = self.ip();
-        if catch.is_some() {
+        // the finally entry is pushed first, so the catch entry is the innermost one
+        // and the VM tries the catch clauses before the finally block
+        let push_finally = self.ip();
+        if finally_block.is_some() {
             self.emit(Op::PushTry, 0, 0, span);
         }
 
-        let push_finally = self.ip();
-        if finally_block.is_some() {
+        let push_catch = self.ip();
+        if catch.is_some() {
             self.emit(Op::PushTry, 0, 0, span);
         }
 
@@ -710,10 +715,10 @@ impl<'a> Compiler<'a> {
         self.code_block(try_block, false, true)?;
         let region_end = self.ip();
 
-        if finally_block.is_some() {
+        if catch.is_some() {
             self.emit(Op::PopTry, 0, 0, span);
         }
-        if catch.is_some() {
+        if finally_block.is_some() {
             self.emit(Op::PopTry, 0, 0, span);
         }
 
@@ -721,7 +726,8 @@ impl<'a> Compiler<'a> {
             self.code_block(finally, true, true)?;
         }
 
-        let end_jump = self.emit_jump(Op::Jmp, 0, span);
+        // the jump over the handlers
+        let mut jumps = vec![self.emit_jump(Op::Jmp, 0, span)];
 
         if let Some(catch) = catch {
             let handler = self.ip();
@@ -744,8 +750,7 @@ impl<'a> Compiler<'a> {
                 self.code_block(finally, true, true)?;
             }
 
-            let jump = self.emit_jump(Op::Jmp, 0, span);
-            self.patch(end_jump, self.ip());
+            jumps.push(self.emit_jump(Op::Jmp, 0, span));
 
             let entry = ExcEntry {
                 kind: ExcKind::Catch,
@@ -756,9 +761,6 @@ impl<'a> Compiler<'a> {
             };
             let index = self.add_exc(entry);
             self.patch_index(push_catch, index);
-            self.patch(jump, self.ip());
-        } else {
-            self.patch(end_jump, self.ip());
         }
 
         if let Some(finally) = finally_block {
@@ -777,12 +779,151 @@ impl<'a> Compiler<'a> {
             self.patch_index(push_finally, index);
         }
 
+        // the end of the whole `try`
+        let end = self.ip();
+        for jump in jumps {
+            self.patch(jump, end);
+        }
+
         Ok(())
     }
 
     // -----------------------------------------------------------------
     // functions
     // -----------------------------------------------------------------
+
+    /// `EvalDefer` — the block is pushed onto the context's defer stack and runs when
+    /// the enclosing function exits.
+    fn code_defer(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let block = &node.children[0];
+
+        // the block is a nested proto, the VM runs it at the function's exit
+        self.begin_proto("defer", None);
+        self.code_function_body(block)?;
+        let proto_slot = self.end_proto();
+
+        self.emit(Op::PushDefer, 0, proto_slot as i32, span);
+        // the reference returns `none`
+        self.emit(Op::LoadNone, 0, 0, span);
+
+        Ok(())
+    }
+
+    /// `EvalUsing` — the assigned value is registered for the exit and the assignment's
+    /// value is the result.
+    fn code_using(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+
+        self.code(&node.children[0])?;
+        self.emit(Op::Dup, 0, 0, span);
+        self.emit(Op::PushUsing, 0, 0, span);
+
+        Ok(())
+    }
+
+    /// `EvalMatch` — the value is tested against every case's pattern, and the first
+    /// case that matches runs its body.
+    ///
+    /// the pattern test is a runtime operation (`MATCH_PATTERN`), so the patterns live
+    /// in the proto's pattern table.
+    fn code_match(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let value = &node.children[0];
+
+        // the value stays on the stack while the cases are tested
+        self.code(value)?;
+
+        let mut ends: Vec<usize> = Vec::new();
+
+        for case in node.children.iter().skip(1) {
+            if case.kind != NodeKind::Case {
+                continue;
+            }
+
+            let pattern = &case.children[0];
+            let case_body = &case.children[1];
+
+            // the case scope, the reference creates one per case
+            self.emit(Op::NewScope, 0, 0, span);
+
+            let compiled = self.compile_pattern(pattern)?;
+            let pattern_index = self.add_pattern(compiled);
+            self.emit(Op::MatchPattern, 0, pattern_index as i32, span);
+
+            // the jump is taken when the pattern does not match
+            let fail = self.emit_jump(Op::JmpIf, FLAG_JUMP_POP, span);
+
+            // the matched path: the value is dropped and the body runs
+            self.emit(Op::Pop, 0, 0, span);
+            self.code(case_body)?;
+            self.emit(Op::PopScope, 0, 0, span);
+            ends.push(self.emit_jump(Op::Jmp, 0, span));
+
+            // the failed path: the case scope is discarded and the value stays
+            self.patch(fail, self.ip());
+            self.emit(Op::PopScope, 0, 0, span);
+        }
+
+        // no case matched. the value stays on the stack, the error ends the run.
+        let message = "no match case";
+        let mi = self.msg_index(message);
+        self.emit(Op::Unsupported, 0, mi as i32, span);
+
+        let end = self.ip();
+        for jump in ends {
+            self.patch(jump, end);
+        }
+
+        Ok(())
+    }
+
+    /// the pattern of a `match` case, the reference's `MatchPattern`.
+    fn compile_pattern(&mut self, pattern: &Node) -> Result<Pattern, Panic> {
+        let compiled = match pattern.kind {
+            NodeKind::Wildcard => Pattern::Wildcard,
+            NodeKind::Identifier => {
+                let name = self.text(pattern);
+                Pattern::Bind(push_name(&mut self.program, &name))
+            }
+            // the reference binds the name and ignores the type
+            NodeKind::Typed => {
+                let name = self.text(&pattern.children[0]);
+                Pattern::Bind(push_name(&mut self.program, &name))
+            }
+            NodeKind::Tuple => {
+                let mut items = Vec::new();
+                for item in &pattern.children {
+                    items.push(self.compile_pattern(item)?);
+                }
+                Pattern::Tuple(items)
+            }
+            NodeKind::Integer
+            | NodeKind::Float
+            | NodeKind::String
+            | NodeKind::Boolean
+            | NodeKind::None => {
+                let value = match pattern.value.as_ref() {
+                    Some(Const::Int(v)) => Constant::Int(*v),
+                    Some(Const::Float(v)) => Constant::Float(*v),
+                    Some(Const::Str(v)) => Constant::Str(v.clone()),
+                    Some(Const::Bool(v)) => Constant::Bool(*v),
+                    _ => Constant::None,
+                };
+                Pattern::Literal(push_const(&mut self.program, value))
+            }
+            _ => return Err(Panic::named("internal", "invalid pattern")),
+        };
+
+        Ok(compiled)
+    }
+
+    /// adds a pattern to the proto's pattern table and returns its index.
+    fn add_pattern(&mut self, pattern: Pattern) -> usize {
+        let current = self.current;
+        self.program.protos[current].patterns.push(pattern);
+        self.program.protos[current].patterns.len() - 1
+    }
 
     /// `EvalFunction` — the body becomes a nested proto, and `MAKE_FUNC` creates the
     /// `LFn` and binds it into the current scope.
@@ -792,7 +933,43 @@ impl<'a> Compiler<'a> {
         let params = &node.children[1];
         let body = &node.children[2];
 
-        self.compile_function(&name, None, params, body, span, FLAG_FUNC_BIND)
+        // a decorated function is bound after the decorators ran
+        let decorated = node
+            .annotations
+            .as_ref()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+
+        let flags = if decorated { 0 } else { FLAG_FUNC_BIND };
+        self.compile_function(&name, None, params, body, span, flags)?;
+        self.apply_annotations(node, span)?;
+
+        if decorated {
+            let slot = self.name_index(&name);
+            self.emit(Op::StoreName, FLAG_SCOPE_SET, slot as i32, span);
+        }
+
+        Ok(())
+    }
+
+    /// `EvalAnnotations` — the decorators are applied in the reverse order, and each
+    /// one is called with the object it decorates.
+    fn apply_annotations(&mut self, node: &Node, span: (usize, usize)) -> Result<(), Panic> {
+        let Some(annotations) = node.annotations.as_ref() else {
+            return Ok(());
+        };
+
+        for annotation in annotations.iter().rev() {
+            // the decorator is evaluated in the enclosing scope
+            self.code(&annotation.children[0])?;
+            // the decorated object is the argument of the call
+            self.emit(Op::Swap, 0, 0, span);
+            self.emit(Op::ArgBegin, 0, 1, span);
+            self.emit(Op::ArgPos, 0, 0, span);
+            self.emit(Op::Call, 0, 1, span);
+        }
+
+        Ok(())
     }
 
     /// `EvalExtension` — `fn Type.method()` registers the method on the type instead
@@ -804,7 +981,8 @@ impl<'a> Compiler<'a> {
         let params = &node.children[2];
         let body = &node.children[3];
 
-        self.compile_function(&name, Some(&ext_type), params, body, span, FLAG_FUNC_EXT)
+        self.compile_function(&name, Some(&ext_type), params, body, span, FLAG_FUNC_EXT)?;
+        self.apply_annotations(node, span)
     }
 
     /// `EvalLambda` — the same body shape, but the function is not bound to a name.
@@ -981,6 +1159,9 @@ impl<'a> Compiler<'a> {
         }
         flags |= (fields.len() as u16) << 8;
         self.emit(Op::MakeClass, flags, name_slot as i32, span);
+
+        // the class object is decorated before it is registered
+        self.apply_annotations(node, span)?;
 
         // `Global.SetClass` — the class is registered before the members are added,
         // so a method can call the class itself
@@ -1628,6 +1809,12 @@ impl<'a> Compiler<'a> {
 fn push_name(program: &mut Program, name: &str) -> usize {
     program.names.push(name.to_string());
     program.names.len() - 1
+}
+
+/// a module constant index, the form the pattern table and the parameter defaults use.
+fn push_const(program: &mut Program, value: Constant) -> usize {
+    program.consts.push(value);
+    program.consts.len() - 1
 }
 
 /// the source span of a node. every `emit` call carries it, because `source_map` is the

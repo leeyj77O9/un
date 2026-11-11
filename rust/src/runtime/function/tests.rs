@@ -396,8 +396,8 @@ fn defers_drain_in_reverse_order_after_the_body() {
         rec.borrow_mut().push(body.len());
         if body.len() == 3 {
             // the body pushes two defers; `finally` pops them LIFO
-            context::push_defer(ctx, node.clone());
-            context::push_defer(ctx, node.clone());
+            context::push_defer(ctx, context::Defer::Node(node.clone()));
+            context::push_defer(ctx, context::Defer::Node(node.clone()));
             Flow::Return(obj::int(1))
         } else {
             Flow::Return(obj::int(2))
@@ -419,7 +419,7 @@ fn defers_and_usings_are_emptied_at_call_exit() {
     let exec: world::Executor = Rc::new(move |ctx: &Context, body: &[Node]| {
         if body.len() == 2 {
             *captured.borrow_mut() = Some(ctx.clone());
-            context::push_defer(ctx, Node::new(0, 1, NodeKind::Identifier));
+            context::push_defer(ctx, context::Defer::Node(Node::new(0, 1, NodeKind::Identifier)));
             context::push_using(ctx, obj::obj_new("obj", Payload::Plain));
         }
         Flow::Normal
