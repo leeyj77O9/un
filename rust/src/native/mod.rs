@@ -19,8 +19,11 @@ use crate::runtime::world;
 pub mod builtin;
 pub mod inspect;
 pub mod io;
+pub mod iter;
 pub mod math;
 pub mod members;
+pub mod os;
+pub mod sys;
 
 /// `Global.Init(path)`
 pub fn init(path: &str) {
@@ -39,6 +42,9 @@ pub fn init(path: &str) {
     world::register_native("io", io::members(&closure));
     world::register_native("inspect", inspect::members(&closure));
     world::register_native("math", math::members(&closure));
+    world::register_native("iter", iter::members(&closure));
+    world::register_native("os", os::members(&closure));
+    world::register_native("sys", sys::members(&closure));
 
     for (name, f) in builtin::members(&closure) {
         world::set_global(&name, f);

@@ -246,7 +246,7 @@ pub fn begin_call(f: &Obj, args: &Args) -> Result<CallFrame, Obj> {
     let closure = cell.borrow().closure.clone();
     let depth = context::call_depth(&closure);
 
-    if depth >= MAX_RECURSION_DEPTH {
+    if depth >= world::max_recursion_depth() {
         return Err(obj::err("maximum recursion depth exceeded"));
     }
 
@@ -296,10 +296,23 @@ pub fn end_call(frame: &CallFrame, result: Obj) -> Obj {
     result
 }
 
+/// the number of bindable parameters of a function, `self` and `super` excluded. the
+/// reference's `iterator.map` uses it to decide whether the index is passed as well.
+pub fn arg_count(f: &Obj) -> usize {
+    let Some(cell) = fn_cell(f) else {
+        return 0;
+    };
+
+    let args = cell.borrow().args.clone();
+    let list = args.borrow();
+    list.iter()
+        .filter(|arg| arg.name != "self" && arg.name != "super")
+        .count()
+}
+
 /// `Fn.Call` on a `Func` payload. the recursion limit is read from the closure's
 /// `CallDepth`, which is shared state of the closure cell.
-pub fn fn_call(f: &Obj, args: &Args) -> Obj {
-    let Some(cell) = fn_cell(f) else {
+pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) else {
         return obj::err(format!(
             "unsupported operand type(s) for (): '{}'",
             obj::type_name(f)
@@ -313,7 +326,7 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {
         // `NFn.Call` increments before the limit test, `LFn.Call` tests first.
         let depth = context::call_depth(&closure);
         context::set_call_depth(&closure, depth + 1);
-        if depth >= MAX_RECURSION_DEPTH {
+        if depth >= world::max_recursion_depth() {
             context::set_call_depth(&closure, depth);
             return obj::err("maximum recursion depth exceeded");
         }
@@ -643,14 +656,24 @@ pub struct PropData {
 
 /// `new Property(name)` — the reference types it as `UnType.Obj`
 pub fn property(name: &str) -> Obj {
+    property_with(name, None, None, obj::none())
+}
+
+/// `new Property(name) { Default, Getter, Setter }`
+pub fn property_with(
+    name: &str,
+    getter: Option<Obj>,
+    setter: Option<Obj>,
+    default: Obj,
+) -> Obj {
     obj::obj_new(
         "obj",
         Payload::Property(Rc::new(RefCell::new(PropData {
             name: name.to_owned(),
             backing: format!("${name}"),
-            default: obj::none(),
-            getter: None,
-            setter: None,
+            default,
+            getter,
+            setter,
         }))),
     )
 }

@@ -848,6 +848,116 @@ impl VM {
             }
 
             // ------------------------------------------------------------------
+            // class / enum
+            // ------------------------------------------------------------------
+            Op::MakeClass => {
+                // the class name and the field names share the name table
+                let name_slot = operand as usize;
+                let name = self.name(name_slot);
+                let field_count = (flags >> 8) as usize;
+
+                let mut fields = Vec::with_capacity(field_count);
+                for i in 0..field_count {
+                    fields.push(self.name(name_slot + 1 + i));
+                }
+
+                let created = if flags & FLAG_CLASS_PARAMS != 0 {
+                    // `new Stru(UnType.Create(className), fields)`
+                    collections::stru(&name, fields)
+                } else {
+                    // `new Obj(UnType.Create(className))`
+                    obj::obj_new(&name, Payload::Plain)
+                };
+
+                self.push(created);
+            }
+            Op::RegisterClass => {
+                // `Global.SetClass` — the type object stays on the stack
+                let name = self.name(operand as usize);
+                let created = self.peek()?.clone();
+                world::set_class(&name, created);
+            }
+            Op::LoadBaseClass => {
+                let name = self.name(operand as usize);
+                match world::get_class(&name) {
+                    Some(class) => self.push(class),
+                    None => {
+                        return Err(self.error(format!("unknown base class '{name}'"), span));
+                    }
+                }
+            }
+            Op::SetBases => {
+                // the base classes are on the stack, the type object is below them
+                let count = operand as usize;
+                let mut bases = Vec::with_capacity(count);
+                for _ in 0..count {
+                    bases.push(self.pop()?);
+                }
+
+                let created = self.peek()?.clone();
+
+                for (index, base) in bases.iter().enumerate() {
+                    if index == 0 {
+                        // the first base is the super class
+                        created.borrow_mut().super_ = Some(base.clone());
+                    }
+                    created.borrow_mut().parents.push(base.clone());
+
+                    let base_types = base.borrow().types.clone();
+                    let merged = Types::create(&[created.borrow().types.clone(), base_types]);
+                    created.borrow_mut().types = merged;
+                }
+            }
+            Op::AddMember => {
+                let value = self.pop()?;
+                let name = self.name(operand as usize);
+                let created = self.peek()?.clone();
+                obj::member_set(&created, &name, &value);
+            }
+            Op::AddMethod => {
+                let value = self.pop()?;
+                let name = self.name(operand as usize);
+                let created = self.peek()?.clone();
+                obj::member_set(&created, &name, &value);
+            }
+            Op::MakeProperty => {
+                // the default value, the getter and the setter
+                let setter = self.pop()?;
+                let getter = self.pop()?;
+                let mut default = self.pop()?;
+
+                let name = self.name(operand as usize);
+
+                // a property without a default inherits the default of the base
+                // class' property of the same name
+                if obj::is_none(&default) {
+                    let created = self.peek()?.clone();
+                    let base = created.borrow().super_.clone();
+                    if let Some(base) = base {
+                        if let Some(member) = obj::member(&base, &name) {
+                            if let Some(cell) = function::prop_cell(&member) {
+                                default = cell.borrow().default.clone();
+                            }
+                        }
+                    }
+                }
+
+                let property = function::property_with(
+                    &name,
+                    if obj::is_none(&getter) { None } else { Some(getter) },
+                    if obj::is_none(&setter) { None } else { Some(setter) },
+                    default,
+                );
+
+                self.push(property);
+            }
+            Op::MakeEnum => {
+                let name = self.name(operand as usize);
+                let created = collections::enu(&name, 0);
+                self.push(created);
+            }
+
+            // ------------------------------------------------------------------
             // unwrap / use / unsupported
             // ------------------------------------------------------------------
             Op::Unwrap => {

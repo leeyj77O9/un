@@ -174,7 +174,7 @@ fn a_wildcard_that_repeats_a_member_is_a_panic() {
 }
 
 #[test]
-fn builtin_instances_are_registered_and_their_member_tables_start_empty() {
+fn builtin_instances_are_registered_and_their_member_tables_are_filled() {
     native::init("");
 
     for name in [
@@ -184,7 +184,14 @@ fn builtin_instances_are_registered_and_their_member_tables_start_empty() {
     }
 
     assert_eq!(&*obj::type_name(&class("int")), "int");
-    assert!(world::try_get_original_value("str", "to_upper").is_none());
+
+    // the `[Native]` members of the builtin types live in the original classes
+    assert!(world::try_get_original_value("str", "to_upper").is_some());
+    assert!(world::try_get_original_value("list", "add").is_some());
+    assert!(world::try_get_original_value("dict", "contains_key").is_some());
+
+    // the iterator subclasses inherit the members of `iter`
+    assert!(world::try_get_original_value("range", "map").is_some());
 }
 
 #[test]

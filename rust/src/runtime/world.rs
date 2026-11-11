@@ -67,6 +67,8 @@ pub struct World {
     /// `Global._loading` — the paths that are being loaded right now. a path that is
     /// already in the set is a circular import.
     loading: HashSet<String>,
+    /// `Global.MAXRECURSIONDEPTH` — the recursion limit of the function calls.
+    max_recursion_depth: usize,
 }
 
 impl World {
@@ -99,6 +101,7 @@ impl World {
             allowed: None,
             module_cache: HashMap::new(),
             loading: HashSet::new(),
+            max_recursion_depth: crate::runtime::function::MAX_RECURSION_DEPTH,
         }
     }
 }
@@ -145,6 +148,15 @@ pub fn loading_add(key: &str) -> bool {
 
 pub fn loading_remove(key: &str) {
     WORLD.with(|w| w.borrow_mut().loading.remove(key));
+}
+
+/// `Global.MAXRECURSIONDEPTH`
+pub fn max_recursion_depth() -> usize {
+    WORLD.with(|w| w.borrow().max_recursion_depth)
+}
+
+pub fn set_max_recursion_depth(depth: usize) {
+    WORLD.with(|w| w.borrow_mut().max_recursion_depth = depth);
 }
 
 pub fn set_current_program(program: Option<Rc<Program>>) {

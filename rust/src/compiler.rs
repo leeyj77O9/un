@@ -364,6 +364,8 @@ impl<'a> Compiler<'a> {
             NodeKind::While => self.code_while(node)?,
             NodeKind::For => self.code_for(node)?,
             NodeKind::Try => self.code_try(node)?,
+            NodeKind::Class => self.code_class(node)?,
+            NodeKind::Enum => self.code_enum(node)?,
             NodeKind::Break => self.code_break(node),
             NodeKind::Skip => self.code_skip(node),
 
@@ -927,6 +929,230 @@ impl<'a> Compiler<'a> {
         self.emit(Op::LoadNone, 0, 0, span);
         self.emit(Op::Return, 0, 0, span);
         self.raises = true;
+
+        Ok(())
+    }
+
+    /// `EvalClass` — the type object, the base classes, the members and the
+    /// properties.
+    ///
+    /// the type object stays on the stack while the members are added, so the class
+    /// expression's value is the type object, exactly like the reference.
+    fn code_class(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let class_name = self.text(&node.children[0]);
+
+        let mut index = 1;
+        let mut fields: Vec<String> = Vec::new();
+
+        if index < node.children.len() && node.children[index].kind == NodeKind::Tuple {
+            let parameters = &node.children[index];
+            for param in &parameters.children {
+                let value = &param.children[0];
+                let name = match value.kind {
+                    NodeKind::Identifier => self.text(value),
+                    NodeKind::Typed => self.text(&value.children[0]),
+                    _ => return Err(Panic::named("internal", "invalid initializer")),
+                };
+                fields.push(name);
+            }
+            index += 1;
+        }
+
+        let mut bases: Vec<String> = Vec::new();
+        if index < node.children.len() && node.children[index].kind == NodeKind::ClassBases {
+            for base in &node.children[index].children {
+                bases.push(self.text(base));
+            }
+            index += 1;
+        }
+
+        let body = &node.children[index];
+
+        // `MAKE_CLASS` — the class name and the field names share the name table
+        let name_slot = self.push_name_raw(&class_name);
+        for field in &fields {
+            self.push_name_raw(field);
+        }
+
+        let mut flags = 0u16;
+        if !fields.is_empty() {
+            flags |= FLAG_CLASS_PARAMS;
+        }
+        flags |= (fields.len() as u16) << 8;
+        self.emit(Op::MakeClass, flags, name_slot as i32, span);
+
+        // `Global.SetClass` — the class is registered before the members are added,
+        // so a method can call the class itself
+        let register_slot = self.push_name_raw(&class_name);
+        self.emit(Op::RegisterClass, 0, register_slot as i32, span);
+
+        // the base classes
+        if !bases.is_empty() {
+            for base in &bases {
+                let slot = self.name_index(base);
+                self.emit(Op::LoadBaseClass, 0, slot as i32, span);
+            }
+            self.emit(Op::SetBases, 0, bases.len() as i32, span);
+        }
+
+        // the accessors and the members of the body
+        let mut accessors: Vec<(&Node, Option<&Node>, Option<&Node>)> = Vec::new();
+        let mut accessor_names: Vec<String> = Vec::new();
+
+        for member in &body.children {
+            if member.kind != NodeKind::Accessor {
+                continue;
+            }
+
+            let name = self.text(&member.children[0]);
+            let kind = match member.value.as_ref() {
+                Some(Const::Str(v)) => v.clone(),
+                _ => String::new(),
+            };
+
+            let entry = match accessor_names.iter().position(|n| *n == name) {
+                Some(pos) => &mut accessors[pos],
+                None => {
+                    accessor_names.push(name.clone());
+                    accessors.push((member, None, None));
+                    accessors.last_mut().expect("accessor")
+                }
+            };
+
+            if kind == "get" {
+                entry.1 = Some(member);
+            } else {
+                entry.2 = Some(member);
+            }
+        }
+
+        // the body: the functions become methods, the assignments become members
+        for member in &body.children {
+            match member.kind {
+                NodeKind::Function => {
+                    let member_name = self.text(&member.children[0]);
+                    let slot = self.name_index(&member_name);
+
+                    // the method body is a nested proto
+                    let saved_raises = self.raises;
+                    let saved_groups = std::mem::take(&mut self.groups);
+                    self.begin_proto(&member_name, None);
+                    self.compile_params(&member.children[1])?;
+                    self.code_function_body(&member.children[2])?;
+                    let proto_slot = self.end_proto();
+                    self.groups = saved_groups;
+                    self.raises = saved_raises;
+
+                    self.emit(Op::MakeFunc, 0, proto_slot as i32, span);
+                    self.emit(Op::AddMethod, 0, slot as i32, span);
+                }
+                NodeKind::Assign => {
+                    let member_name = self.text(&member.children[0]);
+
+                    // an assignment to an accessor name is the property's default
+                    if accessor_names.iter().any(|n| *n == member_name) {
+                        continue;
+                    }
+
+                    let slot = self.name_index(&member_name);
+                    self.code(&member.children[1])?;
+                    self.emit(Op::AddMember, 0, slot as i32, span);
+                }
+                _ => {}
+            }
+        }
+
+        // the properties
+        for (index, (_accessor, getter, setter)) in accessors.iter().enumerate() {
+            let name = &accessor_names[index];
+            let slot = self.name_index(name);
+
+            // the default value
+            let mut default = None;
+            for member in &body.children {
+                if member.kind == NodeKind::Assign && self.text(&member.children[0]) == *name {
+                    default = Some(&member.children[1]);
+                }
+            }
+            match default {
+                Some(expr) => self.code(expr)?,
+                None => self.emit(Op::LoadNone, 0, 0, span),
+            }
+
+            // the getter and the setter, `none` when the accessor is missing
+            for accessor_node in [getter, setter] {
+                match accessor_node {
+                    Some(accessor_node) => {
+                        let body = &accessor_node.children[1];
+                        let saved_raises = self.raises;
+                        let saved_groups = std::mem::take(&mut self.groups);
+                        self.begin_proto(name, None);
+                        // a setter takes the assigned value
+                        if accessor_node.value.as_ref()
+                            == Some(&Const::Str("set".to_owned()))
+                        {
+                            let value_slot = push_name(&mut self.program, "value");
+                            self.program.protos[self.current].params.push(Param {
+                                name: value_slot,
+                                type_name: None,
+                                flags: PARAM_ESSENTIAL,
+                                default: None,
+                            });
+                        }
+                        self.code_function_body(body)?;
+                        let proto_slot = self.end_proto();
+                        self.groups = saved_groups;
+                        self.raises = saved_raises;
+                        self.emit(Op::MakeFunc, 0, proto_slot as i32, span);
+                    }
+                    None => self.emit(Op::LoadNone, 0, 0, span),
+                }
+            }
+
+            self.emit(Op::MakeProperty, 0, slot as i32, span);
+            self.emit(Op::AddMember, 0, slot as i32, span);
+        }
+
+        Ok(())
+    }
+
+    /// `EvalEnum` — the constants become the members of an enum object.
+    fn code_enum(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let enum_name = self.text(&node.children[0]);
+
+        let name_slot = self.push_name_raw(&enum_name);
+        self.emit(Op::MakeEnum, 0, name_slot as i32, span);
+
+        let register_slot = self.push_name_raw(&enum_name);
+        self.emit(Op::RegisterClass, 0, register_slot as i32, span);
+
+        let mut index = 1i64;
+        for member in node.children.iter().skip(1) {
+            let (member_name, value) = match member.kind {
+                NodeKind::Assign => {
+                    let name = self.text(&member.children[0]);
+                    let value = match member.children[1].value.as_ref() {
+                        Some(Const::Int(v)) => *v,
+                        _ => return Err(Panic::named("internal", "invalid enum value")),
+                    };
+                    index = value + 1;
+                    (name, value)
+                }
+                _ => {
+                    let name = self.text(member);
+                    let value = index;
+                    index += 1;
+                    (name, value)
+                }
+            };
+
+            let slot = self.name_index(&member_name);
+            let value_slot = self.const_index(Constant::Int(value));
+            self.emit(Op::LoadConst, 0, value_slot as i32, span);
+            self.emit(Op::AddMember, 0, slot as i32, span);
+        }
 
         Ok(())
     }

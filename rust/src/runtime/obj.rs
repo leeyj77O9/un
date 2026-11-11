@@ -1433,11 +1433,12 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         },
         Payload::Str(a) => match op {
             UnOp::Len => int(a.encode_utf16().count() as i64),
-            UnOp::ToInt => match a.parse::<i64>() {
+            // `long.TryParse` allows the leading and trailing white space
+            UnOp::ToInt => match a.trim().parse::<i64>() {
                 Ok(v) => int(v),
                 Err(_) => err(format!("cannot convert '{a}' to 'int'")),
             },
-            UnOp::ToFloat => match a.parse::<f64>() {
+            UnOp::ToFloat => match a.trim().parse::<f64>() {
                 Ok(v) => float(v),
                 Err(_) => err(format!("cannot convert '{a}' to 'float'")),
             },

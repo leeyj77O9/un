@@ -618,11 +618,12 @@ fn stru_display_len_and_init() {
         "System.Collections.Generic.KeyNotFoundException: The given key 'y' was not present in the dictionary."
     );
 
-    // `Copy` / `Clone` keep the names, an empty `Members`, `Annotations` and `Parents`
+    // `Copy` / `Clone` keep the names, the `Members`, `Annotations` and `Parents`
     let c = obj::copy_obj(&p);
     assert!(!Rc::ptr_eq(&c, &p));
     assert_eq!(obj::display(&obj::len(&c)), "2");
-    assert!(obj::member(&c, "x").is_none());
+    // `Stru.Clone` copies the member table
+    assert_eq!(obj::display(&obj::member(&c, "x").expect("member")), "1");
     assert_eq!(obj::type_name(&c), obj::type_name(&p));
 }
 

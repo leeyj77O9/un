@@ -432,6 +432,10 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         Op::StoreName | Op::StoreLocal | Op::StoreUpv | Op::Return => -1,
         Op::Pop => -1,
         Op::PopN => -count,
+        // `SET_BASES` pops the base classes, the type object stays on the stack
+        Op::SetBases => -count,
+        // `REGISTER_CLASS` registers the type object on the stack, it stays there
+        Op::RegisterClass => 0,
         // `UNPACK` pops `count` values and hands them to the following binders one by one,
         // so the net depth change is `count - 1` (the count itself lives in the operand).
         Op::Unpack => count - 1,
@@ -442,7 +446,7 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         Op::Swap | Op::Rot => 0,
         Op::BuildList | Op::BuildSet | Op::BuildTuple | Op::BuildTupleNamed | Op::FString => 1 - count,
         Op::BuildDict => 1 - 2 * count,
-        Op::Tag | Op::SetBases => -count,
+        Op::Tag => -count,
         Op::Add
         | Op::Sub
         | Op::Mul
@@ -505,8 +509,9 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         // created function.
         Op::MakeFunc => 1 - ((flags >> 8) as i64),
         Op::SetItem => -2,
-        Op::MakeProperty => -3,
-        Op::RegisterClass => -1,
+        // `MAKE_PROPERTY` pops the default value, the getter and the setter, and
+        // pushes the property
+        Op::MakeProperty => -2,
         // `SLICE` pops `k` bounds and the target, pushes the slice: net `-k`.
         // `SET_SLICE` pops the bounds, the target and the value, and pushes the value
         // back for the pattern result, so the net is `-(k + 1)`.

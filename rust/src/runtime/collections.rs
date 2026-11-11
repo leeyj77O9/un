@@ -10,6 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::runtime::function;
 use crate::runtime::iters;
 use crate::runtime::obj;
 use crate::runtime::obj::{BinOp, Obj, Payload, UnOp};
@@ -1313,7 +1314,9 @@ pub fn stru_init(o: &Obj, args: &[Obj]) -> Obj {
     for (i, name) in names.iter().enumerate() {
         if let Some(m) = obj::member(o, name) {
             if obj::is_property(&m) {
-                obj::property_set(&m, o, &args[i]);
+                // `property.Write(this, args[i])` — the header initializer stores the
+                // backing value directly, it does not go through the setter
+                function::prop_write(&m, o, &args[i]);
                 continue;
             }
         }
@@ -1379,7 +1382,7 @@ pub fn stru_eq(o: &Obj, other: &Obj) -> Obj {
 /// `Stru.Copy` / `Stru.Clone` build a new `Stru` with the same names and an empty
 /// `Members`; `Annotations`, `Super`, `Parents` carry over and `Self` is dropped.
 pub fn stru_copy(o: &Obj) -> Obj {
-    let (type_name, names, annotations, parents, super_) = {
+    let (type_name, names, annotations, parents, super_, members) = {
         let d = o.borrow();
         (
             d.type_name.clone(),
@@ -1387,6 +1390,7 @@ pub fn stru_copy(o: &Obj) -> Obj {
             d.annotations.clone(),
             d.parents.clone(),
             d.super_.clone(),
+            d.members.clone(),
         )
     };
     let created = obj::obj_new(&type_name, Payload::Stru(Rc::new(names)));
@@ -1395,6 +1399,8 @@ pub fn stru_copy(o: &Obj) -> Obj {
         d.annotations = annotations;
         d.parents = parents;
         d.super_ = super_;
+        // `Stru.Clone` copies the member table
+        d.members = members;
     }
     created
 }
