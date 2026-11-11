@@ -608,6 +608,53 @@ impl VM {
             }
 
             // ------------------------------------------------------------------
+            // scopes and loops
+            // ------------------------------------------------------------------
+            Op::NewScope => {
+                let cur = context::scope(&self.ctx);
+                let is_fn = flags & FLAG_SCOPE_FUNCTION != 0;
+                let child = scope::new(Some(cur), is_fn);
+                context::set_scope(&self.ctx, child);
+            }
+            Op::PopScope => {
+                let cur = context::scope(&self.ctx);
+                let parent = scope::parent(&cur).unwrap_or_else(|| cur.clone());
+                context::set_scope(&self.ctx, parent);
+            }
+            Op::PrepIter => {
+                let iterable = self.pop()?;
+                let iter = obj::unary(&iterable, obj::UnOp::Iter);
+                if !matches!(obj::payload(&iter), Payload::Iter(_)) {
+                    let msg = self.program.message(operand as usize).to_string();
+                    return Err(self.error(msg, span));
+                }
+                self.push(iter);
+            }
+            Op::ForNext => {
+                let iter = self.peek()?.clone();
+                let next = obj::unary(&iter, obj::UnOp::Next);
+                match obj::payload(&next) {
+                    Payload::Error { message, .. } if message == "iteration stopped" => {
+                        self.pop()?;
+                        self.ip = self.proto.jump_target(self.ip, operand);
+                        return Ok(false);
+                    }
+                    Payload::Panic { .. } => {
+                        self.push(next);
+                        self.ip += 1;
+                        return Ok(true);
+                    }
+                    _ => {
+                        self.push(next);
+                    }
+                }
+            }
+            Op::Break | Op::Skip => {
+                self.ip = self.proto.jump_target(self.ip, operand);
+                return Ok(false);
+            }
+
+            // ------------------------------------------------------------------
             // unwrap / use / unsupported
             // ------------------------------------------------------------------
             Op::Unwrap => {

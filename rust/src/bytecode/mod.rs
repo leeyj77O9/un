@@ -209,45 +209,94 @@ impl Program {
                 }
             }
 
-            // rule 3/7: operand ranges, jump targets, stack depth simulation
-            let mut depth: i64 = 0;
-            let mut ip = 0usize;
-            let mut targets: Vec<i64> = vec![-1; proto.code.len() + 1];
-            targets[0] = 0;
-            while ip < proto.code.len() {
-                let (op, flags, operand) = proto
-                    .instruction(ip)
-                    .ok_or(format!("{label}: opcode {:#04x} is not defined", proto.code[ip].op))?;
-
+            for ip in 0..proto.code.len() {
+                let (op, flags, operand) = proto.instruction(ip).ok_or(format!(
+                    "{label}: opcode {:#04x} is not defined",
+                    proto.code[ip].op
+                ))?;
                 check_indices(&label, proto, self, op, flags, operand)?;
+            }
 
-                let target = ip as i64 + 1 + operand as i64;
-                if op == Op::Jmp || op == Op::JmpIf {
-                    if target < 0 || target > proto.code.len() as i64 {
-                        return Err(format!("{label}: jump target {target} out of range"));
+            // rule 3/7: operand ranges, jump targets, stack depth simulation
+            let mut depths: Vec<Option<i64>> = vec![None; proto.code.len() + 1];
+            let mut work = vec![0usize];
+            depths[0] = Some(0);
+
+            while let Some(ip) = work.pop() {
+                let mut depth = depths[ip].expect("queued depth");
+                let mut ip = ip;
+
+                while ip < proto.code.len() {
+                    if let Some(seen) = depths[ip] {
+                        if seen != depth {
+                            return Err(format!(
+                                "{label}: stack depth mismatch at ip {ip} ({seen} vs {depth})"
+                            ));
+                        }
+                    } else {
+                        depths[ip] = Some(depth);
                     }
-                    let target = target as usize;
-                    let expected = depth + stack_effect(op, flags, operand);
-                    if expected < 0 {
-                        return Err(format!("{label}: stack depth {expected} at ip {ip}"));
+
+                    let (op, flags, operand) = proto.instruction(ip).ok_or(format!(
+                        "{label}: opcode {:#04x} is not defined",
+                        proto.code[ip].op
+                    ))?;
+
+                    let effect = stack_effect(op, flags, operand);
+                    let next_depth = depth + effect;
+                    if next_depth < 0 {
+                        return Err(format!("{label}: stack depth {next_depth} at ip {ip}"));
                     }
-                    if targets[target] >= 0 && targets[target] != expected {
-                        return Err(format!(
-                            "{label}: jump to {target} expects depth {}, reached depth {expected}",
-                            targets[target]
-                        ));
+
+                    if matches!(op, Op::Jmp | Op::JmpIf | Op::ForNext | Op::Break | Op::Skip) {
+                        let target = ip as i64 + 1 + operand as i64;
+                        if target < 0 || target > proto.code.len() as i64 {
+                            return Err(format!("{label}: jump target {target} out of range"));
+                        }
+                        let target = target as usize;
+                        let target_depth = if op == Op::ForNext { depth - 1 } else { next_depth };
+
+                        if target_depth < 0 {
+                            return Err(format!("{label}: stack depth {target_depth} at ip {ip}"));
+                        }
+
+                        match depths[target] {
+                            Some(seen) if seen != target_depth => {
+                                return Err(format!(
+                                    "{label}: jump to {target} expects depth {seen}, reached depth {target_depth}"
+                                ));
+                            }
+                            None => {
+                                depths[target] = Some(target_depth);
+                                work.push(target);
+                            }
+                            _ => {}
+                        }
+
+                        if matches!(op, Op::Jmp | Op::Break | Op::Skip) {
+                            break;
+                        }
+
+                        depth = next_depth;
+                        ip += 1;
+                        continue;
                     }
-                    targets[target] = expected;
-                    depth = expected;
-                    ip = target;
-                    continue;
+
+                    depth = next_depth;
+                    ip += 1;
                 }
 
-                depth += stack_effect(op, flags, operand);
-                if depth < 0 {
-                    return Err(format!("{label}: stack depth {depth} at ip {ip}"));
+                if ip == proto.code.len() {
+                    match depths[ip] {
+                        Some(seen) if seen != depth => {
+                            return Err(format!(
+                                "{label}: stack depth mismatch at end ({seen} vs {depth})"
+                            ));
+                        }
+                        None => depths[ip] = Some(depth),
+                        _ => {}
+                    }
                 }
-                ip += 1;
             }
         }
 
@@ -267,7 +316,7 @@ fn check_indices(
     let operand = operand as i64;
     if operand < 0 {
         // jumps take a negative delta, every other index operand is non-negative
-        let is_jump = op == Op::Jmp || op == Op::JmpIf;
+        let is_jump = matches!(op, Op::Jmp | Op::JmpIf | Op::ForNext | Op::Break | Op::Skip);
         if !is_jump {
             return Err(format!("{label}: negative operand {operand} for {op:?}"));
         }
@@ -309,6 +358,8 @@ fn check_indices(
         Op::PushTry | Op::PushTryProp => index_range(label, "exception entry", operand, proto.exc.len()),
         Op::MakeFunc => index_range(label, "proto", operand, proto.protos.len()),
         Op::Unsupported => index_range(label, "message", operand, program.msgs.len()),
+        Op::PrepIter => index_range(label, "message", operand, program.msgs.len()),
+        Op::Jmp | Op::JmpIf | Op::ForNext | Op::Break | Op::Skip => Ok(()),
         Op::Slice | Op::SetSlice => {
             if flags & !(FLAG_SLICE_START | FLAG_SLICE_END | FLAG_SLICE_STEP) != 0 {
                 return Err(format!("{label}: unknown slice flags {flags:#06x}"));
@@ -340,8 +391,6 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         | Op::LoadLocal
         | Op::LoadUpv
         | Op::Dup
-        | Op::PrepIter
-        | Op::ForNext
         | Op::MakeClass
         | Op::LoadBaseClass
         | Op::MakeEnum
@@ -354,6 +403,10 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         // `UNPACK` pops `count` values and hands them to the following binders one by one,
         // so the net depth change is `count - 1` (the count itself lives in the operand).
         Op::Unpack => count - 1,
+        Op::PrepIter => 0,
+        // `FOR_NEXT` pushes the next value on the fall-through path (+1) and pops the
+        // iterator on the exhausted path (-1). the validator special-cases it.
+        Op::ForNext => 1,
         Op::Swap | Op::Rot => 0,
         Op::BuildList | Op::BuildSet | Op::BuildTuple | Op::BuildTupleNamed | Op::FString => 1 - count,
         Op::BuildDict => 1 - 2 * count,

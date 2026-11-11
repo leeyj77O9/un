@@ -18,12 +18,11 @@ use crate::error::Panic;
 use crate::source::Source;
 use crate::token::TokenType;
 
-/// `break` / `skip` targets of the innermost loop, patched when the loop is closed.
-/// phase 8 has no loops, so the group stack stays empty; it is part of the compiler
-/// shape so phase 9 does not restructure it.
-#[derive(Debug)]
+/// jump targets recorded inside a control-flow group and patched when it closes.
+#[derive(Debug, Default)]
 pub struct Group {
-    pub targets: Vec<usize>,
+    pub breaks: Vec<usize>,
+    pub skips: Vec<usize>,
     pub is_loop: bool,
 }
 
@@ -77,30 +76,35 @@ impl<'a> Compiler<'a> {
         Ok(self.program)
     }
 
-    /// opens a `for` / `while` / `match` group. `is_loop` marks the forms `break`
-    /// escapes to the loop end; the others only collect `skip` targets.
     pub fn open_group(&mut self, is_loop: bool) {
         self.groups.push(Group {
-            targets: Vec::new(),
+            breaks: Vec::new(),
+            skips: Vec::new(),
             is_loop,
         });
     }
 
-    /// records one `break` / `skip` jump to patch when the group closes.
-    pub fn record_exit(&mut self, ip: usize) {
+    pub fn record_break(&mut self, ip: usize) {
         if let Some(group) = self.groups.last_mut() {
-            group.targets.push(ip);
+            group.breaks.push(ip);
         }
     }
 
-    /// patches every recorded exit jump of the innermost group to `target`.
-    pub fn close_group(&mut self, target: usize) {
-        let group = self.groups.pop();
-        if let Some(group) = group {
-            for ip in group.targets {
-                self.patch(ip, target);
-            }
+    pub fn record_skip(&mut self, ip: usize) {
+        if let Some(group) = self.groups.last_mut() {
+            group.skips.push(ip);
         }
+    }
+
+    pub fn close_group(&mut self, break_target: usize, skip_target: usize) -> Option<Group> {
+        let group = self.groups.pop()?;
+        for ip in &group.breaks {
+            self.patch(*ip, break_target);
+        }
+        for ip in &group.skips {
+            self.patch(*ip, skip_target);
+        }
+        Some(group)
     }
 
     fn current(&self) -> usize {
@@ -319,6 +323,12 @@ impl<'a> Compiler<'a> {
             NodeKind::Block => self.code_block(node, false)?,
             NodeKind::Use => self.code_use(node)?,
 
+            NodeKind::If => self.code_if(node)?,
+            NodeKind::While => self.code_while(node)?,
+            NodeKind::For => self.code_for(node)?,
+            NodeKind::Break => self.code_break(node),
+            NodeKind::Skip => self.code_skip(node),
+
             _ => self.unsupported(node),
         }
 
@@ -329,6 +339,14 @@ impl<'a> Compiler<'a> {
     /// `pop_last` is the `for` / `while` body rule, where the last value is dropped too.
     pub fn code_block(&mut self, node: &Node, pop_last: bool) -> Result<(), Panic> {
         let n = node.children.len();
+        if n == 0 {
+            if !pop_last {
+                self.emit(Op::LoadNone, 0, 0, (node.start, node.length));
+            }
+            self.raises = false;
+            return Ok(());
+        }
+
         for (i, child) in node.children.iter().enumerate() {
             self.code(child)?;
 
@@ -429,6 +447,166 @@ impl<'a> Compiler<'a> {
         }
 
         Ok(flags)
+    }
+
+    // -----------------------------------------------------------------
+    // control flow
+    // -----------------------------------------------------------------
+
+    fn code_if(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let mut end_jumps = Vec::new();
+        let mut next_jumps: Vec<usize> = Vec::new();
+        let mut has_else = false;
+        let mut all_raise = true;
+
+        for child in &node.children {
+            // patch jumps from previous failed conditions to here
+            let here = self.ip();
+            for j in next_jumps.drain(..) {
+                self.patch(j, here);
+            }
+
+            match child.kind {
+                NodeKind::IfCase => {
+                    let cond = &child.children[0];
+                    let body = &child.children[1];
+                    self.code(cond)?;
+                    self.emit(Op::ToBool, 0, 0, span_of(cond));
+                    let jnext = self.emit_jump(Op::JmpIf, FLAG_JUMP_POP, span_of(cond));
+                    self.code(body)?;
+                    if self.raises {
+                        self.raises = false;
+                    } else {
+                        all_raise = false;
+                        end_jumps.push(self.emit_jump(Op::Jmp, 0, span_of(body)));
+                    }
+                    next_jumps.push(jnext);
+                }
+                NodeKind::Else => {
+                    has_else = true;
+                    self.code(&child.children[0])?;
+                    if self.raises {
+                        self.raises = false;
+                    } else {
+                        all_raise = false;
+                        end_jumps.push(self.emit_jump(Op::Jmp, 0, span_of(child)));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let here = self.ip();
+        for j in next_jumps.drain(..) {
+            self.patch(j, here);
+        }
+
+        if !has_else {
+            // fall-through when no condition matched and no else
+            self.emit(Op::LoadNone, 0, 0, span);
+            all_raise = false;
+        }
+
+        let end = self.ip();
+        for j in end_jumps {
+            self.patch(j, end);
+        }
+
+        if all_raise {
+            self.raises = true;
+        }
+        Ok(())
+    }
+
+    fn code_while(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let cond = &node.children[0];
+        let body = &node.children[1];
+
+        let loop_start = self.ip();
+        self.code(cond)?;
+        // while condition is strict Bool (As<Bool>), non-Bool or false exits
+        let jend = self.emit_jump(Op::JmpIf, FLAG_JUMP_POP, span_of(cond));
+
+        self.open_group(true);
+        self.code_block(body, true)?;
+        self.emit(Op::Jmp, 0, (loop_start as i32) - (self.ip() as i32 + 1), span_of(body));
+
+        let end = self.ip();
+        self.patch(jend, end);
+        self.close_group(end, loop_start);
+        self.emit(Op::LoadNone, 0, 0, span);
+        Ok(())
+    }
+
+    fn code_for(&mut self, node: &Node) -> Result<(), Panic> {
+        let span = (node.start, node.length);
+        let target = &node.children[0];
+        let iterable = &node.children[1];
+        let body = &node.children[2];
+
+        self.code(iterable)?;
+        let iter_text = self.source.span(iterable.start, iterable.length);
+        let msg = format!("{iter_text} is not iterable");
+        let mi = self.msg_index(&msg);
+        self.emit(Op::PrepIter, 0, mi as i32, span_of(iterable));
+
+        self.emit(Op::NewScope, FLAG_SCOPE_LOOP, 0, span);
+        self.open_group(true);
+
+        let loop_start = self.ip();
+        let jend = self.emit_jump(Op::ForNext, 0, span_of(iterable));
+        self.code_pattern(target, true)?;
+        self.code_block(body, true)?;
+        self.emit(Op::Jmp, 0, (loop_start as i32) - (self.ip() as i32 + 1), span_of(body));
+
+        let exhausted = self.ip();
+        self.patch(jend, exhausted);
+        // iterator already popped by ForNext on exhausted path
+        self.emit(Op::PopScope, 0, 0, span);
+        let jafter = self.emit_jump(Op::Jmp, 0, span);
+
+        let break_cleanup = self.ip();
+        // iterator still on stack when breaking from body
+        self.emit(Op::Pop, 0, 0, span);
+        self.emit(Op::PopScope, 0, 0, span);
+
+        let after = self.ip();
+        self.patch(jafter, after);
+        self.close_group(break_cleanup, loop_start);
+
+        self.emit(Op::LoadNone, 0, 0, span);
+        Ok(())
+    }
+
+    fn code_break(&mut self, node: &Node) {
+        let span = (node.start, node.length);
+        if let Some(pos) = self.groups.iter().rposition(|g| g.is_loop) {
+            let ip = self.emit_jump(Op::Break, 0, span);
+            self.groups[pos].breaks.push(ip);
+            self.raises = true;
+        } else {
+            self.error_node(node, "'break' outside loop");
+        }
+    }
+
+    fn code_skip(&mut self, node: &Node) {
+        let span = (node.start, node.length);
+        if let Some(pos) = self.groups.iter().rposition(|g| g.is_loop) {
+            let ip = self.emit_jump(Op::Skip, 0, span);
+            self.groups[pos].skips.push(ip);
+            self.raises = true;
+        } else {
+            self.error_node(node, "'skip' outside loop");
+        }
+    }
+
+    fn error_node(&mut self, node: &Node, message: &str) {
+        let span = (node.start, node.length);
+        let mi = self.msg_index(message);
+        self.emit(Op::Unsupported, 0, mi as i32, span);
+        self.raises = true;
     }
 
     // -----------------------------------------------------------------
