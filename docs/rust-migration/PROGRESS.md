@@ -39,6 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 10 functions/lambda/return | **완료** | `849d224` | `cargo test --release` 189/189 green, warning 0. nested proto + `MAKE_FUNC`/`RETURN` + `begin_call`/`end_call` + 중첩 VM. differential 42 probes: 41 PASS / 1 DIFF(호스트 예외 stack trace만 차이) || 11~17 | 미착수 | — | — |
 | 11 file modules | **?꾨즺** | `d83eee0` | `use`媛 ?뚯씪 紐⑤뱢???쎈뒗???뚯씪 / `mod.un` / ?붾젆?곕━??紐⑤뱺 `.un`). 紐⑤뱢 罹먯떆 + `circular import detected`. `test/integration/modules.un` reference? ?숈씪 |
 | 12 classes/exceptions/native modules | **?꾨즺** | `fca187e`, `6568c37`, `81ff74a`, `5e520e7`, `18fd0b9` | class/enum/property/match/defer/using/decorator + native 12媛?紐⑤뱢 + stream/future/pool/lock. differential 34 ?뚯씪: 33 PASS / 1 DIFF(異쒕젰 ?숈씪, ?ㅽ뻾 ?쒓컙留? |
+| 13~17 defer/using/stream/tagged/go-wait/.unbc | **?꾨즺** | `18fd0b9`, `43a8f7e`, `fab032b` | `defer`/`using`/`stream`/tagged template/`go`/`wait`/`.unbc` 而⑦뀒?대꼫. differential 34 ?뚯씪: 33 PASS / 1 DIFF, negative 42 ?뚯씪: 38 PASS / 4 DIFF(臾몄꽌?붾맂 李⑥씠) |
 
 ## Phase 2 정합 데이터
 
@@ -610,3 +611,32 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
 - `test/test_suite.un`은 reference와 동일하게 **109 passed, 0 failed**.
 - reference baseline(`scripts/test.ps1`) 불변: Positive 33/1265/0/0, Negative 42 matched,
   Known 1(`test/regression/defects.un`, 6 assertions).
+
+## Phase 13~17 종합 검증(나머지 기능)
+
+- **Phase 13** `defer` / `using` ✓: `defer` 블록은 nested proto이고 함수의 epilogue가 역순으로
+  실행한다. `using`은 대입된 값의 `__entry__`를 등록하고 함수 종료 때 `__exit__`를 부른다.
+- **Phase 14** `stream` payload ✓, `io.open(path, mode)` ✓ (`r`/`w`/`a`/`rw`).
+- **Phase 15** tagged template ✓: `tag\`hello ${name}\``은 tag 함수를
+  `fn(values, strings)`로 부른다.
+- **Phase 16** `go` / `wait` ✓: `MAKE_FUTURE`와 `AWAIT`. 스레드를 쓸 수 없어서(D-054)
+  표현식을 바로 계산해서 future에 넣는다.
+- **Phase 17** `.unbc` 컨테이너 ✓: `bytecode::unbc`가 쓰고 읽는다. magic/version/flag가
+  다르면 validation이 실패한다. 소스 텍스트를 함께 저장할 수 있어서(flags bit0) 오류
+  위치가 원본 파일의 줄을 가리킨다. CLI는 `unvm compile <file.un>`과
+  `unvm run <file.unbc>` ✓.
+
+### 검증
+
+- `cargo build --release` 0 errors / 0 warnings, `cargo test --release` **192 passed / 0 failed**.
+- differential suite(MANIFEST 34개 파일): **33 PASS / 1 DIFF**(출력은 같고 실행 시간만 제한
+  시간을 넘긴 경우).
+- negative suite(42개 파일): **38 PASS / 4 DIFF**. 남은 네 개는 문서화된 차이다:
+  .NET 스택 오버플로(Rust는 재귀 한도), `go`의 타이밍(D-054), .NET `Array.Sort`의
+  일관성 검사.
+
+### 남은 차이
+
+- 함수 안의 `break`/`skip`이 호출자의 반복문까지 unwind 하지 않는다(D-049).
+- `os.tickCount`는 epoch 밀리초(D-051), `fs.hidden`은 점 접두사(D-052).
+- 정규식은 자체 엔진(D-053), `go`/`pool`은 단일 스레드(D-054).
