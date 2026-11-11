@@ -49,6 +49,10 @@ pub enum Payload {    Plain,
     Lock(Rc<RefCell<crate::native::flow::LockState>>),
     /// `Stream` — a file stream
     Stream(Rc<RefCell<crate::native::stream::StreamState>>),
+    /// `Random` — the generator object, the `Value` of the reference's
+    /// `Ref<System.Random>`. the cell is shared by `Clone()`, so the clone keeps drawing
+    /// from the same sequence.
+    Random(Rc<RefCell<crate::native::random::Rng>>),
     /// every collection payload is a shared cell, so `b = a` keeps `b` and `a`
     /// looking at the same items, exactly like the reference's `Ref<T>` cells.
     List(Rc<RefCell<Vec<Obj>>>),
@@ -94,6 +98,7 @@ impl std::fmt::Debug for Payload {
             Payload::Date(t) => write!(f, "Date({t})"),
             Payload::Stopwatch(_) => f.write_str("Stopwatch"),
             Payload::Stream(_) => f.write_str("Stream"),
+            Payload::Random(_) => f.write_str("Random"),
             Payload::Future(_) => f.write_str("Future"),
             Payload::Pool(_) => f.write_str("Pool"),
             Payload::Lock(_) => f.write_str("Lock"),
@@ -148,6 +153,7 @@ impl PartialEq for Payload {
             (Enu(a), Enu(b)) => a == b,
             (TObj(a), TObj(b)) => a == b,
             (Iter(a), Iter(b)) => Rc::ptr_eq(a, b),
+            (Random(a), Random(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -1015,6 +1021,7 @@ pub fn class_name(o: &Obj) -> &'static str {
         Payload::Str(..) => "Str",
         Payload::Stopwatch(..) => "Stopwatch",
         Payload::Stream(..) => "Stream",
+        Payload::Random(..) => "Random",
         Payload::Future(..) => "Future",
         Payload::Pool(..) => "Pool",
         Payload::Lock(..) => "Lock",
@@ -1452,7 +1459,8 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         | Payload::Future(_)
         | Payload::Pool(_)
         | Payload::Lock(_)
-        | Payload::Stream(_) => base_binop(o, op, other, &t, &ot),
+        | Payload::Stream(_)
+        | Payload::Random(_) => base_binop(o, op, other, &t, &ot),
     }
 }
 
@@ -1544,7 +1552,8 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         | Payload::FieldRef(_)
         | Payload::Stopwatch(_)
         | Payload::Future(_)
-        | Payload::Stream(_) => err(op.message(&t)),
+        | Payload::Stream(_)
+        | Payload::Random(_) => err(op.message(&t)),
         Payload::Date(_) | Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => {
             err(op.message(&t))
         }

@@ -1,10 +1,14 @@
-//! `Un.Native.Random` — the native `random` module.
+//! `Un.Native.Random` and `Un.Object.Util.Random` — the native `random` module and the
+//! `random` generator object.
 //!
-//! the reference shares one `System.Random` between the functions, and `seed` replaces
-//! it, so the same seed produces the same values. the .NET generator itself is not
-//! reproduced (the values are not a parity target), but the reproducibility is.
+//! the reference shares one `System.Random` between the module functions and gives every
+//! `random()` object its own, and `seed` replaces the generator in both cases, so the
+//! same seed produces the same values. the .NET generator itself is not reproduced (the
+//! values are not a parity target), but the reproducibility is.
 
 use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::runtime::collections;
 use crate::runtime::context::Context;
@@ -19,12 +23,12 @@ thread_local! {
 }
 
 /// a small xorshift generator, seeded the same way for every seed.
-struct Rng {
+pub struct Rng {
     state: u64,
 }
 
 impl Rng {
-    fn new(seed: u64) -> Self {
+    pub fn new(seed: u64) -> Self {
         // a zero state would stay zero, so the seed is mixed
         let state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x2545_F491_4F6C_DD1D;
         Self {
@@ -32,7 +36,7 @@ impl Rng {
         }
     }
 
-    fn next_u64(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         let mut x = self.state;
         x ^= x << 13;
         x ^= x >> 7;
@@ -63,16 +67,55 @@ impl Rng {
     }
 }
 
-fn with_random<T>(f: impl FnOnce(&mut Rng) -> T) -> T {
-    RANDOM.with(|r| f(&mut r.borrow_mut()))
+/// the generator of the receiver, the `self.Value` of the reference's
+/// `Ref<System.Random>`.
+fn gen_self(scope: &Scope) -> Option<Rc<RefCell<Rng>>> {
+    match obj::payload(&scope::get(scope, "self")) {
+        Payload::Random(cell) => Some(cell),
+        _ => None,
+    }
+}
+
+/// the generator a call uses: the object's own when the member is bound to a `random`
+/// object, the shared one for the module functions.
+fn with_gen<T>(scope: &Scope, f: impl FnOnce(&mut Rng) -> T) -> T {
+    match gen_self(scope) {
+        Some(cell) => f(&mut cell.borrow_mut()),
+        None => RANDOM.with(|r| f(&mut r.borrow_mut())),
+    }
+}
+
+/// `new Random()` — the generator object, seeded from the system clock like the
+/// reference's parameterless `System.Random`.
+pub fn rng_obj() -> Obj {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+
+    obj::obj_new("random", Payload::Random(Rc::new(RefCell::new(Rng::new(nanos)))))
 }
 
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
+    let mut table = base_members(closure);
+
+    table.push((
+        "random".to_owned(),
+        native(closure, "random", Vec::new(), random_impl),
+    ));
+
+    table
+}
+
+/// `Un.Object.Util.Random`'s `[Native]` member table — the `Global.originalClasses`
+/// entry of the `random` type. `self` is the generator object, so every member draws
+/// from that object's own generator, not the shared one.
+pub fn object_members(closure: &Context) -> Vec<(String, Obj)> {
+    base_members(closure)
+}
+
+fn base_members(closure: &Context) -> Vec<(String, Obj)> {
     vec![
-        (
-            "random".to_owned(),
-            native(closure, "random", Vec::new(), random_impl),
-        ),
         ("next".to_owned(), native(closure, "next", Vec::new(), next_impl)),
         (
             "int".to_owned(),
@@ -209,14 +252,11 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
 }
 
 fn random_impl(_scope: &Scope) -> Obj {
-    obj::plain(
-        crate::runtime::world::intern_type("random"),
-        crate::runtime::world::obj_type(),
-    )
+    rng_obj()
 }
 
-fn next_impl(_scope: &Scope) -> Obj {
-    let value = with_random(|rng| rng.next_u64() >> 11);
+fn next_impl(scope: &Scope) -> Obj {
+    let value = with_gen(scope, |rng| rng.next_u64() >> 11);
     obj::int(value as i64)
 }
 
@@ -237,7 +277,7 @@ fn int_impl(scope: &Scope) -> Obj {
         return obj::err("'min' cannot be greater than 'max'");
     }
 
-    let value = with_random(|rng| rng.between(min, max));
+    let value = with_gen(scope, |rng| rng.between(min, max));
     obj::int(value)
 }
 
@@ -246,7 +286,7 @@ fn float_impl(scope: &Scope) -> Obj {
     let max = scope::get(scope, "max");
 
     if obj::is_none(&min) && obj::is_none(&max) {
-        let value = with_random(|rng| rng.next_double());
+        let value = with_gen(scope, |rng| rng.next_double());
         return obj::float(value);
     }
 
@@ -267,12 +307,12 @@ fn float_impl(scope: &Scope) -> Obj {
         return obj::err("'min' cannot be greater than 'max'");
     }
 
-    let value = with_random(|rng| rng.next_double() * (max - min) + min);
+    let value = with_gen(scope, |rng| rng.next_double() * (max - min) + min);
     obj::float(value)
 }
 
-fn bool_impl(_scope: &Scope) -> Obj {
-    let value = with_random(|rng| rng.below(2) == 0);
+fn bool_impl(scope: &Scope) -> Obj {
+    let value = with_gen(scope, |rng| rng.below(2) == 0);
     obj::boolean(value)
 }
 
@@ -288,7 +328,7 @@ fn bytes_impl(scope: &Scope) -> Obj {
         return obj::err("'length' cannot be negative");
     }
 
-    let values: Vec<Obj> = with_random(|rng| {
+    let values: Vec<Obj> = with_gen(scope, |rng| {
         (0..length).map(|_| obj::int((rng.next_u64() & 0xFF) as i64)).collect()
     });
 
@@ -296,14 +336,14 @@ fn bytes_impl(scope: &Scope) -> Obj {
 }
 
 /// the reference's `Random.Shuffle` — the Fisher-Yates shuffle.
-fn shuffle_values(values: &mut Vec<Obj>) {
+fn shuffle_values(scope: &Scope, values: &mut Vec<Obj>) {
     let len = values.len();
     if len < 2 {
         return;
     }
 
     for i in (1..len).rev() {
-        let j = with_random(|rng| rng.below((i + 1) as u64) as usize);
+        let j = with_gen(scope, |rng| rng.below((i + 1) as u64) as usize);
         values.swap(i, j);
     }
 }
@@ -317,7 +357,7 @@ fn shuffle_impl(scope: &Scope) -> Obj {
     };
 
     let mut values = list.borrow().clone();
-    shuffle_values(&mut values);
+    shuffle_values(scope, &mut values);
     *list.borrow_mut() = values;
 
     obj::none()
@@ -336,7 +376,7 @@ fn choice_impl(scope: &Scope) -> Obj {
         return obj::err("expected 'random.choice' argument to be a list");
     }
 
-    let index = with_random(|rng| rng.below(count as u64) as usize);
+    let index = with_gen(scope, |rng| rng.below(count as u64) as usize);
     let items = list.borrow().clone();
     items[index].clone()
 }
@@ -361,7 +401,7 @@ fn choices_impl(scope: &Scope) -> Obj {
 
     let mut result: Vec<Obj> = Vec::new();
     for _ in 0..count {
-        let index = with_random(|rng| rng.below(items.len() as u64) as usize);
+        let index = with_gen(scope, |rng| rng.below(items.len() as u64) as usize);
         result.push(items[index].clone());
     }
 
@@ -389,7 +429,7 @@ fn sample_impl(scope: &Scope) -> Obj {
     }
 
     let mut clone = items;
-    shuffle_values(&mut clone);
+    shuffle_values(scope, &mut clone);
     clone.truncate(count.max(0) as usize);
 
     collections::list(clone)
@@ -406,7 +446,7 @@ fn chance_impl(scope: &Scope) -> Obj {
         return obj::err("'probability' must be between 0 and 1");
     }
 
-    let hit = with_random(|rng| rng.next_double() < value);
+    let hit = with_gen(scope, |rng| rng.next_double() < value);
     obj::boolean(hit)
 }
 
@@ -418,14 +458,19 @@ fn seed_impl(scope: &Scope) -> Obj {
         _ => return obj::err("expected 'random.seed' argument 'seed' is int"),
     };
 
-    RANDOM.with(|r| *r.borrow_mut() = Rng::new(value as u64));
+    // the reference replaces the generator itself (`self.Value = new System.Random(seed)`),
+    // so the object's own sequence restarts when `seed` is called on it.
+    match gen_self(scope) {
+        Some(cell) => *cell.borrow_mut() = Rng::new(value as u64),
+        None => RANDOM.with(|r| *r.borrow_mut() = Rng::new(value as u64)),
+    }
 
     obj::none()
 }
 
-fn uuid_impl(_scope: &Scope) -> Obj {
+fn uuid_impl(scope: &Scope) -> Obj {
     let mut bytes = [0u8; 16];
-    with_random(|rng| {
+    with_gen(scope, |rng| {
         for chunk in bytes.chunks_mut(8) {
             let value = rng.next_u64().to_le_bytes();
             chunk.copy_from_slice(&value[..chunk.len()]);
@@ -463,7 +508,7 @@ fn str_impl(scope: &Scope) -> Obj {
         return obj::err("'length' cannot be negative");
     }
 
-    let text: String = with_random(|rng| {
+    let text: String = with_gen(scope, |rng| {
         (0..length)
             .map(|_| CHARS[rng.below(CHARS.len() as u64) as usize] as char)
             .collect()
@@ -510,7 +555,7 @@ fn weighted_impl(scope: &Scope) -> Obj {
         return obj::err("sum of weights must be greater than zero");
     }
 
-    let mut r = with_random(|rng| rng.next_double() * total);
+    let mut r = with_gen(scope, |rng| rng.next_double() * total);
 
     for (index, weight) in nums.iter().enumerate() {
         r -= weight;
@@ -546,7 +591,7 @@ fn range_impl(scope: &Scope) -> Obj {
     }
 
     let mut values: Vec<Obj> = (min..=max).map(obj::int).collect();
-    shuffle_values(&mut values);
+    shuffle_values(scope, &mut values);
 
     collections::list(values)
 }
@@ -575,11 +620,8 @@ fn value_impl(scope: &Scope) -> Obj {
         return obj::err("expected 'random.value' argument is enum");
     }
 
-    let index = with_random(|rng| rng.below(members.len() as u64) as usize);
-    let value = members[index].1.clone();
+    let index = with_gen(scope, |rng| rng.below(members.len() as u64) as usize);
 
-    // the enum instance carries the value
-    let created = obj::obj_new("enum", Payload::Enu(index as i64));
-    obj::member_set(&created, "value", &value);
-    created
+    // `e.Clone()` keeps the enum type, and `Init` rebuilds the instance with the index
+    collections::enu(&name, index as i32 as i64)
 }

@@ -30,6 +30,7 @@ pub fn init_members(closure: &Context) {
     world::register_original_class("lock", crate::native::flow::lock_members(closure));
     world::register_original_class("stream", crate::native::stream::members(closure));
     world::register_original_class("stopwatch", crate::native::stopwatch::members(closure));
+    world::register_original_class("random", crate::native::random::object_members(closure));
 
     // the iterator subclasses have their own type name, and the members live in the
     // `iter` table. the reference walks the `originalBaseTypes` chain for them.
