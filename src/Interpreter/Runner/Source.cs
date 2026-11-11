@@ -7,7 +7,6 @@ public class Source(string path, string code)
     public string Path => path;
     public string Code => code;
     public string Name => System.IO.Path.GetFileNameWithoutExtension(path);
-    public string FullName => System.IO.Path.GetFileName(path);
 
     public HashSet<int> IgnoredNewLines { get; } = [];
 

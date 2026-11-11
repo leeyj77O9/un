@@ -2,27 +2,17 @@ using Un.Object;
 
 namespace Un;
 
-public sealed class Runner(Context context, Context? parentContext = null)
+public sealed class Runner(Context context)
 {
     public Context Context { get; } = context;
-    public Context? ParentContext { get; } = parentContext;
-    public OptimizationResult? LastOptimization { get; private set; }
 
     public Obj Run()
     {
         return RunCore(null);
     }
 
-    public Obj Run(Node parsedAst)
-    {
-        ArgumentNullException.ThrowIfNull(parsedAst);
-        return RunCore(parsedAst);
-    }
-
     private Obj RunCore(Node? parsedAst)
     {
-        LastOptimization = null;
-
         try
         {
             var ast = parsedAst ?? Parse();
@@ -30,12 +20,11 @@ public sealed class Runner(Context context, Context? parentContext = null)
             var desugarer = new Desugarer();
             var desugaredAst = desugarer.Desugar(ast);
 
-            var optimization = Optimizer.OptimizeWithStats(desugaredAst);
-            LastOptimization = optimization;
+            var optimized = Optimizer.Optimize(desugaredAst);
 
             var evaluator = new Evaluator(Context);
 
-            return evaluator.Eval(optimization.Root);
+            return evaluator.Eval(optimized);
         }
         catch (PropagateFlow pf)
         {
@@ -76,13 +65,6 @@ public sealed class Runner(Context context, Context? parentContext = null)
         return parser.Parse();
     }
 
-    public void Reset()
-    {
-        Context.Defers.Clear();
-        Context.Usings.Clear();
-        Context.Frames.Clear();
-    }
-
     private void FreeUsings()
     {
         while (Context.Usings.Count > 0)
@@ -111,6 +93,4 @@ public sealed class Runner(Context context, Context? parentContext = null)
 
         return new(new(scope, file, []));
     }
-
-    public static Runner Load(Context context, Context parentContext) => new(context, parentContext);
 }

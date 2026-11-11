@@ -64,18 +64,6 @@ public class Scope(Scope? parentScope = null, bool isFunctionScope = false)
         slots.Add(value);
     }
 
-    public void SetLocalOrDeclare(string key, Obj value)
-    {
-        if (symbols.TryGetValue(key, out var idx))
-        {
-            slots[idx] = value;
-            return;
-        }
-
-        symbols[key] = slots.Count;
-        slots.Add(value);
-    }
-
     public void SetLocal(string key, Obj value)
     {
         if (symbols.TryGetValue(key, out var idx))
@@ -95,17 +83,6 @@ public class Scope(Scope? parentScope = null, bool isFunctionScope = false)
 
         return parentScope != null && parentScope.ContainsKey(key);
     }
-
-    public bool ContainsKeyInTop(string key) => symbols.ContainsKey(key);
-
-    public void Declare(string key, Obj? initial = null)
-    {
-        if (symbols.ContainsKey(key))
-            return;
-
-        symbols[key] = slots.Count;
-        slots.Add(initial ?? Obj.None);
-    } 
 
     public bool Remove(string key) => symbols.Remove(key);
 

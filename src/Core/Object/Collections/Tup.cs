@@ -222,8 +222,6 @@ public class Tup : Ref<Obj[]>, IEnumerable<Obj>
 
     private bool OutOfRange(int index) => index < 0 || index >= Count;
 
-    public bool IsSingle() => Count == 1 && (Name.Length == 0 || string.IsNullOrEmpty(Name[0]));
-
     public IEnumerator<Obj> GetEnumerator() => new Enumerator(this);
 
     IEnumerator IEnumerable.GetEnumerator() => new Enumerator(this);

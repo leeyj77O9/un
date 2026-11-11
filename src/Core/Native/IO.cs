@@ -25,14 +25,6 @@ public static class IO
     public static void SetStdin(Object.IO.Stream stream) => _stdin = stream;
     public static Object.IO.Stream GetStdout() => _stdout;
     public static Object.IO.Stream GetStdin() => _stdin;
-    public static void ResetStdout()
-    {
-        try { _stdout = new(Console.OpenStandardOutput()); } catch { _stdout = new(new MemoryStream()); }
-    }
-    public static void ResetStdin()
-    {
-        try { _stdin = new(Console.OpenStandardInput()); } catch { _stdin = new(new MemoryStream()); }
-    }
 
     [Native(
         Name = "write",

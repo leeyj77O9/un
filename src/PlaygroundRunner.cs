@@ -37,7 +37,7 @@ public static class PlaygroundRunner
             var source = new Source($"memory://{fileName}", code);
             var scope = new Scope(Global.GetGlobalScope());
             var context = new Context(scope, source, []);
-            var runner = new Runner(context, null);
+            var runner = new Runner(context);
 
             string? error = null;
             bool timedOut = false;

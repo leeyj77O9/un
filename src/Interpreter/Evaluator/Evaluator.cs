@@ -1210,7 +1210,7 @@ public sealed class Evaluator(Context context)
         }
 
         if (localOnly || context.Scope.IsFunctionScope)
-            context.Scope.SetLocalOrDeclare(name, value);
+            context.Scope.SetLocal(name, value);
         else
             context.Scope.Set(name, value);
     }
@@ -1326,7 +1326,6 @@ public sealed class Evaluator(Context context)
 
     private string GetText(Node node) =>
         (string)(node.Value ?? (node.CachedText ??= context.Source.Code.Substring(node.Start, node.Length)));
-
     private Obj[] Unpack(Obj obj)
     {
         return obj switch

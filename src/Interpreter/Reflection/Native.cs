@@ -1,6 +1,4 @@
-﻿using Un.Object.Type;
-
-namespace Un.Reflection;
+﻿namespace Un.Reflection;
 
 [AttributeUsage(AttributeTargets.Method, Inherited = false)]
 public sealed class NativeAttribute : Attribute

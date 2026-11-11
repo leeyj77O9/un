@@ -140,7 +140,7 @@ public static class MyMod
 ```
 
 - 메서드는 `Obj`를 반환하고, 인자는 `Obj`로 받는다. `self`가 필요하면 `[Self]`를 쓴다.
-- 인자 메타데이터는 `[ArgInfo(Name=..., Essential=..., Optional=..., Positional=..., Keyword=...)]`.
+- 인자 메타데이터는 `[ArgInfo(Name=..., Essential=..., Optional=..., Positional=...)]`.
 - 전역 내장 함수는 `[BuiltinModule("name")]`, 내장 타입은 `[BuiltinType("name")]`,
   네이티브 타입은 `[NativeType("name")]`으로 등록한다.
 - 샌드박스(`PlaygroundRunner.DefaultAllowed`)에서 새 모듈을 허용할지는 별도로 판단한다.

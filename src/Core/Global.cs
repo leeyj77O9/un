@@ -137,13 +137,6 @@ public static class Global
         ImportMap(map, string.Join('.', path), path[^1], moduleAlias, imports);
     }
 
-    public static void Import(string[] path, string? moduleAlias = null, IReadOnlyList<(string Name, string Alias)>? imports = null)
-    {
-        var map = Load(Path.Combine(PATH, Path.Combine(path)));
-
-        ImportMap(map, string.Join('.', path), path[^1], moduleAlias, imports);
-    }
-
     private static void ImportMap(Map map, string moduleName, string moduleObjectName, string? moduleAlias, IReadOnlyList<(string Name, string Alias)>? imports)
     {
         const string Wildcard = "*";
@@ -404,33 +397,34 @@ public static class Global
         return new Err($"class '{name}' not found");
     }
 
-    public static Obj GetClass(TObj type) => GetClass(type.Value);
-
-    public static Obj GetClass(BaseType type)
+    public static Obj GetClass(TObj type)
     {
-        if (type is UnType unType)        
-            return GetClass(unType.Name);        
-        else if (type is CollectionType colType)
-            return GetClass(colType.Kind);
-
-        return new Err($"type '{type}' is not a class");
+        var name = GetClassName(type.Value);
+        return name is null ? new Err($"type '{type.Value}' is not a class") : GetClass(name);
     }
 
-    public static bool TryGetClass(string name, out Obj obj)
+    private static string? GetClassName(BaseType type) => type switch
     {
-        if (classes.Get(name, out obj))
+        UnType unType => unType.Name,
+        CollectionType colType => colType.Kind.Name,
+        _ => null,
+    };
+
+    internal static bool TryGetClass(BaseType type, out Obj obj)
+    {
+        var name = GetClassName(type);
+
+        if (name is not null && TryGetClass(name, out obj))
             return true;
 
         obj = null!;
         return false;
     }
 
-    public static bool TryGetClass(BaseType type, out Obj obj)
+    public static bool TryGetClass(string name, out Obj obj)
     {
-        if (type is UnType unType)
-            return classes.Get(unType.Name, out obj);
-        else if (type is CollectionType colType)
-            return classes.Get(colType.Kind.Name, out obj);
+        if (classes.Get(name, out obj))
+            return true;
 
         obj = null!;
         return false;
@@ -543,8 +537,6 @@ public static class Global
     }
 
     public static Obj GetGlobalVariable(string name) => scope.Get(name, out var value) ? value : new Err($"global variable '{name}' not found");
-
-    public static void SetGlobalVariable(string name, Obj obj) => scope.Set(name, obj);
 
     public static void ClearModuleCache() => _moduleCache.Clear();
 

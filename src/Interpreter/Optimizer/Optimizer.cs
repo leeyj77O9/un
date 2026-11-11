@@ -6,11 +6,6 @@ public static class Optimizer
 
     public static Node Optimize(Node root)
     {
-        return OptimizeWithStats(root).Root;
-    }
-
-    public static OptimizationResult OptimizeWithStats(Node root)
-    {
         ArgumentNullException.ThrowIfNull(root);
 
         for (var passCount = 1; passCount <= MaxPasses; passCount++)
@@ -20,7 +15,7 @@ public static class Optimizer
             root = OptimizePass(root);
 
             if (ReferenceEquals(before, root))
-                return new(root, passCount);
+                return root;
         }
 
         throw new Panic($"optimizer did not reach a fixed point within {MaxPasses} passes");
@@ -252,5 +247,3 @@ public static class Optimizer
         return d;
     }
 }
-
-public readonly record struct OptimizationResult(Node Root, int PassCount);
