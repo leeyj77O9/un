@@ -57,6 +57,7 @@ impl<'a> Compiler<'a> {
     pub fn new(source: &'a Source) -> Self {
         let mut program = Program {
             source_path: source.name().to_string(),
+            source: None,
             names: Vec::new(),
             consts: Vec::new(),
             protos: Vec::new(),

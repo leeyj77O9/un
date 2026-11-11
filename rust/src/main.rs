@@ -41,8 +41,9 @@ fn dispatch() {
         Some("opt") => opt_cmd(&args[1..]),
         Some("dis") => dis(&args[1..]),
         Some("run") => run(&args[1..]),
+        Some("compile") => compile(&args[1..]),
         _ => {
-            eprintln!("usage: unvm <tokens|ast|desugar|opt|dis|run> <file>");
+            eprintln!("usage: unvm <tokens|ast|desugar|opt|dis|run|compile> <file>");
             exit(2);
         }
     }
@@ -249,6 +250,12 @@ fn run(args: &[String]) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     native::init(cwd.to_str().unwrap_or("."));
 
+    // a `.unbc` file carries the compiled program and the source text
+    if args[0].ends_with(".unbc") {
+        run_bytecode(&args[0]);
+        return;
+    }
+
     let source = Rc::new(read_source(&args[0]));
 
     // `Runner.RunCore` — parse, desugar, optimize, compile
@@ -284,6 +291,107 @@ fn run(args: &[String]) {
         }
         Outcome::Propagate(err, start, length) => {
             // `catch (PropagateFlow pf)` in `RunCore`, the header is preserved
+            world::flush_stdout();
+            let e = LangError::new(start, length, err_message(&err)).with_header(err_header(&err));
+            report(&vm, e.display(&source));
+        }
+        Outcome::Return(_, start, length) => {
+            world::flush_stdout();
+            report(&vm, LangError::new(start, length, "'->' outside function").display(&source));
+        }
+        Outcome::Break(start, length) => {
+            world::flush_stdout();
+            report(&vm, LangError::new(start, length, "'break' outside loop").display(&source));
+        }
+        Outcome::Skip(start, length) => {
+            world::flush_stdout();
+            report(&vm, LangError::new(start, length, "'skip' outside loop").display(&source));
+        }
+        Outcome::Panic(o) => {
+            world::flush_stdout();
+            report(&vm, panic_display(&o));
+        }
+    }
+}
+
+/// `unvm compile <file.un>` — writes the compiled program into `<file.unbc>`.
+fn compile(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("usage: unvm compile <file>");
+        exit(2);
+    }
+
+    let source = Rc::new(read_source(&args[0]));
+
+    let mut program = match runner::compile_source(&source) {
+        Ok(program) => program,
+        Err(runner::RunError::Parse(error)) => {
+            print!("{}{}", error.display(&source), nl());
+            exit(1);
+        }
+        Err(runner::RunError::Panic(panic)) => {
+            eprintln!("{}", panic.display());
+            exit(1);
+        }
+    };
+
+    // the source text travels with the program, so the error positions still show the
+    // line of the original file
+    program.source = Some(source.code.iter().collect());
+
+    let path = format!("{}.unbc", args[0]);
+    let bytes = unvm::bytecode::unbc::write(&program);
+
+    match std::fs::write(&path, bytes) {
+        Ok(()) => {
+            println!("wrote {path}");
+        }
+        Err(e) => {
+            eprintln!("cannot write {path}: {e}");
+            exit(1);
+        }
+    }
+}
+
+/// `unvm run <file.unbc>` — reads the compiled program and runs it.
+fn run_bytecode(path: &str) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("cannot read {path}: {e}");
+            exit(1);
+        }
+    };
+
+    let program = match unvm::bytecode::unbc::read(&bytes) {
+        Ok(program) => program,
+        Err(message) => {
+            eprintln!("{path}: {message}");
+            exit(1);
+        }
+    };
+
+    let text = program.source.clone().unwrap_or_default();
+    let source = Rc::new(Source::new(&program.source_path, &text));
+
+    let mut vm = match VM::new(Rc::new(program), source.clone()) {
+        Ok(vm) => vm,
+        Err(message) => {
+            eprintln!("vm: {message}");
+            exit(1);
+        }
+    };
+
+    match vm.run() {
+        Outcome::Value(_) => {
+            world::flush_stdout();
+            exit(0);
+        }
+        Outcome::Error(e) => {
+            world::flush_stdout();
+            report(&vm, e.display(&source));
+        }
+        Outcome::Propagate(err, start, length) => {
             world::flush_stdout();
             let e = LangError::new(start, length, err_message(&err)).with_header(err_header(&err));
             report(&vm, e.display(&source));

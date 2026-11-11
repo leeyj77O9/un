@@ -217,11 +217,13 @@ flags   u16             (source embed 여부, sandbox hints)
 source path: length-prefixed UTF-8
 name table: count u32 + length-prefixed UTF-8 strings
 constant pool: count u32 + entries
+message table: count u32 + length-prefixed UTF-8 strings
 proto table: count u32 + protos
   proto: { name u32, arity u32, flags u16, locals: count+u32s, params: count+entries,
            code: count+instrs(7 bytes each), consts: count+u32s, names: count+u32s,
            protos: count+u32s, call_names: count+(count+u32s), source_map: count+(u32,u32),
-           exc: count+(kind u8, start u32, end u32, handler u32, var_slot u32=NONE) }
+           exc: count+(kind u8, start u32, end u32, handler u32, var_slot u32=NONE),
+           patterns: count+entries, ext_type: u32=NONE }
 ```
 
 - 모든 다바이트 필드는 little-endian. 모든 테이블은 count-prefixed.

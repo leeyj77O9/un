@@ -5,6 +5,7 @@
 //! can serialize this layout without restructuring it.
 
 pub mod instr;
+pub mod unbc;
 
     pub use instr::{
     Instr, Op, PARAM_DEFAULT, PARAM_ESSENTIAL, PARAM_KEYWORD, PARAM_OPTIONAL, PARAM_POSITIONAL,
@@ -158,6 +159,9 @@ impl Proto {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub source_path: String,
+    /// the source text, the `.unbc` container can embed it so the error positions
+    /// still show the line
+    pub source: Option<String>,
     pub names: Vec<String>,
     pub consts: Vec<Constant>,
     pub protos: Vec<Proto>,
