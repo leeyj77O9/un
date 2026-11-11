@@ -377,7 +377,11 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) els
         Err(error) => return error,
     };
 
-    let outcome = match &cell.borrow().body {
+    // the body is cloned out of the cell, because the body runs nested calls and the
+    // borrow must not be alive while they run (`set_property` needs a mutable borrow).
+    let body = cell.borrow().body.clone();
+
+    let outcome = match &body {
         Body::Nodes(n) => {
             let nodes = n.clone();
             Ok(match world::execute(&frame.ctx, &nodes) {
