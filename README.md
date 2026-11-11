@@ -271,8 +271,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
-Positive 집계의 통과·실패 수에 포함하지 않는다. 현재 기준은 Positive 35 파일 /
-1313 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
+Positive 집계의 통과·실패 수에 포함하지 않는다. 현재 기준은 Positive 36 파일 /
+1330 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
 
 `.NET 8` 앱은 `.NET 10` 런타임 위에서 `DOTNET_ROLL_FORWARD=Major`를 설정하면
 실행된다(PowerShell: `$env:DOTNET_ROLL_FORWARD='Major'`).
@@ -518,7 +518,7 @@ work()    # start done
 | `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
-| `time` | `sleep`/`now`/`stopwatch` |
+| `time` | `sleep`(int=ms, float=초)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` |
 | `flow` | `spawn`(pool)과 `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options`와 `_async` 변형, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |

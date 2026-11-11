@@ -273,8 +273,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
-counted in the Positive pass/fail totals. The current baseline is Positive 35
-files / 1313 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
+counted in the Positive pass/fail totals. The current baseline is Positive 36
+files / 1330 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
 Known 1 file.
 
 A `.NET 8` app runs on a `.NET 10` runtime when `DOTNET_ROLL_FORWARD=Major` is
@@ -526,7 +526,7 @@ work()    # start done
 | `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
-| `time` | `sleep`/`now`/`stopwatch` |
+| `time` | `sleep` (int=ms, float=s)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` |
 | `flow` | `spawn` (pool) and `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options` and their `_async` variants, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
