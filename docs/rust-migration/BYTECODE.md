@@ -115,12 +115,12 @@ C#의 dunder dispatch + super fallback + fallback message를 그대로 재현한
 | opcode | operand | stack | 설명 |
 |---|---|---|---|
 | `MAKE_FUNC` | proto idx | +1 | 현재 `Context`를 캡처해 `LClosure` 생성. flag: `BIND`(scope에 `name` 바인딩), `EXT`(extension → `Global.TrySetOriginalClass`), `PROP` |
-| `ARG_BEGIN` | — | | arg accumulator 초기화 |
-| `ARG_POS` | — | -1 | value pop, positional push |
-| `ARG_KW` | name idx | -1 | value pop, keyword push |
-| `ARG_SPREAD` | — | -1 | `Unpack`, `Err`면 throw, positional push |
-| `ARG_KWSPREAD` | — | -1 | `Dict` 아니면 `** argument must be dict`, pair push |
-| `CALL` | n | -(n+1), +1 | callable pop, accumulator n개 → `Tup(values,names)` → `PushFrame(FrameInfo(call node 원문))` → `Call` → pop frame → `Unwrap` |
+| `ARG_BEGIN` | — | 0 | arg accumulator(name list) 초기화. call/tuple/list/dict site마다 emit |
+| `ARG_POS` | — | 0 | value는 stack에 유지, accumulator에 name `""` record |
+| `ARG_KW` | name idx | 0 | value는 stack에 유지, accumulator에 keyword name record |
+| `ARG_SPREAD` | — | 0 | `Unpack`(Err면 throw)해서 name list에 positional append, value 유지 |
+| `ARG_KWSPREAD` | — | -1 | `Dict` 아니면 `** argument must be dict`(arg node 위치) throw. dict pop, pair마다 value push + name append |
+| `CALL` | n | -n, +1 | callable pop, accumulator `n`개 → `Args(values, names)` → `PushFrame(FrameInfo(call node 원문))` → `Call` → pop frame → `Unwrap`. operand는 **static arg 개수**, runtime은 accumulator 길이를 쓴다(spread는 개수가 동적이라 static count가 runtime count와 다를 수 있다) |
 | `UNWRAP` | — | | top이 `Err`면 `Error(msg, node)` throw |
 | `PUSH_TRY_PROP` | entry idx | | `?` 연산용: 실행 중 `Error`/`Err` → `Frames.Count>0`이면 `PropagateFlow`, 최상위면 `Error` |
 
@@ -253,7 +253,7 @@ block의 값**이므로(`EvalBlock`의 `result`), 마지막 문장에는 `POP`�
 
 ## 16. 확장을 위한 자리
 
-- `flags`의 상위 비트, opcode table의 예약 영역(`0x61..0x7F`), `.unbc` footer 섹션은
+- `flags`의 상위 비트, opcode table의 예약 영역(`0x62..0x7F`), `.unbc` footer 섹션은
   추가 필드(dis, profile, coverage, gc metadata)용 예약으로 둔다.
 - serialization을 추가할 때 **proto layout에 필드를 append**하고 version을 bump한다.
   재구축이 필요 없는 이유는 모든 테이블이 count-prefixed이고 instruction이 fixed-size이기 때문이다.
@@ -269,12 +269,21 @@ for (int i = 0; i < result.Length; i++)
     result[i] = stack.Pop();
 ```
 
-`result[0]`이 stack 가장 깊은 값(마지막 push)이므로, tuple pattern의 binder는
-`UNPACK` 이후 `pattern[Count-1]`, `pattern[Count-2]`, … `pattern[0]` **역순**으로
-emit된다. `Stack`이 LIFO이기 때문이다.
+`result[0]`이 stack 가장 깊은 값(마지막 push)이므로, VM은 `UNPACK`에서 items를
+`values[Count-1] … values[0]` 순로 push해서 `values[0]`이 top이 된다. 그래서 tuple
+pattern의 binder는 `pattern[0]`, `pattern[1]`, … `pattern[Count-1]` **순서대로**
+emit된다(`BindPattern`의 `for (int i = 0; i < items.Count; i++)`과 같은 순서).
 
 `SET_SLICE`는 `value`, `target`, bounds를 pop하고 **원래 `value`를 push**한다
 (stack effect `-(1+k)`). `BindPattern`의 slice branch는 마지막에
 `BindPattern(pattern.Children[i], result[i])`로 `value`를 재사용하므로 value가
 stack에 남아야 한다.
+
+## 18. `TO_STR` (`0x61`)
+
+`EvalFString`(`Evaluator.cs:1087`)는 expression part를 `Eval(child).ToStr()`로 변환하고
+결과가 `Str`가 아니면 `f-string expression must be a string`을 **FString node**에서
+throw한다. `ToStr()`는 member dispatch(`ToStr`는 `Str`를 반환하지 않는 타입이 있다)이므로
+변환은 opcode로 표현하고, 타입 check는 `FSTRING`이 수행한다. `TO_STR`의 stack effect는 0이고
+span은 FString node다. `0x61`은 예약 영역의 두 번째 slot(`0x60`은 `UNPACK`이 사용)이다.
 

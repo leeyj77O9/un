@@ -33,7 +33,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 7a Iterator | **완료** | `47a600e` | `cargo test --release` 63/63 green, warning 0. `Range`/`Counter`/`Repeat`/`Reverse`/`Iters` + `List`/`Tup`/`Dict`/`Str`의 `Iter` source. ground truth는 probe `probes7/p9.un`(exit 0)과 `src/Core/Object/Iters/*.cs` |
 | 6 Scope/Context | **완료** | `6f92fe4` | `cargo test --release` green. slot table에서 `Set`은 declaring scope에 write(`for` body의 `sum += v` 축적), `SetLocal`/`SetLocalOrDeclare`는 local 전용, `Declare`는 덮지 않음, `Remove`는 name만 제거(slot index 유지), missing `Get` → `variable '{key}' not found`, `PopFrame` empty → `panic : stack is empty`, `PrintError` trace는 `Frames.Skip(1).Reverse()` + 10-line cap + `truncated [{Count-11}+]` |
 | 7c 함수 계열 | **완료** | `f966a1f` | `cargo test --release` 108/108 green, warning 0. `Bind`의 4가지 메시지, positional fast path, `*`/`**` swallow, spread unpack의 name 상속, recursion limit(1000) 증감 순서, defer/using LIFO drain, `Property` backing key `"$"+name`, `FieldRef`, `fn` display/repr, clone이 closure/Args cell 공유. ground truth는 `src/Core/Object/Function/{Fn,LFn,NFn,Arg}.cs`와 `Base/Property.cs` |
-| 8~17 | 미착수 | — | — |
+| 8a bytecode contract + world/global/native | **완료** | `3f053f0`, `e97bc8c`, `a064047`, `f88c580` | 124 tests green, warning 0. opcode/Proto/Program/validate, `World`/`Global`/native `io` + builtins 14 |
+| 8b compiler + stack VM + `run`/`dis` | **완료** | `633ae20`, `248338c`, `000870c`, `600d8cb`, `508b51d` | `cargo test --release` 167/167, build 0 warnings. differential `cmp3.ps1` 29 probes: PASS 27 / DIFF 2(p11,p28 = .NET stack trace only, D-034). reference baseline 불변 |
+| 9~17 | 미착수 | — | — |
 
 ## Phase 2 정합 데이터
 
@@ -424,9 +426,21 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
   `len([1,2,3])` → `3`, `repr("a")` → `str`, `chr(65)` → `A`,
   `throw("boom")` → header `error`).
 
+## Phase 8b 정합 데이터 (compiler + stack VM)
+
+- `rust/src/compiler.rs`(823줄): AST→Proto, name/const/msg proto-local slot, `code(node)` 값 규약 + statement `UNWRAP`/`POP`/`raises`(D-039), short-circuit/`??`/ternary 인코딩(D-041), optional-chain guard를 `children[0]` 직후 배치(D-038, Index/Slice/Call은 `IsOptionalChain(children[0])`만), `ARG_BEGIN`+ARG accumulator+`FLAG_ARG_CHECK`(D-042), tuple destructuring `UNPACK` forward bind, `?` = `PUSH_TRY_PROP`+`PROPAGATE` exc entry·handler가 try entry 먼저 pop(D-040), `Use` runtime native/file dispatch(D-045), `TO_STR`+`FSTRING`(D-044), `Op::Unpack=0x60`/`Op::ToStr=0x61`.
+- `rust/src/vm.rs`(823줄): stack VM run loop, 매 exec 후 top-of-stack `Payload::Panic` 검사로 host exception abort(D-034), `LOAD_CONST` world interning, `TO_BOOL`/`UNWRAP`, `JMP_IF`(TRUE/NONE/POP/STRICT), `UNPACK` reverse push, `SET_ITEM`/`SET_SLICE`(step!=1 → `slice assignment with step != 1 not supported`), `FSTRING` parts→`to_str`, `CALL`/arg accumulator/`FLAG_ARG_CHECK`, `USE` native/file, `PROPAGATE` top-level rethrow(header/span 보존), `Program::name/constant` proto-local resolve.
+- `rust/src/runtime/world.rs`: `log` + `log_text()`/`log_clear()`, `flush_stdout`가 drain 버퍼를 log에 append(테스트가 run 전체 stdout 읽기).
+- `rust/src/runtime/global.rs`: `import_file` source-dir→`PATH` resolve, missing → `module '{PATH-joined}' not found` Panic, existing file module → `file module '{full}' is not loaded (phase 11)`.
+- `rust/src/runtime/collections.rs`: `list_slice` step!=1 → capacity-0 `[]`, bounds check Panic 유지(D-035). `rust/src/runtime/obj.rs`: primitive `Init` dispatch(D-037).
+- CLI: `unvm run`(exit 1 on error/panic/propagate, trace 10줄 cap), `unvm dis`(names/consts/protos/instructions+running stack depth+exc). parse error stdout+CRLF(D-033).
+- Differential: `C:\Users\User\AppData\Local\Temp\opencode\probes11\cmp3.ps1`(29 probes p01..p29) → **PASS 27 / DIFF 2**. p11(`7 % 0`) / p28(`l[4:0:-1]`)는 메시지·앞 줄·exit 1 정합, `.NET` stack trace만 미재현(D-034).
+- Tests: `cargo test --release` **167 passed / 0 failed** (`compiler::tests` 17, `vm::tests` 25), `cargo build --release` 0 errors / 0 warnings.
+- Reference baseline 불변(2026-11-11): `scripts/test.ps1` → Positive 33/1265/0/0, Negative 42 matched, Known 1(`test/regression/defects.un`, 6 assertions), exit 0.
+
 ### 남은 stub
 
-- CLI `run`은 아직 stub이고 `rust/src/compiler/`, `rust/src/vm/`가 없다.
+- Phase 8b의 `compiler`/`vm`/`run`/`dis`는 표현식·문장(Phase 8 scope: literals/Identifier/Assign/Binary/Unary incl. `?`/Ternary/Call/Property/Index/Slice/Tuple/List/Dict/FString/Use/Block)만 지원한다. 함수/람다/if/for/while/match/try/class/enum/defer/go/using/return/break/skip/tagged/set/spread/kwspread는 `UNSUPPORTED`다.
 - `stream` payload(`io.open`, `io.lines`, file 함수들)는 Phase 14.
   `stream/lock/pool/http_client/web_socket/random/stopwatch` payload는 미착수.
   `template`는 `Payload` variant가 없다.
@@ -436,42 +450,34 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
 
 ## 현재 작업
 
-- Phase 7c 함수 계열 완료(`f966a1f`). `rust/src/runtime/obj.rs`의 `invoke`, `call`,
-  `is_bound_fn`, `is_property`, `property_get`, `property_set`은 `Payload::Func`/
-  `Property`/`FieldRef`에 연결돼 실 구현됐다. 남는 stub은 `Future` payload뿐이다
-  (Phase 16 scheduler 작업).
-- Phase 8a(bytecode contract + world/global/native) 완료(`3f053f0`/`e97bc8c`/`a064047`).
-  Phase 6 `Scope`/`Context` 완료(`6f92fe4`). Phase 8 VM core는 미착수(`rust/src/vm/` 없음)
-  이고 `unvm run`은 stub다.
-- `Iters` self-methods `map`/`filter`/`any`/`all`/`sum`/`first`/`last`와 `map`/`filter`
-  stage는 `Fn` payload가 생겼으니 VM member dispatch가 준비되면 구현한다.
-- Phase 11/14 scope의 미탐사 source: `Flow/{Lock,Pool}.cs`,
-  `IO/{Stream,HttpClient,WebSocket}.cs`, `Util/{Random,Stopwatch}.cs`,
-  `Base/Template.cs`, `Type/{BaseType,CollectionType}.cs`, `Evaluator.cs`의
-  Try/Match/Class/Enum/Assign, `Runner.cs`.
-- reference runner 기준선 재실측(2026-11-11): Positive 33 files / 1265 passed /
-  0 failed / 0 crashed, Negative 42 matched, Known 1 file, overall exit 0.
-- `read`/`grep` 도구가 존재하지 않는 파일의 내용을 지어낼 때가 있다 → ground truth는
-  shell(`Get-Content`, `Select-String`)로 확인하고, 한국어 문서 텍스트는 `read`로 읽는다
-  (콘솔은 non-ASCII를 `?`로 렌더링). `cargo ... 2>&1`는 성공해도 exit 1을 준다.
+- Phase 8b(compiler + stack VM + CLI `run`/`dis`) 완료(`633ae20`~`508b51d` + docs 커밋).
+  `rust/src/compiler.rs`(823줄), `rust/src/vm.rs`(823줄), `compiler::tests` 17, `vm::tests` 25.
+  `cargo test --release` **167 passed / 0 failed**, `cargo build --release` 0 errors / 0 warnings.
+  differential `cmp3.ps1`(`C:\Users\User\AppData\Local\Temp\opencode\probes11\`, 29 probes p01..p29):
+  **PASS 27 / DIFF 2** — p11(`7 % 0`)과 p28(`l[4:0:-1]`)만 `.NET` stack trace 문자열 차이(D-034),
+  메시지/앞 줄/exit code 정합. reference baseline(`scripts/test.ps1`) 불변: Positive 33/1265/0/0,
+  Negative 42 matched, Known 1 file, exit 0.
+- 남는 stub: `fn_call`/`obj::call`은 positional `&[Obj]`만 받고 `Flow`/compiled-proto executor hook 없음(Phase 10),
+  `Future` payload 미구현(Phase 16), `stream`/`lock`/`pool`/`http_client`/`web_socket`/`random`/`stopwatch` payload 미착수,
+  `template` variant 없음, builtin `[Native]` member 테이블 비어 있음(ground truth 개별 probe 필요).
+- `Iters` self-methods `map`/`filter`/`any`/`all`/`sum`/`first`/`last`와 `iter` native module(21 함수)는 VM member dispatch 후.
+- file-module import(`Global.Import`/`Runner.Load`, `mod.un`/디렉터리 전체 로드)는 Phase 11. `test/fixtures/*` 미통과 예상.
+- Phase 11/14 scope 미탐사: `Flow/{Lock,Pool}.cs`, `IO/{Stream,HttpClient,WebSocket}.cs`,
+  `Util/{Random,Stopwatch}.cs`, `Base/Template.cs`, `Type/{BaseType,CollectionType}.cs`,
+  `Evaluator.cs`의 Function/Lambda/Match/For/While/If/Try/Defer/Class/Enum/Using/Go/Wait/Annotations, `Runner.cs`.
+- `read`/`grep` 도구가 존재하지 않는 파일 내용을 지어낼 때가 있다 → ground truth는 shell로 확인.
+  `cargo ... 2>&1`는 성공해도 PowerShell에서 exit 1을 줄 수 있다.
 
 ## 다음 단계
 
-1. Phase 8 VM core: `vm/ctx.rs`, `vm/tools.rs`, `vm/vm.rs` + `pub mod vm;` → 표현식/문장
-   실행, `unvm run`이 `io.write` 출력, `test/unit/runtime/` 스모크. `EvalArguments`의
-   `Err`를 `header: err.Header`로 재포장(`Error:`), `Unwrap`는 lowercase `error`,
-   position block, member-table lookup(멤버는 static materialize), `FieldRef` unwrap,
-   frame trace를 함께 구현한다.
-2. differential harness(`scripts/rust_test.ps1` / `scripts/diff_test.ps1`) 도입 — C#
-   기준선과 stdout/exit/stderr 비교. AST shape 정합은 harness로 증명한다(reference에는
-   AST dump가 없고 C# 코드를 수정할 수 없다).
-3. member error case probe 개별 실측(각 case는 abort한다): `str`의 `to_upper`/`split`/
-   `replace`, `dict`의 `get`/`keys`/`values`, `list`의 `pop`/`sort`/`order`/
-   `binary_search`, `set`의 `union`/`intersect`/`difference`, `str`의 `copy`.
-4. `iter` native module(21 함수) + `Iters` self-methods(`map`/`filter`는 `Fn` 이후) —
-   list 반환 semantics(`take`/`skip`/`chain`/`flatten`/`map`/`filter`/`sorted`),
-   `enumerate`의 named pair, `array(value, dims)`.
-5. Phase 14 네이티브 바인딩 계층(`NATIVE_INVENTORY.md` 기반).
+1. Phase 8b working tree 정리: PROGRESS/DECISIONS/BYTECODE 반영 후 의미 있는 단위로 커밋(`src/main.un` 제외).
+2. member ground truth 개별 probe(각 case abort): `str` `to_upper`/`split`/`replace`/`copy`,
+   `dict` `get`/`keys`/`values`, `list` `pop`/`sort`/`order`/`binary_search`,
+   `set` `union`/`intersect`/`difference`. builtin `[Native]` member 테이블 채우기 범위 확정.
+3. differential harness를 `scripts/`로 승격(`cmp3.ps1`/probe set 정리)해 stdout/exit/stderr 비교를 재현 가능하게 유지.
+4. Phase 9 control flow: `if`/`while`/`for`/`break`/`skip`, `Payload::Control` + `NEW_SCOPE`/`POP_SCOPE`/`PREP_ITER`/`FOR_NEXT`, group/jump patching.
+5. Phase 10 functions/lambda/call: `fn_call`/`obj::call`을 `Args`/`Flow`로 refactor, compiled-proto executor hook, `Break`/`Skip`가 `LFn.Call`을 탈출.
+6. 이후 Phase 11(file-module import, `test/fixtures/*`), 12 try/catch, 13 defer/using, 14 class/enum/member dispatch, 16 go/wait, 17 `.unbc`.
 
 ## 네이티브 인벤토리 (완료)
 

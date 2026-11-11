@@ -297,6 +297,134 @@ bool이 아니면 `error: {a} < {b} is not a boolean`이다.
   `Args` list, `ReturnType`, `Property` link, body를 cell에 넣는다. `LFn`은 AST body,
   `NFn`은 host closure. `Clone()`은 `Args`를 **같은 list object로 assign**하므로
   `Args` cell과 closure cell이 공유되고, 따라가서 **recursion limit이 공유**된다.
+
+## D-033 | display newline은 CRLF, `io.write`는 LF, parse error는 stdout | Accepted
+
+reference의 `Error.ToString()`/`Panic.ToString()`는 CRLF로 저장된 `.cs` 파일의 raw string
+literal이라 **CRLF separator**이고, `Console.WriteLine`은 `Environment.NewLine`(CRLF)를
+추가한다. display 문자열 끝에는 newline이 없다. `io.write`는 literal `"\n"` 문자열을
+stream에 써서 **LF**로 끝난다. 두 newline은 바꿀 수 없고, `error::nl()`(`cfg!(windows)`)가
+표시 라인 전용이다. parse error는 `Run()` 안에서 catch돼 `Console.WriteLine(e)`로 **stdout**에
+나간다(stderr가 아니다). exit code는 exception이 throw될 때만 1, usage error는 2.
+
+## D-034 | uncaught host exception은 `Payload::Panic` 값이고 .NET stack trace는 재현하지 못한다 | Accepted
+
+reference는 `Int.Mod` by 0(`System.DivideByZeroException: Attempted to divide by zero.`),
+`List.Slice`의 `this[i]` bounds(`System.IndexOutOfRangeException: Index was outside the
+bounds of the array.`)처럼 host exception을 **throw**한다. VM은 unwinding이 없으므로 같은
+객체가 stack에 올라오면 run loop가 매 exec 직후 top-of-stack을 검사해 abort하고
+`{Name}: {Message}` + exit 1을 stdout에 prints. reference는 같은 출력 뒤 `.NET` stack
+trace(`   at Un.Object.Primitive.Int.Mod(Obj other) in C:\dev\un\src\...\Int.cs:line 87`)를
+追加한다. Rust에 대응하는 frame 정보가 없으므로 stack trace는 **documented divergence**다
+(실측: `p11.un`, `p28.un`의 앞 줄과 exit code는 정합, trace 문자열만 diff).
+
+## D-035 | `List.Slice`의 step != 1은 capacity-0 list를 만들고 bounds check는 남는다 | Accepted
+
+`List.Slice`는 `st == 1`일 때만 `Array.Copy`하고, 그 외에는 `newList = new List()`
+(용량 0)에 `this[i]`를 `Add`한다. `List.Add`는 용량이 차면 `new Err("...")`를 **반환**하고
+루프가 그 값을 버린다. 그래서 실측 결과는 `[]`다(`[1,2,3,4][3:0:-2]` → `[]`).
+`this[i]`의 index check는 `IndexOutOfRangeException`를 throw하므로, `l[4:0:-1]`은 abort한다.
+Rust는 같은 순서로 `list_slice`를 구현하고 check는 Panic payload로 낸다.
+
+## D-036 | slice assignment는 step 1만 지원한다 | Accepted
+
+`BindPattern`의 Slice branch는 step이 1이 아니면
+`slice assignment with step != 1 not supported`를 낸다. `SET_SLICE`는 bounds + target +
+value를 pop하고 value를 pattern result로 stack에 **다시 push**한다(net `-(k+1)`).
+
+## D-037 | primitive 생성자는 `Init` dispatch table을 그대로 재현한다 | Accepted
+
+`int()`/`float()`/`bool()`/`str()`/`date()`는 `TObj.Call` → `Global.GetClass(this).Clone().Init(args)`
+이고, `Init`는 arity별 규칙을 가진다: `int` 0→0, 1→`ToInt()`, `(str,int)`→base conversion
+(base 2..36, `0b/0x/0o` prefix, 실패 시 `int: Input string was not in a correct format.`),
+그 외 `int: expected (str, int) for base conversion`, 그 외 타입은
+`cannot convert to 'int'`. `float` 0→0.0, 1→`ToFloat()`, 그 외
+`cannot convert to 'float'`. `bool` 0→false, 1→`ToBool()`, extra arg는 무시.
+`str` 0→"", 1→`ToStr()`, `(str,int)`→`repeat(min(i, int.MaxValue))`(negative → empty),
+그 외 `too many arguments`. `date` 0→`DateTime.Now`(**time dependent, 재현 불가**),
+1 Str→`invalid date str`, 그 외 `cannot convert '{type}' to 'date'`.
+
+## D-038 | optional chain guard는 children[0] 평가 직후에 있고 index/slice는 chain이 아니다 | Accepted
+
+`EvalCall`/`EvalSlice`는 `children[0]`을 평가한 뒤 `none`이면 **나머지를 평가하지 않고**
+`none`을 반환한다. 그래서 guard는 `code(children[0])` 바로 직후, argument list / bounds
+expr 앞에 놓인다. chain 판정은 reference 규칙 그대로: `Property`는
+`Operator == QuestionDot || IsOptionalChain(children[0])`, `Index`/`Slice`/`Call`은
+`IsOptionalChain(children[0])`만 본다. 따라서 `m?[0]`은 chain이 아니고 `none`에
+`unsupported operand type(s) for []: 'none'`가 난다. `JMP_IF(FLAG_JUMP_NONE)`은
+`FLAG_JUMP_TRUE`과 짝일 때만 jump를 계산하므로 guard는 항상 두 flag를 함께 쓴다.
+
+## D-039 | expression encoding은 reference의 `Unwrap` 지점을 기준으로 한다 | Accepted
+
+`code(node)`는 node의 값을 stack에 남긴다. `UNWRAP`는 `Evaluator.cs`가
+`Unwrap(..., node)`를 호출하는 지점(Unary, Binary(arith), Property, Index, Slice, `CALL`
+handler 안)에서만 발생한다. Identifier/literal/FString/Tuple/List/Dict/Assign/Ternary/
+and/or/`??`/`Use`는 `UNWRAP`를 발생하지 않는다. statement 규칙은 모든 block child(마지막
+제외)에 `code(child); UNWRAP(child span); POP`, 마지막 child는 값이 block result로 남는다.
+control transfer(`UNSUPPORTED`/`RETURN` 등)로 끝나는 child는 `UNWRAP`/`POP`를 생략한다 —
+`raises` flag. `io.write`의 callee property는 `EvalProperty`가 자기 node에서 unwrap하므로
+`UNWRAP` 개수는 statement 수 + chain 표현식 수다.
+
+## D-040 | `?`는 PUSH_TRY_PROP + PROPAGATE + exc entry이고 handler는 try entry를 먼저 pop한다 | Accepted
+
+`code_unary(TokenType::Question)`은 `PUSH_TRY_PROP`, `code(child)`, `PROPAGATE`를 발생하고
+`ExcEntry{kind: Propagate, start: push_ip, end: ip, handler: PROPAGATE ip, var_slot: None}`
+를 append한 뒤 `push_ip`의 operand에 index를 patch한다. `PROPAGATE`는 자기 try entry를
+**먼저** pop한다(`tries.last().handler == ip`). handler ip가 region 안에 있으므로
+`handle()`이 region을 다시 매칭하면(`start <= ip < end`) 무한 루프가 난다(실측 TIMEOUT).
+`frames > 0`이면 `Propagate`, top level이면 `pending`(catch된 `LangError`)을 재throw해
+span/header를 원본 그대로 유지한다(`throw;`와 같다).
+
+## D-041 | short-circuit 인코딩은 reference의 truth test 위치와 같다 | Accepted
+
+- `and` = `code(L); DUP; TO_BOOL(STRICT); JMP_IF(TRUE|POP)→T; JMP→E; T: POP; code(R); E:`
+- `or` = 같은 형태에서 `JMP_IF(POP)` (`FLAG_JUMP_TRUE` 없음 → truthy left가 결과)
+- `??` = `code(L); JMP_IF(NONE|TRUE)→R; JMP→E; R: POP; code(R); E:`
+- ternary = `code(cond); TO_BOOL(no STRICT); JMP_IF(TRUE|POP)→A; code(else); JMP→B; A:
+  code(then); B:` — 여분 POP 없음. `EvalTernary`는 cond를 unwrap하지 않으므로 `Err` cond는
+  falsy로 **else branch**로 간다(단, cond 자체가 `Err`면 그 node에서 abort).
+- `while`은 `JMP_IF`에 `FLAG_STRICT`를 쓴다.
+
+`Unwrap` on non-`Bool`, non-`Err`는 falsy다. `none.ToBool()`는 `Err`라 `none and 3`은
+`unsupported operand type(s) for bool(): 'none'`로 abort한다(실측 정합).
+
+## D-042 | ARG accumulator는 값을 stack에 남기고 CALL은 runtime count를 쓴다 | Accepted
+
+`ARG_POS`/`ARG_KW`/`ARG_SPREAD`/`ARG_BEGIN`의 stack effect는 0(값을 push하지 않고
+accumulator에 이름만 기록). `ARG_KW_SPREAD`는 `-1`. `CALL`은 operand가 static count,
+runtime count는 accumulator frame length(실측: spread가 count를 늘린다).
+`FLAG_ARG_CHECK`가 붙은 `ARG_POS`(call site)는 peek한 값이 `Err`면
+`Error(msg, arg node)`를 header 보존으로 throw한다. container literal의 `ARG_POS`는 flag를
+쓰지 않는다. `ARG_KW`/`Pair`는 검사하지 않는다. tuple literal의 이름은 names table에서
+**contiguous**해야 한다(`push_names_contiguous`).
+
+## D-043 | name/constant operand는 proto-local slot이다 | Accepted
+
+`name_index`/`const_index`/`push_name_raw`는 module table index가 아니라 **proto-local slot**
+을 반환하고, `Program::name(proto, slot)` / `Program::constant(proto, slot)`가
+`proto.names[slot]` / `proto.consts[slot]`로 shared table을 resolve한다. `check_indices`는
+`Op::Use` operand를 `proto.names` 경계로 검사한다. `BUILD_TUPLE_NAMED`는 names-table index를
+flags에 넣고, `CALL`은 `call_names` index를 flags에, arg count를 operand에 넣는다.
+
+## D-044 | `TO_STR`는 FSTRING opcode의 type check와 같은 span을 쓴다 | Accepted
+
+`EvalFString`는 expression part마다 `Eval(child).ToStr()`를 호출하고 `Str`를 요구한다:
+`f-string expression must be a string`는 **FString node** 위치에서 난다. 그래서 compiler는
+expression part 직후에 `TO_STR`(span = FString node)를 발생하고, `FSTRING`(operand = part
+수)은 plain stack 값을 소비한다(accumulator frame을 pop하지 않는다). literal part는
+`Str` constant. `list` part는 display text가 된다(`` `a{[1, 2]}c` `` → `a[1, 2]c`).
+
+## D-045 | `use`의 native/file dispatch는 VM run time에 결정된다 | Accepted
+
+compiler는 file module path를 항상 compile하고 `Op::Use`가 run time에
+`world::is_native(last)`로 dispatch한다(native → `global::include`, 그 외 →
+`global::import_file(parts, ctx.source.path, alias, imports)`).
+`import_file`은 `resolve_module`(source directory 기준 `<p>.un` 파일 || `p` 디렉터리) 후
+`Path.Combine(PATH, path)`를 try하고, 없으면
+`module '{Path::new(world::path()).join(joined)}' not found` Panic를 낸다(reference는
+`Global.Load`의 `Path.Combine(PATH, path)` 문자열). module이 **존재하면** Phase 11까지
+`file module '{full}' is not loaded (phase 11)` Panic가 documented divergence다.
+`builtin`은 `[BuiltinModule]`라 native registry에 없고 `use builtin`은 file-not-found로 간다.
 - `Bind`는 `self`를 local로, `Property`가 있으면 `field`(= `new FieldRef(Self, Property)`)을
   local로 먼저 넣고, 파라미터 중 `self`/`super` 이름은 arg 바인딩에서 **건너뛴다**.
   `TryBindSimplePositional`은 args에 keyword name이 없고 `Spreads`가 없으며 파라미터에
