@@ -8,10 +8,10 @@ pub mod instr;
 
 pub use instr::{
     Instr, Op, PARAM_DEFAULT, PARAM_ESSENTIAL, PARAM_KEYWORD, PARAM_OPTIONAL, PARAM_POSITIONAL,
-    FLAG_CLASS_BASES, FLAG_CLASS_PARAMS, FLAG_FUNC_BIND, FLAG_FUNC_EXT, FLAG_FUNC_PROP,
-    FLAG_JUMP_NONE, FLAG_JUMP_POP, FLAG_JUMP_TRUE, FLAG_LOCAL_ONLY, FLAG_OPT_CHAIN,
-    FLAG_SCOPE_FUNCTION, FLAG_SCOPE_LOOP, FLAG_SLICE_END, FLAG_SLICE_START, FLAG_SLICE_STEP,
-    FLAG_STRICT, PROTO_FUNCTION, PROTO_HAS_SELF, PROTO_HAS_SUPER,
+    FLAG_ARG_CHECK, FLAG_CLASS_BASES, FLAG_CLASS_PARAMS, FLAG_FUNC_BIND, FLAG_FUNC_EXT,
+    FLAG_FUNC_PROP, FLAG_JUMP_NONE, FLAG_JUMP_POP, FLAG_JUMP_TRUE, FLAG_LOCAL_ONLY,
+    FLAG_OPT_CHAIN, FLAG_SCOPE_FUNCTION, FLAG_SCOPE_LOOP, FLAG_SLICE_END, FLAG_SLICE_START,
+    FLAG_SLICE_STEP, FLAG_STRICT, PROTO_FUNCTION, PROTO_HAS_SELF, PROTO_HAS_SUPER,
 };
 
 /// `.unbc` magic (BYTECODE.md §13).
@@ -304,6 +304,8 @@ fn check_indices(
             index_range(label, "upvalue depth", depth, usize::MAX)
         }
         Op::Call => index_range(label, "call names", flags as usize, proto.call_names.len()),
+        // the `use` operand is the path name index, the alias and pairs follow it
+        Op::Use => index_range(label, "name", operand, proto.names.len()),
         Op::PushTry | Op::PushTryProp => index_range(label, "exception entry", operand, proto.exc.len()),
         Op::MakeFunc => index_range(label, "proto", operand, proto.protos.len()),
         Op::Unsupported => index_range(label, "message", operand, program.msgs.len()),
@@ -380,16 +382,17 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         | Op::In
         | Op::Xor
         | Op::GetItem
-        | Op::ArgPos
-        | Op::ArgKw
-        | Op::ArgSpread
         | Op::ArgKwSpread => -1,
+        // the ARG accumulators keep the value on the stack and only record the name,
+        // so they do not change the depth. `ARG_KW_SPREAD` pops the dict it spreads.
+        Op::ArgPos | Op::ArgKw | Op::ArgSpread => 0,
         Op::Not
         | Op::Pos
         | Op::Neg
         | Op::Bnot
         | Op::Spread
         | Op::ToBool
+        | Op::ToStr
         | Op::Jmp
         | Op::PushTryProp
         | Op::Propagate
@@ -414,8 +417,13 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         Op::SetItem => -2,
         Op::MakeProperty => -3,
         Op::RegisterClass => -1,
-        Op::Slice => -slice_bounds(flags),
-        Op::SetSlice => -(1 + slice_bounds(flags)),
+        // `SLICE` pops `k` bounds and the target, pushes the slice: net `-k`.
+        // `SET_SLICE` pops the bounds, the target and the value, and pushes the value
+        // back for the pattern result, so the net is `-(k + 1)`.
+        // `slice_bounds(flags)` counts the target plus the bounds, so the target is
+        // subtracted separately here.
+        Op::Slice => -slice_bounds(flags) + 1,
+        Op::SetSlice => -slice_bounds(flags),
         Op::JmpIf => {
             if flags & FLAG_JUMP_POP != 0 {
                 -1

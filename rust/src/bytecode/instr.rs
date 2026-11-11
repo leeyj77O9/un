@@ -140,6 +140,12 @@ pub enum Op {
     /// deepest, so the binder runs the targets in reverse.
     /// `Evaluator.Unpack` (`Evaluator.cs:1309`) is the reference this opcode implements.
     Unpack = 0x60,
+
+    /// `ToStr()` conversion. `EvalFString` (`Evaluator.cs:1087`) converts every expression
+    /// part with `Eval(child).ToStr()` and requires the result to be a `Str`, so the
+    /// conversion is an opcode and the check is part of `FSTRING`.
+    /// `0x61` is the second slot of the §16 extension area.
+    ToStr = 0x61,
 }
 
 impl Op {
@@ -242,6 +248,7 @@ impl Op {
             0x5E => Some(Op::Use),
             0x5F => Some(Op::Unsupported),
             0x60 => Some(Op::Unpack),
+            0x61 => Some(Op::ToStr),
             _ => None,
         }
     }
@@ -260,6 +267,11 @@ pub const FLAG_OPT_CHAIN: u16 = 1 << 4;
 
 /// `STORE_NAME` with `localOnly: true` — the `for`/`match`/`catch` loop variable form
 pub const FLAG_LOCAL_ONLY: u16 = 1 << 5;
+
+/// `ARG_POS` inside a call site: `EvalArguments` checks `value is Err` and rethrows with
+/// the header preserved. container literals (`EvalList` / `EvalDict` / `EvalTuple`) do
+/// not check, so they emit `ARG_POS` without this flag.
+pub const FLAG_ARG_CHECK: u16 = 1 << 6;
 
 /// slice bound presence, bit0 = start, bit1 = end, bit2 = step
 pub const FLAG_SLICE_START: u16 = 1 << 0;
@@ -369,16 +381,18 @@ mod tests {
         assert_eq!(Op::Use as u8, 0x5E);
         assert_eq!(Op::Unsupported as u8, 0x5F);
         assert_eq!(Op::Unpack as u8, 0x60);
+        assert_eq!(Op::ToStr as u8, 0x61);
     }
 
     #[test]
     fn reserved_area_is_free() {
-        // `0x60` is the first slot of the reserved extension area, and `UNPACK` takes it.
-        // `0x61..=0x7F` must stay free so a `.unbc` written by an older compiler is readable.
-        for v in 0x61u8..=0x7F {
+        // `0x60` and `0x61` are the first two slots of the reserved extension area, and
+        // `UNPACK` / `TO_STR` take them. `0x62..=0x7F` must stay free so a `.unbc`
+        // written by an older compiler is readable.
+        for v in 0x62u8..=0x7F {
             assert_eq!(Op::from_u8(v), None, "{v:#04x} must stay reserved");
         }
-        for v in 0x61u8..=0x7F {
+        for v in 0x62u8..=0x7F {
             let bytes = [v, 0, 0, 0, 0, 0, 0];
             let instr = Instr::decode(&bytes);
             assert_eq!(instr.op_code(), None);
