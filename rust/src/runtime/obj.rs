@@ -15,9 +15,19 @@ use crate::runtime::world;
 /// interior-mutable cell.
 pub type Obj = Rc<RefCell<ObjData>>;
 
+/// the state of a `Stopwatch`: the elapsed ticks, the running flag and the lap.
+#[derive(Default)]
+pub struct StopwatchState {
+    /// the accumulated ticks of the finished runs
+    pub elapsed: i64,
+    /// the tick count of the current run
+    pub started: i64,
+    pub running: bool,
+    pub lap: i64,
+}
+
 #[derive(Clone)]
-pub enum Payload {
-    Plain,
+pub enum Payload {    Plain,
     /// `Err` — `ToStr()` renders `"{header}: {message}"`
     Error { header: String, message: String },
     /// uncaught host exception (`System.X`, `Panic`); the VM aborts when it reaches
@@ -29,6 +39,8 @@ pub enum Payload {
     Bool(bool),
     Str(Rc<str>),
     Date(i64),
+    /// `Stopwatch` — the elapsed ticks, the running flag and the lap of the timer
+    Stopwatch(Rc<RefCell<StopwatchState>>),
     /// every collection payload is a shared cell, so `b = a` keeps `b` and `a`
     /// looking at the same items, exactly like the reference's `Ref<T>` cells.
     List(Rc<RefCell<Vec<Obj>>>),
@@ -72,6 +84,7 @@ impl std::fmt::Debug for Payload {
             Payload::Bool(v) => write!(f, "Bool({v})"),
             Payload::Str(s) => write!(f, "Str({s})"),
             Payload::Date(t) => write!(f, "Date({t})"),
+            Payload::Stopwatch(_) => f.write_str("Stopwatch"),
             Payload::List(v) => write!(f, "List({} items)", v.borrow().len()),
             Payload::Dict(km) => write!(f, "Dict({} entries)", km.borrow().len()),
             Payload::Set(s) => write!(f, "Set({} items)", s.borrow().len()),
@@ -555,12 +568,15 @@ fn prim_init(o: &Obj, args: &[Obj]) -> Obj {
             }
             _ => err("too many arguments"),
         },
-        // `DateTime.TryParse` is phase 14, so a string argument reports the reference's
-        // parse-failure message. `new Date()` is `DateTime.Now`, a time the VM cannot fix.
+        // `DateTime.TryParse` accepts the ISO forms, and `new Date()` is `DateTime.Now`,
+        // a time the VM cannot fix.
         Payload::Date(_) => match args.len() {
             0 => date_obj(0),
             1 => match payload(&args[0]) {
-                Payload::Str(_) => err("invalid date str"),
+                Payload::Str(s) => match crate::runtime::date::parse(s.as_ref()) {
+                    Some(ticks) => date_obj(ticks),
+                    None => err("invalid date str"),
+                },
                 _ => err(format!("cannot convert '{}' to 'date'", type_name(&args[0]))),
             },
             _ => err("cannot convert to 'date'"),
@@ -985,6 +1001,7 @@ pub fn class_name(o: &Obj) -> &'static str {
         Payload::Float(..) => "Float",
         Payload::Bool(..) => "Bool",
         Payload::Str(..) => "Str",
+        Payload::Stopwatch(..) => "Stopwatch",
         Payload::Date(..) => "Date",
         Payload::List(..) => "List",
         Payload::Dict(..) => "Dict",
@@ -1412,9 +1429,10 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => base_binop(o, op, other, &t, &ot),
         // function, property, and field payloads have no operator override, so the base
         // chain message is what the reference produces for them too
-        Payload::Func(_) | Payload::Property(_) | Payload::FieldRef(_) => {
-            base_binop(o, op, other, &t, &ot)
-        }
+        Payload::Func(_)
+        | Payload::Property(_)
+        | Payload::FieldRef(_)
+        | Payload::Stopwatch(_) => base_binop(o, op, other, &t, &ot),
     }
 }
 
@@ -1485,7 +1503,8 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         Payload::TObj(..)
         | Payload::Func(_)
         | Payload::Property(_)
-        | Payload::FieldRef(_) => err(op.message(&t)),
+        | Payload::FieldRef(_)
+        | Payload::Stopwatch(_) => err(op.message(&t)),
         Payload::Date(_) | Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => {
             err(op.message(&t))
         }

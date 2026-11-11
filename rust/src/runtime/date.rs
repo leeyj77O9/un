@@ -42,8 +42,7 @@ pub fn ticks_to_days(ticks: i64) -> i64 {
     (ticks - unix_epoch_ticks()).div_euclid(TICKS_PER_DAY)
 }
 
-pub fn parts(ticks: i64) -> (i64, i64, i64, i64, i64, i64, i64) {
-    let (y, m, d) = civil_from_days(ticks_to_days(ticks));
+pub fn parts(ticks: i64) -> (i64, i64, i64, i64, i64, i64, i64) {    let (y, m, d) = civil_from_days(ticks_to_days(ticks));
     let time = ticks.rem_euclid(TICKS_PER_DAY);
     let hour = time / 36_000_000_000;
     let minute = (time % 36_000_000_000) / 600_000_000;
@@ -62,6 +61,59 @@ pub fn format(ticks: i64) -> String {
 pub fn format_date(ticks: i64) -> String {
     let (y, m, d, _, _, _, _) = parts(ticks);
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// `DateTime.ToString(format)` — the custom format specifiers of .NET: `y` (the year),
+/// `M` (the month), `d` (the day), `H` (the hour), `m` (the minute), `s` (the second) and
+/// `f` (the fraction of a second). a run of the same specifier is the padded width.
+pub fn format_pattern(ticks: i64, format: &str) -> String {
+    let (year, month, day, hour, minute, second, ms) = parts(ticks);
+
+    let mut out = String::new();
+    let chars: Vec<char> = format.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let specifier = chars[i];
+        let mut width = 1;
+        while i + width < chars.len() && chars[i + width] == specifier {
+            width += 1;
+        }
+
+        match specifier {
+            'y' => out.push_str(&pad(year, width.min(4))),
+            'M' => out.push_str(&pad(month, width.min(2))),
+            'd' => out.push_str(&pad(day, width.min(2))),
+            'H' => out.push_str(&pad(hour, width.min(2))),
+            'm' => out.push_str(&pad(minute, width.min(2))),
+            's' => out.push_str(&pad(second, width.min(2))),
+            'f' => {
+                // the fraction of a second, the digits are the tenths, hundredths and
+                // thousandths
+                let digits = width.min(3);
+                let value = ms / 10i64.pow(3 - digits as u32);
+                out.push_str(&pad(value, digits));
+            }
+            _ => {
+                for _ in 0..width {
+                    out.push(specifier);
+                }
+            }
+        }
+
+        i += width;
+    }
+
+    out
+}
+
+/// the number padded with zeros, the .NET format specifiers pad to the width.
+fn pad(value: i64, width: usize) -> String {
+    let text = value.to_string();
+    if text.len() >= width {
+        return text;
+    }
+    format!("{}{}", "0".repeat(width - text.len()), text)
 }
 
 pub fn year(ticks: i64) -> i64 {
@@ -108,8 +160,55 @@ pub fn day_of_year(ticks: i64) -> i64 {
 
 /// `new DateTimeOffset(self.Value).ToUnixTimeSeconds()` — .NET maps
 /// `0001-01-01` to the unix epoch offset of 62135596800 s.
+/// the ticks of the unix epoch, the .NET ticks count from 0001-01-01.
 pub fn unix_epoch_ticks() -> i64 {
     621_355_968_000_000_000
+}
+
+/// `DateTime.TryParse` — the forms the tests use: `yyyy-MM-dd` and
+/// `yyyy-MM-ddTHH:mm:ss` (a space is accepted as the separator too).
+pub fn parse(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let (date_part, time_part) = match text.split_once(['T', ' ']) {
+        Some((date, time)) => (date, Some(time)),
+        None => (text, None),
+    };
+
+    let mut date_fields = date_part.split(['-', '/']);
+    let year: i64 = date_fields.next()?.parse().ok()?;
+    let month: i64 = date_fields.next()?.parse().ok()?;
+    let day: i64 = date_fields.next()?.parse().ok()?;
+
+    if date_fields.next().is_some() {
+        return None;
+    }
+
+    if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
+        return None;
+    }
+
+    let (mut hour, mut minute, mut second, mut ms) = (0i64, 0i64, 0i64, 0i64);
+
+    if let Some(time) = time_part {
+        let mut fields = time.split(':');
+        hour = fields.next()?.parse().ok()?;
+        minute = fields.next().unwrap_or("0").parse().ok()?;
+        second = fields.next().unwrap_or("0").parse().ok()?;
+
+        if let Some(fraction) = fields.next() {
+            let mut digits = fraction.chars();
+            let mut value = 0i64;
+            let mut count = 0;
+            for c in digits.by_ref().take(3) {
+                let digit = c.to_digit(10)? as i64;
+                value = value * 10 + digit;
+                count += 1;
+            }
+            ms = value * 10i64.pow(3 - count as u32);
+        }
+    }
+
+    Some(ticks_from_civil(year, month, day, hour, minute, second, ms))
 }
 
 pub fn timestamp(ticks: i64) -> i64 {
