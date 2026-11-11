@@ -181,10 +181,23 @@ use io
 for i in 1..5
     io.write(i)              # 1 2 3 4
 
+for 0..5
+    io.write("tick")         # iterate without binding
+
 io.write(list(0..3))         # [0, 1, 2]
 io.write(len(0..100))        # 100
 io.write(list(1 + 2..6))     # [3, 4, 5]
 io.write(list((1..10).take(3)))  # [1, 2, 3]
+```
+
+When `for` is followed by just an iterable and no `in` target, the loop
+iterates without binding each element — the same as discarding with `_`,
+but written with the iterable alone.
+
+```un
+wild = 0
+for 0..3
+    wild += 1                # iterates 3 times
 ```
 
 Asynchronous execution:
@@ -260,8 +273,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
-counted in the Positive pass/fail totals. The current baseline is Positive 33
-files / 1265 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
+counted in the Positive pass/fail totals. The current baseline is Positive 34
+files / 1275 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
 Known 1 file.
 
 A `.NET 8` app runs on a `.NET 10` runtime when `DOTNET_ROLL_FORWARD=Major` is
@@ -625,7 +638,7 @@ io.write(t.celsius)
 io.write(t.fahrenheit)
 ```
 
-Ranges and laziness (`test/unit/runtime/range.un`):
+Ranges and laziness (`test/unit/runtime/range.un`), for without a binding (`test/unit/runtime/for_no_bind.un`):
 
 ```un
 use io

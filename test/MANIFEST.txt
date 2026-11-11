@@ -20,6 +20,7 @@ unit|test/unit/parser/structure.un
 unit|test/unit/runtime/operators.un
 unit|test/unit/runtime/scope.un
 unit|test/unit/runtime/control_flow.un
+unit|test/unit/runtime/for_no_bind.un
 unit|test/unit/runtime/functions.un
 unit|test/unit/runtime/classes.un
 unit|test/unit/runtime/property.un

@@ -180,10 +180,22 @@ use io
 for i in 1..5
     io.write(i)              # 1 2 3 4
 
+for 0..5
+    io.write("tick")         # 요소를 바인딩하지 않는 반복
+
 io.write(list(0..3))         # [0, 1, 2]
 io.write(len(0..100))        # 100
 io.write(list(1 + 2..6))     # [3, 4, 5]
 io.write(list((1..10).take(3)))  # [1, 2, 3]
+```
+
+`for` 뒤에 `in` 대상 없이 이터러블만 쓰면 요소를 바인딩하지 않고 순회한다.
+`for _ in ...`처럼 `_`로 버리는 것과 같은 동작을 컬렉션만으로 쓸 수 있다.
+
+```un
+wild = 0
+for 0..3
+    wild += 1                # 3번 반복
 ```
 
 비동기 실행:
@@ -259,8 +271,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
-Positive 집계의 통과·실패 수에 포함하지 않는다. 현재 기준은 Positive 33 파일 /
-1265 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
+Positive 집계의 통과·실패 수에 포함하지 않는다. 현재 기준은 Positive 34 파일 /
+1275 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
 
 `.NET 8` 앱은 `.NET 10` 런타임 위에서 `DOTNET_ROLL_FORWARD=Major`를 설정하면
 실행된다(PowerShell: `$env:DOTNET_ROLL_FORWARD='Major'`).
@@ -618,7 +630,7 @@ io.write(t.celsius)
 io.write(t.fahrenheit)
 ```
 
-범위와 지연 평가 (`test/unit/runtime/range.un`):
+범위와 지연 평가 (`test/unit/runtime/range.un`), 바인딩 생략 for (`test/unit/runtime/for_no_bind.un`):
 
 ```un
 use io
