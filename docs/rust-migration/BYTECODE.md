@@ -133,7 +133,7 @@ C#의 dunder dispatch + super fallback + fallback message를 그대로 재현한
 | `MAKE_CLASS` | name idx, flag(has params, has bases) | +1 | `Obj(UnType.Create(name))` 또는 `Stru` + fields(names idx) |
 | `LOAD_BASE_CLASS` | name idx | +1 | 미등록 base → `unknown base class '{name}'` |
 | `SET_BASES` | n | -(n+1) | 첫 base는 `Super`+`Parents[0]`+`Types` 합, 이후 base는 `Parents`+`Types` |
-| `ADD_MEMBER` | name idx | -2 | `Members[name] = value` |
+| `ADD_MEMBER` | name idx | -1 | `Members[name] = value` (name idx는 flags) |
 | `ADD_METHOD` | name idx, proto idx, flag | -1 | accessor conflict 검사 포함 |
 | `MAKE_PROPERTY` | name idx | -3 | getter/setter proto + default, `"$"+name` backing, `CreateAccessor` 이름 `get {n}`/`set {n}` |
 | `REGISTER_CLASS` | name idx | -1 | `Global.SetClass(name, type)` |

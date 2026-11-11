@@ -1,4 +1,5 @@
 ﻿pub mod ast;
+pub mod bytecode;
 pub mod desugar;
 pub mod error;
 pub mod lexer;
