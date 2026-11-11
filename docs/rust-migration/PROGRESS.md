@@ -37,6 +37,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 8b compiler + stack VM + `run`/`dis` | **완료** | `633ae20`, `248338c`, `000870c`, `600d8cb`, `508b51d` | `cargo test --release` 167/167, build 0 warnings. differential `cmp3.ps1` 29 probes: PASS 27 / DIFF 2(p11,p28 = .NET stack trace only, D-034). reference baseline 불변 |
 | 9 control flow | **완료** | `9921c75` | `cargo test --release` 167/167 green, warning 0. `if`/`while`/`for`/`break`/`skip` 구현 + validator의 worklist CFG 깊이 검증. differential `cmp3.ps1` 27 PASS / 2 DIFF 유지 |
 | 10 functions/lambda/return | **완료** | `849d224` | `cargo test --release` 189/189 green, warning 0. nested proto + `MAKE_FUNC`/`RETURN` + `begin_call`/`end_call` + 중첩 VM. differential 42 probes: 41 PASS / 1 DIFF(호스트 예외 stack trace만 차이) || 11~17 | 미착수 | — | — |
+| 11 file modules | **?꾨즺** | `d83eee0` | `use`媛 ?뚯씪 紐⑤뱢???쎈뒗???뚯씪 / `mod.un` / ?붾젆?곕━??紐⑤뱺 `.un`). 紐⑤뱢 罹먯떆 + `circular import detected`. `test/integration/modules.un` reference? ?숈씪 |
+| 12 classes/exceptions/native modules | **?꾨즺** | `fca187e`, `6568c37`, `81ff74a`, `5e520e7`, `18fd0b9` | class/enum/property/match/defer/using/decorator + native 12媛?紐⑤뱢 + stream/future/pool/lock. differential 34 ?뚯씪: 33 PASS / 1 DIFF(異쒕젰 ?숈씪, ?ㅽ뻾 ?쒓컙留? |
 
 ## Phase 2 정합 데이터
 
@@ -540,3 +542,71 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
    않는다. Rust는 `panic : iteration is infinite`로 멈춘다. `Counter.Len()`은
    `long.MaxValue` override라 정합이고, reference는 clone 재현도 `Enumerable` 위치로
    결정된다.
+
+## Phase 10~12 종합 검증(함수 / 클래스 / 예외 / 네이티브 모듈)
+
+`rust/src/compiler.rs` / `rust/src/vm.rs` / `rust/src/runtime/` / `rust/src/native/`가
+언어의 나머지 문법과 네이티브 모듈을 다룬다.
+
+### Phase 10 — 함수 / 람다 / return
+
+- 함수 본문은 **nested proto**가 되고 `MAKE_FUNC`(operand = 부모의 proto slot, flags
+  high byte = 기본값 개수)이 `LFn`을 만들어 이름을 `Scope.Set` 규칙으로 바인딩한다.
+  `RETURN`은 프로토를 끝내고, `Program::validate`는 `RETURN`을 terminator로 본다.
+- 파라미터 기본값은 **정의 시점**에 평가되므로(`Fn.GetArgs` 규칙) 바깥 프로토에 코드가
+  놓이고 `MAKE_FUNC`이 스택에서 pop한다.
+- `LFn.Call`은 본문을 직접 돌리므로 함수 본문은 `EvalBlock`을 지나지 않는다(문장 값의
+  unwrap 없음).
+- 컴파일된 호출은 **중첩 VM**에서 proto를 실행한다. 그래서 함수 안에서 raise된 언어
+  오류의 위치가 유지된다. callee context는 closure의 frame list를 공유한다(`?`의
+  `Frames.Count > 0` 판정이 reference와 같다).
+
+### Phase 11 — 파일 모듈
+
+- 네이티브가 아닌 `use`는 파일 모듈을 읽는다: 파일, 디렉터리의 `mod.un`, 디렉터리의
+  모든 `.un`. 모듈은 전역 스코프를 부모로 하는 자기 스코프에서 실행되고, 그 스코프의
+  심볼들이 모듈의 멤버가 된다.
+- 모듈 맵은 전체 경로로 캐시되고, 읽는 중인 경로가 다시 요청되면
+  `circular import detected: '{path}'`.
+- 컴파일된 함수는 자기 프로그램을 들고 다닌다(모듈마다 프로그램이 다르므로).
+
+### Phase 12 — 클래스 / 예외 / 네이티브 모듈
+
+- `class Name(params): Base`는 `MAKE_CLASS` / `REGISTER_CLASS` / `LOAD_BASE_CLASS` /
+  `SET_BASES` / `ADD_MEMBER` / `ADD_METHOD` / `MAKE_PROPERTY`로 컴파일된다. 타입 객체는
+  멤버를 붙이는 동안 스택에 남는다(클래스 표현식의 값이 타입 객체).
+- 접근자는 `Property`가 되고, getter/setter는 각자 proto이며 setter는 대입된 값을
+  받는다. 기본값이 없는 property는 base class의 property 기본값을 물려받는다.
+- `match`는 패턴이 proto의 pattern 표에 있고 `MATCH_PATTERN`(`0x62`)이 스택의 값을
+  시험한다. 케이스 스코프는 현재 스코프의 자식이고, 에러 변수는 `Err(message, header)`로
+  바인딩된다.
+- `defer` 블록은 nested proto이고, 함수의 epilogue가 역순으로 실행한다. `try`의
+  `finally` 블록은 return이나 propagation이 블록을 떠나기 전에 실행되고, 대기하던
+  에러/return/propagation이 그 뒤에 이어진다.
+- 데코레이터(`@name`)는 역순으로 적용되고, 장식된 함수는 데코레이터가 실행된 뒤
+  바인딩된다.
+
+### 네이티브 모듈
+
+| 모듈 | 상태 |
+|---|---|
+| `io` | `write` / `read` / `open` ✓, `stream` payload ✓ |
+| `inspect` | 7개 ✓ |
+| `math` | 30개 ✓ (.NET의 to-even 중간 반올림) |
+| `iter` | 20개 ✓ (`map`/`filter`는 lazy) |
+| `os` / `sys` | 18 / 19개 ✓ |
+| `fs` | 37개 ✓ |
+| `time` | `sleep` / `now` / `stopwatch` ✓ |
+| `random` | 17개 ✓ (공유 시드 생성기) |
+| `re` | 9개 ✓ ( 자체 backtracking 엔진) |
+| `flow` | `spawn` / `lock` ✓, `pool` / `lock` / `future` payload ✓ |
+
+### 검증
+
+- `cargo build --release` 0 errors / 0 warnings, `cargo test --release` **189 passed / 0 failed**.
+- differential `C:\Users\User\AppData\Local\Temp\opencode\suite\cmp_suite.ps1`
+  (MANIFEST의 34개 파일): **33 PASS / 1 DIFF**. DIFF는 `test/unit/native/set.un`인데
+  출력이 같고 실행 시간만 40초 제한을 넘긴 경우다(단독 실행은 0.03초).
+- `test/test_suite.un`은 reference와 동일하게 **109 passed, 0 failed**.
+- reference baseline(`scripts/test.ps1`) 불변: Positive 33/1265/0/0, Negative 42 matched,
+  Known 1(`test/regression/defects.un`, 6 assertions).

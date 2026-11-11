@@ -547,3 +547,49 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   허용하는데, Rust frame은 C# frame보다 크다(Windows 주 스택은 1MB).
 - `unvm`은 64MB 스택의 worker thread에서 실행한다(가상 메모리라 예약 비용은 없다). 테스트
   harness의 스택은 2MB라서, 깊은 재귀 테스트는 `assert_abort_deep`가 따로 스택을 확보한다.
+
+## D-051 | `os.tickCount`는 epoch 밀리초를 쓴다 | Accepted
+
+- reference의 `Environment.TickCount64`는 머신의 uptime(부팅 이후 밀리초)이다. Rust
+  runtime에는 이 값을 이식성 있게 읽는 방법이 없다(Windows API 호출이 필요하다).
+- 그래서 epoch 밀리초를 반환한다. 값은 단조 증가하고 양수라는 점은 같지만, 값 자체는
+  reference와 다르다.
+
+## D-052 | `fs.hidden`은 점 접두사로 판정한다 | Accepted
+
+- reference는 Windows의 `FileAttributes.Hidden` 속성을 읽는다. 이 속성은 이식성이
+  없고 Rust runtime에는 대응 API가 없다.
+- 그래서 파일 이름이 `.`로 시작하면 hidden으로 판정한다. Windows의 dotfile 규칙과
+  비슷하지만 reference와 항상 같지는 않다.
+
+## D-053 | 정규식은 자체 backtracking 엔진으로 구현한다 | Accepted
+
+- reference는 `System.Text.RegularExpressions`를 쓴다. Rust runtime에는 regex crate가
+  없고(외부 의존성을 추가하지 않는다), .NET 문법 전체를 재현하는 것도 범위가 아니다.
+- `native/regex.rs`의 엔진은 backtracking 매처이고, 언어가 쓰는 문법을 지원한다:
+  리터럴, `.`, 문자 클래스, 탈출(`\d`, `\w`, `\s` 와 부정형), 그룹, 대안, 수량자
+  (`*`, `+`, `?`, `{n,m}`), 앵커(`^`, `$`).
+- 매칭 결과는 .NET과 같지만(탐욕/게으른 수량자, 그룹 번호), .NET 특유의 기능은
+  없다(lookbehind, named group의 역참조, `\p{...}` 등).
+
+## D-054 | `go`/`wait`과 pool은 호출 스레드에서 실행한다 | Accepted
+
+- reference는 pool의 worker를 실제 스레드로 만들고 `go`는 `Task.Run`으로 표현식을 별도
+  스레드에서 평가한다.
+- Rust runtime의 객체 모델(`Rc<RefCell<..>>`)은 `Send`가 아니라 스레드로 넘길 수 없다.
+  그래서 D-012대로 단일 스레드 cooperative scheduler로 구현한다: `go expr`은 표현식을
+  바로 계산해서 future에 넣고, `wait`는 그 값을 꺼낸다. pool의 `map`/`submit`도 호출
+  스레드에서 순서대로 실행한다.
+- 결과 값은 reference와 같지만 인터리빙(순서)은 다르다.
+
+## D-055 | `Str`는 `>`를 override 하지 않는다 | Accepted
+
+- reference의 `Str`는 `Eq`, `NEq`, `Lt`만 override하고 `>`는 base class의 규칙
+  (`!lt && !eq`)을 따른다. 그래서 문자열 비교는 culture가 아니라 순서 비교가 된다.
+- Rust의 `str_binop`도 `>`를 base class로 보내므로 같은 결과가 나온다.
+
+## D-056 | `Stru.Clone`은 멤버 표를 복사한다 | Accepted
+
+- reference의 `Stru.Clone()`은 `Members = Members.New()`로 멤버 표를 복사한다. Rust
+  구현이 멤버를 복사하지 않아서 클래스의 메서드가 인스턴스에서 사라졌다.
+- `stru_copy`가 멤버 표를 복사하도록 고쳤다.

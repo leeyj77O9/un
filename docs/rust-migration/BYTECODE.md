@@ -179,6 +179,7 @@ Proto {
   call_names: Vec<Vec<Option<NameId>>>,  // call site의 인자 이름 목록
   source_map: Vec<(u32, u32)>,   // instruction별 (start, length)
   exc: Vec<ExcEntry>,
+  patterns: Vec<Pattern>,          // match ?⑦꽩 ?? ?대쫫/?곸닔 ?몃뜳?ㅻ뒗 module ?⑥쐞
   flags: u16,                    // is_function_scope, has_self, ...
   ext_type: Option<NameId>,         // 확장 메서드(`fn Type.method()`)의 확장 타입 이름
 }
@@ -288,3 +289,33 @@ throw한다. `ToStr()`는 member dispatch(`ToStr`는 `Str`를 반환하지 않�
 변환은 opcode로 표현하고, 타입 check는 `FSTRING`이 수행한다. `TO_STR`의 stack effect는 0이고
 span은 FString node다. `0x61`은 예약 영역의 두 번째 slot(`0x60`은 `UNPACK`이 사용)이다.
 
+
+## 19. `MATCH_PATTERN` (`0x62`), `MAKE_FUTURE` (`0x63`), `AWAIT` (`0x64`)
+
+`0x62`부터 `0x64`까지는 §16 확장 영역의 슬롯이고, `0x65..=0x7F`는 비워 둔다.
+
+| opcode | operand | stack | 설명 |
+|---|---|---|---|
+| `MATCH_PATTERN` | pattern idx | +1 | 스택의 값을 proto의 pattern 표 항목과 비교한다. 스택의 값은 그대로 두고 결과(bool)를 push한다. 매칭되면 패턴의 이름이 현재 스코프에 바인딩된다. |
+| `MAKE_FUTURE` | - | 0 | 스택의 값을 future로 바꿔 push한다(`go expr`). |
+| `AWAIT` | - | 0 | 스택의 future를 그 값으로 바꿔 push한다(`wait expr`). future가 아니면 `'wait' requires Future` 에러. |
+
+### pattern 표
+
+```text
+Pattern {
+    Wildcard,                    // case _
+    Bind(NameId),                // case name — 값을 이름에 바인딩
+    Literal(ConstId),            // case 1 — 상수와 비교
+    Tuple(Vec<Pattern>),         // case (a, b) — 값을 풀고 항목을 비교
+}
+```
+
+`Proto`에 `patterns: Vec<Pattern>`이 추가되었다. `Pattern`의 이름과 상수 인덱스는
+module 단위 인덱스다.
+
+### `go` / `wait`
+
+reference는 `go`로 `Task.Run`을 시작하고 `wait`가 future의 결과를 기다린다. Rust runtime의
+객체 모델은 `Send`가 아니라 스레드로 넘길 수 없으므로(D-054), `go expr`은 표현식을 바로
+계산해서 future에 넣고 `wait`는 그 값을 꺼낸다. 결과 값은 같지만 인터리빙은 다르다.
