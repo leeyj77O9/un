@@ -786,6 +786,8 @@ pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
     match payload(o) {
         Payload::List(..) => collections::list_in(o, other),
         Payload::Dict(..) => collections::dict_in(o, other),
+        // `Set.In(other)` is `HashSet.Contains`, the same key equality as `count`
+        Payload::Set(v) => boolean(v.borrow().iter().any(|k| key_eq(k, other))),
         Payload::Tup(vals, _) => collections::tup_in(&vals, other),
         Payload::TObj(t) => collections::tobj_in(&t, other),
         Payload::Iter(st) => iters::iter_in(o, &st, other),

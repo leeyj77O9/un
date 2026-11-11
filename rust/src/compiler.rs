@@ -333,11 +333,12 @@ impl<'a> Compiler<'a> {
 
             NodeKind::Tuple => self.code_tuple(node)?,
             NodeKind::List => self.code_container(node, Op::BuildList)?,
-            // `Eval` has no `Set` case, so `{1, 2}` is observable as
-            // `unsupported node kind Set` at the node. `Spread` / `KwSpread` are only
-            // evaluated by `EvalArguments`; a spread inside a container literal reaches
-            // the same default arm, so it stays unsupported here too.
-            NodeKind::Set | NodeKind::Spread | NodeKind::KwSpread => self.unsupported(node),
+            // `EvalSet` evaluates every element in order and adds it to the set, so a
+            // set literal is the same builder shape as a list literal. `Spread` /
+            // `KwSpread` are only evaluated by `EvalArguments`; a spread inside a
+            // container literal reaches the same default arm, so it stays unsupported.
+            NodeKind::Set => self.code_container(node, Op::BuildSet)?,
+            NodeKind::Spread | NodeKind::KwSpread => self.unsupported(node),
             NodeKind::Dict => self.code_dict(node)?,
 
             NodeKind::Assign => {
