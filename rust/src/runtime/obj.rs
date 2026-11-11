@@ -47,6 +47,8 @@ pub enum Payload {    Plain,
     Pool(Rc<RefCell<crate::native::flow::PoolState>>),
     /// `Lock` — the held flag
     Lock(Rc<RefCell<crate::native::flow::LockState>>),
+    /// `Stream` — a file stream
+    Stream(Rc<RefCell<crate::native::stream::StreamState>>),
     /// every collection payload is a shared cell, so `b = a` keeps `b` and `a`
     /// looking at the same items, exactly like the reference's `Ref<T>` cells.
     List(Rc<RefCell<Vec<Obj>>>),
@@ -91,6 +93,7 @@ impl std::fmt::Debug for Payload {
             Payload::Str(s) => write!(f, "Str({s})"),
             Payload::Date(t) => write!(f, "Date({t})"),
             Payload::Stopwatch(_) => f.write_str("Stopwatch"),
+            Payload::Stream(_) => f.write_str("Stream"),
             Payload::Future(_) => f.write_str("Future"),
             Payload::Pool(_) => f.write_str("Pool"),
             Payload::Lock(_) => f.write_str("Lock"),
@@ -1011,6 +1014,7 @@ pub fn class_name(o: &Obj) -> &'static str {
         Payload::Bool(..) => "Bool",
         Payload::Str(..) => "Str",
         Payload::Stopwatch(..) => "Stopwatch",
+        Payload::Stream(..) => "Stream",
         Payload::Future(..) => "Future",
         Payload::Pool(..) => "Pool",
         Payload::Lock(..) => "Lock",
@@ -1447,7 +1451,8 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         | Payload::Stopwatch(_)
         | Payload::Future(_)
         | Payload::Pool(_)
-        | Payload::Lock(_) => base_binop(o, op, other, &t, &ot),
+        | Payload::Lock(_)
+        | Payload::Stream(_) => base_binop(o, op, other, &t, &ot),
     }
 }
 
@@ -1538,7 +1543,8 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         | Payload::Property(_)
         | Payload::FieldRef(_)
         | Payload::Stopwatch(_)
-        | Payload::Future(_) => err(op.message(&t)),
+        | Payload::Future(_)
+        | Payload::Stream(_) => err(op.message(&t)),
         Payload::Date(_) | Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => {
             err(op.message(&t))
         }

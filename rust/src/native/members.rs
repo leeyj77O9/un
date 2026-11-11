@@ -28,6 +28,7 @@ pub fn init_members(closure: &Context) {
     world::register_original_class("date", crate::native::date_members::members(closure));
     world::register_original_class("pool", crate::native::flow::pool_members(closure));
     world::register_original_class("lock", crate::native::flow::lock_members(closure));
+    world::register_original_class("stream", crate::native::stream::members(closure));
     world::register_original_class("stopwatch", crate::native::stopwatch::members(closure));
 
     // the iterator subclasses have their own type name, and the members live in the

@@ -27,7 +27,10 @@ pub mod math;
 pub mod members;
 pub mod os;
 pub mod random;
+pub mod re;
+pub mod regex;
 pub mod stopwatch;
+pub mod stream;
 pub mod sys;
 pub mod time;
 
@@ -55,6 +58,7 @@ pub fn init(path: &str) {
     world::register_native("time", time::members(&closure));
     world::register_native("random", random::members(&closure));
     world::register_native("flow", flow::members(&closure));
+    world::register_native("re", re::members(&closure));
 
     for (name, f) in builtin::members(&closure) {
         world::set_global(&name, f);

@@ -44,7 +44,58 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
                 read_impl,
             ),
         ),
+        (
+            "open".to_owned(),
+            native(
+                closure,
+                "open",
+                vec![arg("path", true, false, false), arg("mode", false, true, false)],
+                open_impl,
+            ),
+        ),
     ]
+}
+
+/// `io.open(path, mode)` — the path is relative to `Global.PATH`, the mode is one of
+/// `"r"`, `"w"`, `"a"` and `"rw"`.
+fn open_impl(scope: &Scope) -> Obj {
+    let path = scope::get(scope, "path");
+    let mode = scope::get(scope, "mode");
+
+    let path = match obj::payload(&obj::to_str(&path)) {
+        Payload::Str(s) => s.to_string(),
+        _ => return obj::err("expected 'path' argument to be a string"),
+    };
+
+    let mode = if obj::is_none(&mode) {
+        "r".to_owned()
+    } else {
+        match obj::payload(&obj::to_str(&mode)) {
+            Payload::Str(s) => s.to_string(),
+            _ => return obj::err("expected 'mode' argument to be a string"),
+        }
+    };
+
+    if !matches!(mode.as_str(), "r" | "w" | "a" | "rw") {
+        return obj::err("invalid 'mode' argument, expected one of 'r', 'w', 'a', or 'rw'");
+    }
+
+    // `Path.Combine(Global.PATH, path)` — an absolute path wins
+    let full = {
+        let base = std::path::Path::new(&world::path()).join(&path);
+        base.display().to_string()
+    };
+
+    if mode == "r" && !std::path::Path::new(&full).is_file() {
+        return obj::err("file not found");
+    }
+
+    let handle = match super::stream::open_file(&full, &mode) {
+        Ok(handle) => handle,
+        Err(e) => return e,
+    };
+
+    super::stream::new_stream(&full, &mode, handle)
 }
 
 fn write_impl(scope: &Scope) -> Obj {
