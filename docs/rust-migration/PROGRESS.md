@@ -35,7 +35,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 7c 함수 계열 | **완료** | `f966a1f` | `cargo test --release` 108/108 green, warning 0. `Bind`의 4가지 메시지, positional fast path, `*`/`**` swallow, spread unpack의 name 상속, recursion limit(1000) 증감 순서, defer/using LIFO drain, `Property` backing key `"$"+name`, `FieldRef`, `fn` display/repr, clone이 closure/Args cell 공유. ground truth는 `src/Core/Object/Function/{Fn,LFn,NFn,Arg}.cs`와 `Base/Property.cs` |
 | 8a bytecode contract + world/global/native | **완료** | `3f053f0`, `e97bc8c`, `a064047`, `f88c580` | 124 tests green, warning 0. opcode/Proto/Program/validate, `World`/`Global`/native `io` + builtins 14 |
 | 8b compiler + stack VM + `run`/`dis` | **완료** | `633ae20`, `248338c`, `000870c`, `600d8cb`, `508b51d` | `cargo test --release` 167/167, build 0 warnings. differential `cmp3.ps1` 29 probes: PASS 27 / DIFF 2(p11,p28 = .NET stack trace only, D-034). reference baseline 불변 |
-| 9~17 | 미착수 | — | — |
+| 9 control flow | **완료** | `9921c75` | `cargo test --release` 167/167 green, warning 0. `if`/`while`/`for`/`break`/`skip` 구현 + validator의 worklist CFG 깊이 검증. differential `cmp3.ps1` 27 PASS / 2 DIFF 유지 |
+| 10 functions/lambda/return | **완료** | `849d224` | `cargo test --release` 189/189 green, warning 0. nested proto + `MAKE_FUNC`/`RETURN` + `begin_call`/`end_call` + 중첩 VM. differential 42 probes: 41 PASS / 1 DIFF(호스트 예외 stack trace만 차이) || 11~17 | 미착수 | — | — |
 
 ## Phase 2 정합 데이터
 
@@ -468,6 +469,38 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
 - `read`/`grep` 도구가 존재하지 않는 파일 내용을 지어낼 때가 있다 → ground truth는 shell로 확인.
   `cargo ... 2>&1`는 성공해도 PowerShell에서 exit 1을 줄 수 있다.
 
+## Phase 10 종합 검증(함수 / 람다 / return)
+
+`rust/src/compiler.rs` / `rust/src/vm.rs` / `rust/src/runtime/function.rs`가 함수 3형태
+(`fn name()`, `fn Type.method()`, `fn(a, b) -> expr` lambda)와 `->`(return)를 다룬다.
+
+- 컴파일러: 함수 본문을 **nested proto**로 만든다(`Proto.protos`가 부모 proto의 slot 목록이고,
+  `Program.protos`는 module 단위 평탄 목록이다). `MAKE_FUNC`(operand = slot, flags high byte =
+  기본값 개수)이 `LFn`을 만들고 이름을 `Scope.Set` 규칙으로 바인딩한다. `RETURN`은 프로토를
+  끝낸다. `Program::validate`는 `RETURN`을 terminator로 보고, 그 뒤의 코드는 unreachable이다.
+- 파라미터: `Param { name, type_name, flags, default }`는 module name index를 쓴다.
+  `Fn.GetArgs` 규칙 그대로 `essential/optional/positional/keyword` flag를 채운다.
+  기본값 표현식은 **정의 시점**에 평가되므로 바깥 proto에 코드를 두고 `MAKE_FUNC`이 pop한다.
+- 런타임: `Body::Proto`를 가진 `Fn`은 VM이 중첩 VM(`VM::new_proto`)으로 proto를 실행한다.
+  `function::begin_call`/`end_call`이 reference `LFn.Call`의 prologue/epilogue를 담당한다
+  (재귀 한도 1000, 함수 스코프, 인자 바인딩, defer/using drain, call depth 복원).
+  callee context가 closure의 frame list를 공유해서 `?`의 `Frames.Count > 0` 판정이 reference와
+  같다. `LFn.Call`이 `PropagateFlow`를 잡는 규칙(호출자가 call site에서 unwrap)도 그대로다.
+- 오류 위치: 중첩 VM 덕분에 함수 안에서 raise된 언어 오류의 위치가 유지된다.
+  `fn_call` 경로(멤버 호출 등)는 위치를 잃고 `Err` 값으로 떨어뜨린다.
+- `unvm`은 64MB 스택의 worker thread에서 실행한다(VM이 Un 호출마다 Rust frame을 쌓는다).
+- 문서화한 차이: 함수 안의 `break`/`skip`은 caller의 반복문까지 unwind 하지 않는다(D-049).
+
+### 검증
+
+- `cargo build --release` 0 errors / 0 warnings, `cargo test --release` **189 passed / 0 failed**.
+- differential `C:\Users\User\AppData\Local\Temp\opencode\p10\cmp10.ps1`(42 probes):
+  **41 PASS / 1 DIFF**. DIFF는 값 없는 `->` 하나이고, reference는
+  `System.ArgumentOutOfRangeException`을 .NET stack trace와 함께 출력하는 반면 Rust는 첫 줄만
+  출력한다(D-034의 host 예외 규칙).
+- 기존 differential `probes11/cmp3.ps1`(29 probes) baseline 유지: **27 PASS / 2 DIFF**.
+- reference baseline(`scripts/test.ps1`) 불변: Positive 33/1265/0/0, Negative 42 matched,
+  Known 1(`test/regression/defects.un`, 6 assertions).
 ## 다음 단계
 
 1. Phase 8b working tree 정리: PROGRESS/DECISIONS/BYTECODE 반영 후 의미 있는 단위로 커밋(`src/main.un` 제외).
@@ -475,9 +508,9 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
    `dict` `get`/`keys`/`values`, `list` `pop`/`sort`/`order`/`binary_search`,
    `set` `union`/`intersect`/`difference`. builtin `[Native]` member 테이블 채우기 범위 확정.
 3. differential harness를 `scripts/`로 승격(`cmp3.ps1`/probe set 정리)해 stdout/exit/stderr 비교를 재현 가능하게 유지.
-4. Phase 9 control flow: `if`/`while`/`for`/`break`/`skip`, `Payload::Control` + `NEW_SCOPE`/`POP_SCOPE`/`PREP_ITER`/`FOR_NEXT`, group/jump patching.
-5. Phase 10 functions/lambda/call: `fn_call`/`obj::call`을 `Args`/`Flow`로 refactor, compiled-proto executor hook, `Break`/`Skip`가 `LFn.Call`을 탈출.
-6. 이후 Phase 11(file-module import, `test/fixtures/*`), 12 try/catch, 13 defer/using, 14 class/enum/member dispatch, 16 go/wait, 17 `.unbc`.
+4. Phase 9 control flow: 완료(`9921c75`). `if`/`while`/`for`/`break`/`skip` + validator의 jump 깊이 검증.
+5. Phase 10 functions/lambda/return: 완료. nested proto + `MAKE_FUNC`/`RETURN` + `begin_call`/`end_call` + 중첩 VM.
+6. 남은 Phase: 11(file-module import, `test/fixtures/*`), 12 try/catch, 13 defer/using, 14 class/enum/member dispatch, 16 go/wait, 17 `.unbc`.
 
 ## 네이티브 인벤토리 (완료)
 

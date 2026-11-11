@@ -105,16 +105,16 @@ C#의 dunder dispatch + super fallback + fallback message를 그대로 재현한
 | `FOR_NEXT` | delta | +1 | exhausted → jump; 아니면 next value push |
 | `BREAK` | — | | loop frame search. 최상위까지 없으면 `'break' outside loop` |
 | `SKIP` | — | | 같은 방식으로 `'skip' outside loop` |
-| `RETURN` | — | -1 | 함수 경계까지 unwind, defers/usings flush |
+| `RETURN` | - | -1 | 함수 프로토를 끝내고 값을 돌려준다(`ReturnFlow`). `break`/`skip`처럼 바깥 루프로 unwind 하지는 않는다. |
 
-`return`는 함수 경계(`LFn.Call`)에서 `Flow::Return(value)`로 처리하고, `break`/`skip`은
-루프 경계에서 잡힌다. `try`의 `finally`는 unwind 중에 실행된다(C#의 `finally` 순서 유지).
+`return`은 바깥으로 unwind 하지 않고 그 함수 프로토만 끝낸다. 컴파일된 형태는 `RETURN` opcode
+하나로 표현되고, VM은 `Outcome::Return(value)`로 돌려줘서 `LFn.Call`의 `Flow::Return(value)`와
 
 ## 7. 함수
 
 | opcode | operand | stack | 설명 |
 |---|---|---|---|
-| `MAKE_FUNC` | proto idx | +1 | 현재 `Context`를 캡처해 `LClosure` 생성. flag: `BIND`(scope에 `name` 바인딩), `EXT`(extension → `Global.TrySetOriginalClass`), `PROP` |
+| `MAKE_FUNC` | proto idx | +1 - defaults | 현재 `Context`를 캡처해 `LFn`을 만든다. flag: bit0 `BIND`(scope에 `name` 바인딩, `Scope.Set` 규칙), bit1 `EXT`(extension → `Global.TrySetOriginalClass`), bit2 `PROP`, high byte = 정의 시점에 평가된 기본값 개수(스택에서 pop) |
 | `ARG_BEGIN` | — | 0 | arg accumulator(name list) 초기화. call/tuple/list/dict site마다 emit |
 | `ARG_POS` | — | 0 | value는 stack에 유지, accumulator에 name `""` record |
 | `ARG_KW` | name idx | 0 | value는 stack에 유지, accumulator에 keyword name record |
@@ -180,11 +180,12 @@ Proto {
   source_map: Vec<(u32, u32)>,   // instruction별 (start, length)
   exc: Vec<ExcEntry>,
   flags: u16,                    // is_function_scope, has_self, ...
+  ext_type: Option<NameId>,         // 확장 메서드(`fn Type.method()`)의 확장 타입 이름
 }
 ```
 
 - `locals`는 compile-time slot 할당과 런타임 Scope slot 순서가 같다.
-- `params`는 정의 시점에 평가되는 default 값(constant pool index)을 가진다.
+- `params`는 `Fn.GetArgs`가 만든 파라미터 목록이다. `name`/`type_name`은 module name index,
 - nested `Proto`는 parent Proto의 `protos`에 저장하고, `.unbc`는 평탄화된 proto table로 저장한다.
 
 ## 11. Constant pool / Name table
@@ -242,7 +243,7 @@ proto table: count u32 + protos
 - expression producing: +1
 - statement consuming: -1 (식 문장은 마지막에 `POP`을 emit한다)
 - `CALL n`: -(n+1) +1
-- `MAKE_FUNC`: +1
+- `MAKE_FUNC`: +1 - defaults(flags high byte의 기본값 개수)
 - `NEW_SCOPE`/`POP_SCOPE`: 0
 - control jump: 조건 pop 포함 표기대로
 

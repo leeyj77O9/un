@@ -495,3 +495,55 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - `Global.Init`는 `io`를 bind하지 않는다. 모든 probe/test 스크립트는 `use io`로 시작한다.
 - `Str`은 `Repr()`를 override하지 않으므로 `repr("a")`는 base form의 type name `str`이다
   (`type(1)` → `<type: int>`, `len([1,2,3])` → `3`, `chr(65)` → `A`와 실측 비교).
+
+## D-046 | 함수 본문은 `EvalBlock`을 거치지 않는다 | Accepted
+
+- reference `LFn.Call`은 `foreach (Node node in body) evaluator.Eval(node)`로 본문을 돈다.
+  module 최상위 블록은 `EvalBlock`을 지나서 각 자식의 `Err`을 unwrap하지만, 함수 본문은
+  `EvalBlock`을 지나지 않으므로 **문장 값이 unwrap 되지 않는다**. 컴파일러는 함수 본문을
+  `unwrap = false`로 codegen한다(`code_block(node, pop_last, unwrap)`).
+- reference `LFn.Call`은 본문 문장 값을 모두 버리고 `None`을 돌려준다. 컴파일러는 함수 본문
+  마지막에 `LOAD_NONE` + `RETURN`을 emit해서 같은 결과를 만든다.
+- `->`(return)만 예외다. `ReturnFlow`는 `LFn.Call`이 잡아서 값으로 돌려주므로, 컴파일된 형태는
+  `RETURN` opcode 하나로 프로토를 끝내고 `Outcome::Return(value)`를 돌려준다.
+
+## D-047 | 컴파일된 함수 호출은 중첩 VM에서 proto를 실행한다 | Accepted
+
+- `Body::Proto(proto_index)`를 가진 `Fn`은 VM이 중첩 VM(`VM::new_proto`)으로 proto를 실행한다.
+  world에 `proto_executor`/`current_program` hook을 등록하고, `function::begin_call`/`end_call`이
+  reference `LFn.Call`의 prologue/epilogue(재귀 한도 검사, 함수 스코프 생성, 인자 바인딩,
+  defer/using drain, call depth 복원)를 담당한다.
+- 중첩 VM을 쓰면 함수 안에서 raise된 언어 오류의 **위치**가 그대로 유지된다(`Outcome::Error`가
+  그대로 caller로 올라간다). `fn_call` 경로(멤버 호출 등)에서는 위치를 잃으므로 `Err` 값으로
+  떨어뜨린다.
+- callee context는 closure context의 frame list를 공유한다(reference `new Context(scope,
+  Closure.Source, Closure.Frames)`와 동일). 그래서 `?` 연산자의 `Frames.Count > 0` 판정이
+  reference와 같이 동작한다.
+- `LFn.Call`이 `PropagateFlow`를 잡아서 `Err` 값으로 돌려주는 규칙도 그대로 적용한다. 그래서
+  함수 안의 `?`는 caller의 call site에서 unwrap 된다.
+
+## D-048 | 파라미터 기본값은 정의 시점에 평가한다 | Accepted
+
+- `Fn.GetArgs`는 함수 **생성 시점**에 기본값 표현식을 평가한다(closure context). 그래서
+  `x = 1; fn f(a = x); x = 2; f()`는 `a == 1`이다.
+- 컴파일러는 기본값 표현식을 **바깥 프로토**에 그대로 codegen한다(정의 시점에 평가되므로
+  enclosing scope를 봐야 한다). `MAKE_FUNC`은 flags high byte에 기본값 개수를 담아서 스택에서
+  pop하고, 만든 함수의 파라미터 기본값으로 넣는다.
+- `Param.default` 필드는 module constant index를 담는 자리로 남겨 두었지만, 지금은 항상
+  `None`이다(기본값을 상수 풀에 넣으면 정의 시점 평가 규칙과 어긋난다).
+
+## D-049 | 함수 안의 `break`/`skip`은 caller의 반복문까지 unwind 하지 않는다 | Accepted
+
+- reference는 `BreakFlow`/`SkipFlow`가 C# 예외로 호출자 프레임까지 unwind 하므로, 반복문 안에서
+  호출한 함수가 `break`를 실행하면 그 반복문이 끝난다(`probes10/k1.un`, `k2.un` 확인).
+- 컴파일러는 함수 본문을 별도 proto로 컴파일할 때 loop group을 비우기 때문에, 함수 안의
+  `break`/`skip`은 `'break' outside loop` / `'skip' outside loop` 오류가 된다.
+- 이건 아직 지원하지 않는 divergence다. 해결하려면 반복문 경계를 runtime에 노출하는
+  opcode(loop context push/pop)와 호출 프레임을 넘어서는 jump가 필요하다.
+
+## D-050 | 프로그램은 큰 스택의 worker thread에서 실행한다 | Accepted
+
+- VM은 Un 호출 1개당 Rust frame 1개를 쌓는다. reference는 recursion limit 1000까지 nested call을
+  허용하는데, Rust frame은 C# frame보다 크다(Windows 주 스택은 1MB).
+- `unvm`은 64MB 스택의 worker thread에서 실행한다(가상 메모리라 예약 비용은 없다). 테스트
+  harness의 스택은 2MB라서, 깊은 재귀 테스트는 `assert_abort_deep`가 따로 스택을 확보한다.
