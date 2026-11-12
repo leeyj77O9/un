@@ -158,7 +158,9 @@ fn container_literals_have_no_element_unwraps() {
 /// the reference's `Unwrap` would run on a stack that no longer has the value
 #[test]
 fn a_child_that_raises_leaves_no_statement_unwrap() {
-    let (program, _) = compile_text("use io\nx = {1, 2}\ny = 1");
+    // `break` outside a loop is the statement child whose code ends in a control
+    // transfer: `UNSUPPORTED` + `RAISES`, with no value on the stack to unwrap.
+    let (program, _) = compile_text("use io\nbreak\ny = 1");
     let ops = code(&program);
 
     let unsupported = find(&program, Op::Unsupported);

@@ -353,15 +353,10 @@ fn set_lookup_and_operators() {
         message(&obj::binop(&s1, BinOp::Add, &obj::int(1))),
         "unsupported operand type(s) for +: 'set' and 'int'"
     );
-    // `Set` has no `In` override, and `x in set` is the base error
-    assert_eq!(
-        message(&obj::obj_in(&s1, &obj::int(1))),
-        "unsupported operand type(s) for in: 'set'"
-    );
-    assert_eq!(
-        message(&obj::obj_in(&s1, &s2)),
-        "unsupported operand type(s) for in: 'set'"
-    );
+    // `Set.In(other)` is `HashSet.Contains`, the same key equality as `count`
+    assert_eq!(obj::display(&obj::obj_in(&s1, &obj::int(1))), "true");
+    assert_eq!(obj::display(&obj::obj_in(&s1, &obj::int(5))), "false");
+    assert_eq!(obj::display(&obj::obj_in(&s1, &s2)), "false");
     assert_eq!(
         message(&obj::to_bool(&s1)),
         "unsupported operand type(s) for bool(): 'set'"
