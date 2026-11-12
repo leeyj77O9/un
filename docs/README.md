@@ -581,7 +581,7 @@ The C# implementation has no intermediate bytecode or separate virtual machine. 
 
 ## Rust port (experimental)
 
-A second implementation of the same language lives under `rust/`: a bytecode compiler and stack-based VM written in Rust (`unvm`). It reproduces the C# implementation's grammar, semantics, standard library, and error messages, and is verified to be byte-identical on the scripts in `test/MANIFEST.txt` — stdout, exit code, and `help` output included — via `scripts/differential.ps1` (105 checked / 0 unexpected DIFFs, with only the 4 documented negative divergences).
+A second implementation of the same language lives under `rust/`: a bytecode compiler and stack-based VM written in Rust (`unvm`). It reproduces the C# implementation's grammar, semantics, standard library, and error messages, and is verified to be byte-identical on the scripts in `test/MANIFEST.txt` — stdout, exit code, and `help` output included — via `scripts/differential.ps1` (108 checked / 0 unexpected DIFFs, with only the 4 documented negative divergences).
 
 - Build: `cargo +stable-x86_64-pc-windows-gnu build --release --manifest-path rust/Cargo.toml`
 - Run: `rust\target\release\unvm.exe run <file>`

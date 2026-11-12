@@ -573,7 +573,7 @@ C# 구현에는 중간 바이트코드나 별도 가상 머신이 없다. (Rust 
 
 ## Rust 포트 (실험적)
 
-`rust/` 아래에 같은 언어의 두 번째 구현이 있다: Rust로 작성된 바이트코드 컴파일러와 스택 기반 VM(`unvm`). C# 구현과 같은 문법, 의미론, 표준 라이브러리(그리고 오류 메시지까지)를 재현하며, `test/MANIFEST.txt`의 스크립트를 두 엔진에서 동일하게 실행해 stdout·exit code·`help` 출력까지 byte-identical임을 검증한다(`scripts/differential.ps1`: 105 checked / 0 unexpected DIFF, negative의 문서화된 차이 4개만 예외).
+`rust/` 아래에 같은 언어의 두 번째 구현이 있다: Rust로 작성된 바이트코드 컴파일러와 스택 기반 VM(`unvm`). C# 구현과 같은 문법, 의미론, 표준 라이브러리(그리고 오류 메시지까지)를 재현하며, `test/MANIFEST.txt`의 스크립트를 두 엔진에서 동일하게 실행해 stdout·exit code·`help` 출력까지 byte-identical임을 검증한다(`scripts/differential.ps1`: 108 checked / 0 unexpected DIFF, negative의 문서화된 차이 4개만 예외).
 
 - 빌드: `cargo +stable-x86_64-pc-windows-gnu build --release --manifest-path rust/Cargo.toml`
 - 실행: `rust\target\release\unvm.exe run <file>`

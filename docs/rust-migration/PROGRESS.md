@@ -513,8 +513,8 @@ warning 0**. ground truthëŠ” `src/Interpreter/Evaluator/Evaluator.cs`,
 2. member ground truth ê°œë³„ probe: ì™„ë£Œ(Phase 12ì—ì„œ `[Native]` member í…Œì´ë¸”ì„ ì±„ì› ë‹¤).
 3. ~~differential harnessë¥¼ `scripts/`ë¡œ ìŠ¹ê²©~~ **ì™„ë£Œ** â€” `scripts/differential.ps1`,
    `test/probes/regex/`(probe_re*.un 25ê°œ). `scripts/differential.ps1`ì€ MANIFEST positive
-   (37ê°œ), negative (manifest 42ê°œ row), regex probes (25ê°œ), `help`ë¥¼ ë¹„êµí•œë‹¤.
-   105 checked / 0 unexpected DIFF / 4 known-divergent(ë¬¸ì„œí™”ëœ ì°¨ì´, exit code 1 ë°˜í™˜).
+   (40ê°œ(2026-11 http/ws/flow í¬í•¨)), negative (manifest 42ê°œ row), regex probes (25ê°œ), `help`ë¥¼ ë¹„êµí•œë‹¤.
+   108 checked / 0 unexpected DIFF / 4 known-divergent(ë¬¸ì„œí™”ëœ ì°¨ì´, exit code 1 ë°˜í™˜).
    refì˜ `2>&1` ë³‘í•© semanticsë¥¼ ê·¸ëŒ€ë¡œ ë”°ë¥¸ë‹¤.
 4. Phase 9 control flow: ì™„ë£Œ(`9921c75`). `if`/`while`/`for`/`break`/`skip` + validatorì˜ jump ê¹Šì´ ê²€ì¦.
 5. Phase 10 functions/lambda/return: ì™„ë£Œ. nested proto + `MAKE_FUNC`/`RETURN` + `begin_call`/`end_call` + ì¤‘ì²© VM.
@@ -815,10 +815,10 @@ bump, lenì—ì„œ ë©ˆì¶¤)ë„ ê·¸ëŒ€ë¡œ ì¬í˜„í–ˆë‹¤. `IO.write`ê°€ > 0x7Fë¥¼ `?`ë¡
 - Tempì—ë§Œ ìˆë˜ harness(`p10\fullcmp.ps1`, `negcmp.ps1`, `wscmp.ps1`, `cmp_all.ps1`)ë¥¼
   ì €ì¥ì†Œì˜ `scripts/differential.ps1`ë¡œ ìŠ¹ê²©í•˜ê³ , regex probesë¥¼ `test/probes/regex/`ì—
   ì»¤ë°‹í–ˆë‹¤(probe_re*.un 25ê°œ).
-- í•˜ìœ„ ê·¸ë£¹: `positive`(MANIFEST 37ê°œ), `negative`(manifest 42ê°œ row, 4ê°œ known-divergent
-  ëŠ” KNOWN-DIFFë¡œ ë³´ê³ í•˜ê³  ì‹¤íŒ¨ë¡œ ì„¸ì§€ ì•ŠìŒ), `regex`(25 probes), `help`.
+- í•˜ìœ„ ê·¸ë£¹: `positive`(MANIFEST 40ê°œ(2026-11 http/ws/flow í¬í•¨)), `negative`(manifest 42ê°œ row,
+  4ê°œ known-divergentëŠ” KNOWN-DIFFë¡œ ë³´ê³ í•˜ê³  ì‹¤íŒ¨ë¡œ ì„¸ì§€ ì•ŠìŒ), `regex`(25 probes), `help`.
   `-Rebuild`ë¡œ unvmì„ ë¨¼ì € ë¹Œë“œí•  ìˆ˜ ìˆë‹¤. refì˜ `2>&1` ë³‘í•© substring ê·œì¹™ì„ ê·¸ëŒ€ë¡œ ì¬í˜„í•œë‹¤.
-- ê²€ì¦: **105 checked / 0 unexpected DIFF / 4 known-divergent**, exit 0.
+- ê²€ì¦: **108 checked / 0 unexpected DIFF / 4 known-divergent**, exit 0.
 
 ### ë‚¨ì€ ì°¨ì´(ì´ì§‘í•©)
 
@@ -846,3 +846,16 @@ nested_sum_200(~1.55Ã—) ë‘ ê°œì´ë©°, ë‘˜ ë‹¤ interpreterì˜ iterator/member-di
 ì§€ë°°í•œ ê²°ê³¼ë‹¤. dictëŠ” KeyMap ë²„ì¼“ ì²´ì¸ìœ¼ë¡œ 17.9msâ†’11.9ms ê°œì„  í›„ì—ë„ referenceì™€ ê²©ì°¨ê°€
 ë‚¨ëŠ”ë‹¤. ë‘ ì—´ìœ„ëŠ” ì»´íŒŒì¼ëŸ¬ ë ˆë²¨ì˜ loop specialization(range ê¸°ë°˜ forë¥¼ native counter
 ë£¨í”„ë¡œ ë‚®ì¶”ê¸°)ì´ í•„ìš”í•˜ê³ , ì´ëŠ” ë³„ë„ì˜ ì„¤ê³„ íŒë‹¨ì´ í•„ìš”í•œ ì‘ì—…ì´ë‹¤.
+
+## 2026-11 merge to main + Rust port fix
+
+- feature/rust-bytecode-vmÀÌ PR #1·Î main¿¡ ¸ÓÁöµÆ´Ù(cfecb6f). main¿¡´Â reference ÂÊ Ä¿¹Ô
+  µÎ °³µµ ÇÔ²² ¸ÓÁöµÆ´Ù(0ab82df http/ws native ¸ğµâ ¼öÁ¤, 802cdce playground sandbox
+  °­È­ + flow/http/ws Å×½ºÆ® Ãß°¡, Positive baseline 39 files / 1363 passed).
+- º´ÇÕ Á÷ÈÄ C# »êÃâ¹°ÀÌ staleÀÌ¶ó(1347 passed / 1 crash 'http.un') ÀçºôµåÇß°í(dotnet build -c Release)
+  ÀÌÈÄ reference´Â 39 / 1363 / 0 / 0 ±âÁØ¼±À» ¸¸Á·ÇÑ´Ù.
+- Rust Æ÷Æ®µµ µû¶ó¿Ô´Ù(D-066): http/ws Å¬¶óÀÌ¾ğÆ®ÀÇ UnTypeÀ» ÀÎ½ºÅÏ½º Å¸ÀÔ ÀÌ¸§°ú
+  registration key(http_client / web_socket)¿¡ ¸ÂÃç ¿¬°áÇÏ°í payload type_nameµµ °°ÀÌ ¹Ù²å´Ù.
+  ±×·¡¼­ test/unit/native/http.unÀÌ Rust Æ÷Æ®¿¡¼­µµ 16/16 byte-identicalÀ¸·Î Åë°úÇÑ´Ù.
+- °ËÁõ: scripts/differential.ps1 **108 checked / 0 unexpected DIFF / 4 known-divergent**,
+  cargo test --release 199 passed, cargo build --release ¿À·ù/°æ°í 0. src/main.unÀº unstaged À¯Áö.

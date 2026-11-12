@@ -606,17 +606,15 @@ inner ë¬¸ìžì—´ë§Œ ì €ìž¥í•˜ê³  CLIëŠ” `System.ArgumentOutOfRangeException: {mes
 - `http://`ì™€ `ws://`ë§Œ parity targetì´ë‹¤. ì—°ê²°/í•¸ë“œì…°ì´í¬ ì‹¤íŒ¨ëŠ” ì „ë¶€ ê°™ì€ ë¬¸êµ¬ë¡œ
   ë‹µí•œë‹¤(refused, DNS ì‹¤íŒ¨, timeout, TLS ìš”ì²­ í¬í•¨).
 
-## D-058 | `http_client`/`web_socket` ë©¤ë²„ í‘œëŠ” ë“±ë¡ë§Œ í•œë‹¤ | Accepted
+## D-058 | `http_client`/`web_socket` ë©¤ë²„ í‘œëŠ” ë“±ë¡ë§Œ í•œë‹¤ | Superseded by D-066
 
 - referenceì˜ `[NativeType]` ì´ë¦„ì€ `http_client`ì™€ `web_socket`ì´ê³  `Global.Init`ëŠ” ê·¸
   í‘œë¥¼ `originalClasses`ì—ë§Œ ë“±ë¡í•œë‹¤. `originalClasses`ëŠ” attribute lookupì´ ì°¸ê³ í•˜ëŠ”
   í‘œì´ì§€ `Global.GetAttr`ê°€ ì§ì ‘ ë³´ëŠ” í‘œê°€ ì•„ë‹ˆë‹¤.
 - ê°ì²´ì˜ íƒ€ìž… ì´ë¦„ì€ `http`ì™€ `socket`ì´ë¯€ë¡œ ë©¤ë²„ ì ‘ê·¼ì€ `'http' object has no attribute
   'get'` / `'socket' object has no attribute 'send'`ë¡œ ì‹¤íŒ¨í•˜ê³  `inspect.attr`ëŠ” `[]`ë‹¤.
-  `http_client()`ì™€ `web_socket()`ëŠ” `undefined variable`ì´ë‹¤(`[NativeType]`ì€ ì „ì—­
-  ìƒì„±ìžë¥¼ ë§Œë“¤ì§€ ì•ŠëŠ”ë‹¤).
 - ê·¸ëž˜ì„œ 16ê°œ http ë©¤ë²„ì™€ 4ê°œ ws ë©¤ë²„ëŠ” referenceì™€ ê°™ì€ ìƒíƒœë¡œ ë“±ë¡í•˜ë˜ Un ì½”ë“œì—ì„œ
-  ë„ë‹¬í•  ìˆ˜ ì—†ë‹¤.
+  ë„ë‹¬í•  ìˆ˜ ì—†ì—ˆë‹¤(**ë‹¨, 2026-11 `0ab82df`ì—ì„œ referenceê°€ ìˆ˜ì •ë˜ì–´ D-066ìœ¼ë¡œ ëŒ€ì²´ë¨**).
 
 ## D-059 | `random`ì˜ ê°’ì€ parity targetì´ ì•„ë‹ˆë‹¤ | Accepted
 
@@ -626,15 +624,30 @@ inner ë¬¸ìžì—´ë§Œ ì €ìž¥í•˜ê³  CLIëŠ” `System.ArgumentOutOfRangeException: {mes
   ê³µìœ  ìƒì„±ê¸°(ëª¨ë“ˆ í•¨ìˆ˜)ì™€ ê°ì²´ë³„ ìƒì„±ê¸°(`random()` ê°ì²´)ì˜ êµ¬ë³„, `seed`ê°€ ìƒì„±ê¸°ë¥¼
   êµì²´í•˜ëŠ” ì„±ì§ˆ, `Clone()`ì´ ìƒì„±ê¸° cellì„ ê³µìœ í•˜ëŠ” ì„±ì§ˆì€ ìž¬í˜„í•œë‹¤.
 
-## D-060 | http/wsì˜ request/frame I/OëŠ” parity ëŒ€ìƒì´ ì•„ë‹ˆë‹¤ | Accepted
+## D-060 | http/wsì˜ request/frame I/OëŠ” parity ëŒ€ìƒì´ ì•„ë‹ˆë‹¤ | Partially superseded by D-066
 
-- D-058 ë•Œë¬¸ì— ë©¤ë²„ê°€ ë„ë‹¬í•  ìˆ˜ ì—†ì–´ì„œ HTTP requestì™€ WebSocket frameì˜ ìž…ì¶œë ¥ì€ Un
-  ì½”ë“œì—ì„œ ê´€ì¸¡í•  ìˆ˜ ì—†ë‹¤. `test/**.un`ì˜ ì–´ë–¤ íŒŒì¼ë„ `http`/`ws`ë¥¼ `use`í•˜ì§€ ì•Šê³ 
-  `PlaygroundRunner.DefaultAllowed`ì—ë„ ì—†ë‹¤.
-- ê·¸ëž˜ì„œ ê²€ì¦ì€ probe suiteë¡œë§Œ í•œë‹¤(`p10\ws1..ws6.un` + `p10\http1..http7.un`,
-  **13 PASS / 0 DIFF**). probeëŠ” URI ê²€ì¦í‘œ, ì—°ê²° ì‹¤íŒ¨ ë¬¸êµ¬, ê°ì²´ì˜ íƒ€ìž…/display/
-  ë¹„êµ/`bool`, `inspect.attr`ë¥¼ referenceì™€ byte-identicalë¡œ ë¹„êµí•˜ê³ , frame ì†¡ìˆ˜ì‹ ì€
-  Node `ws` packageì˜ echo server(port 19085)ì— ëŒ€í•œ ì‹¤ì œ handshakeì™€ echoë¡œ í™•ì¸í•œë‹¤.
+- ~~D-058 ë•Œë¬¸ì— ë©¤ë²„ê°€ ë„ë‹¬í•  ìˆ˜ ì—†ì–´ì„œ HTTP requestì™€ WebSocket frameì˜ ìž…ì¶œë ¥ì€ Un
+  ì½”ë“œì—ì„œ ê´€ì¸¡í•  ìˆ˜ ì—†ë‹¤~~ â†’ **`0ab82df` ì´í›„ ë©¤ë²„ê°€ ë„ë‹¬ ê°€ëŠ¥í•´ì¡Œë‹¤(D-066).**
+  `test/unit/native/http.un`ì˜ ê²€ì¦ ê²½ë¡œ(ì¸ìž íƒ€ìž…Â·ì—°ê²° ê±°ë¶€ í¬íŠ¸)ì™€ `ws.connect`ì˜
+  ê²€ì¦ ê²½ë¡œê°€ Rust í¬íŠ¸ì—ì„œë„ byte-identicalë¡œ ë™ìž‘í•œë‹¤(http.un 16/16, differential
+  40/40 positive, exit 0).
+- ë‹¤ë§Œ frame/requestì˜ ì‹¤ì œ round tripì€ probe suiteë¡œë§Œ ê²€ì¦í•œë‹¤(`p10\ws1..ws6.un` +
+  `http1..http7.un`, **13 PASS / 0 DIFF**). frame ì†¡ìˆ˜ì‹ ì€ Node `ws` packageì˜
+  echo server(port 19085)ì— ëŒ€í•œ ì‹¤ì œ handshakeì™€ echoë¡œ í™•ì¸í•œë‹¤.
+
+## D-066 | http/ws ì¸ìŠ¤í„´ìŠ¤ íƒ€ìž… ì´ë¦„ì„ registration keyì™€ ë§žì¶˜ë‹¤ | Accepted
+
+- referenceê°€ `0ab82df`(2026-11, leeyj77O9)ë¡œ `http`â†’`http_client`, `socket`â†’`web_socket`ìœ¼ë¡œ
+  ì¸ìŠ¤í„´ìŠ¤ `UnType`ì„ ë°”ê¿” ë©¤ë²„ í‘œê°€ ë„ë‹¬ ê°€ëŠ¥í•´ì¡Œë‹¤. Rust í¬íŠ¸ë„ ë™ì¼í•˜ê²Œ
+  `obj_new("http_client")` / `obj_new("web_socket")`ìœ¼ë¡œ ì¸ìŠ¤í„´ìŠ¤ë¥¼ ë§Œë“¤ê³ , payload
+  `type_name` ë§¤í•‘ì„ `http_client` / `web_socket`ìœ¼ë¡œ ë°”ê¿¨ë‹¤.
+- ì´ì œ `client.get(1)` â†’ `error: expected url is string` ê°™ì€ ì¸ìž ê²€ì¦ ê²½ë¡œì™€
+  `client.set_header` / `clear_headers`ê°€ Un ì½”ë“œì—ì„œ ë™ìž‘í•˜ë©° `test/unit/native/http.un`ì´
+  differential byte-identicalì´ë‹¤(16/16 assertions).
+- error ë©”ì‹œì§€ì™€ `type()` displayì˜ íƒ€ìž… ì´ë¦„ì´ `http_client` / `web_socket`ìœ¼ë¡œ ë°”ë€Œì—ˆë‹¤
+  (referenceì™€ ë™ì¼).
+- ê²€ì¦: `scripts/differential.ps1` **108 checked / 0 unexpected DIFF / 4 known-divergent**,
+  `cargo test --release` 199 passed, `dotnet build -c Release` ì˜¤ë¥˜ 0 / ê²½ê³  0.
 
 ## D-061 | `[Native(Async = true)]`ëŠ” binderê°€ ë¬´ì‹œí•˜ê³ , `f43637f`ì˜ dead-code ì •ë¦¬ëŠ” Rustì— ì˜í–¥ì´ ì—†ë‹¤ | Accepted
 
@@ -683,43 +696,49 @@ inner ë¬¸ìžì—´ë§Œ ì €ìž¥í•˜ê³  CLIëŠ” `System.ArgumentOutOfRangeException: {mes
 
 ## D-064 | .NET compatible regex engine; char-based text instead of UTF-16 | Accepted
 
-- reference´Â `System.Text.RegularExpressions`ÀÇ backtracking ¿£ÁøÀ» ¾´´Ù. ÀÌ ¿£ÁøÀº
-  .NET ¾Ë°í¸®Áò(`RegexParser` ¡æ `RegexWriter` ¡æ `RegexInterpreter`)ÀÇ Ãæ½ÇÇÑ ÀÌ½ÄÀÌ´Ù:
-  °íÁ¤ ¿ë·® ¹è¿­(track/stack/crawl)°ú peek-after-pop ±Ô¾à, `Branchcount` loop armÀÌ mark¸¦
-  track¿¡ ÀúÀåÇÏ°í straight path´Â `[mark, count, -codepos]`·Î ÀúÀåÇÏ´Â ±ÔÄ¢,
-  `Backtrack()`ÀÇ negative marker = `BacktrackingSecond`(flag¸¦ ORÀÌ ¾Æ´Ï¶ó **±³Ã¼**),
-  `Matches()` enumeration(ºó ¸ÅÄ¡´Â ÇÑ ±ÛÀÚ bump, len¿¡¼­ ¸ØÃã), `Regex.Split`ÀÇ Ä¸Ã³
-  splice, `ScanDollar`(`$` expansion: ``, `..`´Â ÀüÃ¼ ÀÚ¸´¼ö ¼Òºñ + ½½·Ô
-  ¾øÀ¸¸é literal emission), `Escape`(`Regex.Escape`¿Í °°Àº metachar set)±îÁö ÀçÇöÇß´Ù.
-  node kind/opcode ¹øÈ£´Â .NET°ú µ¿ÀÏÇÏ´Ù.
-- ±¸Çö Áß ¹ß°ß¡¤¼öÁ¤ÇÑ ¿£Áø °áÇÔ(ÀüºÎ byte-identical Àç°ËÁõ):
-  `scan_group_open`ÀÇ Rust `break`°¡ loop ÀüÃ¼¸¦ Å»ÃâÇØ option groups¿Í expression
-  conditional(`(?(x)b)`)ÀÌ Ç×»ó `Unrecognized grouping construct.`°¡ µÇ´ø ±¸Á¶ ¿À·ù,
-  Ä«Å×°í¸® group resultÀÇ ÃÊ±â°ª(`false` ´ë½Å `true`·Î ½ÃÀÛÇØ ¸ðµç ¹®ÀÚ°¡ `\p{..}`¿¡
-  ¸ÅÄª), `NOT_SPACE_CONST`ÀÇ double negation(`\S`°¡ °ø¹é¿¡ ¸ÅÄª), Å¬·¡½º ³»ºÎ shorthand
-  (`[\D]`/`[\S]`/`[\W]`/`[\p{...}]`/`\-`)°¡ `ch`(=`\`)¸¦ ºñ±³ÇØ Ç×»ó ºÎÁ¤Àý·Î
-  ºüÁö´ø ¿À·ù, `[\b]`ÀÇ `_pos` ÀÌÁß rewinding, `Branchcount` track frame¿¡ mark°¡ ºüÁø
-  °Í, `backtrack()`ÀÇ `back |= BACKTRACKING_SECOND`(384)°¡ ¾î¶² arm¿¡µµ ¸ÂÁö ¾Ê¾Æ capture¸¦
-  º¹¿øÇÏÁö ¸øÇÏ°í `goto(31)` OOB panicÀ» ¸¸µé´ø ¹®Á¦, `is_true_quantifier`ÀÇ ³¡ÀÚ¶ô
-  OOB read(`a{2`¿¡¼­ panic).
-- °ËÁõ: probes 25Á¾ **25 PASS / 0 DIFF**(IO.write°¡ >0x7F¸¦ `?`·Î ÀÚ¸£´Â °Í±îÁö Æ÷ÇÔ),
+- referenceï¿½ï¿½ `System.Text.RegularExpressions`ï¿½ï¿½ backtracking ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½. ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+  .NET ï¿½Ë°ï¿½ï¿½ï¿½ï¿½ï¿½(`RegexParser` ï¿½ï¿½ `RegexWriter` ï¿½ï¿½ `RegexInterpreter`)ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½Ì½ï¿½ï¿½Ì´ï¿½:
+  ï¿½ï¿½ï¿½ï¿½ ï¿½ë·® ï¿½è¿­(track/stack/crawl)ï¿½ï¿½ peek-after-pop ï¿½Ô¾ï¿½, `Branchcount` loop armï¿½ï¿½ markï¿½ï¿½
+  trackï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Ï°ï¿½ straight pathï¿½ï¿½ `[mark, count, -codepos]`ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Ï´ï¿½ ï¿½ï¿½Ä¢,
+  `Backtrack()`ï¿½ï¿½ negative marker = `BacktrackingSecond`(flagï¿½ï¿½ ORï¿½ï¿½ ï¿½Æ´Ï¶ï¿½ **ï¿½ï¿½Ã¼**),
+  `Matches()` enumeration(ï¿½ï¿½ ï¿½ï¿½Ä¡ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ bump, lenï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½), `Regex.Split`ï¿½ï¿½ Ä¸Ã³
+  splice, `ScanDollar`(`$` expansion: ``, `..`ï¿½ï¿½ ï¿½ï¿½Ã¼ ï¿½Ú¸ï¿½ï¿½ï¿½ ï¿½Òºï¿½ + ï¿½ï¿½ï¿½ï¿½
+  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ literal emission), `Escape`(`Regex.Escape`ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ metachar set)ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ß´ï¿½.
+  node kind/opcode ï¿½ï¿½È£ï¿½ï¿½ .NETï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Ï´ï¿½.
+- ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ ï¿½ß°ß¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½(ï¿½ï¿½ï¿½ï¿½ byte-identical ï¿½ï¿½ï¿½ï¿½ï¿½):
+  `scan_group_open`ï¿½ï¿½ Rust `break`ï¿½ï¿½ loop ï¿½ï¿½Ã¼ï¿½ï¿½ Å»ï¿½ï¿½ï¿½ï¿½ option groupsï¿½ï¿½ expression
+  conditional(`(?(x)b)`)ï¿½ï¿½ ï¿½×»ï¿½ `Unrecognized grouping construct.`ï¿½ï¿½ ï¿½Ç´ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½,
+  Ä«ï¿½×°ï¿½ï¿½ï¿½ group resultï¿½ï¿½ ï¿½Ê±â°ª(`false` ï¿½ï¿½ï¿½ `true`ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½Ú°ï¿½ `\p{..}`ï¿½ï¿½
+  ï¿½ï¿½Äª), `NOT_SPACE_CONST`ï¿½ï¿½ double negation(`\S`ï¿½ï¿½ ï¿½ï¿½ï¿½é¿¡ ï¿½ï¿½Äª), Å¬ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ shorthand
+  (`[\D]`/`[\S]`/`[\W]`/`[\p{...}]`/`\-`)ï¿½ï¿½ `ch`(=`\`)ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½×»ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½, `[\b]`ï¿½ï¿½ `_pos` ï¿½ï¿½ï¿½ï¿½ rewinding, `Branchcount` track frameï¿½ï¿½ markï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½
+  ï¿½ï¿½, `backtrack()`ï¿½ï¿½ `back |= BACKTRACKING_SECOND`(384)ï¿½ï¿½ ï¿½î¶² armï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½Ê¾ï¿½ captureï¿½ï¿½
+  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½Ï°ï¿½ `goto(31)` OOB panicï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½, `is_true_quantifier`ï¿½ï¿½ ï¿½ï¿½ï¿½Ú¶ï¿½
+  OOB read(`a{2`ï¿½ï¿½ï¿½ï¿½ panic).
+- ï¿½ï¿½ï¿½ï¿½: probes 25ï¿½ï¿½ **25 PASS / 0 DIFF**(IO.writeï¿½ï¿½ >0x7Fï¿½ï¿½ `?`ï¿½ï¿½ ï¿½Ú¸ï¿½ï¿½ï¿½ ï¿½Í±ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½),
   differential suite 37 PASS / 0 DIFF, `cargo test --release` 199 passed, cargo build 0/0.
-- engineÀº BMP+astral Unicode category tableÀ» .NET numberingÀ¸·Î º´ÇÕÇØ ¾´´Ù.
-- **UTF-16 ´ë½Å Rust `char` ±â¹Ý**ÀÌ´Ù: .NETÀº pattern°ú inputÀ» UTF-16 code unitÀ¸·Î
-  ÀÐÀ¸¹Ç·Î astral ¹®ÀÚ°¡ surrogate 2°³·Î º¸ÀÌÁö¸¸, Rust ¿£ÁøÀº char ÇÏ³ª·Î º»´Ù. ±×·¡¼­
-  BMP literal/class´Â µ¿ÀÏÇÏÁö¸¸ astral ¹®ÀÚ¿¡ ´ëÇÑ ÀÏºÎ patternÀº ¹®ÀÚ°¡ 2°³Ã³·³
-  ¸ÅÄªµÇ´Â .NET°ú ´Ù¸£°Ô µ¿ÀÛÇÒ ¼ö ÀÖ´Ù(astral literalÀº category table·Î¸¸ ¸ÅÄª °¡´É).
-  ÇöÀç parity harness(probe/differential)¿¡´Â astral patternÀÌ ¾ø¾î ¹ÌÃøÁ¤.
-- case-insensitivity´Â .NETÀÇ culture-specific case equivalence tableÀÌ ¾Æ´Ï¶ó RustÀÇ
-  Unicode lowercase/uppercase/titlecase·Î ´Ü¼øÈ­Çß´Ù(Turkish I, Cyrillic culture Æ¯¼ö
-  ÄÉÀÌ½º´Â ´Ù¸§). POSIX `[:name:]`´Â .NETÃ³·³ literal ¹®ÀÚ ÁýÇÕÀ» ±â¿©ÇÏÁö ¾Ê´Â´Ù(probe·Î
-  È®ÀÎ): `[a[:alpha:]]`´Â literal `a`, `[`, `:`, `a`, `l`, `p`...¸¦ ÁØ´Ù.
-- `Escape`ÀÇ metachar setÀº `\t \n \f \r ' ' # $ ( ) * + . ? [ \ ^ { |`ÀÌ¸ç Á¦¾î ¹®ÀÚ´Â
-  `\t`/`\n`/`\r`/`\f`·Î espaceÇÑ´Ù(`Regex.Escape` ground truth).
-## D-065 | KeyMapÀº bucket-chained hash tableÀÌ´Ù(order À¯Áö) | Accepted
+- engineï¿½ï¿½ BMP+astral Unicode category tableï¿½ï¿½ .NET numberingï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½.
+- **UTF-16 ï¿½ï¿½ï¿½ Rust `char` ï¿½ï¿½ï¿½**ï¿½Ì´ï¿½: .NETï¿½ï¿½ patternï¿½ï¿½ inputï¿½ï¿½ UTF-16 code unitï¿½ï¿½ï¿½ï¿½
+  ï¿½ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ astral ï¿½ï¿½ï¿½Ú°ï¿½ surrogate 2ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½, Rust ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ char ï¿½Ï³ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½. ï¿½×·ï¿½ï¿½ï¿½
+  BMP literal/classï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ astral ï¿½ï¿½ï¿½Ú¿ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½Ïºï¿½ patternï¿½ï¿½ ï¿½ï¿½ï¿½Ú°ï¿½ 2ï¿½ï¿½Ã³ï¿½ï¿½
+  ï¿½ï¿½Äªï¿½Ç´ï¿½ .NETï¿½ï¿½ ï¿½Ù¸ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ ï¿½Ö´ï¿½(astral literalï¿½ï¿½ category tableï¿½Î¸ï¿½ ï¿½ï¿½Äª ï¿½ï¿½ï¿½ï¿½).
+  ï¿½ï¿½ï¿½ï¿½ parity harness(probe/differential)ï¿½ï¿½ï¿½ï¿½ astral patternï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½.
+- case-insensitivityï¿½ï¿½ .NETï¿½ï¿½ culture-specific case equivalence tableï¿½ï¿½ ï¿½Æ´Ï¶ï¿½ Rustï¿½ï¿½
+  Unicode lowercase/uppercase/titlecaseï¿½ï¿½ ï¿½Ü¼ï¿½È­ï¿½ß´ï¿½(Turkish I, Cyrillic culture Æ¯ï¿½ï¿½
+  ï¿½ï¿½ï¿½Ì½ï¿½ï¿½ï¿½ ï¿½Ù¸ï¿½). POSIX `[:name:]`ï¿½ï¿½ .NETÃ³ï¿½ï¿½ literal ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½â¿©ï¿½ï¿½ï¿½ï¿½ ï¿½Ê´Â´ï¿½(probeï¿½ï¿½
+  È®ï¿½ï¿½): `[a[:alpha:]]`ï¿½ï¿½ literal `a`, `[`, `:`, `a`, `l`, `p`...ï¿½ï¿½ ï¿½Ø´ï¿½.
+- `Escape`ï¿½ï¿½ metachar setï¿½ï¿½ `\t \n \f \r ' ' # $ ( ) * + . ? [ \ ^ { |`ï¿½Ì¸ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½Ú´ï¿½
+  `\t`/`\n`/`\r`/`\f`ï¿½ï¿½ espaceï¿½Ñ´ï¿½(`Regex.Escape` ground truth).
+## D-065 | KeyMapï¿½ï¿½ bucket-chained hash tableï¿½Ì´ï¿½(order ï¿½ï¿½ï¿½ï¿½) | Accepted
 
-- ±âÁ¸ `KeyMap`Àº `Vec<(hash, key, value)>`¸¦ ¸Å¹ø linear scanÇß´Ù(bucketÀÌ ¾ø¾ú´Ù). dict5000 º¥Ä¡¸¶Å©°¡ reference ´ëºñ ~10x ´À·È´Ù.
-- `entries: Vec<Entry>`(insertion-ordered store, `Entry { hash, key, value, used }`) + power-of-two `buckets`(head index) + `next`(chain link)·Î ¹Ù²å´Ù. Á¦°Å´Â tombstoneÀ¸·Î Ç¥½ÃÇÏ°í free list¸¦ `next`¿¡ threadingÇÏ¿© Àç»ç¿ëÇÑ´Ù ¡æ live entryÀÇ ¼ø¼­°¡ ¹Ù²îÁö ¾Ê°í, `remove`µµ ¼ø¼­¸¦ º¸Á¸ÇÑ´Ù.
-- duplicate key´Â find¿¡¼­ °¡Àå ÀÌ¸¥ index¸¦ ¹ÝÈ¯(Ã¹ »ðÀÔÀÌ get¿¡ ÀÀ´äÇÏ´Â ±âÁ¸ µ¿ÀÛ À¯Áö). bucket chainÀº head-prependÀÌ°í find´Â chainÀ» ³¡±îÁö º»´Ù(chain ±æÀÌ´Â Æò±Õ 1).
-- `Set`µµ °°Àº `KeyMap`À¸·Î backed Çß´Ù(value = `none`). member ÇÔ¼öµéÀº `try_insert`/`contains_key`/`get_key`/`remove`¸¦ ¾´´Ù.
-- °ËÁõ: cargo test 199/199, differential 37 PASS / 0 DIFF, negcmp 38/4(±âÁ¸ Â÷ÀÌ), wscmp 13/0, fullcmp 37/0. dict5000 17.9ms ¡æ ~9.3ms(ref ~6.1ms, loop-only´Â ¾çÂÊ parity). referenceº¸´Ù ´À¸° ³ª¸ÓÁö´Â interpreter dispatch overhead ¼öÁØÀÌ´Ù.
+- ï¿½ï¿½ï¿½ï¿½ `KeyMap`ï¿½ï¿½ `Vec<(hash, key, value)>`ï¿½ï¿½ ï¿½Å¹ï¿½ linear scanï¿½ß´ï¿½(bucketï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½). dict5000 ï¿½ï¿½Ä¡ï¿½ï¿½Å©ï¿½ï¿½ reference ï¿½ï¿½ï¿½ ~10x ï¿½ï¿½ï¿½È´ï¿½.
+- `entries: Vec<Entry>`(insertion-ordered store, `Entry { hash, key, value, used }`) + power-of-two `buckets`(head index) + `next`(chain link)ï¿½ï¿½ ï¿½Ù²ï¿½ï¿½. ï¿½ï¿½ï¿½Å´ï¿½ tombstoneï¿½ï¿½ï¿½ï¿½ Ç¥ï¿½ï¿½ï¿½Ï°ï¿½ free listï¿½ï¿½ `next`ï¿½ï¿½ threadingï¿½Ï¿ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Ñ´ï¿½ ï¿½ï¿½ live entryï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½Ù²ï¿½ï¿½ï¿½ ï¿½Ê°ï¿½, `remove`ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Ñ´ï¿½.
+- duplicate keyï¿½ï¿½ findï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½Ì¸ï¿½ indexï¿½ï¿½ ï¿½ï¿½È¯(Ã¹ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ getï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Ï´ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½). bucket chainï¿½ï¿½ head-prependï¿½Ì°ï¿½ findï¿½ï¿½ chainï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½(chain ï¿½ï¿½ï¿½Ì´ï¿½ ï¿½ï¿½ï¿½ 1).
+- `Set`ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ `KeyMap`ï¿½ï¿½ï¿½ï¿½ backed ï¿½ß´ï¿½(value = `none`). member ï¿½Ô¼ï¿½ï¿½ï¿½ï¿½ï¿½ `try_insert`/`contains_key`/`get_key`/`remove`ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½.
+- ï¿½ï¿½ï¿½ï¿½: cargo test 199/199, differential 37 PASS / 0 DIFF, negcmp 38/4(ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½), wscmp 13/0, fullcmp 37/0. dict5000 17.9ms ï¿½ï¿½ ~9.3ms(ref ~6.1ms, loop-onlyï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ parity). referenceï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ interpreter dispatch overhead ï¿½ï¿½ï¿½ï¿½ï¿½Ì´ï¿½.
+
+## D-066 | http/ws ï¿½Î½ï¿½ï¿½Ï½ï¿½ Å¸ï¿½ï¿½ ï¿½Ì¸ï¿½ï¿½ï¿½ registration keyï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ | Accepted
+
+- ï¿½ï¿½ï¿½ï¿½ `client.get(1)`ï¿½ï¿½`error: expected url is string` ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½Î¿ï¿½ `client.set_header`/`clear_headers`ï¿½ï¿½ Un ï¿½Úµå¿¡ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Ï¸ï¿½ `test/unit/native/http.un`ï¿½ï¿½ differential byte-identicalï¿½Ì´ï¿½(16/16 assertions).
+- error ï¿½Þ½ï¿½ï¿½ï¿½ï¿½ï¿½ `type()` displayï¿½ï¿½ Å¸ï¿½ï¿½ ï¿½Ì¸ï¿½ï¿½ï¿½ `http_client` / `web_socket`ï¿½ï¿½ï¿½ï¿½ ï¿½Ù²ï¿½ï¿½ï¿½ï¿½(referenceï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½).
+- ï¿½ï¿½ï¿½ï¿½: `scripts/differential.ps1` **108 checked / 0 unexpected DIFF / 4 known-divergent**, `cargo test --release` 199 passed, `dotnet build -c Release` ï¿½ï¿½ï¿½ï¿½ 0 / ï¿½ï¿½ï¿½ 0.

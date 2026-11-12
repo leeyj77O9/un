@@ -18,9 +18,9 @@
 
 - **C# 소스는 reference(gold standard)다. 수정하지 않는다.** 의미론의 근거는 `src/`다.
 - **검증**: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/differential.ps1`
-  — MANIFEST의 37개 positive 파일, negative 42행, regex probes 25개, `help`를 두 엔진에서
-  실행해 stdout/exit code를 비교한다(105 checked / 0 unexpected DIFF; 문서화된 차이 4개는
-  KNOWN-DIFF로 기록).
+  — MANIFEST의 40개 positive 파일(2026-11 기준, http/ws/flow 포함), negative 42행,
+  regex probes 25개, `help`를 두 엔진에서 실행해 stdout/exit code를 비교한다(108 checked /
+  0 unexpected DIFF; 문서화된 차이 4개는 KNOWN-DIFF로 기록).
 - **빌드**: `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml`
   (`stable-x86_64-pc-windows-gnu` toolchain 필수 — MSVC linker가 없다). 새 warning을 추가하지 않는다.
 - **`src/main.un`은 사용자의 스크래치 파일**이다. 테스트/제품 진입점이 아니며, 에이전트는
