@@ -24,6 +24,18 @@
 //! The caller writes the input buffers with `playground_alloc`, reads the result
 //! into a UTF-8 string of `out_len` bytes, then frees both buffers and the result.
 //!
+//! Required imports (`wasm32-unknown-unknown` has no OS clock):
+//!
+//! ```text
+//! env.unvm_monotonic_nanos() -> f64   // e.g. performance.now() * 1e6
+//! env.unvm_unix_nanos()      -> f64   // e.g. Date.now() * 1e6
+//! ```
+//!
+//! Instantiating `unvm_playground.wasm` without these fails at link time; a host
+//! that returns NaN/negative values falls back to a counter / the epoch. This is
+//! what lets `time.stopwatch()`, `time.now()`, `time.monotonic*()`, and
+//! `random()`'s seed see real time instead of trapping.
+//!
 //! Interactive `read()`: the web playground replays the whole script with the
 //! input lines gathered so far as `stdin`. when the script calls `read()` and no
 //! replayed line remains, the run aborts with a `need_input` panic and the JSON

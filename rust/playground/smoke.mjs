@@ -1,5 +1,8 @@
 // Smoke test for unvm_playground.wasm ??loads the module with the documented ABI
 // and runs the fixture scripts through it.
+// The wasm imports the host's clock (no OS clock in wasm32-unknown-unknown):
+//   env.unvm_monotonic_nanos() -> f64 nanoseconds, e.g. performance.now() * 1e6
+//   env.unvm_unix_nanos()      -> f64 nanoseconds, e.g. Date.now() * 1e6
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -7,7 +10,13 @@ const repoRoot = new URL("../..", import.meta.url).pathname.replace(/^\/([A-Za-z
 const wasmPath = join(repoRoot, "rust", "target", "wasm32-unknown-unknown", "release", "unvm_playground.wasm");
 const bytes = await readFile(wasmPath);
 
-const { instance } = await WebAssembly.instantiate(bytes, {});
+const imports = {
+    env: {
+        unvm_monotonic_nanos: () => performance.now() * 1e6,
+        unvm_unix_nanos: () => Date.now() * 1e6,
+    },
+};
+const { instance } = await WebAssembly.instantiate(bytes, imports);
 const exp = instance.exports;
 
 if (typeof exp.playground_alloc !== "function") throw new Error("playground_alloc export missing");
@@ -96,6 +105,14 @@ expect("replayed stdin exit code", r7.exitCode, 0);
 const r8 = run("use io\nname = io.read(\"Name: \")\nio.write(\"hi\", name)", { allowEof: true });
 expect("allowEof reads empty line", r8.needsInput, false);
 expect("allowEof stdout", r8.stdout, "Name: hi \n");
+
+const r9 = run("use io\nuse time\nsw = time.stopwatch()\nsw.start()\nsw.stop()\nio.write(sw.ms() >= 0)");
+expect("stopwatch exit code", r9.exitCode, 0);
+expect("stopwatch runs on host clock", r9.stdout, "true\n");
+
+const r10 = run("use io\nuse time\nio.write(time.epoch() > 0)");
+expect("time.epoch exit code", r10.exitCode, 0);
+expect("time.epoch is positive", r10.stdout, "true\n");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

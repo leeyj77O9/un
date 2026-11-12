@@ -7,19 +7,32 @@
 //!
 //! - other targets: `Instant` for the monotonic source (the same role the reference's
 //!   process clock plays), `SystemTime` for the wall clock;
-//! - `wasm32-unknown-unknown`: a strictly increasing counter (one nanosecond per
-//!   call) for the monotonic source, the Unix epoch (`0`) for the wall clock, and a
-//!   no-op `sleep`. Deterministic and incapable of trapping, which is the point.
+//! - `wasm32-unknown-unknown`: the host page supplies the clock through two `env`
+//!   imports (`unvm_monotonic_nanos` / `unvm_unix_nanos`, nanoseconds as f64). A host
+//!   that returns NaN or a negative value falls back to a counter / the epoch; a host
+//!   that cannot supply them must at least provide functions, because instantiation
+//!   fails at link time without them. `sleep` stays a no-op.
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod imp {
     use std::cell::Cell;
 
+    // `wasm32-unknown-unknown` has no clock, so the host page supplies one. Both
+    // imports are mandatory: instantiating `unvm_playground.wasm` without
+    // `env.unvm_monotonic_nanos` / `env.unvm_unix_nanos` fails at link time, and
+    // a returned NaN or negative value falls back to the counter. nanoseconds as
+    // f64 stays exact up to 2^53 ns (~104 days).
+    #[link(wasm_import_module = "env")]
+    extern "C" {
+        fn unvm_monotonic_nanos() -> f64;
+        fn unvm_unix_nanos() -> f64;
+    }
+
     thread_local! {
         static TICK: Cell<u64> = const { Cell::new(1) };
     }
 
-    pub fn monotonic_nanos() -> u64 {
+    fn counter_nanos() -> u64 {
         TICK.with(|t| {
             let now = t.get();
             t.set(now + 1);
@@ -27,19 +40,28 @@ mod imp {
         })
     }
 
+    fn host(f: unsafe extern "C" fn() -> f64) -> Option<u64> {
+        let value = unsafe { f() };
+        if value.is_finite() && value > 0.0 {
+            Some(value as u64)
+        } else {
+            None
+        }
+    }
+
+    pub fn monotonic_nanos() -> u64 {
+        host(unvm_monotonic_nanos).unwrap_or_else(counter_nanos)
+    }
+
     pub fn unix_nanos() -> u64 {
-        0
+        host(unvm_unix_nanos).unwrap_or(0)
     }
 
     pub fn sleep_ms(_milliseconds: u64) {}
 
     /// a seed that differs on every call, so `random()` does not repeat across calls.
     pub fn seed_nanos() -> u64 {
-        TICK.with(|t| {
-            let now = t.get();
-            t.set(now + 1);
-            now.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        })
+        monotonic_nanos().wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(counter_nanos())
     }
 }
 
