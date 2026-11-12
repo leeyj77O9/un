@@ -1,0 +1,1 @@
+class vec2	x = 0.0	y = 0.0	get point -> (self.x, self.y)	set x = float(value) 		fn __init__(x, y)		self.x = x		self.y = yuse iov = vec2(3, 4)v.x = "0.1"io.write(v.point)
