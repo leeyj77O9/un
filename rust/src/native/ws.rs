@@ -1,10 +1,9 @@
 //! `Un.Native.Ws` and `Un.Object.Web.WebSocket` — the native `ws` module and the socket
 //! object.
 //!
-//! the socket's `UnType` is `socket`, while its `[NativeType]` name is `web_socket`, so the
-//! reference never finds the member table: every member access on the object answers
-//! `'socket' object has no attribute 'send'`. the 4 members are registered under the
-//! `web_socket` key exactly as `Global.BuildNativeMap` does, and stay unreachable.
+//! the socket's `UnType` is `web_socket` (aligned with its `[NativeType]` registration
+//! key in the reference), so member lookup resolves the 4 members registered under the
+//! `web_socket` key, matching the reference's behavior after the C# fix.
 //!
 //! `wss` is out of scope, so the scheme check answers the connect failure text.
 
@@ -55,7 +54,7 @@ fn connect_impl(scope: &Scope) -> Obj {
     }
 
     match net::ws_connect(&uri) {
-        Ok(state) => obj::obj_new("socket", Payload::WebSocket(Rc::new(RefCell::new(state)))),
+        Ok(state) => obj::obj_new("web_socket", Payload::WebSocket(Rc::new(RefCell::new(state)))),
         Err(message) => obj::err(message),
     }
 }

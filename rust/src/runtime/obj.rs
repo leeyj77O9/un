@@ -59,12 +59,13 @@ pub enum Payload {    Plain,
     /// from the same sequence.
     Random(Rc<RefCell<crate::native::random::Rng>>),
     /// `HttpClient` — the client object, the `Value` of the reference's
-    /// `Ref<System.Net.Http.HttpClient>`. the `http_client` member table is unreachable,
-    /// because the object's type name is `http`.
+    /// `Ref<System.Net.Http.HttpClient>`. reachable as `http_client`, matching the
+    /// reference's `[NativeType]` registration key (fixed in the C# reference to
+    /// match the instance type name).
     HttpClient(Rc<RefCell<crate::native::net::HttpState>>),
     /// `WebSocket` — the socket object, the `Value` of the reference's
-    /// `Ref<ClientWebSocket>`. the `web_socket` member table is unreachable, because the
-    /// object's type name is `socket`.
+    /// `Ref<ClientWebSocket>`. reachable as `web_socket`, matching the
+    /// reference's `[NativeType]` registration key.
     WebSocket(Rc<RefCell<crate::native::net::WsState>>),
     /// every collection payload is a shared cell, so `b = a` keeps `b` and `a`
     /// looking at the same items, exactly like the reference's `Ref<T>` cells.
@@ -1061,8 +1062,8 @@ pub fn class_name(o: &Obj) -> &'static str {
         Payload::Stopwatch(..) => "Stopwatch",
         Payload::Stream(..) => "Stream",
         Payload::Random(..) => "Random",
-        Payload::HttpClient(..) => "HttpClient",
-        Payload::WebSocket(..) => "WebSocket",
+        Payload::HttpClient(..) => "http_client",
+        Payload::WebSocket(..) => "web_socket",
         Payload::Future(..) => "Future",
         Payload::Pool(..) => "Pool",
         Payload::Lock(..) => "Lock",

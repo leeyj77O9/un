@@ -1,10 +1,9 @@
 //! `Un.Native.Http` and `Un.Object.Web.HttpClient` — the native `http` module and the
 //! `http` client object.
 //!
-//! the client's `UnType` is `http`, while its `[NativeType]` name is `http_client`, so the
-//! reference never finds the member table: every member access on the object answers
-//! `'http' object has no attribute 'get'`. the 16 members are registered under the
-//! `http_client` key exactly as `Global.BuildNativeMap` does, and stay unreachable.
+//! the client's `UnType` is `http_client` (aligned with its `[NativeType]` registration
+//! key in the reference), so member lookup resolves the 16 members registered under the
+//! `http_client` key, matching the reference's behavior after the C# fix.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -211,7 +210,7 @@ fn options_impl(scope: &Scope) -> Obj {
 
 fn connect_impl(_scope: &Scope) -> Obj {
     obj::obj_new(
-        "http",
+        "http_client",
         Payload::HttpClient(Rc::new(RefCell::new(HttpState {
             headers: Vec::new(),
         }))),
@@ -259,8 +258,7 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
 }
 
 /// `Un.Object.Web.HttpClient`'s `[Native]` member table, the `Global.originalClasses` entry of
-/// the `http_client` type. the object's type name is `http`, so the reference and the Rust
-/// runtime never look up this table.
+/// the `http_client` type. the object's type name is `http_client`, so member lookup resolves it.
 pub fn client_members(closure: &Context) -> Vec<(String, Obj)> {
     let one = || vec![arg("url", true, false, false)];
     let two = || vec![arg("url", true, false, false), arg("body", true, false, false)];
