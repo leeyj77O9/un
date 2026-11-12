@@ -42,11 +42,21 @@ fn dispatch() {
         Some("dis") => dis(&args[1..]),
         Some("run") => run(&args[1..]),
         Some("compile") => compile(&args[1..]),
-        _ => {
-            eprintln!("usage: unvm <tokens|ast|desugar|opt|dis|run|compile> <file>");
-            exit(2);
+        Some("help") => print_help(),
+        None => print_help(),
+        Some(cmd) => {
+            // the reference prints `Unknown command: {cmd}` then the same Help block, exit 0
+            print!("Unknown command: {cmd}{}", nl());
+            print_help();
         }
     }
+}
+
+/// the reference's `PrintHelp` — `Help:` then `  un run <file.un>` on stdout with
+/// `Environment.NewLine` endings, exit 0
+fn print_help() {
+    print!("Help:{}", nl());
+    print!("  un run <file.un>{}", nl());
 }
 
 fn read_source(path: &str) -> Source {
@@ -242,8 +252,9 @@ fn print_node(node: &Node, source: &Source, depth: usize) {
 
 fn run(args: &[String]) {
     if args.is_empty() {
-        eprintln!("usage: unvm run <file>");
-        exit(2);
+        // the reference prints `Usage: un run <file>` to stdout, exit 0
+        print!("Usage: un run <file>{}", nl());
+        exit(0);
     }
 
     // `Global.Init(Environment.CurrentDirectory)`, the root of module search
