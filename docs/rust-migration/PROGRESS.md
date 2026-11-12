@@ -685,9 +685,13 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
 `ebde101`(binding 없는 `for`), `63cab26`(set literal과 `Set.In`), `42fd0bf`(`atomic`),
 `4941988`(`time`), `f43637f`(dead-code 정리).
 
-- **Phase 19a** set literal ✓: `[1, 2, 3]`은 list가 아니라 set이다. 같은 `code_container`가
-  `MAKE_SET`을 쓰고, 리터럴이 set cell을 만든다. `in`은 `HashSet.Contains`와 같은 comparer
-  (`key_eq`)를 쓴다. `test/unit/native/set.un`의 `1 in set`이 true다.
+- **Phase 19a** set literal ✓: set 리터럴의 문법은 `{1, 2, 3}`이고 `[1, 2, 3]`은 list로
+  남는다. reference는 `{`를 여는 표현식에서 첫 `:`이 없으면 `NodeKind.Set`을 만들 수 있었지만
+  평가 케이스가 없어서 `unsupported node kind Set`로 실패했고, `63cab26`이 `EvalSet`을 추가했다.
+  Rust는 같은 `code_container`가 `MAKE_SET`을 쓰므로 이미 평가되고 있었고, Port한 것은 set
+  membership이다. 비어 있는 중괄호 `{}`와 `:`이 있는 중괄호 `{"a": 1}`은 dict로 남는다.
+  `in`은 `HashSet.Contains`와 같은 comparer(`key_eq`)를 쓴다. `test/unit/native/set.un`의
+  `1 in set`이 true다.
 - **Phase 19b** binding 없는 `for` ✓: `for expr`은 헤더가 `[Wildcard(iterable), expr, body]`로
   parse되고, compiler의 `NodeKind::Wildcard` target arm이 iterator를 pop한다. `for _ in x`와
   같은 경로다.
