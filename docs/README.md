@@ -590,9 +590,9 @@ Un/
 |   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm.rs / module.rs
 |   |   |-- runtime/         (obj, collections, iters, function, world, scope, date, ...)
 |   |   |-- native/          (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
-|   |   `-- main.un          (personal scratch; not a product entry point)
 |   |-- playground/          (WASM entry point, target of un-playground)
 |   `-- target/              (generated build output, gitignored)
+|-- main.un                 (user's scratch; untracked)
 |-- test/                  (.un test scripts and fixtures)
 |   |-- unit/            (unit/lexer, unit/parser, unit/runtime, unit/native)
 |   |-- integration/
@@ -605,7 +605,7 @@ Un/
 |   `-- assert.un        (assert module)
 |-- scripts/             (test.ps1, bench.ps1)
 |-- bench/               (benchmark scripts, bench/node/, bench/results/)
-`-- bin/, obj/             (generated build output, gitignored)
+`-- docs/                (production docs; rust-migration/ keeps the port history)
 ```
 
 ## Examples

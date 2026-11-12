@@ -583,9 +583,9 @@ Un/
 |   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm.rs / module.rs
 |   |   |-- runtime/         (obj, collections, iters, function, world, scope, date, ...)
 |   |   |-- native/          (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
-|   |   `-- main.un          (개인 스크래치; 제품 진입점 아님)
 |   |-- playground/          (WASM 진입점, un-playground 재빌드 대상)
 |   `-- target/              (생성된 빌드 산출물, gitignore)
+|-- main.un                 (사용자의 스크래치; 추적하지 않음)
 |-- test/                  (.un 테스트 스크립트와 픽스처)
 |   |-- unit/            (unit/lexer, unit/parser, unit/runtime, unit/native)
 |   |-- integration/
@@ -598,7 +598,7 @@ Un/
 |   `-- assert.un        (assert 실행 검사)
 |-- scripts/             (test.ps1, bench.ps1)
 |-- bench/               (벤치마크 스크립트, bench/node/, bench/results/)
-`-- bin/, obj/           (생성된 빌드 산출물, gitignore)
+`-- docs/                (프로덕션 문서; rust-migration/에 Rust 포트 역사 보존)
 ```
 
 ## 예제

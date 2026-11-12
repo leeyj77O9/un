@@ -19,21 +19,22 @@
 문서화되어 있다. 현재 디렉터리를 참고:
 
 ```text
-C:\dev\un\rust/
-├─ Cargo.toml            # unvm 라이브러리 + unvm CLI + unvm-playground workspace
-├─ src/
-│  ├─ main.rs             # CLI 진입점 (run/compile/tokens/ast/desugar/opt/dis/help)
-│  ├─ lib.rs
-│  ├─ bytecode/           # Op(explicit #[repr(u8)]), Instruction, Program, Proto, unbc
-│  ├─ lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm.rs / module.rs
-│  ├─ runtime/            # obj, collections, iters, function, world, scope, date, ...
-│  ├─ native/             # io, fs, re, math, iter, ... (`native::init`에서 명시적 등록)
-│  ├─ playground/         # WASM 진입점 (PlaygroundRunner.RunCode 대응)
-│  └─ main.un             # 개인 스크래치; 제품 진입점 아님
-└─ target/               # 빌드 산출물 (gitignore)
+C:\dev\un/
+├─ rust/
+│  ├─ Cargo.toml            # unvm 라이브러리 + unvm CLI + unvm-playground workspace
+│  ├─ src/
+│  │  ├─ main.rs             # CLI 진입점 (run/compile/tokens/ast/desugar/opt/dis/help)
+│  │  ├─ lib.rs
+│  │  ├─ bytecode/           # Op(explicit #[repr(u8)]), Instruction, Program, Proto, unbc
+│  │  ├─ lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm.rs / module.rs
+│  │  ├─ runtime/            # obj, collections, iters, function, world, scope, date, ...
+│  │  ├─ native/             # io, fs, re, math, iter, ... (`native::init`에서 명시적 등록)
+│  │  └─ playground/         # WASM 진입점 (PlaygroundRunner.RunCode 대응)
+│  └─ target/               # 빌드 산출물 (gitignore)
+└─ main.un                 # 사용자의 스크래치; 추적하지 않음
 ```
 
-- **`src/main.un`은 사용자의 스크래치 파일**이다. 테스트/제품 진입점이 아니며, 에이전트는
+- **`main.un`은 사용자의 스크래치 파일**이다. 테스트/제품 진입점이 아니며, 에이전트는
   이 파일을 수정하거나 스테이징하지 않는다.
 - **`Op` enum은 explicit `#[repr(u8)]`로 고정**되어 있다. opcode 값을 바꾸면 `.unbc`가 깨진다.
 - **외부 crate 의존성은 없다**(표준 라이브러리만 사용). 새 의존성은 정말 필요할 때만 추가한다.
