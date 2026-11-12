@@ -2,8 +2,8 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
 
+use crate::runtime::clock;
 use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload, StopwatchState};
 use crate::runtime::scope::{self, Scope};
@@ -90,20 +90,7 @@ fn elapsed_ticks(state: &StopwatchState) -> i64 {
 
 /// the current tick count, the .NET ticks are 100 ns.
 fn now_ticks() -> i64 {
-    let started = START.with(|s| *s.borrow());
-    started.elapsed().as_nanos() as i64 / 100
-}
-
-/// `Environment.TickCount64` in the reference: the whole milliseconds since the process
-/// started. `time.monotonic` / `time.monotonic_ms` read it, so the process clock is the
-/// monotonic source, unaffected by system clock changes.
-pub fn elapsed_ms() -> i64 {
-    START.with(|s| s.borrow().elapsed().as_millis() as i64)
-}
-
-thread_local! {
-    /// the moment the process started, the tick counts are relative to it
-    static START: RefCell<Instant> = RefCell::new(Instant::now());
+    (clock::monotonic_nanos() / 100) as i64
 }
 
 fn start(scope: &Scope) -> Obj {

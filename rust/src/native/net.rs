@@ -9,7 +9,6 @@
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpStream;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::random::Rng;
 
@@ -361,12 +360,7 @@ pub struct WsState {
 
 /// a value seeded from the system clock, the mask key and the handshake key.
 fn random_bytes(count: usize) -> Vec<u8> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-
-    let mut rng = Rng::new(nanos);
+    let mut rng = Rng::new(crate::runtime::clock::seed_nanos());
     let mut bytes = Vec::new();
     for _ in 0..count {
         bytes.push((rng.next_u64() & 0xFF) as u8);

@@ -183,12 +183,7 @@ fn linesep_impl(_scope: &Scope) -> Obj {
 fn tick_count_impl(_scope: &Scope) -> Obj {
     // `Environment.TickCount64` is the uptime of the machine, the Rust runtime has no
     // portable form of it, so the epoch milliseconds are used (D-051)
-    obj::int(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0),
-    )
+    obj::int(crate::runtime::clock::unix_millis())
 }
 
 fn get_call_depth_impl(_scope: &Scope) -> Obj {

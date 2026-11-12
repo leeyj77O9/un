@@ -8,7 +8,6 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::runtime::collections;
 use crate::runtime::context::Context;
@@ -88,12 +87,10 @@ fn with_gen<T>(scope: &Scope, f: impl FnOnce(&mut Rng) -> T) -> T {
 /// `new Random()` — the generator object, seeded from the system clock like the
 /// reference's parameterless `System.Random`.
 pub fn rng_obj() -> Obj {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-
-    obj::obj_new("random", Payload::Random(Rc::new(RefCell::new(Rng::new(nanos)))))
+    obj::obj_new(
+        "random",
+        Payload::Random(Rc::new(RefCell::new(Rng::new(crate::runtime::clock::seed_nanos())))),
+    )
 }
 
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {

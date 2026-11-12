@@ -1,8 +1,6 @@
 //! `Un.Native.Time` — the native `time` module.
 
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
+use crate::runtime::clock;
 use crate::runtime::context::Context;
 use crate::runtime::date;
 use crate::runtime::obj::{self, Obj, Payload};
@@ -78,15 +76,13 @@ fn sleep_impl(scope: &Scope) -> Obj {
         }
     };
 
-    thread::sleep(Duration::from_millis(ms as u64));
+    clock::sleep_ms(ms.max(0) as u64);
     obj::none()
 }
 
 fn now_impl(_scope: &Scope) -> Obj {
-    let now = SystemTime::now();
-    let duration = now.duration_since(UNIX_EPOCH).unwrap_or_default();
     // the .NET ticks count from 0001-01-01
-    let ticks = date::unix_epoch_ticks() + (duration.as_nanos() / 100) as i64;
+    let ticks = date::unix_epoch_ticks() + (clock::unix_nanos() / 100) as i64;
 
     obj::date_obj(ticks)
 }
@@ -101,14 +97,12 @@ fn utc_now_impl(scope: &Scope) -> Obj {
 
 /// `Time.Epoch()` — `DateTimeOffset.UtcNow.ToUnixTimeSeconds()`.
 fn epoch_impl(_scope: &Scope) -> Obj {
-    let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    obj::int(duration.as_secs() as i64)
+    obj::int(clock::unix_secs())
 }
 
 /// `Time.EpochMs()` — `DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()`.
 fn epoch_ms_impl(_scope: &Scope) -> Obj {
-    let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    obj::int(duration.as_millis() as i64)
+    obj::int(clock::unix_millis())
 }
 
 /// `Time.FromEpoch(seconds)` — `DateTimeOffset.FromUnixTimeSeconds(s).LocalDateTime`.
@@ -140,14 +134,14 @@ fn from_epoch_ms_impl(scope: &Scope) -> Obj {
 
 /// `Time.Monotonic()` — `Environment.TickCount64 / 1000.0`. the tick count is the
 /// milliseconds since the process started, so the runtime's process clock (the same
-/// `Instant` the stopwatch measures from) is the monotonic source.
+/// clock the stopwatch measures from) is the monotonic source.
 fn monotonic_impl(_scope: &Scope) -> Obj {
-    obj::float(crate::native::stopwatch::elapsed_ms() as f64 / 1000.0)
+    obj::float(clock::monotonic_ms() as f64 / 1000.0)
 }
 
 /// `Time.MonotonicMs()` — `Int.From(Environment.TickCount64)`.
 fn monotonic_ms_impl(_scope: &Scope) -> Obj {
-    obj::int(crate::native::stopwatch::elapsed_ms())
+    obj::int(clock::monotonic_ms())
 }
 
 /// the `Stopwatch` object of the reference: it starts when it is created.

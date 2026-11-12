@@ -2,6 +2,7 @@
 //! interning registries of `Global`, and the primitive `Int` / `Float` / `Str` /
 //! `Bool` / `Date` semantics.
 
+pub mod clock;
 pub mod collections;
 pub mod context;
 pub mod date;
