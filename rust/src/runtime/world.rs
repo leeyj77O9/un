@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use crate::ast::Node;
@@ -72,6 +72,13 @@ pub struct World {
     loading: HashSet<String>,
     /// `Global.MAXRECURSIONDEPTH` — the recursion limit of the function calls.
     max_recursion_depth: usize,
+    /// the playground stdin buffer. the browser replays the whole script with the
+    /// lines gathered so far, so this is a queue of lines, `None` when no buffer was
+    /// installed (the CLI reads the real stdin).
+    stdin: Option<VecDeque<String>>,
+    /// `UnInterop._allowEof` — `true` when `read()` at end of input returns `""`
+    /// instead of raising the `need_input` abort.
+    allow_eof: bool,
 }
 
 impl World {
@@ -106,6 +113,8 @@ impl World {
             module_cache: HashMap::new(),
             loading: HashSet::new(),
             max_recursion_depth: crate::runtime::function::MAX_RECURSION_DEPTH,
+            stdin: None,
+            allow_eof: false,
         }
     }
 }
@@ -477,6 +486,61 @@ pub fn log_text() -> String {
 
 pub fn log_clear() {
     WORLD.with(|w| w.borrow().log.borrow_mut().clear());
+}
+
+// ---------------------------------------------------------------------------
+// playground stdin — the browser installs a replay buffer with `set_stdin`
+// ---------------------------------------------------------------------------
+
+/// `Native.IO.SetStdin` — installs the lines `read()` pops, replaying `\n`-joined
+/// input. a trailing newline is added when missing, like the reference's
+/// `MemoryStream` wrap, and a trailing `\r` is dropped per line (`ReadLine`).
+/// an empty buffer is still a buffer: `read()` sees EOF, not the real stdin.
+pub fn set_stdin(input: &str) {
+    WORLD.with(|w| {
+        let mut w = w.borrow_mut();
+        let text = if input.is_empty() || input.ends_with('\n') {
+            input.to_owned()
+        } else {
+            format!("{input}\n")
+        };
+        w.stdin = Some(
+            text.lines()
+                .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+                .collect(),
+        );
+    });
+}
+
+/// `UnInterop.SetAllowEof` — at stdin EOF `read()` returns `""` instead of the
+/// `need_input` abort the browser catches to ask for the next line.
+pub fn set_allow_eof(allowed: bool) {
+    WORLD.with(|w| w.borrow_mut().allow_eof = allowed);
+}
+
+pub fn allow_eof() -> bool {
+    WORLD.with(|w| w.borrow().allow_eof)
+}
+
+/// the result of `read()` consuming the playground stdin buffer. `NotSet` means no
+/// buffer was installed and the caller should fall back to the real stdin.
+pub enum StdinLine {
+    Line(String),
+    Eof,
+    NotSet,
+}
+
+pub fn stdin_next_line() -> StdinLine {
+    WORLD.with(|w| {
+        let mut w = w.borrow_mut();
+        match &mut w.stdin {
+            None => StdinLine::NotSet,
+            Some(buffer) => buffer
+                .pop_front()
+                .map(StdinLine::Line)
+                .unwrap_or(StdinLine::Eof),
+        }
+    })
 }
 
 pub fn set_class(name: &str, obj: Obj) {

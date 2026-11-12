@@ -161,12 +161,32 @@ fn read_impl(scope: &Scope) -> Obj {
 
     let prompt = if obj::is_none(&prompt) { obj::str("") } else { prompt };
 
+    let prompt_text = match obj::payload(&prompt) {
+        Payload::Str(s) => s.to_string(),
+        _ => String::new(),
+    };
+
     match write_text(&prompt) {
         Ok(()) => {}
         Err(e) => return e,
     }
 
     world::flush_stdout();
+
+    match world::stdin_next_line() {
+        world::StdinLine::Line(line) => return obj::str(&line),
+        world::StdinLine::Eof => {
+            if world::allow_eof() {
+                // the reference returns `Str.From(cr?.ReadLine() ?? "")` at EOF
+                return obj::str("");
+            }
+            // the browser aborts the run here and replays with the next line
+            // appended; the VM lets `Panic` through untouched (`catch` / `try`
+            // only intercept `Error`)
+            return obj::panic("need_input", prompt_text);
+        }
+        world::StdinLine::NotSet => {}
+    }
 
     let mut line = String::new();
     if io::stdin().read_line(&mut line).is_err() {

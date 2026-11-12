@@ -1,4 +1,4 @@
-//! `unvm-playground` — the WASM entry point of the Un sandbox.
+//! `unvm-playground` ??the WASM entry point of the Un sandbox.
 //!
 //! `PlaygroundRunner.RunCode` of the reference C# implementation, ported to Rust:
 //! it runs a script against an in-memory file system with a fixed module allowlist,
@@ -16,11 +16,19 @@
 //! playground_run(code_ptr: *const u8, code_len: usize,
 //!                file_ptr: *const u8, file_len: usize,
 //!                allowed_ptr: *const u8, allowed_len: usize,   // newline-separated names; empty = default
-//!                out_len: *mut usize) -> *mut u8                 // NUL-free; length in out_len
+//!                stdin_ptr: *const u8, stdin_len: usize,       // replayed input, '\n'-joined; may be empty
+//!                allow_eof: i32,                               // nonzero: at stdin EOF `read()` returns ""
+//!                out_len: *mut usize) -> *mut u8               // NUL-free; length in out_len
 //! ```
 //!
-//! The caller writes the two input buffers with `playground_alloc`, reads the result
+//! The caller writes the input buffers with `playground_alloc`, reads the result
 //! into a UTF-8 string of `out_len` bytes, then frees both buffers and the result.
+//!
+//! Interactive `read()`: the web playground replays the whole script with the
+//! input lines gathered so far as `stdin`. when the script calls `read()` and no
+//! replayed line remains, the run aborts with a `need_input` panic and the JSON
+//! result reports `"needsInput": true` (with whatever stdout was produced so far).
+//! `allow_eof` nonzero turns the abort into an empty-string line instead.
 //!
 //! The timeout parameter is accepted for ABI compatibility with the reference and is
 //! ignored: like the reference's browser path, a preemptive timeout cannot exist on
@@ -30,6 +38,7 @@ use std::rc::Rc;
 
 use unvm::native;
 use unvm::runner;
+use unvm::runtime::obj::{self, Payload};
 use unvm::runtime::world;
 use unvm::source::Source;
 use unvm::vm::{err_header, err_message, panic_display, Outcome, VM};
@@ -45,10 +54,25 @@ pub struct PlaygroundResult {
     pub error: Option<String>,
     pub timed_out: bool,
     pub exit_code: i32,
+    /// the run aborted at `read()`: the replayed stdin ran out and `allow_eof` was
+    /// not set. the browser should ask the user for the next line and replay.
+    pub needs_input: bool,
+}
+
+fn is_need_input(o: &obj::Obj) -> bool {
+    matches!(obj::payload(o), Payload::Panic { name, .. } if name == "need_input")
 }
 
 /// Runs `code` against the sandbox, mirrors `PlaygroundRunner.RunCode`.
-pub fn run(code: &str, file_name: &str, allowed: Option<Vec<String>>) -> PlaygroundResult {
+/// `stdin` is the replayed input the browser collected by asking the user line by
+/// line; `allow_eof` mirrors `UnInterop.SetAllowEof`.
+pub fn run(
+    code: &str,
+    file_name: &str,
+    allowed: Option<Vec<String>>,
+    stdin: &str,
+    allow_eof: bool,
+) -> PlaygroundResult {
     world::reset();
 
     native::init("memory://");
@@ -58,12 +82,15 @@ pub fn run(code: &str, file_name: &str, allowed: Option<Vec<String>>) -> Playgro
     );
     world::set_allow_exit(false);
     world::log_clear();
+    world::set_stdin(stdin);
+    world::set_allow_eof(allow_eof);
 
     let mut exit_code = 0;
     let mut error: Option<String> = None;
+    let mut needs_input = false;
 
     let source = Rc::new(Source::new(file_name, code));
-    // `Runner.RunCore` — parse, desugar, optimize, compile
+    // `Runner.RunCore` ??parse, desugar, optimize, compile
     let program = match runner::compile_source(&source) {
         Ok(program) => Some(program),
         Err(runner::RunError::Parse(parse_error)) => {
@@ -108,7 +135,13 @@ pub fn run(code: &str, file_name: &str, allowed: Option<Vec<String>>) -> Playgro
                     exit_code = 1;
                 }
                 Outcome::Panic(o) => {
-                    error = Some(panic_display(&o));
+                    if is_need_input(&o) {
+                        // the browser asks for the next line and replays with more
+                        // stdin; the error stays hidden, as `NeedInputException` was
+                        needs_input = true;
+                    } else {
+                        error = Some(panic_display(&o));
+                    }
                     exit_code = 1;
                 }
             },
@@ -127,6 +160,7 @@ pub fn run(code: &str, file_name: &str, allowed: Option<Vec<String>>) -> Playgro
         error,
         timed_out: false,
         exit_code,
+        needs_input,
     }
 }
 
@@ -148,7 +182,7 @@ fn escape_json(text: &str) -> String {
     out
 }
 
-/// `{"stdout": "...", "error": null|"...", "timedOut": false, "exitCode": 0}`
+/// `{"stdout": "...", "error": null|"...", "timedOut": false, "exitCode": 0, "needsInput": false}`
 pub fn result_to_json(result: &PlaygroundResult) -> String {
     let error = match &result.error {
         Some(text) => format!("\"{}\"", escape_json(text)),
@@ -156,11 +190,12 @@ pub fn result_to_json(result: &PlaygroundResult) -> String {
     };
 
     format!(
-        "{{\"stdout\": \"{}\", \"error\": {}, \"timedOut\": {}, \"exitCode\": {}}}",
+        "{{\"stdout\": \"{}\", \"error\": {}, \"timedOut\": {}, \"exitCode\": {}, \"needsInput\": {}}}",
         escape_json(&result.stdout),
         error,
         if result.timed_out { "true" } else { "false" },
-        result.exit_code
+        result.exit_code,
+        if result.needs_input { "true" } else { "false" }
     )
 }
 
@@ -202,6 +237,9 @@ pub unsafe extern "C" fn playground_run(
     file_len: usize,
     allowed_ptr: *const u8,
     allowed_len: usize,
+    stdin_ptr: *const u8,
+    stdin_len: usize,
+    allow_eof: i32,
     out_len: *mut usize,
 ) -> *mut u8 {
     if out_len.is_null() {
@@ -229,7 +267,10 @@ pub unsafe extern "C" fn playground_run(
         )
     };
 
-    let result = run(&code, &file_name, allowed);
+    let stdin = String::from_utf8_lossy(read_bytes(stdin_ptr, stdin_len)).into_owned();
+    let allow_eof = allow_eof != 0;
+
+    let result = run(&code, &file_name, allowed, &stdin, allow_eof);
     let json = result_to_json(&result);
     let len = json.len();
     let buf = playground_alloc(len);
@@ -248,23 +289,81 @@ mod tests {
 
     #[test]
     fn run_captures_stdout_and_exit_code() {
-        let result = run("use io\nio.write(\"hello\")", "playground.un", None);
+        let result = run("use io\nio.write(\"hello\")", "playground.un", None, "", false);
         assert_eq!(result.stdout, "hello\n");
         assert!(result.error.is_none());
         assert_eq!(result.exit_code, 0);
         assert!(!result.timed_out);
+        assert!(!result.needs_input);
 
         // io.write(a, b) prints a + " " + b + "\n", matching the reference exactly
-        let result = run("use io\nio.write(\"hello\", \"\\n\")", "playground.un", None);
+        let result = run("use io\nio.write(\"hello\", \"\\n\")", "playground.un", None, "", false);
         assert_eq!(result.stdout, "hello \n\n");
         assert_eq!(result.exit_code, 0);
     }
 
     #[test]
     fn run_reports_script_errors() {
-        let result = run("use io\nio.write(undefined_variable, \"\\n\")", "playground.un", None);
+        let result = run(
+            "use io\nio.write(undefined_variable, \"\\n\")",
+            "playground.un",
+            None,
+            "",
+            false,
+        );
         assert!(result.error.is_some());
         assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn run_aborts_at_read_until_input_is_replayed() {
+        // no stdin: the run aborts at `read()` and reports needs_input, keeping the
+        // stdout (the prompt) it produced so far
+        let result = run(
+            "use io\nname = io.read(\"Name: \")\nio.write(\"hi\", name)",
+            "playground.un",
+            None,
+            "",
+            false,
+        );
+        assert!(result.needs_input);
+        assert_eq!(result.stdout, "Name: ");
+        assert!(result.error.is_none());
+
+        // replay with the collected line: the script completes without asking again
+        let result = run(
+            "use io\nname = io.read(\"Name: \")\nio.write(\"hi\", name)",
+            "playground.un",
+            None,
+            "kim\n",
+            false,
+        );
+        assert!(!result.needs_input);
+        assert_eq!(result.stdout, "Name: hi kim\n");
+        assert_eq!(result.exit_code, 0);
+
+        // the replayed buffer is consumed in order, then asks again
+        let result = run(
+            "use io\nexample = io.read(\"first: \")\nother = io.read(\"second: \")\nio.write(example, other)",
+            "playground.un",
+            None,
+            "kim\n",
+            false,
+        );
+        assert!(result.needs_input);
+        assert_eq!(result.stdout, "first: second: ");
+
+        // allow_eof turns the abort into an empty line
+        let result = run(
+            "use io\nname = io.read(\"Name: \")\nio.write(\"hi\", name)",
+            "playground.un",
+            None,
+            "",
+            true,
+        );
+        assert!(!result.needs_input);
+        assert_eq!(result.stdout, "Name: hi \n");
+        assert_eq!(result.exit_code, 0);
     }
 
     #[test]
@@ -274,10 +373,11 @@ mod tests {
             error: Some("bad\nerror".to_string()),
             timed_out: false,
             exit_code: 1,
+            needs_input: false,
         };
         assert_eq!(
             result_to_json(&result),
-            "{\"stdout\": \"a\\\"b\\\\c\\nd\", \"error\": \"bad\\nerror\", \"timedOut\": false, \"exitCode\": 1}"
+            "{\"stdout\": \"a\\\"b\\\\c\\nd\", \"error\": \"bad\\nerror\", \"timedOut\": false, \"exitCode\": 1, \"needsInput\": false}"
         );
     }
 }

@@ -866,3 +866,11 @@ nested_sum_200(~1.55×) 두 개이며, 둘 다 interpreter의 iterator/member-di
   �׷��� test/unit/native/http.un�� Rust ��Ʈ������ 16/16 byte-identical���� ����Ѵ�.
 - ����: scripts/differential.ps1 **108 checked / 0 unexpected DIFF / 4 known-divergent**,
   cargo test --release 199 passed, cargo build --release ����/��� 0. src/main.un�� unstaged ����.
+
+## 2026-11 playground stdin replay (un-playground Rust WASM 이관 지원)
+
+- `rust/playground`의 `playground_run` ABI에 `stdin_ptr`/`stdin_len`, `allow_eof: i32` 파라미터를 추가하고, JSON 결과에 `needsInput`을 노출한다. 대화형 `io.read()`는 참조 구현처럼 **리플레이** 방식이다(지금까지 입력된 줄을 stdin으로 주고 전체 스크립트를 재실행, 입력 소진 시 중단).
+- `rust/src/runtime/world.rs`에 stdin 리플레이 버퍼(`set_stdin`/`stdin_next_line`/`set_allow_eof`)를 추가했다. `None`이면 실제 stdin을 읽는다(CLI 동작 불변).
+- `rust/src/native/io.rs`의 `read()`는 버퍼가 비면 `need_input` panic을 반환해 VM을 중단시킨다. `Panic`은 `try`/`catch`(`Error`만 처리)를 그대로 통과하므로 최상위에서만 잡혀 `needsInput: true`로 보고된다. `allow_eof`면 빈 문자열 반환.
+- `rust/playground/smoke.mjs` 갱신(ABI 신규 시그니처 + read/replay/allowEof 케이스). `cargo test --workspace` 203 passed, wasm32 빌드 + smoke 18 passed.
+- 주의: `un`에 이 변경이 커밋/push되지 않으면, un-playground의 다음 예약 재빌드(upstream main 기준)에서 `needsInput` 배선이 없는 산출물로 덮여 대화형 `io.read()`가 깨진다.
