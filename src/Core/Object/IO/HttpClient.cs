@@ -7,7 +7,7 @@ using Un.Reflection;
 namespace Un.Object.Web;
 
 [NativeType(Name = "http_client")]
-public class HttpClient(System.Net.Http.HttpClient value) : Ref<System.Net.Http.HttpClient>(value, UnType.Create("http"))
+public class HttpClient(System.Net.Http.HttpClient value) : Ref<System.Net.Http.HttpClient>(value, UnType.Create("http_client"))
 {
     public override Obj Init(Tup args) => new Err("'http' cannot be constructed directly; use http.connect()");
 

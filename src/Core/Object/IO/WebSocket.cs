@@ -9,7 +9,7 @@ using Un.Reflection;
 namespace Un.Object.Web;
 
 [NativeType(Name = "web_socket")]
-public class WebSocket(ClientWebSocket value) : Ref<ClientWebSocket>(value, UnType.Create("socket"))
+public class WebSocket(ClientWebSocket value) : Ref<ClientWebSocket>(value, UnType.Create("web_socket"))
 {
     public override Obj Init(Tup args) => new Err("'socket' cannot be constructed directly; use websocket.connect(url)");
 
