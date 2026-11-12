@@ -18,7 +18,7 @@
     all(기본) | un | node
 
 .PARAMETER Rebuild
-    dotnet build -c Release를 먼저 수행한다.
+    cargo build --release를 먼저 수행한다.
 
 .PARAMETER NoSave
     bench/results에 저장하지 않는다.
@@ -36,8 +36,11 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$env:DOTNET_ROLL_FORWARD = "Major"
-$Exe = Join-Path $Root "bin\Release\net8.0\Un.exe"
+$rustup = Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe"
+$cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
+$Exe = Join-Path $Root "rust\target\release\unvm.exe"
+$Toolchain = "stable-x86_64-pc-windows-gnu"
+$Manifest = Join-Path $Root "rust\Cargo.toml"
 $Culture = [System.Globalization.CultureInfo]::InvariantCulture
 
 function Fmt([double]$v, [string]$format) {
@@ -119,7 +122,7 @@ $Pairs = @(
 
 if ($Rebuild) {
     Write-Host "--- building (Release) ---"
-    dotnet build -c Release
+    & $rustup run $Toolchain $cargo build --release --manifest-path $Manifest
     if ($LASTEXITCODE -ne 0) {
         Write-Host "build failed"
         exit 1
@@ -279,7 +282,7 @@ if (-not $NoSave) {
     $Md += "## 환경"
     $Md += ""
     foreach ($line in $EnvLines) { $Md += "- ``$line``" }
-    $Md += "- OS: Windows (win32). Un은 net8.0 앱이 .NET 10 런타임에서 실행된다(DOTNET_ROLL_FORWARD=Major)."
+    $Md += "- OS: Windows (win32). Un은 Rust로 작성되어 빌드 산출물(unvm.exe)이 실행된다."
     $Md += "- Un 타이머: time.stopwatch().tick()는 0.1ms 단위 정수. Node: performance.now()."
     $Md += "- warmup=2, reps=7. Median=times[n/2], StdDev=모집단 표준편차, OPS=iters/(median ms/1000)."
     $Md += "- 측정 구간에는 출력이 포함되지 않는다. 각 스크립트는 측정 전에 검증한다."

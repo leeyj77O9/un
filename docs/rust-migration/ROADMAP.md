@@ -1,5 +1,9 @@
 # ROADMAP.md — 17단계 이행 계획
 
+> **완료.** 이 계획은 Rust 포트의 이행 계획이다. Phase 1~20은 전부 완료됐고,
+> Rust 구현이 C# 구현을 대체했으며 C# 소스는 제거됐다. 이 문서는 이행 계획의
+> 역사적 기록으로 보존한다. 현재 상태는 `docs/rust-migration/PROGRESS.md` 참고.
+
 각 Phase는 **작동하는 증분(slipping)**을 남긴다. Phase 완료 기준은 항상
 `dotnet build -c Release`(C# 참조) + Rust 빌드 + 관련 테스트 통과 + differential 비교다.
 

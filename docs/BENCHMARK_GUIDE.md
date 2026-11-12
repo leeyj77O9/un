@@ -23,8 +23,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1 -Rebuild -
 A single benchmark can be run directly:
 
 ```powershell
-$env:DOTNET_ROLL_FORWARD = "Major"
-.\bin\Release\net8.0\Un.exe run bench\sort.un
+.\rust\target\release\unvm.exe run bench\sort.un
 node bench\node\sort.mjs
 ```
 

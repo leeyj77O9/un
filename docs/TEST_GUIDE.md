@@ -1,8 +1,8 @@
 # Test Guide
 
 This document explains how the Un test suite is organized and how to run it.
-There is no C# test project: every test is an `.un` script executed by the
-interpreter, and the results are aggregated by a PowerShell runner.
+There is no unit-test runner in a build system: every test is an `.un` script
+executed by the interpreter, and the results are aggregated by a PowerShell runner.
 
 ## Running the tests
 
@@ -22,42 +22,47 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1 -Group know
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1 -File test/unit/native/str.un
 ```
 
-The runner shells out to `bin\Release\net8.0\Un.exe run <file>` and aggregates:
+The runner shells out to `rust\target\release\unvm.exe run <file>` and aggregates:
 
 - the `=== Result: N passed, M failed ===` line that each script prints through
   `assert.summary()`,
 - exit codes and message substrings for the negative manifest,
-- the current status of files listed in `test/KnownFailures.txt`.
+- the current status of files listed in `test/KnownFailures.txt`,
+- the documented divergences listed in `test/KnownDivergent.txt`.
 
 Overall exit code is `0` when every positive script passes, every negative
 expectation matches, and no known failure has been fixed silently.
 
-Direct single-file runs work too, as long as the command is run from the repo
-root and in Release:
+Direct single-file runs work too. Build once with `-Rebuild` (or by hand) and run:
 
 ```powershell
-$env:DOTNET_ROLL_FORWARD = "Major"
-.\bin\Release\net8.0\Un.exe run test\unit\native\str.un
+.\rust\target\release\unvm.exe run test\unit\native\str.un
 ```
 
-Never run Debug: `src/Program.cs` has a `#if DEBUG` block that hard-codes a
-foreign absolute path.
+Rebuild the release binary with
+
+```powershell
+rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust\Cargo.toml
+```
+
+Never run Debug builds; the reader path is not supported.
 
 ## Layout
 
 ```
 test/
 |-- assert.un               shared assertion module
-|-- test_suite.un           canonical smoke suite (104 assertions)
+|-- test_suite.un           canonical smoke suite (109 assertions)
 |-- MANIFEST.txt            group|path list executed by scripts/test.ps1
 |-- KnownFailures.txt       scripts that are expected to fail today
+|-- KnownDivergent.txt      scripts whose behaviour diverges on purpose
 |-- unit/
 |   |-- lexer/            literals, escapes, comments
 |   |-- parser/           precedence, statement/function/class structure
 |   |-- runtime/          operators, scope, control flow, functions, classes,
 |   |                     async, errors, date, builtins
 |   `-- native/           str, list, dict, set, tup, math, iter, re, random,
-|                         inspect, os, sys, fs, io
+|                         inspect, os, sys, fs, io, flow, http, ws
 |-- integration/          modules, concurrency, recursion, algorithms
 |-- regression/           defects.un (documented behaviour vs actual behaviour)
 |-- negative/             crash/parse-error scripts + manifest.txt
@@ -69,12 +74,11 @@ Counts at the time of writing:
 
 | Group | Files | Assertions |
 |---|---|---|
-| suite | 1 | 104 |
-| unit (lexer 1, parser 2, runtime 9, native 14) | 26 | 957 |
-| integration | 4 | 89 |
-| **Positive total** | **31** | **1150** |
-| negative (exit-code checks) | 34 scripts, 36 checks | n/a |
-| known (documented defects) | 1 | 10 failing assertions |
+| suite | 1 | 109 |
+| unit + integration | 38 | (1363 - 109) |
+| **Positive total** | **39** | **1363** |
+| negative (exit-code checks) | 42 checks | 38 matched + 4 documented divergences |
+| known (documented defects) | 1 | 6 failing assertions |
 | fixtures (not run directly) | 8 | n/a |
 
 ## Manifests
@@ -94,6 +98,11 @@ with `-Group known`, reports them as `KNOWN FAIL`, and excludes them from the
 positive totals. If one of them starts passing, the runner reports
 `KNOWN FIXED` and exits non-zero, so the manifest must be cleaned up.
 
+`test/KnownDivergent.txt` — one path per line. Checks that fail on the current
+implementation for documented reasons (`order_crash`'s .NET-internal consistency
+detection, native stack overflow, the racy `go` scheduling). The runner reports
+them as `NEG KNOWN` and excludes them from the negative totals.
+
 ## Test file conventions
 
 - `use test.assert as assert` at the top, `assert.summary()` as the last statement.
@@ -106,9 +115,9 @@ positive totals. If one of them starts passing, the runner reports
   variable names per file (`err_er1`, `err_def2`, ...).
 - Do not call `str()` on an error value; use an f-string (`` `{err}` ``).
 - Do not call `.close()` on a stream opened with `using`, and do not `map` on a
-  pool after `close()`. Both crash the process with uncaught .NET exceptions.
+  pool after `close()`. Both crash the process with uncaught exceptions.
 - Do not test unbounded recursion in a positive file; `sys.setcalldepth` above
-  1000 kills the process with a stack overflow. Use `test/negative/`.
+  the call limit kills the process. Use `test/negative/`.
 - Dict literal keys must be expressions: use string keys (`{"min": 1}`), since
   bare `min`/`max` are not defined names.
 - Every `fs`/`io` test writes only into a subdirectory created under

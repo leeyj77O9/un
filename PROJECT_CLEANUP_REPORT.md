@@ -1,5 +1,10 @@
 # PROJECT_CLEANUP_REPORT.md
 
+> **Legacy document.** This report describes the C# codebase as of commit `4941988`
+> (2026-11-11). The C# implementation has since been replaced by the Rust port
+> (`rust/`), and this file is kept for historical context. The current implementation
+> is documented in `docs/README.md` and `docs/rust-migration/`.
+
 작성일: 2026-11-11 · 기준 커밋: `4941988` · 브랜치: `main` (미커밋 변경 없음, 사용자 작업물 보존)
 
 ## 1. 프로젝트 현황

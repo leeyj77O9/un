@@ -1,5 +1,12 @@
 # Benchmark log
 
+> **Legacy document.** These entries were measured against the C# / .NET 8
+> implementation, which has since been replaced by the Rust port (`rust/`).
+> The recorded numbers describe that implementation and this machine at the
+> time they were taken; they are kept as history, not as current reference.
+> For current numbers, see `docs/BENCHMARK_GUIDE.md` and re-measure with
+> `scripts/bench.ps1`.
+
 이 문서는 벤치마크 정리 과정과 실측 결과를 기록한다.
 절차/형식 규칙은 `docs/BENCHMARK_GUIDE.md`가 정하고, 이 문서는 그 절차로 측정한 값과
 그 측정의 한계를 기록한다.

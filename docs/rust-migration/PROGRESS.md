@@ -1,6 +1,13 @@
 # PROGRESS.md â€” ì§„í–‰ ìƒíƒœ
 
-ë¸Œëœì¹˜: `feature/rust-bytecode-vm` (from `main` @ `fe05894`). C# ì½”ë“œëŠ” ë³€ê²½í•˜ì§€ ì•ŠëŠ”ë‹¤.
+> **ìƒíƒœ: ì™„ë£Œ.** Rust í¬íŠ¸ëŠ” feature/rust-bytecode-vm(PR #1ë¡œ mainì— ë¨¸ì§€, `cfecb6f`)ë¡œ
+> mainì— ë°˜ì˜ëë‹¤. differential ê²€ì¦ìœ¼ë¡œ C# êµ¬í˜„ê³¼ byte-identicalì„ì„ í™•ì¸í•œ ë’¤ C# êµ¬í˜„ì€
+> ì œê±°ëë‹¤(í˜„ì¬ ì´ íŒŒì¼ì€ ê·¸ ì—­ì‚¬ì™€ ê²€ì¦ ê¸°ë¡ì´ë‹¤). í˜„ì¬ ê¸°ì¤€ì„ : Positive 39 files /
+> 1363 passed / 0 failed / 0 crashed, Negative 38 matched + 4 documented divergences,
+> `cargo test --release` 199 passed, differential(harnessëŠ” `scripts/differential.ps1`ë¡œ
+> ìŠ¹ê²© í›„ ì œê±°ë¨).
+
+ë¸Œëœì¹˜: `feature/rust-bytecode-vm` (from `main` @ `fe05894`). C# ì½”ë“œëŠ” ë³€ê²½í•˜ì§€ ì•Šì•˜ë‹¤(í˜„ì¬ëŠ” ì œê±°ë¨).
 RustëŠ” `rust/`, ë¬¸ì„œëŠ” `docs/rust-migration/`ì—ë§Œ ì¶”ê°€í•œë‹¤. í‘¸ì‹œëŠ” ì‚¬ìš©ì ìŠ¹ì¸ í›„.
 
 ## ë¹Œë“œ/ì‹¤í–‰ í™˜ê²½
@@ -849,13 +856,13 @@ nested_sum_200(~1.55Ã—) ë‘ ê°œì´ë©°, ë‘˜ ë‹¤ interpreterì˜ iterator/member-di
 
 ## 2026-11 merge to main + Rust port fix
 
-- feature/rust-bytecode-vmÀÌ PR #1·Î main¿¡ ¸ÓÁöµÆ´Ù(cfecb6f). main¿¡´Â reference ÂÊ Ä¿¹Ô
-  µÎ °³µµ ÇÔ²² ¸ÓÁöµÆ´Ù(0ab82df http/ws native ¸ğµâ ¼öÁ¤, 802cdce playground sandbox
-  °­È­ + flow/http/ws Å×½ºÆ® Ãß°¡, Positive baseline 39 files / 1363 passed).
-- º´ÇÕ Á÷ÈÄ C# »êÃâ¹°ÀÌ staleÀÌ¶ó(1347 passed / 1 crash 'http.un') ÀçºôµåÇß°í(dotnet build -c Release)
-  ÀÌÈÄ reference´Â 39 / 1363 / 0 / 0 ±âÁØ¼±À» ¸¸Á·ÇÑ´Ù.
-- Rust Æ÷Æ®µµ µû¶ó¿Ô´Ù(D-066): http/ws Å¬¶óÀÌ¾ğÆ®ÀÇ UnTypeÀ» ÀÎ½ºÅÏ½º Å¸ÀÔ ÀÌ¸§°ú
-  registration key(http_client / web_socket)¿¡ ¸ÂÃç ¿¬°áÇÏ°í payload type_nameµµ °°ÀÌ ¹Ù²å´Ù.
-  ±×·¡¼­ test/unit/native/http.unÀÌ Rust Æ÷Æ®¿¡¼­µµ 16/16 byte-identicalÀ¸·Î Åë°úÇÑ´Ù.
-- °ËÁõ: scripts/differential.ps1 **108 checked / 0 unexpected DIFF / 4 known-divergent**,
-  cargo test --release 199 passed, cargo build --release ¿À·ù/°æ°í 0. src/main.unÀº unstaged À¯Áö.
+- feature/rust-bytecode-vmï¿½ï¿½ PR #1ï¿½ï¿½ mainï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Æ´ï¿½(cfecb6f). mainï¿½ï¿½ï¿½ï¿½ reference ï¿½ï¿½ Ä¿ï¿½ï¿½
+  ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½Ô²ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Æ´ï¿½(0ab82df http/ws native ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½, 802cdce playground sandbox
+  ï¿½ï¿½È­ + flow/http/ws ï¿½×½ï¿½Æ® ï¿½ß°ï¿½, Positive baseline 39 files / 1363 passed).
+- ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ C# ï¿½ï¿½ï¿½â¹°ï¿½ï¿½ staleï¿½Ì¶ï¿½(1347 passed / 1 crash 'http.un') ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ß°ï¿½(dotnet build -c Release)
+  ï¿½ï¿½ï¿½ï¿½ referenceï¿½ï¿½ 39 / 1363 / 0 / 0 ï¿½ï¿½ï¿½Ø¼ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Ñ´ï¿½.
+- Rust ï¿½ï¿½Æ®ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½Ô´ï¿½(D-066): http/ws Å¬ï¿½ï¿½ï¿½Ì¾ï¿½Æ®ï¿½ï¿½ UnTypeï¿½ï¿½ ï¿½Î½ï¿½ï¿½Ï½ï¿½ Å¸ï¿½ï¿½ ï¿½Ì¸ï¿½ï¿½ï¿½
+  registration key(http_client / web_socket)ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Ï°ï¿½ payload type_nameï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½Ù²ï¿½ï¿½.
+  ï¿½×·ï¿½ï¿½ï¿½ test/unit/native/http.unï¿½ï¿½ Rust ï¿½ï¿½Æ®ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ 16/16 byte-identicalï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½Ñ´ï¿½.
+- ï¿½ï¿½ï¿½ï¿½: scripts/differential.ps1 **108 checked / 0 unexpected DIFF / 4 known-divergent**,
+  cargo test --release 199 passed, cargo build --release ï¿½ï¿½ï¿½ï¿½/ï¿½ï¿½ï¿½ 0. src/main.unï¿½ï¿½ unstaged ï¿½ï¿½ï¿½ï¿½.

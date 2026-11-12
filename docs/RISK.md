@@ -1,5 +1,11 @@
 # RISK.md
 
+> **Legacy document.** This file describes the pre-replacement C# implementation
+> (commit `fe05894`). The C# codebase has since been replaced by the Rust port
+> (`rust/`), which reproduces the runtime object model and the same fault surface.
+> Kept for historical reference; the current implementation is documented in
+> `docs/README.md` and `docs/rust-migration/`.
+
 `main` 브랜치(커밋 fe05894) 기준 코드 리뷰에서 발견된 리스크 목록과 해결 기록.
 각각 수정 후 Release 빌드 + `test/test_suite.un`(109 passed) + `scripts/test.ps1` 기준으로 검증했다.
 

@@ -1,5 +1,10 @@
 # ANALYSIS.md — 기존 C# Un 구현 분석
 
+> **Legacy document.** This document analyzes the original C# / .NET 8 implementation,
+> which has since been removed. It is kept because the Rust port's verified behaviors
+> were derived from it. For the current implementation, see `docs/README.md` and
+> `docs/rust-migration/`.
+
 Reference Implementation: `C:\dev\un` (C# / .NET 8, tree-walking interpreter).
 이 문서는 Rust 바이트코드 VM이 **정확히 재현해야 하는 동작**을 기록한다.
 모든 항목은 실제 소스 코드(`src/…`)를 읽고 작성했다. 추측은 `TODO-VERIFY`로 표시한다.

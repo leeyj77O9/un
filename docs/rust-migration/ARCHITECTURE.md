@@ -1,6 +1,11 @@
 # ARCHITECTURE.md — Rust Un VM 설계
 
-Rust 프로젝트 `rust/`는 C# Reference Implementation(`src/`)의 동작을 재현하는
+> **Historical design doc.** Written while the Rust VM was being ported alongside
+> the C# reference. The design was kept (modulo documented divergences), and the
+> C# reference has since been removed. Current state is documented in
+> `docs/README.md` and `docs/rust-migration/PROGRESS.md`.
+
+Rust 프로젝트 `rust/`는 C# Reference Implementation(`src/`, 이후 제거됨)의 동작을 재현하는
 **바이트코드 컴파일러 + 스택 기반 VM**이다. C# 코드는 수정하지 않고 기준선(reference oracle)으로만 쓴다.
 
 ## 1. 파이프라인

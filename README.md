@@ -2,14 +2,12 @@
 
 간결한 문법, 명시적 비동기 실행, 패턴 매칭을 제공하는 현대적인 스크립팅 언어.
 
-Un은 C#과 .NET 8 위에서 동작하는 트리 워킹 인터프리터로 구현되어 있다. 처리 파이프라인은 다음과 같다.
+Un은 Rust로 작성된 바이트코드 컴파일러와 스택 기반 VM(`unvm`)으로 구현되어 있다. 처리 파이프라인은 다음과 같다.
 
-`Lexer -> Parser -> Desugarer -> Optimizer -> Evaluator`
-
-(`rust/`에 같은 언어를 재현하는 독립적인 Rust 바이트코드 VM 구현도 있다. 이 문서는 C# 구현을 기준으로 설명한다.)
+`Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Stack VM`
 
 <p align="center">
-  <img src="https://img.shields.io/badge/.NET-8.0-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET 8" />
+  <img src="https://img.shields.io/badge/Rust-1.99-DEA584?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="MIT License" />
 </p>
 
@@ -17,7 +15,7 @@ Un은 C#과 .NET 8 위에서 동작하는 트리 워킹 인터프리터로 구�
 
 Un은 읽기 쉽고 간결한 프로그램을 작성하기 위한 동적 타입 스크립팅 언어이다. Python 스타일의 들여쓰기 기반 블록, 명시적인 동시성 기본 요소, 구조적 패턴 매칭, 작은 표준 라이브러리를 결합한다.
 
-언어는 C#으로 작성된 인터프리터가 기본 구현이다. 별도의 컴파일 단계나 바이트코드 가상 머신은 없다. 소스 파일은 AST로 파싱된 뒤 역탈당(desugar), 최적화, 직접 평가된다. (`rust/`에 독립적인 Rust 바이트코드 VM 구현도 있으며, 이 문서의 내용을 대부분 재현한다. 자세한 내용은 아래 'Rust 포트' 절을 참고한다.)
+Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 AST로 역탈당(desugar), 최적화(상수 폴딩, 최대 64패스)하고, 바이트코드로 컴파일해 스택 기반 VM에서 실행한다. 이전에 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었으나 Rust 구현이 C# 구현의 의미론을 byte-identical로 재현함을 differential 검증으로 확인하고 대체했다(문서화된 차이 4개는 `test/KnownDivergent.txt` 참고).
 
 설계 목표:
 
@@ -218,24 +216,21 @@ io.write(wait a)   # 10
 
 ### 요구사항
 
-- .NET SDK 8.0 이상
+- Rust toolchain (`stable-x86_64-pc-windows-gnu`, Rust 1.99+). Linux/macOS에서는 MSVC/`gcc` 대신 GNU 링크를 사용한다.
 
 ### 빌드
 
 ```bash
-dotnet build -c Release
+rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
 ```
+
+Windows 산출물은 `rust\target\release\unvm.exe`이다.
 
 ### 실행
 
 ```bash
-dotnet run -c Release -- run path/to/file.un
-
-# 또는 빌드된 실행 파일 사용
-./bin/Release/net8.0/Un run path/to/file.un
+.\rust\target\release\unvm.exe run path/to/file.un
 ```
-
-Windows에서는 실행 파일이 `bin\Release\net8.0\Un.exe`이다.
 
 ### 첫 프로그램
 
@@ -251,7 +246,7 @@ main()
 `hello.un`으로 저장한 뒤 실행한다.
 
 ```bash
-dotnet run -c Release -- run hello.un
+.\rust\target\release\unvm.exe run hello.un
 ```
 
 ### 테스트와 벤치마크
@@ -259,8 +254,8 @@ dotnet run -c Release -- run hello.un
 빌드와 스크립트 실행:
 
 ```bash
-dotnet build -c Release
-dotnet run -c Release -- run test/test_suite.un
+rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
+.\rust\target\release\unvm.exe run test/test_suite.un
 ```
 
 전체 테스트는 runner로 실행한다. runner는 `test/MANIFEST.txt`의 `group|path` 행을
@@ -273,11 +268,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
-Positive 집계의 통과·실패 수에 포함하지 않는다. 현재 기준은 Positive 39 파일 /
-1363 통과 / 0 실패 / 0 크래시, Negative 42 checks 매칭, Known 1 파일이다.
-
-`.NET 8` 앱은 `.NET 10` 런타임 위에서 `DOTNET_ROLL_FORWARD=Major`를 설정하면
-실행된다(PowerShell: `$env:DOTNET_ROLL_FORWARD='Major'`).
+Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
+구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
+포함하지 않는다. 현재 기준은 Positive 39 파일 / 1363 passed / 0 failed / 0 crashed,
+Negative 42 checks 중 38 매칭 + 4 documented divergences, Known 1 파일이다.
 
 벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`와 `results.md`에 저장한다.
@@ -535,7 +529,7 @@ work()    # start done
 
 ## 아키텍처
 
-인터프리터는 AST 위에서 단일 파이프라인으로 동작한다.
+바이트코드 컴파일러와 스택 기반 VM 위에서 동작한다.
 
 ```
 Source (.un)
@@ -553,63 +547,45 @@ Desugarer      복합 대입 확장, if/elif 정규화
 Optimizer      상수 폴딩, 대수적 단순화, 최대 64패스
   |
   v
-Evaluator      Context / Scope / Frame 기반 실행, go/wait를 위한 Future
+Bytecode Compiler   Opcode/Proto/Program, Instruction(flags, operand) 인코딩
   |
   v
-Runtime        Obj / Val / Ref / Enu / Stru / TObj / Property와 타입 시스템
+Stack VM        Context / Scope / Frame 기반 실행, go/wait를 위한 Future
   |
   v
-Stdlib         NativeModule / NativeType 리플렉션 바인딩
+Runtime         Obj / Val / Ref / Enu / Stru / TObj / Property와 타입 시스템
+  |
+  v
+Stdlib          NativeModule / NativeType 리플렉션 바인딩
 ```
 
 주요 구성 요소:
 
-- `src/Interpreter/Runner/Runner.cs`는 소스 파일을 읽고 파싱, 역탈당, 최적화, 평가한다. `Source`는 줄과 열 정보를 추적한다.
-- `src/Interpreter/Runner/Scope.cs`는 부모 체인을 갖는 슬롯 기반 심볼 테이블을 제공한다.
-- `src/Core/Global.cs`는 내장 및 네이티브 모듈을 등록하고 `import` / `include`를 해석한다.
-- `src/Interpreter/Reflection/`는 어트리뷰트를 통해 네이티브 모듈과 타입을 바인딩한다.
-
-C# 구현에는 중간 바이트코드나 별도 가상 머신이 없다. (Rust 포트는 바이트코드 컴파일러와 스택 기반 VM으로 실행한다.)
-
-## Rust 포트 (실험적)
-
-`rust/` 아래에 같은 언어의 두 번째 구현이 있다: Rust로 작성된 바이트코드 컴파일러와 스택 기반 VM(`unvm`). C# 구현과 같은 문법, 의미론, 표준 라이브러리(그리고 오류 메시지까지)를 재현하며, `test/MANIFEST.txt`의 스크립트를 두 엔진에서 동일하게 실행해 stdout·exit code·`help` 출력까지 byte-identical임을 검증한다(`scripts/differential.ps1`: 108 checked / 0 unexpected DIFF, negative의 문서화된 차이 4개만 예외).
-
-- 빌드: `cargo +stable-x86_64-pc-windows-gnu build --release --manifest-path rust/Cargo.toml`
-- 실행: `rust\target\release\unvm.exe run <file>`
-- 검증: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/differential.ps1`
-- 성능: 대부분의 벤치에서 C# 참조와 동급이거나 더 빠르다(예: fib24 3.2×, sort 4.0× 빠름; `dict`와 중첩 루프만 열위).
-- 문서: `docs/rust-migration/`
-
-몇 가지 차이는 문서화되어 있다(스택 오버플로 exit code, `go`/`pool`의 단일 스레드 실행, TLS 미지원). 이 문서의 나머지 내용은 C# 구현 기준이지만, 문법과 표준 라이브러리는 두 구현이 동일하다(일부 오류 메시지와 exit code에 문서화된 차이가 있다).
+- `rust/src/compiler.rs`는 역탈당·최적화된 AST를 바이트코드 Proto로 컴파일한다.
+- `rust/src/vm.rs`는 Proto를 스택 기계로 실행한다. `Op` enum은 explicit `#[repr(u8)]`로 고정되어 있고, `Proto`는 `code`/`consts`/`names`/`protos`/`source_map`을 owns한다.
+- `rust/src/runtime/scope.rs`는 부모 체인을 갖는 슬롯 기반 심볼 테이블을 제공한다. `Scope`의 slot table에서 `Set`은 declaring scope에 write하고(`for` body의 `sum += v` 축적), `SetLocal`/`SetLocalOrDeclare`는 local 전용, `Declare`는 덮지 않는다.
+- `rust/src/runtime/world.rs`는 전역 상태(`path`, `global_scope`, `natives`, `stdout`, `allowed`)를 owns하고 모듈 캐시를 관리한다.
+- `rust/src/native/`는 표준 라이브러리 모듈(`io`, `fs`, `re`, `math`, `iter`, ...)이다. 네이티브 모듈은 `Global`과 같은 방식으로 어셈블리 없이 리플렉션으로 자동 발견되지 않고, `native::init`이 명시적으로 등록한다.
+- `rust/playground/`는 `unvm`을 웹 플레이그라운드용으로 감싼 WASM 진입점(`PlaygroundRunner.RunCode`의 Rust 대응)이다.
 
 ## 프로젝트 구조
 
 ```
 Un/
-|-- Un.sln
-|-- Un.csproj
 |-- README.md
 |-- LICENSE
-|-- src/
-|   |-- Program.cs
-|   |-- PlaygroundRunner.cs
-|   |-- main.un
-|   |-- Core/
-|   |   |-- Global.cs
-|   |   |-- IO/
-|   |   |-- Native/        (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
-|   |   `-- Object/       (런타임 객체 모델, 컬렉션, 함수, 흐름, 입출력, 이터레이터, 기본 타입, 타입, 유틸)
-|   `-- Interpreter/
-|       |-- Lexer/
-|       |-- Parser/
-|       |-- Desugarer/
-|       |-- Optimizer/
-|       |-- Evaluator/
-|       |-- Runner/
-|       |-- Reflection/
-|       |-- Error/
-|       `-- Util/
+|-- rust/
+|   |-- Cargo.toml
+|   |-- src/
+|   |   |-- main.rs          (CLI 진입점: run/compile/tokens/ast/desugar/opt/dis/help)
+|   |   |-- lib.rs
+|   |   |-- bytecode/        (opcodes, instruction, Program, Proto, unbc container)
+|   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm.rs / module.rs
+|   |   |-- runtime/         (obj, collections, iters, function, world, scope, date, ...)
+|   |   |-- native/          (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
+|   |   `-- main.un          (개인 스크래치; 제품 진입점 아님)
+|   |-- playground/          (WASM 진입점, un-playground 재빌드 대상)
+|   `-- target/              (생성된 빌드 산출물, gitignore)
 |-- test/                  (.un 테스트 스크립트와 픽스처)
 |   |-- unit/            (unit/lexer, unit/parser, unit/runtime, unit/native)
 |   |-- integration/
@@ -618,11 +594,11 @@ Un/
 |   |-- fixtures/        (circular/, rel_test/, dirmod/, dirall/)
 |   |-- MANIFEST.txt     (group|path 행)
 |   |-- KnownFailures.txt
+|   |-- KnownDivergent.txt   (문서화된 구현 간 차이)
 |   `-- assert.un        (assert 실행 검사)
-|-- scripts/             (test.ps1, bench.ps1, differential.ps1)
-|-- rust/                (Rust 바이트코드 VM 포트의 소스)
+|-- scripts/             (test.ps1, bench.ps1)
 |-- bench/               (벤치마크 스크립트, bench/node/, bench/results/)
-`-- bin/, obj/           (생성된 빌드 산출물)
+`-- bin/, obj/           (생성된 빌드 산출물, gitignore)
 ```
 
 ## 예제
@@ -691,7 +667,7 @@ class Heap
 
 구현 완료:
 
-- 인터프리터 파이프라인 (lexer, parser, desugarer, optimizer, evaluator)
+- 바이트코드 컴파일러와 스택 기반 VM (lexer, parser, desugarer, optimizer, compiler, vm)
 - 런타임 객체 모델과 타입 시스템
 - 표준 라이브러리 모듈
 - 비동기 실행과 워커 풀
@@ -706,7 +682,6 @@ class Heap
 진행 중:
 
 - 점진적 타입 어노테이션 검증
-- Rust 바이트코드 VM 포트(`rust/`)
 
 계획됨:
 
@@ -717,14 +692,14 @@ class Heap
 ## 기여하기
 
 1. 저장소를 포크하고 클론한다.
-2. `dotnet build -c Release`로 빌드하고 경고와 오류가 0개인지 확인한다.
+2. `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml`로 빌드하고 경고와 오류가 0개인지 확인한다.
 3. `feat/my-feature` 형식의 브랜치를 만든다.
 4. `test/`의 알맞은 그룹에 `.un` 테스트를 추가하고 `test/MANIFEST.txt`에 `group|path`
    행을 등록한다. exit code와 stderr를 확인하는 테스트는
    `test/negative/manifest.txt`에 `path|expected exit|expected substring` 행으로 등록한다.
 5. 풀 리퀘스트를 연다. 커밋은 기여자가 직접 수행한다. 자동화 도구는 git에 푸시하지 않는다.
 
-코딩 컨벤션: `ImplicitUsings`와 `Nullable`이 활성화되어 있다. 네이티브 및 내장 멤버는 어트리뷰트를 통해 등록한다.
+코딩 컨벤션: Rust 2021 edition을 쓴다. 모듈은 `//!` 설명과 함께 파일 상단에 문서를 두고, `?` 연산자로 오류를 전파하며, 패턴 매칭을 적극적으로 쓴다. 외부 crate 의존성은 없고 표준 라이브러리만 쓴다.
 
 ## 라이선스
 

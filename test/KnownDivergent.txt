@@ -1,0 +1,18 @@
+# Known divergent scripts — these checks fail the exit-code/stderr expectation
+# on the current implementation for documented reasons. They are recorded but
+# not counted as failures (run with -Group negative to see them listed).
+#
+# - order_crash.un      .NET's Array.Sort comparer-consistency detection throws
+#                        System.ArgumentException ('inconsistent results'); the
+#                        Rust VM's sort is consistent and does not throw.
+# - depth_limit_crash.un The process dies with a native stack overflow
+#                        (exit -1073741571); the Rust VM runs on a 64 MB worker
+#                        thread and reports 'maximum recursion depth exceeded' (exit 1).
+# - property_recursion.un Same class as depth_limit_crash (stack overflow vs call
+#                        limit), message matches, exit code differs.
+# - go_loop_var.un       Racy scheduling; the reference's behavior varies between
+#                        runs and cannot be matched deterministically.
+test/negative/order_crash.un
+test/negative/depth_limit_crash.un
+test/negative/property_recursion.un
+test/negative/go_loop_var.un

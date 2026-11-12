@@ -2,14 +2,12 @@
 
 A modern scripting language with concise syntax, explicit asynchronous execution, and pattern matching.
 
-Un is implemented as a tree-walking interpreter in C# on .NET 8. The processing pipeline is:
+Un is implemented as a bytecode compiler and stack-based VM written in Rust (`unvm`). The processing pipeline is:
 
-`Lexer -> Parser -> Desugarer -> Optimizer -> Evaluator`
-
-(An independent Rust implementation of the same language also lives in `rust/`, see the "Rust port" section. This document describes the C# implementation.)
+`Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Stack VM`
 
 <p align="center">
-  <img src="https://img.shields.io/badge/.NET-8.0-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET 8" />
+  <img src="https://img.shields.io/badge/Rust-1.99-DEA584?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="MIT License" />
 </p>
 
@@ -17,7 +15,7 @@ Un is implemented as a tree-walking interpreter in C# on .NET 8. The processing 
 
 Un is a dynamically typed scripting language aimed at readable, compact programs. It combines Python-like indentation-based blocks with explicit concurrency primitives, structural pattern matching, and a small standard library.
 
-The language is implemented primarily as a C# interpreter. There is no separate compilation step or bytecode virtual machine: source files are parsed into an AST, desugared, optimized, and evaluated directly. (An independent Rust bytecode VM port also lives in `rust/` and reproduces most of this document. See the "Rust port" section below.)
+Un is written in Rust: source files are lexed and parsed, desugared, optimized (constant folding, up to 64 passes), compiled to bytecode, and executed by a stack-based VM. It was previously implemented as a C# tree-walking interpreter on .NET 8; the Rust port was verified byte-identical to it by differential testing before replacing it (the 4 documented divergent cases are listed in `test/KnownDivergent.txt`).
 
 Design goals:
 
@@ -220,24 +218,21 @@ io.write(wait a)   # 10
 
 ### Requirements
 
-- .NET SDK 8.0 or later
+- Rust toolchain (`stable-x86_64-pc-windows-gnu`, Rust 1.99+). The GNU flavor is used instead of MSVC.
 
 ### Build
 
 ```bash
-dotnet build -c Release
+rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
 ```
+
+The Windows executable is `rust\target\release\unvm.exe`.
 
 ### Run
 
 ```bash
-dotnet run -c Release -- run path/to/file.un
-
-# or use the built executable
-./bin/Release/net8.0/Un run path/to/file.un
+.\rust\target\release\unvm.exe run path/to/file.un
 ```
-
-On Windows the executable is `bin\Release\net8.0\Un.exe`.
 
 ### First program
 
@@ -253,7 +248,7 @@ main()
 Save as `hello.un` and run:
 
 ```bash
-dotnet run -c Release -- run hello.un
+.\rust\target\release\unvm.exe run hello.un
 ```
 
 ### Tests and Benchmarks
@@ -261,8 +256,8 @@ dotnet run -c Release -- run hello.un
 Build and run a script directly:
 
 ```bash
-dotnet build -c Release
-dotnet run -c Release -- run test/test_suite.un
+rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
+.\rust\target\release\unvm.exe run test/test_suite.un
 ```
 
 The full suite runs through a runner. It executes the `group|path` rows of
@@ -275,12 +270,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
-counted in the Positive pass/fail totals. The current baseline is Positive 39
-files / 1363 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
-Known 1 file.
-
-A `.NET 8` app runs on a `.NET 10` runtime when `DOTNET_ROLL_FORWARD=Major` is
-set (PowerShell: `$env:DOTNET_ROLL_FORWARD='Major'`).
+counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
+are documented divergences between implementations and are not counted as failures.
+The current baseline is Positive 39 files / 1363 passed / 0 failed / 0 crashed,
+Negative 42 checks: 38 matched + 4 documented divergences, and Known 1 file.
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
 statistics, and saved to `bench/results/<timestamp>/results.csv` and `results.md`.
@@ -561,63 +554,45 @@ Desugarer      compound assignment expansion, if/elif normalization
 Optimizer      constant folding, algebraic simplification, up to 64 passes
   |
   v
-Evaluator      Context / Scope / Frame based execution, Future for go/wait
+Bytecode Compiler   Op / Proto / Instruction(flags, operand) encoding
   |
   v
-Runtime        Obj / Val / Ref / Enu / Stru / TObj / Property and the type system
+Stack VM        Context / Scope / Frame based execution, Future for go/wait
   |
   v
-Stdlib         NativeModule / NativeType reflection binding
+Runtime         Obj / Ref / Enu / Stru / TObj / Property and the type system
+  |
+  v
+Stdlib          native modules (`io`, `fs`, `re`, `math`, ...)
 ```
 
 Key components:
 
-- `src/Interpreter/Runner/Runner.cs` loads, parses, desugars, optimizes, and evaluates a source file. `Source` tracks line and column information.
-- `src/Interpreter/Runner/Scope.cs` provides slot-based symbol tables with parent chains.
-- `src/Core/Global.cs` registers built-in and native modules and resolves `import` / `include`.
-- `src/Interpreter/Reflection/` binds native modules and types through attributes.
-
-The C# implementation has no intermediate bytecode or separate virtual machine. (The Rust port runs through a bytecode compiler and a stack-based VM.)
-
-## Rust port (experimental)
-
-A second implementation of the same language lives under `rust/`: a bytecode compiler and stack-based VM written in Rust (`unvm`). It reproduces the C# implementation's grammar, semantics, standard library, and error messages, and is verified to be byte-identical on the scripts in `test/MANIFEST.txt` — stdout, exit code, and `help` output included — via `scripts/differential.ps1` (108 checked / 0 unexpected DIFFs, with only the 4 documented negative divergences).
-
-- Build: `cargo +stable-x86_64-pc-windows-gnu build --release --manifest-path rust/Cargo.toml`
-- Run: `rust\target\release\unvm.exe run <file>`
-- Verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/differential.ps1`
-- Performance: on par with or faster than the C# reference on most benchmarks (e.g. fib24 3.2x and sort 4.0x faster; only `dict` and the nested loop bench trail).
-- Docs: `docs/rust-migration/`
-
-A handful of divergences are documented (stack overflow exit code, `go`/`pool` single-threaded execution, no TLS). The rest of this document describes the C# implementation, but the grammar and standard library are the same in both (some error messages and exit codes differ as documented).
+- `rust/src/compiler.rs` compiles desugared, optimized AST to bytecode Protos.
+- `rust/src/vm.rs` runs Protos on a stack machine; `Op` is an explicit `#[repr(u8)]` enum, `Proto` owns `code`/`consts`/`names`/`protos`/`source_map`.
+- `rust/src/runtime/scope.rs` provides slot-based symbol tables with parent chains.
+- `rust/src/runtime/world.rs` owns global state (`path`, `global_scope`, `natives`, `stdout`, `allowed`) and the module cache.
+- `rust/src/native/` holds the standard library modules. They are registered explicitly in `native::init`, without assembly reflection.
+- `rust/playground/` wraps `unvm` as an entry point for the web playground (the Rust equivalent of `PlaygroundRunner.RunCode`).
 
 ## Project Structure
 
 ```
 Un/
-|-- Un.sln
-|-- Un.csproj
 |-- README.md
 |-- LICENSE
-|-- src/
-|   |-- Program.cs
-|   |-- PlaygroundRunner.cs
-|   |-- main.un
-|   |-- Core/
-|   |   |-- Global.cs
-|   |   |-- IO/
-|   |   |-- Native/        (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
-|   |   `-- Object/       (runtime object model, collections, functions, flow, IO, iters, primitives, types, utils)
-|   `-- Interpreter/
-|       |-- Lexer/
-|       |-- Parser/
-|       |-- Desugarer/
-|       |-- Optimizer/
-|       |-- Evaluator/
-|       |-- Runner/
-|       |-- Reflection/
-|       |-- Error/
-|       `-- Util/
+|-- rust/
+|   |-- Cargo.toml
+|   |-- src/
+|   |   |-- main.rs          (CLI entry: run/compile/tokens/ast/desugar/opt/dis/help)
+|   |   |-- lib.rs
+|   |   |-- bytecode/        (opcodes, instruction, Program, Proto, unbc container)
+|   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm.rs / module.rs
+|   |   |-- runtime/         (obj, collections, iters, function, world, scope, date, ...)
+|   |   |-- native/          (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
+|   |   `-- main.un          (personal scratch; not a product entry point)
+|   |-- playground/          (WASM entry point, target of un-playground)
+|   `-- target/              (generated build output, gitignored)
 |-- test/                  (.un test scripts and fixtures)
 |   |-- unit/            (unit/lexer, unit/parser, unit/runtime, unit/native)
 |   |-- integration/
@@ -626,11 +601,11 @@ Un/
 |   |-- fixtures/        (circular/, rel_test/, dirmod/, dirall/)
 |   |-- MANIFEST.txt     (group|path rows)
 |   |-- KnownFailures.txt
+|   |-- KnownDivergent.txt   (documented divergences)
 |   `-- assert.un        (assert module)
-|-- scripts/             (test.ps1, bench.ps1, differential.ps1)
-|-- rust/                (source of the Rust bytecode VM port)
+|-- scripts/             (test.ps1, bench.ps1)
 |-- bench/               (benchmark scripts, bench/node/, bench/results/)
-`-- bin/, obj/             (generated build output)
+`-- bin/, obj/             (generated build output, gitignored)
 ```
 
 ## Examples
@@ -699,7 +674,7 @@ More examples are available in `test/test_suite.un`, `test/integration/algorithm
 
 Implemented:
 
-- Interpreter pipeline (lexer, parser, desugarer, optimizer, evaluator)
+- Bytecode compiler and stack-based VM (lexer, parser, desugarer, optimizer, compiler, vm)
 - Runtime object model and type system
 - Standard library modules
 - Asynchronous execution and worker pools
@@ -714,7 +689,6 @@ Implemented:
 In progress:
 
 - Gradual type annotation enforcement
-- Rust bytecode VM port (`rust/`)
 
 Planned:
 
@@ -725,14 +699,14 @@ Planned:
 ## Contributing
 
 1. Fork and clone the repository.
-2. Build with `dotnet build -c Release` and confirm zero warnings and errors.
+2. Build with `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml` and confirm zero warnings and errors.
 3. Create a branch named `feat/my-feature`.
 4. Add `.un` tests to the right group under `test/` and register a `group|path` row in
    `test/MANIFEST.txt`. Tests that check exit codes and stderr go in `test/negative/`
    with a `path|expected exit|expected substring` row in `test/negative/manifest.txt`.
 5. Open a pull request. Commits are made by the contributor; automated tooling does not push to git.
 
-Coding conventions: `ImplicitUsings` and `Nullable` are enabled. Native and built-in members are registered through attributes.
+Coding conventions: Rust 2021 edition. Modules carry a `//!` doc comment at the top, errors propagate with `?`, and pattern matching is used liberally. No external crate dependencies; the standard library is all that is used.
 
 ## License
 

@@ -18,7 +18,7 @@
     특정 스크립트 하나만 실행 (MANIFEST 우회).
 
 .PARAMETER Rebuild
-    dotnet build -c Release를 먼저 수행한다.
+    cargo build --release를 먼저 수행한다.
 
 .EXAMPLE
     powershell -File scripts/test.ps1
@@ -34,11 +34,14 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$env:DOTNET_ROLL_FORWARD = "Major"
-$Exe = Join-Path $Root "bin\Release\net8.0\Un.exe"
+$rustup = Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe"
+$cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
+$Exe = Join-Path $Root "rust\target\release\unvm.exe"
+$Toolchain = "stable-x86_64-pc-windows-gnu"
+$Manifest = Join-Path $Root "rust\Cargo.toml"
 
 if ($Rebuild) {
-    dotnet build -c Release | Out-Null
+    & $rustup run $Toolchain $cargo build --release --manifest-path $Manifest
     if ($LASTEXITCODE -ne 0) {
         Write-Host "build failed" -ForegroundColor Red
         exit 1
@@ -107,11 +110,20 @@ function Run-Negative() {
     $manifest = Join-Path $Root "test\negative\manifest.txt"
     if (-not (Test-Path $manifest)) {
         Write-Host "negative manifest missing" -ForegroundColor Red
-        return @{ matched = 0; mismatched = 0 }
+        return @{ matched = 0; mismatched = 0; known = 0 }
+    }
+
+    $knownDivergent = @()
+    $knownFile = Join-Path $Root "test\KnownDivergent.txt"
+    if (Test-Path $knownFile) {
+        $knownDivergent = Get-Content $knownFile |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -ne '' -and -not $_.StartsWith('#') }
     }
 
     $matched = 0
     $mismatched = 0
+    $known = 0
 
     foreach ($line in (Get-Content $manifest)) {
         $line = $line.Trim()
@@ -128,6 +140,10 @@ function Run-Negative() {
             Write-Host ("[NEG OK]  {0} (exit {1})" -f $path, $r.code) -ForegroundColor Green
             $matched += 1
         }
+        elseif ($knownDivergent -contains $path) {
+            Write-Host ("[NEG KNOWN] {0} (documented divergence; exit {1}, expected {2} / '{3}')" -f $path, $r.code, $wantCode, $wantMsg) -ForegroundColor Yellow
+            $known += 1
+        }
         else {
             $mismatched += 1
             Write-Host ("[NEG BAD] {0} (exit {1}, expected {2} / '{3}')" -f $path, $r.code, $wantCode, $wantMsg) -ForegroundColor Red
@@ -135,7 +151,7 @@ function Run-Negative() {
         }
     }
 
-    return @{ matched = $matched; mismatched = $mismatched }
+    return @{ matched = $matched; mismatched = $mismatched; known = $known }
 }
 
 function Run-Known() {
@@ -203,7 +219,7 @@ $known = $null
 if ($Group -eq "all" -or $Group -eq "negative") {
     Write-Host ""
     $neg = Run-Negative
-    Write-Host ("Negative: {0} matched, {1} mismatched" -f $neg.matched, $neg.mismatched)
+    Write-Host ("Negative: {0} matched, {1} mismatched, {2} documented divergences" -f $neg.matched, $neg.mismatched, $neg.known)
 }
 
 if ($Group -eq "all" -or $Group -eq "known") {
