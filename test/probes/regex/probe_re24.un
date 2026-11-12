@@ -1,0 +1,42 @@
+use io
+use re
+
+fn fa(name, pat, text)
+    try
+        io.write(name, " | ", re.find_all(pat, text), "\n")
+    catch e
+        io.write(name, " | ", `ERR {e}`, "\n")
+
+fn sp(name, pat, text)
+    try
+        io.write(name, " | ", re.split(pat, text), "\n")
+    catch e
+        io.write(name, " | ", `ERR {e}`, "\n")
+
+fa("f1", "a", "")
+fa("f2", "a*", "aba")
+fa("f3", "", "ab")
+fa("f4", "a|", "ab")
+fa("f5", "\\b", "a a")
+fa("f6", "a*?", "aba")
+fa("f7", "a|a", "aa")
+fa("f8", "(a)", "aaa")
+fa("f9", "a{2}", "aaaa")
+fa("f10", "x?", "ab")
+fa("f11", "a|b|c", "abc")
+fa("f12", ".*", "ab")
+fa("f13", ".*?", "ab")
+fa("f14", "", "")
+
+sp("s1", "a", "aaa")
+sp("s2", "a|", "ab")
+sp("s3", "a|", "b")
+sp("s4", "", "abc")
+sp("s5", "", "")
+sp("s6", "a*", "ab")
+sp("s7", "\\b", "a a")
+sp("s8", "(a)(b)", "abab")
+sp("s9", "(a)", "a")
+sp("s10", "a+", "aaab")
+sp("s11", "\\b", "")
+sp("s12", "a", "")

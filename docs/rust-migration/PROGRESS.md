@@ -509,14 +509,16 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
   Known 1(`test/regression/defects.un`, 6 assertions).
 ## 다음 단계
 
-1. Phase 8b working tree 정리: PROGRESS/DECISIONS/BYTECODE 반영 후 의미 있는 단위로 커밋(`src/main.un` 제외).
-2. member ground truth 개별 probe(각 case abort): `str` `to_upper`/`split`/`replace`/`copy`,
-   `dict` `get`/`keys`/`values`, `list` `pop`/`sort`/`order`/`binary_search`,
-   `set` `union`/`intersect`/`difference`. builtin `[Native]` member 테이블 채우기 범위 확정.
-3. differential harness를 `scripts/`로 승격(`cmp3.ps1`/probe set 정리)해 stdout/exit/stderr 비교를 재현 가능하게 유지.
+1. Phase 8b working tree 정리: 완료.
+2. member ground truth 개별 probe: 완료(Phase 12에서 `[Native]` member 테이블을 채웠다).
+3. ~~differential harness를 `scripts/`로 승격~~ **완료** — `scripts/differential.ps1`,
+   `test/probes/regex/`(probe_re*.un 25개). `scripts/differential.ps1`은 MANIFEST positive
+   (37개), negative (manifest 42개 row), regex probes (25개), `help`를 비교한다.
+   105 checked / 0 unexpected DIFF / 4 known-divergent(문서화된 차이, exit code 1 반환).
+   ref의 `2>&1` 병합 semantics를 그대로 따른다.
 4. Phase 9 control flow: 완료(`9921c75`). `if`/`while`/`for`/`break`/`skip` + validator의 jump 깊이 검증.
 5. Phase 10 functions/lambda/return: 완료. nested proto + `MAKE_FUNC`/`RETURN` + `begin_call`/`end_call` + 중첩 VM.
-6. 남은 Phase: 11(file-module import, `test/fixtures/*`), 12 try/catch, 13 defer/using, 14 class/enum/member dispatch, 16 go/wait, 17 `.unbc`.
+6. 남은 Phase 없음. Phase 1~20 전체 완료(`c832ae3`까지).
 
 ## 네이티브 인벤토리 (완료)
 
@@ -807,6 +809,16 @@ bump, len에서 멈춤)도 그대로 재현했다. `IO.write`가 > 0x7F를 `?`�
 - dict5000 벤치마크: 17.9ms → ~9.3ms (reference ~6.1ms, loop-only는 양쪽 parity).
   differential 37 PASS / 0 DIFF, negcmp 38/4(문서화된 차이), wscmp 13/0, fullcmp 37/0,
   `cargo test --release` **199 passed / 0 failed**, `cargo build --release` 0/0.
+
+## differential harness 승격: `scripts/differential.ps1`
+
+- Temp에만 있던 harness(`p10\fullcmp.ps1`, `negcmp.ps1`, `wscmp.ps1`, `cmp_all.ps1`)를
+  저장소의 `scripts/differential.ps1`로 승격하고, regex probes를 `test/probes/regex/`에
+  커밋했다(probe_re*.un 25개).
+- 하위 그룹: `positive`(MANIFEST 37개), `negative`(manifest 42개 row, 4개 known-divergent
+  는 KNOWN-DIFF로 보고하고 실패로 세지 않음), `regex`(25 probes), `help`.
+  `-Rebuild`로 unvm을 먼저 빌드할 수 있다. ref의 `2>&1` 병합 substring 규칙을 그대로 재현한다.
+- 검증: **105 checked / 0 unexpected DIFF / 4 known-divergent**, exit 0.
 
 ### 남은 차이(총집합)
 
