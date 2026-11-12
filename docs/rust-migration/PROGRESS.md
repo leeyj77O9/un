@@ -828,3 +828,21 @@ bump, len에서 멈춤)도 그대로 재현했다. `IO.write`가 > 0x7F를 `?`�
   케이스는 다름, D-064).
 - 정규식 timeout은 두 구현 모두 지정되지 않는다(.NET도 `RegexOptions.None` + timeout 기본 off).
   문서화 대상 아님.
+
+## 성능 전수 비교 (2026-11 benchmark suite vs reference)
+
+- class1000: ref 11.00ms / rust 6.46ms → **1.70× faster**
+- dict5000: ref 6.16ms / rust 11.85ms → **1.92× slower**
+- fib24: ref 787.2ms / rust 247.1ms → **3.19× faster**
+- iter10000: ref 96.0ms / rust 39.0ms → **2.46× faster**
+- nested_sum_200: ref 23.7ms / rust 36.8ms → **1.55× slower**
+- math10000: ref 76.4ms / rust 30.3ms → **2.52× faster**
+- qsort500: ref 74.4ms / rust 18.6ms → **4.00× faster**
+- rle1994: ref 19.0ms / rust 15.0ms → **1.26× faster**
+- env.un: BENCH 라인 없음(측정 도구가 아니라 환경 출력)
+
+Rust가 9개 중 7개 벤치에서 우세(3개 벤치에서 2배 이상). 열위는 dict5000(~1.9×)과
+nested_sum_200(~1.55×) 두 개이며, 둘 다 interpreter의 iterator/member-dispatch 비용이
+지배한 결과다. dict는 KeyMap 버켓 체인으로 17.9ms→11.9ms 개선 후에도 reference와 격차가
+남는다. 두 열위는 컴파일러 레벨의 loop specialization(range 기반 for를 native counter
+루프로 낮추기)이 필요하고, 이는 별도의 설계 판단이 필요한 작업이다.
