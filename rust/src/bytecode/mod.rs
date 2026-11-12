@@ -411,6 +411,8 @@ fn check_indices(
         Op::Use => index_range(label, "name", operand, proto.names.len()),
         Op::PushTry | Op::PushTryProp => index_range(label, "exception entry", operand, proto.exc.len()),
         Op::MakeFunc => index_range(label, "proto", operand, proto.protos.len()),
+        // `MAKE_FUTURE` carries the proto of the `go` expression
+        Op::MakeFuture => index_range(label, "proto", operand, proto.protos.len()),
         Op::MatchPattern => index_range(label, "pattern", operand, proto.patterns.len()),
         Op::Unsupported => index_range(label, "message", operand, program.msgs.len()),
         Op::PrepIter => index_range(label, "message", operand, program.msgs.len()),
@@ -472,9 +474,9 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         Op::PrepIter => 0,
         // `MATCH_PATTERN` reads the value on the stack and pushes the result
         Op::MatchPattern => 1,
-        // `MAKE_FUTURE` replaces the value with a future, `AWAIT` replaces the future
-        // with its value
-        Op::MakeFuture => 0,
+        // `MAKE_FUTURE` pushes a future holding the proto (nothing is consumed), `AWAIT`
+        // replaces the future with its value
+        Op::MakeFuture => 1,
         Op::Await => 0,
         // `FOR_NEXT` pushes the next value on the fall-through path (+1) and pops the
         // iterator on the exhausted path (-1). the validator special-cases it.

@@ -1032,17 +1032,65 @@ impl VM {
                 self.push(world::bool_obj(matched));
             }
             Op::MakeFuture => {
-                // `go expr` — the value becomes a future
-                let value = self.pop()?;
-                self.push(crate::native::flow::future_of(value));
+                // `go expr` — the operand is the proto of the expression. the future holds
+                // the work and the scope chain the reference's task body sees: `EvalGo`'s
+                // task opens `new Scope(context.Scope)` with the scope that is current when
+                // `go` runs, so the capture happens here, not at the `wait` point.
+                let slot = operand as usize;
+                let module_index = self.proto.protos[slot];
+                self.push(crate::native::flow::future_pending(
+                    module_index,
+                    self.program.clone(),
+                    scope::snapshot(&context::scope(&self.ctx)),
+                ));
             }
             Op::Await => {
-                // `wait expr` — the future is replaced by its value
+                // `wait expr` — the reference blocks on the task's result. the work runs on
+                // the calling thread (D-012) in a child of the captured scope, the chain the
+                // task body opened at the `go` point.
                 let value = self.pop()?;
-                match crate::native::flow::future_value(&value) {
-                    Some(result) => self.push(result),
-                    None => return Err(self.error("'wait' requires Future", span)),
-                }
+
+                let state = match obj::payload(&value) {
+                    Payload::Future(state) => state.clone(),
+                    _ => return Err(self.error("'wait' requires Future", span)),
+                };
+
+                let result = match state.borrow().value.clone() {
+                    Some(v) => v,
+                    None => {
+                        let (index, program, captured) = state
+                            .borrow()
+                            .pending
+                            .clone()
+                            .expect("pending work");
+
+                        let scope = scope::new(Some(captured), false);
+                        let (source, frames) = {
+                            let c = self.ctx.borrow();
+                            (c.source.clone(), c.frames.clone())
+                        };
+                        let ctx = context::new(scope, source, frames);
+
+                        match world::execute_proto(&program, &ctx, index) {
+                            function::Flow::Return(v) => v,
+                            // the control transfers keep the spans they carry, the same way
+                            // the reference's task exception reaches the `wait` statement
+                            function::Flow::Propagate(v) => {
+                                return Err(Outcome::Propagate(v, span.0, span.1))
+                            }
+                            function::Flow::Error(e) => return Err(Outcome::Error(e)),
+                            function::Flow::Panic(p) => return Err(Outcome::Panic(p)),
+                            function::Flow::Break(s, l) => return Err(Outcome::Break(s, l)),
+                            function::Flow::Skip(s, l) => return Err(Outcome::Skip(s, l)),
+                            function::Flow::Normal => obj::none(),
+                        }
+                    }
+                };
+
+                // `Task.Result` is memoized, so a second `wait` on the same future answers
+                // the same value
+                state.borrow_mut().value = Some(result.clone());
+                self.push(result);
             }
             Op::PushDefer => {
                 // the deferred block is a nested proto of the running program

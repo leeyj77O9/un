@@ -883,6 +883,8 @@ pub fn clone_obj(o: &Obj) -> Obj {
         // socket keep the same host connection.
         Payload::Property(_) | Payload::FieldRef(_) => return o.clone(),
         Payload::HttpClient(_) | Payload::WebSocket(_) => return o.clone(),
+        // `Future.Clone()` wraps the same task, so the clone shares the memoized result.
+        Payload::Future(_) => return o.clone(),
         // `Pool.Clone()`, `Lock.Clone()`, `AtomicInt.Clone()` and `AtomicBool.Clone()` are
         // errors: the flow objects own a host resource (the worker set, the monitor, the
         // interlocked target), so a second cell would not be the same guard.

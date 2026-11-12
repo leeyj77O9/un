@@ -153,7 +153,8 @@ pub enum Op {
     /// `0x62` is the third slot of the §16 extension area.
     MatchPattern = 0x62,
 
-    /// `go expr` — the value on the stack becomes a future.
+    /// `go expr` — the operand is the proto slot of the expression, the future runs it at
+    /// the `wait` point.
     MakeFuture = 0x63,
 
     /// `wait expr` — the future on the stack is replaced by its value.

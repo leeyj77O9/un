@@ -15,10 +15,16 @@ use crate::runtime::scope::{self, Scope};
 
 use super::{arg, native};
 
-/// a future: the value the work produced.
+/// a future: the value the work produced, or the compiled work it has to run.
 #[derive(Default)]
 pub struct FutureState {
     pub value: Option<Obj>,
+    /// `go expr` keeps the proto of the expression, the program it belongs to, and a copy of
+    /// the scope chain the work sees. `EvalGo`'s task body opens `new Scope(context.Scope)`
+    /// with the chain the `go` point had, so the capture happens at the `go` point; the
+    /// single-threaded runtime (D-012) runs the work at the `wait` point, and the copy is
+    /// what keeps a loop variable readable after its block is gone.
+    pub pending: Option<(usize, Rc<crate::bytecode::Program>, Scope)>,
 }
 
 /// a pool: the worker count and the closed flag.
@@ -58,6 +64,22 @@ pub fn future_of(value: Obj) -> Obj {
         "future",
         Payload::Future(Rc::new(RefCell::new(FutureState {
             value: Some(value),
+            pending: None,
+        }))),
+    )
+}
+
+/// a future holding the compiled work. the value is computed when `wait` runs it.
+pub fn future_pending(
+    index: usize,
+    program: Rc<crate::bytecode::Program>,
+    scope: Scope,
+) -> Obj {
+    obj::obj_new(
+        "future",
+        Payload::Future(Rc::new(RefCell::new(FutureState {
+            value: None,
+            pending: Some((index, program, scope)),
         }))),
     )
 }

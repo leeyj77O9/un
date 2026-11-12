@@ -162,5 +162,32 @@ pub fn slot_count(scope: &Scope) -> usize {
     scope.borrow().slots.len()
 }
 
+/// the chain as it is at this moment. every level's symbol table, order, and slot values
+/// are copied, the value objects themselves stay shared cells. `EvalGo`'s task body opens
+/// `new Scope(context.Scope)` with the chain the `go` point had, so the work sees the
+/// variables as they were when the future was made. the reference shares the live slot
+/// list with the task, and the task's start time decides what it sees; the single-threaded
+/// runtime cannot share the live chain, because the loop scope is gone by the `wait` point.
+pub fn snapshot(scope: &Scope) -> Scope {
+    let (is_function_scope, parent, symbols, order, slots) = {
+        let d = scope.borrow();
+        (
+            d.is_function_scope,
+            d.parent.clone(),
+            d.symbols.clone(),
+            d.order.clone(),
+            d.slots.clone(),
+        )
+    };
+
+    Rc::new(RefCell::new(ScopeData {
+        is_function_scope,
+        parent: parent.map(|p| snapshot(&p)),
+        symbols,
+        order,
+        slots,
+    }))
+}
+
 #[cfg(test)]
 mod tests;

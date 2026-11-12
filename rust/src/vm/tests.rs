@@ -434,3 +434,43 @@ fn an_error_inside_a_function_body_is_reported_at_its_node() {
 fn a_function_value_prints_its_signature() {
     assert_out("use io\nfn f(a: int, b: str)\n    -> a\nio.write(\"f\", f)", "f fn(int, str) -> any\n");
 }
+
+/// `go expr` is a future holding the work, not the value. the reference's task body opens
+/// `new Scope(context.Scope)` with the chain the `go` point had, so the work reads the
+/// variables of its own iteration even after the enclosing block is gone.
+#[test]
+fn a_go_future_sees_the_variables_of_its_go_point() {
+    assert_out(
+        "use io\nuse iter\nfuts = []\nfor i in [1, 2, 3]\n    futs.add(go (i * 2))\n\nout = []\nfor f in futs\n    out.add(wait f)\n\nio.write(\"out = \", out)\n",
+        "out =  [2, 4, 6]\n",
+    );
+}
+
+/// the capture is the chain the `go` point had, so a `go` inside a function body reads the
+/// parameters of the call that made it
+#[test]
+fn a_go_future_in_a_function_body_sees_the_parameters() {
+    assert_out(
+        "use io\nfn sq(n)\n    -> go (n * n)\n\nf = sq(5)\nio.write(\"f=\", wait f)\n",
+        "f= 25\n",
+    );
+}
+
+/// `Task.Result` is memoized, so the work runs once and a second `wait` answers the value
+#[test]
+fn a_waited_future_keeps_its_value() {
+    assert_out(
+        "use io\nf = go (1 + 2)\nio.write(wait f)\nio.write(wait f)\n",
+        "3\n3\n",
+    );
+}
+
+/// `go` is a unary operator, so `go n * n` is `(go n) * n` and the future has no `*`
+/// override. this is the reference's message, not a compile error.
+#[test]
+fn go_binds_tighter_than_a_binary_operator() {
+    assert_abort(
+        "use io\nfn sq(n)\n    -> go n * n\nio.write(wait sq(5))",
+        "unsupported operand type(s) for *: 'future' and 'int'",
+    );
+}

@@ -1592,12 +1592,23 @@ impl<'a> Compiler<'a> {
         let span = (node.start, node.length);
         let op = node.op.unwrap_or(TokenType::Error);
 
-        // `go expr` — the reference starts a task that evaluates the expression, the
-        // Rust runtime runs the work on the calling thread (D-012), so the value is
-        // computed right away and the future holds it.
+        // `go expr` — the reference starts a task whose body opens `new Scope(context.Scope)`
+        // with the chain the `go` point had. the expression is a nested proto that returns
+        // its value, and the future carries that proto with a copy of the chain captured
+        // here; the single-threaded runtime (D-012) runs the work at the `wait` point.
         if op == TokenType::Go {
+            let saved_raises = self.raises;
+            let saved_groups = std::mem::take(&mut self.groups);
+
+            self.begin_proto("go", None);
             self.code(&node.children[0])?;
-            self.emit(Op::MakeFuture, 0, 0, span);
+            self.emit(Op::Return, 0, 0, span);
+            let slot = self.end_proto();
+
+            self.groups = saved_groups;
+            self.raises = saved_raises;
+
+            self.emit(Op::MakeFuture, 0, slot as i32, span);
             return Ok(());
         }
 
