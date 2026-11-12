@@ -6,6 +6,8 @@ Un is implemented as a tree-walking interpreter in C# on .NET 8. The processing 
 
 `Lexer -> Parser -> Desugarer -> Optimizer -> Evaluator`
 
+(An independent Rust implementation of the same language also lives in `rust/`, see the "Rust port" section. This document describes the C# implementation.)
+
 <p align="center">
   <img src="https://img.shields.io/badge/.NET-8.0-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET 8" />
   <img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="MIT License" />
@@ -15,7 +17,7 @@ Un is implemented as a tree-walking interpreter in C# on .NET 8. The processing 
 
 Un is a dynamically typed scripting language aimed at readable, compact programs. It combines Python-like indentation-based blocks with explicit concurrency primitives, structural pattern matching, and a small standard library.
 
-The language is implemented entirely in C# as an interpreter. There is no separate compilation step or bytecode virtual machine: source files are parsed into an AST, desugared, optimized, and evaluated directly.
+The language is implemented primarily as a C# interpreter. There is no separate compilation step or bytecode virtual machine: source files are parsed into an AST, desugared, optimized, and evaluated directly. (An independent Rust bytecode VM port also lives in `rust/` and reproduces most of this document. See the "Rust port" section below.)
 
 Design goals:
 
@@ -575,7 +577,19 @@ Key components:
 - `src/Core/Global.cs` registers built-in and native modules and resolves `import` / `include`.
 - `src/Interpreter/Reflection/` binds native modules and types through attributes.
 
-There is no intermediate bytecode or separate virtual machine.
+The C# implementation has no intermediate bytecode or separate virtual machine. (The Rust port runs through a bytecode compiler and a stack-based VM.)
+
+## Rust port (experimental)
+
+A second implementation of the same language lives under `rust/`: a bytecode compiler and stack-based VM written in Rust (`unvm`). It reproduces the C# implementation's grammar, semantics, standard library, and error messages, and is verified to be byte-identical on the scripts in `test/MANIFEST.txt` — stdout, exit code, and `help` output included — via `scripts/differential.ps1` (105 checked / 0 unexpected DIFFs, with only the 4 documented negative divergences).
+
+- Build: `cargo +stable-x86_64-pc-windows-gnu build --release --manifest-path rust/Cargo.toml`
+- Run: `rust\target\release\unvm.exe run <file>`
+- Verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/differential.ps1`
+- Performance: on par with or faster than the C# reference on most benchmarks (e.g. fib24 3.2x and sort 4.0x faster; only `dict` and the nested loop bench trail).
+- Docs: `docs/rust-migration/`
+
+A handful of divergences are documented (stack overflow exit code, `go`/`pool` single-threaded execution, no TLS). The rest of this document describes the C# implementation, but the grammar and standard library are the same in both (some error messages and exit codes differ as documented).
 
 ## Project Structure
 
@@ -613,7 +627,8 @@ Un/
 |   |-- MANIFEST.txt     (group|path rows)
 |   |-- KnownFailures.txt
 |   `-- assert.un        (assert module)
-|-- scripts/             (test.ps1, bench.ps1)
+|-- scripts/             (test.ps1, bench.ps1, differential.ps1)
+|-- rust/                (source of the Rust bytecode VM port)
 |-- bench/               (benchmark scripts, bench/node/, bench/results/)
 `-- bin/, obj/             (generated build output)
 ```
@@ -699,6 +714,7 @@ Implemented:
 In progress:
 
 - Gradual type annotation enforcement
+- Rust bytecode VM port (`rust/`)
 
 Planned:
 
