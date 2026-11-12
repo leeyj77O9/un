@@ -4,7 +4,10 @@
 
 pub const TICKS_PER_DAY: i64 = 864_000_000_000;
 pub const TICKS_PER_MS: i64 = 10_000;
-pub const TICKS_PER_SEC: i64 = 1_000_000;
+/// 100 ns ticks, so a second is 10 ms ticks = 10_000_000. `TICKS_PER_DAY` is
+/// `86_400 * TICKS_PER_SEC`, and `ticks_from_civil` uses `ss * 10_000_000`, so the
+/// whole date model is built on this scale.
+pub const TICKS_PER_SEC: i64 = 10_000_000;
 
 /// .NET `DateTime.DaysInMonth`
 pub fn days_in_month(year: i64, month: i64) -> i64 {
