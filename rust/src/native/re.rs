@@ -83,7 +83,7 @@ fn pattern_and_text(scope: &Scope) -> Result<(String, String), Obj> {
     Ok((pattern, text))
 }
 
-/// the compiled pattern, the reference reports the .NET compile error.
+/// the compiled pattern, an error reports the .NET compile error text.
 fn compile(pattern: &str) -> Result<Regex, Obj> {
     match Regex::new(pattern) {
         Ok(regex) => Ok(regex),
@@ -181,59 +181,151 @@ fn groups_impl(scope: &Scope) -> Obj {
         return obj::none();
     };
 
-    let groups: Vec<Obj> = found
-        .captures
-        .iter()
-        .map(|capture| match capture {
-            Some((start, end)) => obj::str(&chars[*start..*end].iter().collect::<String>()),
-            None => obj::none(),
-        })
-        .collect();
+    let capsize = found.captures.len();
+    let mut groups = Vec::with_capacity(capsize - 1);
+
+    // groups 1..capsize; unmatched groups are `none`
+    for slot in 1..capsize {
+        if found.is_matched(slot) {
+            let start = found.group_start(slot);
+            let end = found.group_end(slot);
+            groups.push(obj::str(&chars[start..end].iter().collect::<String>()));
+        } else {
+            groups.push(obj::none());
+        }
+    }
 
     collections::list(groups)
 }
 
-/// the replacement of `replace` and `replace_all`, the `$1` groups of the reference.
-fn expand(replacement: &str, chars: &[char], found: &regex::Match) -> String {
+/// .NET `RegexReplacement.ScanDollar` — the `$` substitution tokens.
+/// `found` is the match; `text` is the full input (for the `$_`, `` $` ``, `$'`).
+fn expand(replacement: &str, chars: &[char], found: &regex::Match, regex: &Regex) -> String {
     let mut out = String::new();
-    let mut chars_iter = replacement.chars().peekable();
+    let mut iter = replacement.chars().peekable();
 
-    while let Some(c) = chars_iter.next() {
+    while let Some(c) = iter.next() {
         if c != '$' {
             out.push(c);
             continue;
         }
 
-        match chars_iter.peek().copied() {
+        match iter.peek().copied() {
             Some('$') => {
-                chars_iter.next();
+                iter.next();
                 out.push('$');
             }
-            Some(digit) if digit.is_ascii_digit() => {
-                chars_iter.next();
-                let mut number = digit.to_digit(10).unwrap_or(0) as usize;
-
-                // a two digit group number
-                if let Some(next) = chars_iter.peek().copied() {
-                    if next.is_ascii_digit() {
-                        let two = number * 10 + next.to_digit(10).unwrap_or(0) as usize;
-                        if two < found.captures.len() {
-                            chars_iter.next();
-                            number = two;
+            Some('{') => {
+                iter.next();
+                let mut name = String::new();
+                let mut closed = false;
+                while let Some(n) = iter.next() {
+                    if n == '}' {
+                        closed = true;
+                        break;
+                    }
+                    name.push(n);
+                }
+                if !closed {
+                    // literal ${name} — emit as-is
+                    out.push('$');
+                    out.push('{');
+                    out.push_str(&name);
+                    continue;
+                }
+                match group_ref_from_token(regex, &name) {
+                    Some(num) => {
+                        if found.is_matched(num) {
+                            let start = found.group_start(num);
+                            let end = found.group_end(num);
+                            out.push_str(&chars[start..end].iter().collect::<String>());
                         }
                     }
+                    None => {
+                        // unknown name — literal ${name}
+                        out.push('$');
+                        out.push('{');
+                        out.push_str(&name);
+                        out.push('}');
+                    }
+                }
+            }
+            Some(digit) if digit.is_ascii_digit() => {
+                // .NET ScanDollar (non-angled): scan the FULL digit run;
+                // if the number doesn't name a capture slot, emit "$" + the run literally
+                let mut run = String::new();
+                run.push(digit);
+                iter.next();
+                while let Some(next) = iter.peek().copied() {
+                    if !next.is_ascii_digit() {
+                        break;
+                    }
+                    iter.next();
+                    run.push(next);
                 }
 
-                match found.captures.get(number).copied().flatten() {
-                    Some((start, end)) => out.push_str(&chars[start..end].iter().collect::<String>()),
-                    None => {}
+                let number: u64 = run.parse().unwrap_or(u64::MAX);
+                let slot = if number <= i32::MAX as u64 {
+                    number as i32
+                } else {
+                    -1
+                };
+                if slot >= 0 && regex.is_valid_slot(slot) {
+                    let num = regex.map_capture(slot) as usize;
+                    if found.is_matched(num) {
+                        let start = found.group_start(num);
+                        let end = found.group_end(num);
+                        out.push_str(&chars[start..end].iter().collect::<String>());
+                    }
+                } else {
+                    out.push('$');
+                    out.push_str(&run);
                 }
+            }
+            Some('&') => {
+                iter.next();
+                out.push_str(&chars[found.start..found.end].iter().collect::<String>());
+            }
+            Some('`') => {
+                iter.next();
+                out.push_str(&chars[..found.start].iter().collect::<String>());
+            }
+            Some('\'') => {
+                iter.next();
+                out.push_str(&chars[found.end..].iter().collect::<String>());
+            }
+            Some('+') => {
+                iter.next();
+                let last = regex.capsize() - 1;
+                if last >= 1 && found.is_matched(last as usize) {
+                    let start = found.group_start(last as usize);
+                    let end = found.group_end(last as usize);
+                    out.push_str(&chars[start..end].iter().collect::<String>());
+                }
+            }
+            Some('_') => {
+                iter.next();
+                out.push_str(&chars[..].iter().collect::<String>());
             }
             _ => out.push('$'),
         }
     }
 
     out
+}
+
+/// `${...}` token resolution: all-digit tokens name a numbered group,
+/// otherwise the token is a group name. Sparse numbering is dense-mapped.
+fn group_ref_from_token(regex: &Regex, token: &str) -> Option<usize> {
+    if !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit()) {
+        let raw: u64 = token.parse().ok()?;
+        let raw = i32::try_from(raw).ok()?;
+        if !regex.is_valid_slot(raw) {
+            return None;
+        }
+        return Some(regex.map_capture(raw) as usize);
+    }
+    regex.group_number_from_name(token)
 }
 
 fn replace_impl(scope: &Scope) -> Obj {
@@ -257,7 +349,7 @@ fn replace_impl(scope: &Scope) -> Obj {
     };
 
     let mut out: String = chars[..found.start].iter().collect();
-    out.push_str(&expand(&replacement, &chars, &found));
+    out.push_str(&expand(&replacement, &chars, &found, &regex));
     out.push_str(&chars[found.end..].iter().collect::<String>());
 
     obj::str(&out)
@@ -284,7 +376,7 @@ fn replace_all_impl(scope: &Scope) -> Obj {
 
     for found in regex.find_all(&chars) {
         out.push_str(&chars[pos..found.start].iter().collect::<String>());
-        out.push_str(&expand(&replacement, &chars, &found));
+        out.push_str(&expand(&replacement, &chars, &found, &regex));
         pos = found.end;
     }
 
@@ -311,6 +403,15 @@ fn split_impl(scope: &Scope) -> Obj {
     for found in regex.find_all(&chars) {
         parts.push(obj::str(&chars[pos..found.start].iter().collect::<String>()));
         pos = found.end;
+
+        // .NET: add the matched capture groups after each split
+        for slot in 1..found.captures.len() {
+            if found.is_matched(slot) {
+                let start = found.group_start(slot);
+                let end = found.group_end(slot);
+                parts.push(obj::str(&chars[start..end].iter().collect::<String>()));
+            }
+        }
     }
 
     parts.push(obj::str(&chars[pos..].iter().collect::<String>()));

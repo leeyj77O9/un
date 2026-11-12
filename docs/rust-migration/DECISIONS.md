@@ -562,15 +562,15 @@ inner ë¬¸ìì—´ë§Œ ì €ì¥í•˜ê³  CLIëŠ” `System.ArgumentOutOfRangeException: {mes
 - ê·¸ë˜ì„œ íŒŒì¼ ì´ë¦„ì´ `.`ë¡œ ì‹œì‘í•˜ë©´ hiddenìœ¼ë¡œ íŒì •í•œë‹¤. Windowsì˜ dotfile ê·œì¹™ê³¼
   ë¹„ìŠ·í•˜ì§€ë§Œ referenceì™€ í•­ìƒ ê°™ì§€ëŠ” ì•Šë‹¤.
 
-## D-053 | ì •ê·œì‹ì€ ìì²´ backtracking ì—”ì§„ìœ¼ë¡œ êµ¬í˜„í•œë‹¤ | Accepted
+## D-053 | ì •ê·œì‹ì€ ìì²´ backtracking ì—”ì§„ìœ¼ë¡œ êµ¬í˜„í•œë‹¤ | Superseded by D-064
 
 - referenceëŠ” `System.Text.RegularExpressions`ë¥¼ ì“´ë‹¤. Rust runtimeì—ëŠ” regex crateê°€
   ì—†ê³ (ì™¸ë¶€ ì˜ì¡´ì„±ì„ ì¶”ê°€í•˜ì§€ ì•ŠëŠ”ë‹¤), .NET ë¬¸ë²• ì „ì²´ë¥¼ ì¬í˜„í•˜ëŠ” ê²ƒë„ ë²”ìœ„ê°€ ì•„ë‹ˆë‹¤.
-- `native/regex.rs`ì˜ ì—”ì§„ì€ backtracking ë§¤ì²˜ì´ê³ , ì–¸ì–´ê°€ ì“°ëŠ” ë¬¸ë²•ì„ ì§€ì›í•œë‹¤:
-  ë¦¬í„°ëŸ´, `.`, ë¬¸ì í´ë˜ìŠ¤, íƒˆì¶œ(`\d`, `\w`, `\s` ì™€ ë¶€ì •í˜•), ê·¸ë£¹, ëŒ€ì•ˆ, ìˆ˜ëŸ‰ì
-  (`*`, `+`, `?`, `{n,m}`), ì•µì»¤(`^`, `$`).
-- ë§¤ì¹­ ê²°ê³¼ëŠ” .NETê³¼ ê°™ì§€ë§Œ(íƒìš•/ê²Œìœ¼ë¥¸ ìˆ˜ëŸ‰ì, ê·¸ë£¹ ë²ˆí˜¸), .NET íŠ¹ìœ ì˜ ê¸°ëŠ¥ì€
-  ì—†ë‹¤(lookbehind, named groupì˜ ì—­ì°¸ì¡°, `\p{...}` ë“±).
+- ìµœì´ˆ êµ¬í˜„(`native/regex.rs`)ì€ backtracking ë§¤ì²˜ì˜€ê³  ì–¸ì–´ê°€ ì“°ëŠ” ë¬¸ë²•ë§Œ ì§€ì›í–ˆë‹¤
+  (ë¦¬í„°ëŸ´, `.`, ë¬¸ì í´ë˜ìŠ¤, ê·¸ë£¹, ëŒ€ì•ˆ, ìˆ˜ëŸ‰ì, `^`/`$`).
+- **D-064**ì—ì„œ ì´ ì—”ì§„ì€ .NET ì•Œê³ ë¦¬ì¦˜ì˜ ì¶©ì‹¤í•œ ì´ì‹ìœ¼ë¡œ êµì²´ëë‹¤
+  (`rust/src/native/regex/`). named group, lookaround, balancing group, `\p{...}`,
+  EXPRCOND/BACKCOND, `$` expansion ë“± .NET ê¸°ëŠ¥ì´ ê·¸ëŒ€ë¡œ ë™ì‘í•œë‹¤.
 
 ## D-054 | `go`/`wait`ê³¼ poolì€ í˜¸ì¶œ ìŠ¤ë ˆë“œì—ì„œ ì‹¤í–‰í•œë‹¤ | Accepted
 
@@ -680,3 +680,39 @@ inner ë¬¸ìì—´ë§Œ ì €ì¥í•˜ê³  CLIëŠ” `System.ArgumentOutOfRangeException: {mes
 - `test/negative/go_loop_var.un`ì€ ë§ì¶œ ìˆ˜ ì—†ë‹¤: referenceëŠ” racyí•´ì„œ 6íšŒ ì‹¤í–‰ ì¤‘ 4íšŒê°€
   exit `-1`, 2íšŒê°€ exit `1`ì´ê³ , manifestê°€ ê¸°ëŒ€í•˜ëŠ” `undefined variable 'i'`ëŠ” taskê°€ loop
   scopeë¥¼ ë²„ë¦° ë’¤ì— ì‹œì‘í•˜ëŠ” ìˆœì„œì—ì„œë§Œ ë‚˜ì˜¨ë‹¤. RustëŠ” `sorted =  [1, 4, 9]`ë¡œ exit 0ì´ë‹¤.
+
+## D-064 | .NET compatible regex engine; char-based text instead of UTF-16 | Accepted
+
+- reference´Â `System.Text.RegularExpressions`ÀÇ backtracking ¿£ÁøÀ» ¾´´Ù. ÀÌ ¿£ÁøÀº
+  .NET ¾Ë°í¸®Áò(`RegexParser` ¡æ `RegexWriter` ¡æ `RegexInterpreter`)ÀÇ Ãæ½ÇÇÑ ÀÌ½ÄÀÌ´Ù:
+  °íÁ¤ ¿ë·® ¹è¿­(track/stack/crawl)°ú peek-after-pop ±Ô¾à, `Branchcount` loop armÀÌ mark¸¦
+  track¿¡ ÀúÀåÇÏ°í straight path´Â `[mark, count, -codepos]`·Î ÀúÀåÇÏ´Â ±ÔÄ¢,
+  `Backtrack()`ÀÇ negative marker = `BacktrackingSecond`(flag¸¦ ORÀÌ ¾Æ´Ï¶ó **±³Ã¼**),
+  `Matches()` enumeration(ºó ¸ÅÄ¡´Â ÇÑ ±ÛÀÚ bump, len¿¡¼­ ¸ØÃã), `Regex.Split`ÀÇ Ä¸Ã³
+  splice, `ScanDollar`(`$` expansion: ``, `..`´Â ÀüÃ¼ ÀÚ¸´¼ö ¼Òºñ + ½½·Ô
+  ¾øÀ¸¸é literal emission), `Escape`(`Regex.Escape`¿Í °°Àº metachar set)±îÁö ÀçÇöÇß´Ù.
+  node kind/opcode ¹øÈ£´Â .NET°ú µ¿ÀÏÇÏ´Ù.
+- ±¸Çö Áß ¹ß°ß¡¤¼öÁ¤ÇÑ ¿£Áø °áÇÔ(ÀüºÎ byte-identical Àç°ËÁõ):
+  `scan_group_open`ÀÇ Rust `break`°¡ loop ÀüÃ¼¸¦ Å»ÃâÇØ option groups¿Í expression
+  conditional(`(?(x)b)`)ÀÌ Ç×»ó `Unrecognized grouping construct.`°¡ µÇ´ø ±¸Á¶ ¿À·ù,
+  Ä«Å×°í¸® group resultÀÇ ÃÊ±â°ª(`false` ´ë½Å `true`·Î ½ÃÀÛÇØ ¸ğµç ¹®ÀÚ°¡ `\p{..}`¿¡
+  ¸ÅÄª), `NOT_SPACE_CONST`ÀÇ double negation(`\S`°¡ °ø¹é¿¡ ¸ÅÄª), Å¬·¡½º ³»ºÎ shorthand
+  (`[\D]`/`[\S]`/`[\W]`/`[\p{...}]`/`\-`)°¡ `ch`(=`\`)¸¦ ºñ±³ÇØ Ç×»ó ºÎÁ¤Àı·Î
+  ºüÁö´ø ¿À·ù, `[\b]`ÀÇ `_pos` ÀÌÁß rewinding, `Branchcount` track frame¿¡ mark°¡ ºüÁø
+  °Í, `backtrack()`ÀÇ `back |= BACKTRACKING_SECOND`(384)°¡ ¾î¶² arm¿¡µµ ¸ÂÁö ¾Ê¾Æ capture¸¦
+  º¹¿øÇÏÁö ¸øÇÏ°í `goto(31)` OOB panicÀ» ¸¸µé´ø ¹®Á¦, `is_true_quantifier`ÀÇ ³¡ÀÚ¶ô
+  OOB read(`a{2`¿¡¼­ panic).
+- °ËÁõ: probes 25Á¾ **25 PASS / 0 DIFF**(IO.write°¡ >0x7F¸¦ `?`·Î ÀÚ¸£´Â °Í±îÁö Æ÷ÇÔ),
+  differential suite 37 PASS / 0 DIFF, `cargo test --release` 199 passed, cargo build 0/0.
+- engineÀº BMP+astral Unicode category tableÀ» .NET numberingÀ¸·Î º´ÇÕÇØ ¾´´Ù.
+- **UTF-16 ´ë½Å Rust `char` ±â¹İ**ÀÌ´Ù: .NETÀº pattern°ú inputÀ» UTF-16 code unitÀ¸·Î
+  ÀĞÀ¸¹Ç·Î astral ¹®ÀÚ°¡ surrogate 2°³·Î º¸ÀÌÁö¸¸, Rust ¿£ÁøÀº char ÇÏ³ª·Î º»´Ù. ±×·¡¼­
+  BMP literal/class´Â µ¿ÀÏÇÏÁö¸¸ astral ¹®ÀÚ¿¡ ´ëÇÑ ÀÏºÎ patternÀº ¹®ÀÚ°¡ 2°³Ã³·³
+  ¸ÅÄªµÇ´Â .NET°ú ´Ù¸£°Ô µ¿ÀÛÇÒ ¼ö ÀÖ´Ù(astral literalÀº category table·Î¸¸ ¸ÅÄª °¡´É).
+  ÇöÀç parity harness(probe/differential)¿¡´Â astral patternÀÌ ¾ø¾î ¹ÌÃøÁ¤.
+- case-insensitivity´Â .NETÀÇ culture-specific case equivalence tableÀÌ ¾Æ´Ï¶ó RustÀÇ
+  Unicode lowercase/uppercase/titlecase·Î ´Ü¼øÈ­Çß´Ù(Turkish I, Cyrillic culture Æ¯¼ö
+  ÄÉÀÌ½º´Â ´Ù¸§). POSIX `[:name:]`´Â .NETÃ³·³ literal ¹®ÀÚ ÁıÇÕÀ» ±â¿©ÇÏÁö ¾Ê´Â´Ù(probe·Î
+  È®ÀÎ): `[a[:alpha:]]`´Â literal `a`, `[`, `:`, `a`, `l`, `p`...¸¦ ÁØ´Ù.
+- `Escape`ÀÇ metachar setÀº `\t \n \f \r ' ' # $ ( ) * + . ? [ \ ^ { |`ÀÌ¸ç Á¦¾î ¹®ÀÚ´Â
+  `\t`/`\n`/`\r`/`\f`·Î espaceÇÑ´Ù(`Regex.Escape` ground truth).

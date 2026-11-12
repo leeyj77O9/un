@@ -42,6 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 13~17 defer/using/stream/tagged/go-wait/.unbc | **완료** | `18fd0b9`, `43a8f7e`, `fab032b` | `defer`/`using`/`stream`/tagged template/`go`/`wait`/`.unbc`까지 구현. differential 34개 파일: 33 PASS / 1 DIFF, negative 42개 파일: 38 PASS / 4 DIFF(문서화된 차이) |
 | 18 random object / http / ws | **완료** | `91cf755`, `1f30012`, `bbdb954` | `random()` 생성 객체(공유/개별 생성기) + `http` client와 `ws` socket payload(plain TCP, RFC 6455 handshake, TLS는 범위 밖 D-057). network probe 13개: 13 PASS / 0 DIFF, differential 34개 파일: 34 PASS / 0 DIFF, negative 38 PASS / 4 DIFF, reference baseline 불변 |
 | 19 set literal / binding 없는 `for` / `atomic` / `time` / `go` 지연 | **완료** | `231058b`, `afe2c1b`, `0ff268b`, `4f38a21`, `0a0ab98`, `bd773fa` | `main` merge(`89f2805`)로 최신 reference를 받고 Port: `[1,2,3]`이 set, binding 없는 `for`, `atomic.int`/`atomic.bool`, `time` 확장(8개 함수 + `elapsed_ms` + `TICKS_PER_SEC`), `go`가 `go` 시점의 scope chain을 captured한 deferred future. differential 37개 파일: 37 PASS / 0 DIFF, negative 38 PASS / 4 DIFF, cargo 196 tests, reference baseline Positive 36 files / 1330 passed |
+| 20 `re` 엔진 교체(.NET 호환) | **완료** | | .NET `RegexParser`→`RegexWriter`→`RegexInterpreter` 이식(`rust/src/native/regex/`), probes 25 PASS / 0 DIFF, differential 37 PASS / 0 DIFF, cargo 199 tests, reference baseline Positive 36 files / 1330 passed / Negative 42 matched |
 
 ## Phase 2 정합 데이터
 
@@ -749,3 +750,57 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
   (exit code 1은 같고 stderr 문구가 없다.)
 - TLS(`https`/`wss`)는 지원하지 않는다(D-057). `http`/`ws`의 request/frame I/O는 Un 코드에서
   관측할 수 없어 parity 대상이 아니다(D-060).
+
+## Phase 20 종합 검증(`re` 엔진 교체)
+
+`re`의 엔진이 .NET `System.Text.RegularExpressions`의 자체 호환 backtracking 엔진으로
+교체됐다(`rust/src/native/regex/`, D-053 교체). .NET의 알고리즘을 그대로 이식했다:
+`RegexParser`(두 패스 capture counting 포함) → `RegexWriter` → `RegexInterpreter`(VM).
+node kind/opcode 번호는 .NET과 동일하다. `.NET`의 `Regex.Escape`, `ScanDollar`
+(`$` expansion, `${name}`, `$0..$9`는 전체 자릿수 소비 + 슬롯 없으면 literal),
+`Regex.Split`(캡처 그룹을 결과에 splice)과 `Matches()` enumeration(빈 매치는 한 글자
+bump, len에서 멈춤)도 그대로 재현했다. `IO.write`가 > 0x7F를 `?`로 자르는 특성까지
+포함해 25개 probe가 전부 byte-identical이다.
+
+- 13→25 probes(`probe_re*.un`): **25 PASS / 0 DIFF**.
+- 엔진 내부: 고정 용량 배열(track/stack/crawl) + `.NET` peek-after-pop 규약,
+  `Backtrack()`의 negative marker = `BacktrackingSecond` 규칙(`back`을 교체, OR이 아님),
+  `Branchcount`는 `[mark, count]`를 track에 `-codepos` marker로 저장, loop arm은 mark를 track에 저장.
+- Unicode category: BMP+astral table(`unicode_table.rs` 계열)을 .NET과 같은 numbering으로
+  병합해 생성. astral 문자는 char 하나로 분류되므로(.NET은 surrogate 쌍으로 봄)
+  category 매칭이 astral에서도 동작하는 점만 divergence다(D-064).
+- case-insensitivity는 culture 테이블이 아니라 Rust의 Unicode lowercase/uppercase/titlecase로
+  단순화(D-064). `Matches()` bump 규칙, `Split`의 캡처 splice, `$` expansion의 전체 자릿수
+  소비를 재현했다.
+- differential 중 발견·수정한 엔진 결함(전부 byte-identical 재검증):
+  `scan_group_open`의 Rust `break`가 loop 전체를 탈출해 `(?(x)b)` 같은 조건을
+  `Unrecognized grouping construct.`로 만들던 구조 오류(switch는 fall-through,
+  shared return으로 연결 + `(?)` early-return 누락 수정), 카테고리 group의 result 초기값
+  (`false`가 아닌 `true`로 시작해서 모든 문자가 `\p{...}`에 매칭), `NOT_SPACE_CONST`의
+  double negation(`\S`가 공백에 매칭), 클래스 내부 shorthand(`[\D]`/`[\S]`/`[\W]`/
+  `[\p{...}]`)가 `ch`(=`\`)를 비교해 항상 부정절로 빠지던 문제, `[\b]`의 `_pos` 이중
+  rewinding(ranges `(92)`=`\`,`(98)`=`b`), `Branchcount` track frame에 mark가 빠진 것과
+  positive marker로 저장한 것, `backtrack()`의 `back |= BACKTRACKING_SECOND`(384)가
+  어떤 arm에도 맞지 않아 capture를 복원하지 못해 goto(31) OOB panic을 만들던 문제
+  (교체가 맞다), `is_true_quantifier`의 끝자락 OOB read(`a{2`에서 panic).
+
+### 검증
+
+- `cargo build --release` 0 errors / 0 warnings, `cargo test --release` **199 passed / 0 failed**
+  (`char_class_category_groups`, `class_shorthand_escapes`, `match_and_find_all` 추가).
+- probes: **25 PASS / 0 DIFF** (`probe_re.un` ~ `probe_re24.un`, `probe_repan.un`).
+- differential suite(MANIFEST 37개 파일): **37 PASS / 0 DIFF** 유지.
+- negative suite: **38 PASS / 4 DIFF**(문서화된 차이 유지).
+- network probe suite: **13 PASS / 0 DIFF** 유지.
+- reference baseline(`scripts/test.ps1`) 불변: Positive 36 files / 1330 passed / 0 failed /
+  0 crashed, Negative 42 matched, Known 1.
+- `src/main.un`은 손대지 않았다. C# 코드(`src/*.cs`), 테스트, build config 변경 없음.
+
+### 남은 차이(총집합)
+
+- UTF-16 vs `char`: .NET은 surrogate 2개 code unit, Rust는 char 하나로 센다(D-064).
+  BMP 리터럴/클래스는 동일하고 astral 문자의 category 매칭만 동작한다.
+- case-insensitivity는 Rust Unicode 대소문자 매핑으로 단순화(Turkish 등 culture 특수
+  케이스는 다름, D-064).
+- 정규식 timeout은 두 구현 모두 지정되지 않는다(.NET도 `RegexOptions.None` + timeout 기본 off).
+  문서화 대상 아님.
