@@ -581,6 +581,8 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   바로 계산해서 future에 넣고, `wait`는 그 값을 꺼낸다. pool의 `map`/`submit`도 호출
   스레드에서 순서대로 실행한다.
 - 결과 값은 reference와 같지만 인터리빙(순서)은 다르다.
+- `go`의 즉시는 D-063으로 대체했다: `go`는 work를 deferred future에 담고, work는 `go`
+  시점의 scope chain 복사본에서 `wait` 시점에 실행된다. pool의 단일 스레드 규칙은 그대로다.
 
 ## D-055 | `Str`는 `>`를 override 하지 않는다 | Accepted
 
@@ -633,3 +635,48 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   **13 PASS / 0 DIFF**). probe는 URI 검증표, 연결 실패 문구, 객체의 타입/display/
   비교/`bool`, `inspect.attr`를 reference와 byte-identical로 비교하고, frame 송수신은
   Node `ws` package의 echo server(port 19085)에 대한 실제 handshake와 echo로 확인한다.
+
+## D-061 | `[Native(Async = true)]`는 binder가 무시하고, `f43637f`의 dead-code 정리는 Rust에 영향이 없다 | Accepted
+
+- reference의 binder는 `Async`를 읽지 않는다(실제 비동기 호출 경로가 없고, `f43637f`는
+  `Native.Async` 필드를 제거했다). 그래서 Rust의 `_async` 멤버는 blocking 멤버와 같은
+  동작이다.
+- `f43637f`가 지운 것(`UnType`의 `TGeneric`/`UGeneric`/`Infinity`/`Skip`/`Break`,
+  `ArgInfo.Keyword`, `Native.Async`, `Source.FullName`, `IFileSystem.Enumerate*`,
+  `IO.ResetStdout`/`ResetStdin`, `Scope`의 `SetLocalOrDeclare`/`ContainsKeyInTop`/
+  `Snapshot`/`Restore`)은 Rust에 없다. reference의 대입 규칙은 `SetLocal` 하나로
+  합쳐졌고(`localOnly || IsFunctionScope`), Rust는 `set_local`이 그 규칙을 쓴다.
+- `Global.AllowProcessExit`와 `Fs.GetBlockedPath`는 playground 전용이다. Rust runtime은
+  playground API가 없고 `world::set_allowed`가 모듈 허용을 담당한다.
+
+## D-062 | `atomic`의 값은 한 cell에 담는다 | Accepted
+
+- reference는 `Interlocked` 연산(`Interlocked.Read`/`Exchange`/`Add`/
+  `CompareExchange`)을 쓴다. Rust runtime는 객체 모델을 스레드로 넘기지 못하므로(D-012)
+  counter와 flag는 `Rc<RefCell<i64>>`/`Rc<RefCell<bool>>` 한 cell에 값을 담고, 연산은 같은
+  값을 만든다. `atomic.int(5).add(3).get()`는 `8`이고, `exchange`는 이전 값을 돌려주며
+  `compare_and_swap`은 일치할 때만 swap한다.
+- `Clone()`은 counter/flag/pool/lock에서 오류(`'atomic_int' cannot be cloned` 등)이고
+  `Copy()`는 네 개 모두 `this`다. `Entry()`는 `this`이고 `Exit()`는 override가 없어서 base
+  문구(`unsupported operand type(s) for using exit: 'atomic_int'`)를 답한다.
+- 인자 이름은 reference의 `[ArgInfo]` 이름(`initial`/`amount`/`expected`/`newValue`)을
+  따른다. 오류 문구는 reference가 hard-code한 `'value'`/`'new_value'`를 그대로 쓴다.
+
+## D-063 | `go`는 `go` 시점의 scope chain 복사본을 가진 deferred future다 | Accepted
+
+- reference의 `EvalGo`는 `Task.Run(() => { var goScope = new Scope(context.Scope); ... })`
+  이다. task body가 `new Scope(context.Scope)`를 **task가 시작할 때** 열므로, task는 `go`
+  시점의 scope chain을 본다. `Future.Wait()`는 `Task.Result`를 블록하고 `AggregateException`
+  을 flatten해서 inner 예외를 rethrow한다.
+- Rust는 단일 스레드(D-012)에서 work를 `wait` 시점에 실행한다. `go` 시점의 live chain을
+  공유하면 loop block이 사라진 뒤 값이 resolve되지 않으므로, `MAKE_FUTURE`가 **chain의
+  복사본**을 future에 담는다(각 level의 symbol table과 slot 값을 복사하고 value cell은
+  공유한다). `AWAIT`는 복사본의 child scope에서 proto를 실행하고 값을 memoize한다.
+- 실측: `fn sq(n) -> go (n * n)` 후 `wait f`는 `25`, `for i in [1,2,3]` 안에서
+  `futs.add(go (i * 2))`의 future는 각 iteration 값을 유지해서 `out =  [2, 4, 6]`이 된다.
+  `go n * n`은 `(go n) * n`이고 future에 `*` override가 없어
+  `unsupported operand type(s) for *: 'future' and 'int'`로 abort한다(`go`는 unary이며
+  binary보다 강하게 bind한다).
+- `test/negative/go_loop_var.un`은 맞출 수 없다: reference는 racy해서 6회 실행 중 4회가
+  exit `-1`, 2회가 exit `1`이고, manifest가 기대하는 `undefined variable 'i'`는 task가 loop
+  scope를 버린 뒤에 시작하는 순서에서만 나온다. Rust는 `sorted =  [1, 4, 9]`로 exit 0이다.

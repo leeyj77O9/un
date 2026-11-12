@@ -41,6 +41,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 12 classes/exceptions/native modules | **완료** | `fca187e`, `6568c37`, `81ff74a`, `5e520e7`, `18fd0b9` | class/enum/property/match/defer/using/decorator + native 12개 모듈 + stream/future/pool/lock. differential 34개 파일: 33 PASS / 1 DIFF(출력 동일, 실행 시간만 차이) |
 | 13~17 defer/using/stream/tagged/go-wait/.unbc | **완료** | `18fd0b9`, `43a8f7e`, `fab032b` | `defer`/`using`/`stream`/tagged template/`go`/`wait`/`.unbc`까지 구현. differential 34개 파일: 33 PASS / 1 DIFF, negative 42개 파일: 38 PASS / 4 DIFF(문서화된 차이) |
 | 18 random object / http / ws | **완료** | `91cf755`, `1f30012`, `bbdb954` | `random()` 생성 객체(공유/개별 생성기) + `http` client와 `ws` socket payload(plain TCP, RFC 6455 handshake, TLS는 범위 밖 D-057). network probe 13개: 13 PASS / 0 DIFF, differential 34개 파일: 34 PASS / 0 DIFF, negative 38 PASS / 4 DIFF, reference baseline 불변 |
+| 19 set literal / binding 없는 `for` / `atomic` / `time` / `go` 지연 | **완료** | `231058b`, `afe2c1b`, `0ff268b`, `4f38a21`, `0a0ab98`, `bd773fa` | `main` merge(`89f2805`)로 최신 reference를 받고 Port: `[1,2,3]`이 set, binding 없는 `for`, `atomic.int`/`atomic.bool`, `time` 확장(8개 함수 + `elapsed_ms` + `TICKS_PER_SEC`), `go`가 `go` 시점의 scope chain을 captured한 deferred future. differential 37개 파일: 37 PASS / 0 DIFF, negative 38 PASS / 4 DIFF, cargo 196 tests, reference baseline Positive 36 files / 1330 passed |
 
 ## Phase 2 정합 데이터
 
@@ -621,7 +622,8 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
 - **Phase 15** tagged template ✓: `tag\`hello ${name}\``은 tag 함수를
   `fn(values, strings)`로 부른다.
 - **Phase 16** `go` / `wait` ✓: `MAKE_FUTURE`와 `AWAIT`. 스레드를 쓸 수 없어서(D-054)
-  표현식을 바로 계산해서 future에 넣는다.
+  표현식을 바로 계산해서 future에 넣는다. 이 즉시 평가는 Phase 19e에서 deferred future로
+  바뀌었다(D-063).
 - **Phase 17** `.unbc` 컨테이너 ✓: `bytecode::unbc`가 쓰고 읽는다. magic/version/flag가
   다르면 validation이 실패한다. 소스 텍스트를 함께 저장할 수 있어서(flags bit0) 오류
   위치가 원본 파일의 줄을 가리킨다. CLI는 `unvm compile <file.un>`과
@@ -633,8 +635,8 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
 - differential suite(MANIFEST 34개 파일): **33 PASS / 1 DIFF**(출력은 같고 실행 시간만 제한
   시간을 넘긴 경우).
 - negative suite(42개 파일): **38 PASS / 4 DIFF**. 남은 네 개는 문서화된 차이다:
-  .NET 스택 오버플로(Rust는 재귀 한도), `go`의 타이밍(D-054), .NET `Array.Sort`의
-  일관성 검사.
+  .NET 스택 오버플로(Rust는 재귀 한도), .NET `Array.Sort`의 일관성 검사,
+  `go`의 racy한 타이밍(D-063, Phase 19e에서 확인).
 
 ## Phase 18 종합 검증(random 객체 / http / ws)
 
@@ -677,6 +679,54 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
 - reference baseline(`scripts/test.ps1`) 불변: Positive 33 files / 1265 passed / 0 failed /
   0 crashed, Negative 42 matched, Known 1(`test/regression/defects.un`, 6 assertions).
 
+## Phase 19 종합 검증(최신 reference 기능)
+
+`main`의 최신 커밋 6개를 `main` merge(`89f2805`)로 받아서 Port했다: `0a6bbe0`(risk fixes),
+`ebde101`(binding 없는 `for`), `63cab26`(set literal과 `Set.In`), `42fd0bf`(`atomic`),
+`4941988`(`time`), `f43637f`(dead-code 정리).
+
+- **Phase 19a** set literal ✓: `[1, 2, 3]`은 list가 아니라 set이다. 같은 `code_container`가
+  `MAKE_SET`을 쓰고, 리터럴이 set cell을 만든다. `in`은 `HashSet.Contains`와 같은 comparer
+  (`key_eq`)를 쓴다. `test/unit/native/set.un`의 `1 in set`이 true다.
+- **Phase 19b** binding 없는 `for` ✓: `for expr`은 헤더가 `[Wildcard(iterable), expr, body]`로
+  parse되고, compiler의 `NodeKind::Wildcard` target arm이 iterator를 pop한다. `for _ in x`와
+  같은 경로다.
+- **Phase 19c** `atomic` module ✓: `atomic.int(initial)`/`atomic.bool(initial)`는 interlocked
+  counter와 flag를 담고 `get`/`set`/`add`/`inc`/`dec`/`exchange`/`compare_and_swap`를 답한다.
+  인자 이름은 reference의 `[ArgInfo]` 이름(`initial`/`amount`/`expected`/`newValue`)을 따르고,
+  오류 문구는 reference가 hard-code한 `'value'`/`'new_value'`다. `Clone()`은 counter/flag/
+  pool/lock에서 오류, `Copy()`는 네 개 모두 `this`다. 스레드가 없어서(D-012) 값은 한 cell에
+  담고, interlocked 연산이 만드는 값과 같은 결과를 낸다.
+- **Phase 19d** `time` 확장 ✓: `utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/
+  `monotonic`/`monotonic_ms`와 `stopwatch.elapsed_ms()`를 추가하고, `TICKS_PER_SEC`는 .NET의
+  `10_000_000`(100ns tick)이다. `Date`는 UTC instant를 그대로 쓴다(D-032).
+- **Phase 19e** `go` 지연 ✓: `go expr`는 `RETURN`으로 끝나는 nested proto를 `MAKE_FUTURE`의
+  operand로 담고, future는 그 proto와 `go` 시점의 scope chain 복사본을 가진다. `AWAIT`가
+  captured chain의 child scope에서 proto를 실행하고 값을 memoize한다(`Task.Result`의 동작).
+  `Future.Clone()`은 같은 task를 공유한다. reference의 `EvalGo` task는 `go` 시점에
+  `new Scope(context.Scope)`를 열므로, future는 자기 iteration의 loop var를 본다.
+- `f43637f`가 지운 것들(`UnType`의 `TGeneric`/`UGeneric`/`Infinity`/`Skip`/`Break`,
+  `ArgInfo.Keyword`, `Native.Async`, `Source.FullName`, `IFileSystem.Enumerate*`,
+  `IO.ResetStdout`/`ResetStdin`)은 Rust에 이미 없다. `Native.Async`는 reference의 binder가
+  이미 무시했고(D-061), `Scope`의 `SetLocalOrDeclare`/`Declare`/`ContainsKeyInTop`과
+  `Snapshot`/`Restore`는 reference가 `SetLocal` 하나로 합쳤다(D-062).
+
+### 검증
+
+- `cargo build --release` 0 errors / 0 warnings, `cargo test --release` **196 passed / 0 failed**.
+- differential suite(MANIFEST 37개 파일): **37 PASS / 0 DIFF**(stdout과 exit code가
+  byte-identical). `test/unit/native/set.un`, `test/unit/runtime/for_no_bind.un`,
+  `test/unit/native/atomic.un`, `test/unit/native/time.un`, `test/integration/concurrency.un`,
+  `test/test_suite.un`(`109 passed, 0 failed`) 포함.
+- `go` probe suite: `go (n * n)`이 함수 body 안에서 파라미터를 보고(`f= 25`), `go (i * 2)`가
+  loop의 각 iteration 값을 유지한다(`out =  [2, 4, 6]`). reference 6회 실행과 같은 출력.
+- negative suite(42개 파일): **38 PASS / 4 DIFF**.
+- network probe suite: **13 PASS / 0 DIFF** 유지.
+- reference baseline(`scripts/test.ps1`): Positive **36 files / 1330 passed / 0 failed /
+  0 crashed**, Negative 42 matched, Known 1(`test/regression/defects.un`, 6 assertions).
+  `test/MANIFEST.txt`에 `unit|test/unit/runtime/for_no_bind.un`,
+  `unit|test/unit/native/atomic.un`, `unit|test/unit/native/time.un`이 추가됐다.
+
 ### 남은 차이(총집합)
 
 - 함수 안의 `break`/`skip`이 호출자의 반복문까지 unwind 하지 않는다(D-049).
@@ -686,9 +736,12 @@ warning 0**. ground truth는 `src/Interpreter/Evaluator/Evaluator.cs`,
   `Stack overflow`를 내고, Rust는 재귀 한도(1000)가 `maximum recursion depth exceeded`로
   exit 1을 낸다. `test/negative/depth_limit_crash.un`와 `test/negative/property_recursion.un`
   가 이 차이이고(D-034), .NET의 overflow 값은 parity target이 아니다.
-- `go`의 타이밍: `go`가 호출 스레드에서 즉시 평가하므로 `for`의 loop var를 captured한
-  future가 reference와 다른 값을 낸다(`test/negative/go_loop_var.un`, D-054).
+- `go`는 `go` 시점의 scope chain 복사본을 쓴다(D-063). `test/negative/go_loop_var.un`은
+  reference가 racy라서 deterministic하게 맞출 수 없다: reference 6회 실행 중 4회가 exit
+  `-1`, 2회가 exit `1`이고, manifest가 기대하는 `undefined variable 'i'`는 task가 loop
+  scope를 버린 뒤에 시작하는 순서에서 나오는 결과다. Rust는 `sorted =  [1, 4, 9]`로 exit 0이다.
 - .NET `Array.Sort`는 비교 일관성 위반을 `inconsistent results`로 throw하고 exit 1을 낸다
   (`test/negative/order_crash.un`). Rust는 같은 정렬에 같은 비교를 쓰므로 throw하지 않는다.
+  (exit code 1은 같고 stderr 문구가 없다.)
 - TLS(`https`/`wss`)는 지원하지 않는다(D-057). `http`/`ws`의 request/frame I/O는 Un 코드에서
   관측할 수 없어 parity 대상이 아니다(D-060).
