@@ -386,3 +386,4 @@ FodyWeavers.xsd
 Thumbs.db
 desktop.ini
 .idea/
+rust/target/

@@ -6,6 +6,8 @@ Un은 C#과 .NET 8 위에서 동작하는 트리 워킹 인터프리터로 구�
 
 `Lexer -> Parser -> Desugarer -> Optimizer -> Evaluator`
 
+(`rust/`에 같은 언어를 재현하는 독립적인 Rust 바이트코드 VM 구현도 있다. 이 문서는 C# 구현을 기준으로 설명한다.)
+
 <p align="center">
   <img src="https://img.shields.io/badge/.NET-8.0-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET 8" />
   <img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="MIT License" />
@@ -15,7 +17,7 @@ Un은 C#과 .NET 8 위에서 동작하는 트리 워킹 인터프리터로 구�
 
 Un은 읽기 쉽고 간결한 프로그램을 작성하기 위한 동적 타입 스크립팅 언어이다. Python 스타일의 들여쓰기 기반 블록, 명시적인 동시성 기본 요소, 구조적 패턴 매칭, 작은 표준 라이브러리를 결합한다.
 
-언어는 C#으로 작성된 인터프리터 하나로 구현되어 있다. 별도의 컴파일 단계나 바이트코드 가상 머신은 없다. 소스 파일은 AST로 파싱된 뒤 역탈당(desugar), 최적화, 직접 평가된다.
+언어는 C#으로 작성된 인터프리터가 기본 구현이다. 별도의 컴파일 단계나 바이트코드 가상 머신은 없다. 소스 파일은 AST로 파싱된 뒤 역탈당(desugar), 최적화, 직접 평가된다. (`rust/`에 독립적인 Rust 바이트코드 VM 구현도 있으며, 이 문서의 내용을 대부분 재현한다. 자세한 내용은 아래 'Rust 포트' 절을 참고한다.)
 
 설계 목표:
 
@@ -567,7 +569,19 @@ Stdlib         NativeModule / NativeType 리플렉션 바인딩
 - `src/Core/Global.cs`는 내장 및 네이티브 모듈을 등록하고 `import` / `include`를 해석한다.
 - `src/Interpreter/Reflection/`는 어트리뷰트를 통해 네이티브 모듈과 타입을 바인딩한다.
 
-중간 바이트코드나 별도 가상 머신은 없다.
+C# 구현에는 중간 바이트코드나 별도 가상 머신이 없다. (Rust 포트는 바이트코드 컴파일러와 스택 기반 VM으로 실행한다.)
+
+## Rust 포트 (실험적)
+
+`rust/` 아래에 같은 언어의 두 번째 구현이 있다: Rust로 작성된 바이트코드 컴파일러와 스택 기반 VM(`unvm`). C# 구현과 같은 문법, 의미론, 표준 라이브러리(그리고 오류 메시지까지)를 재현하며, `test/MANIFEST.txt`의 스크립트를 두 엔진에서 동일하게 실행해 stdout·exit code·`help` 출력까지 byte-identical임을 검증한다(`scripts/differential.ps1`: 105 checked / 0 unexpected DIFF, negative의 문서화된 차이 4개만 예외).
+
+- 빌드: `cargo +stable-x86_64-pc-windows-gnu build --release --manifest-path rust/Cargo.toml`
+- 실행: `rust\target\release\unvm.exe run <file>`
+- 검증: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/differential.ps1`
+- 성능: 대부분의 벤치에서 C# 참조와 동급이거나 더 빠르다(예: fib24 3.2×, sort 4.0× 빠름; `dict`와 중첩 루프만 열위).
+- 문서: `docs/rust-migration/`
+
+몇 가지 차이는 문서화되어 있다(스택 오버플로 exit code, `go`/`pool`의 단일 스레드 실행, TLS 미지원). 이 문서의 나머지 내용은 C# 구현 기준이지만, 문법과 표준 라이브러리는 두 구현이 동일하다(일부 오류 메시지와 exit code에 문서화된 차이가 있다).
 
 ## 프로젝트 구조
 
@@ -605,7 +619,8 @@ Un/
 |   |-- MANIFEST.txt     (group|path 행)
 |   |-- KnownFailures.txt
 |   `-- assert.un        (assert 실행 검사)
-|-- scripts/             (test.ps1, bench.ps1)
+|-- scripts/             (test.ps1, bench.ps1, differential.ps1)
+|-- rust/                (Rust 바이트코드 VM 포트의 소스)
 |-- bench/               (벤치마크 스크립트, bench/node/, bench/results/)
 `-- bin/, obj/           (생성된 빌드 산출물)
 ```
@@ -691,6 +706,7 @@ class Heap
 진행 중:
 
 - 점진적 타입 어노테이션 검증
+- Rust 바이트코드 VM 포트(`rust/`)
 
 계획됨:
 

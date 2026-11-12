@@ -10,6 +10,24 @@
 - **파이프라인**: `Lexer -> Parser -> Desugarer -> Optimizer -> Evaluator`
 - **규모**: C# 88개 파일 / 약 15,200줄, `test/` 아래 `.un` 스크립트 89개.
 
+## Rust 포트 (`rust/`)
+
+같은 언어를 재현하는 독립적인 Rust 구현(바이트코드 컴파일러 + 스택 VM, 바이너리 이름 `unvm`)이
+`rust/`에 있다. 진행 상황과 설계 판단은 `docs/rust-migration/`(PROGRESS.md, DECISIONS.md)에
+기록되어 있고, 이 문서의 C# 기준 규칙들과는 별도로 관리한다.
+
+- **C# 소스는 reference(gold standard)다. 수정하지 않는다.** 의미론의 근거는 `src/`다.
+- **검증**: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/differential.ps1`
+  — MANIFEST의 37개 positive 파일, negative 42행, regex probes 25개, `help`를 두 엔진에서
+  실행해 stdout/exit code를 비교한다(105 checked / 0 unexpected DIFF; 문서화된 차이 4개는
+  KNOWN-DIFF로 기록).
+- **빌드**: `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml`
+  (`stable-x86_64-pc-windows-gnu` toolchain 필수 — MSVC linker가 없다). 새 warning을 추가하지 않는다.
+- **`src/main.un`은 사용자의 스크래치 파일**이다. 테스트/제품 진입점이 아니며, 에이전트는
+  이 파일을 수정하거나 스테이징하지 않는다.
+- **git 규칙**: 브랜치는 `feature/rust-bytecode-vm`. 커밋은 의미 있는 단위로 나누고, `main`으로의
+  병합/푸시는 사용자의 명시적 승인 없이는 하지 않는다.
+
 ## 빠른 명령
 
 ```bash

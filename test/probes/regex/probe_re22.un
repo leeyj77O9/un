@@ -1,0 +1,26 @@
+use io
+use re
+
+fn probe(name, pat, text)
+    try
+        io.write(name, " | ", re.search(pat, text), "\n")
+    catch e
+        io.write(name, " | ", `ERR {e}`, "\n")
+
+probe("{,3}", "{,3}", "aaa")
+probe("a{,3}", "a{,3}", "aaa")
+probe("{", "{", "{")
+probe("a{", "a{", "a{")
+probe("a{{", "a{{", "a{{")
+probe("a{}}", "a{}}", "a{}}")
+probe("a{2", "a{2", "a{2")
+probe("a}", "a}", "a}")
+probe("a}a", "a}a", "a}a")
+probe("a}", "a}", "}")
+probe("x{a}", "x{a}", "x{a}")
+probe("x{", "x{", "x{")
+probe("x{2", "x{2", "x{2")
+probe("x{2}y", "x{2}y", "xxy")
+probe("x{2,y}", "x{2,y}", "x{2,y}")
+probe("x{,y}", "x{,y}", "x{,y}")
+probe("x{2,y}", "x{2,y}", "{2,y}")

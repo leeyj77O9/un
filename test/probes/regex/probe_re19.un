@@ -1,0 +1,31 @@
+use io
+use re
+
+fn B(s)
+    -> chr(92) + s
+
+fn probe(name, pat, text)
+    try
+        io.write(name, " | ", `M {re.search(pat, text)}\n`)
+    catch e
+        io.write(name, " | ", `ERR {e}\n`)
+
+probe("w01", "[a-z&&b-d]", "abc")
+probe("w02", "[a-z&&b-d]", "b")
+probe("w03", "[a-z&&[bc]]", "abc")
+probe("w04", "[a-z&&[^b]]", "ab")
+probe("w05", "[a&&b]", "b")
+probe("w06", "[a-z-[b]]", "ac")
+probe("w07", "[a-z-[b]]", "b")
+probe("w08", "[a-z-[b]", "ac")
+probe("w09", "[a-z-[b]]x", "acx")
+probe("w10", "[a-z&&b-d]", "d")
+probe("w11", "[b-a]", "a")
+probe("w12", "[a-c-f]", "d")
+probe("w13", "(?>(a))" + B("1"), "aa")
+probe("w14", "(a)(?i:" + B("1") + ")", "aA")
+probe("w15", "[a-z&&]", "a")
+probe("w16", "[a-z&&b-d]", "e")
+probe("w17", "[a&&&b]", "b")
+probe("w18", "[[:alpha:]]", "a")
+probe("w19", "[a[:alpha:]b]", "ab")

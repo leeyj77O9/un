@@ -1,0 +1,4 @@
+use io
+use re
+
+io.write("find_all [^a]: ", re.find_all("[^a]", "abc"), "\n")

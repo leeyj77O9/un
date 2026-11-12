@@ -1,0 +1,12 @@
+﻿[package]
+name = "unvm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "unvm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "unvm"
+path = "src/main.rs"

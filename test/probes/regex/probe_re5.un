@@ -1,0 +1,12 @@
+use io
+use re
+
+io.write("backref: ", re.test("(a)\\1", "aa"), "\n")
+io.write("\\A: ", re.search("\\Ab", "ab"), "\n")
+io.write("\\z: ", re.search("b\\z", "ab"), "\n")
+io.write("\\p{L}: ", re.search("\\p{L}+", "abc"), "\n")
+io.write("non-greedy: ", re.search("a+?b", "aaab"), "\n")
+io.write("dot newline: ", re.search("a.b", "a\nb"), "\n")
+io.write("possessive: ", re.test("a++b", "aaab"), "\n")
+io.write("conditional: ", re.test("(a)?(b)\\2", "ab"), "\n")
+io.write("balance: ", re.test("(?<name>a)", "a"), "\n")

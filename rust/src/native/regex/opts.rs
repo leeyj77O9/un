@@ -1,0 +1,149 @@
+// Internal option bits, node kinds and opcodes, numbered exactly as in the .NET engine.
+
+pub const OPT_NONE: i32 = 0;
+pub const OPT_ICASE: i32 = 1;
+pub const OPT_EXPLICIT: i32 = 4;
+pub const OPT_IGNORE_WS: i32 = 8;
+pub const OPT_ECMASPEC: i32 = 16;
+pub const OPT_MULTILINE: i32 = 0x100;
+pub const OPT_SINGLELINE: i32 = 0x200;
+pub const OPT_RTL: i32 = 0x40;
+
+// node kinds == the same numbers as the opcode of the same name (.NET mirrors them)
+pub const K_ONEREP: i32 = 0;
+pub const K_NOTONEREP: i32 = 1;
+pub const K_SETREP: i32 = 2;
+pub const K_ONELLOOP: i32 = 3;
+pub const K_NOTONELLOOP: i32 = 4;
+pub const K_SETLOOP: i32 = 5;
+pub const K_ONELAZY: i32 = 6;
+pub const K_NOTONELAZY: i32 = 7;
+pub const K_SETLAZY: i32 = 8;
+pub const K_ONE: i32 = 9;
+pub const K_NOTONE: i32 = 10;
+pub const K_SET: i32 = 11;
+pub const K_MULTI: i32 = 12;
+pub const K_REF: i32 = 13;
+pub const K_BOL: i32 = 14;
+pub const K_EOL: i32 = 15;
+pub const K_BOUNDARY: i32 = 16;
+pub const K_NONBOUNDARY: i32 = 17;
+pub const K_BEGINNING: i32 = 18;
+pub const K_START: i32 = 19;
+pub const K_ENDZ: i32 = 20;
+pub const K_END: i32 = 21;
+pub const K_NOTHING: i32 = 22;
+pub const K_EMPTY: i32 = 23;
+pub const K_ALTERNATE: i32 = 24;
+pub const K_CONCATENATE: i32 = 25;
+pub const K_LOOP: i32 = 26;
+pub const K_LAZYLOOP: i32 = 27;
+pub const K_CAPTURE: i32 = 28;
+pub const K_GROUP: i32 = 29;
+pub const K_POSLOOK: i32 = 30;
+pub const K_NEGLOOK: i32 = 31;
+pub const K_ATOMIC: i32 = 32;
+pub const K_BACKCOND: i32 = 33;
+pub const K_EXPRCOND: i32 = 34;
+pub const K_ECMABOUNDARY: i32 = 41;
+pub const K_NONECMABOUNDARY: i32 = 42;
+pub const K_ONELLOOP_ATOMIC: i32 = 43;
+pub const K_NOTONELLOOP_ATOMIC: i32 = 44;
+pub const K_SETLOOP_ATOMIC: i32 = 45;
+pub const K_UPDATEBUMPALONG: i32 = 46;
+
+pub const K_BEFORE_CHILD: i32 = 64;
+pub const K_AFTER_CHILD: i32 = 128;
+
+// opcodes (.NET RegexOpcode)
+pub const OP_MASK: i32 = 63;
+pub const OP_RTL: i32 = 64;
+pub const OP_BACKTRACKING: i32 = 128;
+pub const OP_BACKTRACKING_SECOND: i32 = 256;
+pub const OP_CASEINS: i32 = 512;
+
+pub const OP_ONEREP: i32 = 0;
+pub const OP_NOTONEREP: i32 = 1;
+pub const OP_SETREP: i32 = 2;
+pub const OP_ONELLOOP: i32 = 3;
+pub const OP_NOTONELLOOP: i32 = 4;
+pub const OP_SETLOOP: i32 = 5;
+pub const OP_ONELAZY: i32 = 6;
+pub const OP_NOTONELAZY: i32 = 7;
+pub const OP_SETLAZY: i32 = 8;
+pub const OP_ONE: i32 = 9;
+pub const OP_NOTONE: i32 = 10;
+pub const OP_SET: i32 = 11;
+pub const OP_MULTI: i32 = 12;
+pub const OP_BACKREF: i32 = 13;
+pub const OP_BOL: i32 = 14;
+pub const OP_EOL: i32 = 15;
+pub const OP_BOUNDARY: i32 = 16;
+pub const OP_NONBOUNDARY: i32 = 17;
+pub const OP_BEGINNING: i32 = 18;
+pub const OP_START: i32 = 19;
+pub const OP_ENDZ: i32 = 20;
+pub const OP_END: i32 = 21;
+pub const OP_NOTHING: i32 = 22;
+pub const OP_LAZYBRANCH: i32 = 23;
+pub const OP_BRANCHMARK: i32 = 24;
+pub const OP_LAZYBRANCHMARK: i32 = 25;
+pub const OP_NULLCOUNT: i32 = 26;
+pub const OP_SETCOUNT: i32 = 27;
+pub const OP_BRANCHCOUNT: i32 = 28;
+pub const OP_LAZYBRANCHCOUNT: i32 = 29;
+pub const OP_NULLMARK: i32 = 30;
+pub const OP_SETMARK: i32 = 31;
+pub const OP_CAPTUREMARK: i32 = 32;
+pub const OP_GETMARK: i32 = 33;
+pub const OP_SETJUMP: i32 = 34;
+pub const OP_BACKJUMP: i32 = 35;
+pub const OP_FOREJUMP: i32 = 36;
+pub const OP_TESTREF: i32 = 37;
+pub const OP_GOTO: i32 = 38;
+pub const OP_STOP: i32 = 40;
+pub const OP_ECMABOUNDARY: i32 = 41;
+pub const OP_NONECMABOUNDARY: i32 = 42;
+pub const OP_ONELLOOP_ATOMIC: i32 = 43;
+pub const OP_NOTONELLOOP_ATOMIC: i32 = 44;
+pub const OP_SETLOOP_ATOMIC: i32 = 45;
+pub const OP_UPDATEBUMPALONG: i32 = 46;
+
+pub const MULTI_VS_REPEATER_LIMIT: i32 = 10;
+pub const OP_BACKREF_CI: i32 = OP_BACKREF | OP_CASEINS;
+
+// combined opcode values (.NET `OpcodeA | OpcodeB` case constants)
+pub const OP_LAZYBRANCH_BACK: i32 = OP_LAZYBRANCH | OP_BACKTRACKING;
+pub const OP_SETMARK_BACK: i32 = OP_SETMARK | OP_BACKTRACKING;
+pub const OP_NULLMARK_BACK: i32 = OP_NULLMARK | OP_BACKTRACKING;
+pub const OP_GETMARK_BACK: i32 = OP_GETMARK | OP_BACKTRACKING;
+pub const OP_CAPTUREMARK_BACK: i32 = OP_CAPTUREMARK | OP_BACKTRACKING;
+pub const OP_BRANCHMARK_BACK: i32 = OP_BRANCHMARK | OP_BACKTRACKING;
+pub const OP_BRANCHMARK_BACK2: i32 = OP_BRANCHMARK | OP_BACKTRACKING_SECOND;
+pub const OP_LAZYBRANCHMARK_BACK: i32 = OP_LAZYBRANCHMARK | OP_BACKTRACKING;
+pub const OP_LAZYBRANCHMARK_BACK2: i32 = OP_LAZYBRANCHMARK | OP_BACKTRACKING_SECOND;
+pub const OP_SETCOUNT_BACK: i32 = OP_SETCOUNT | OP_BACKTRACKING;
+pub const OP_NULLCOUNT_BACK: i32 = OP_NULLCOUNT | OP_BACKTRACKING;
+pub const OP_SETJUMP_BACK: i32 = OP_SETJUMP | OP_BACKTRACKING;
+pub const OP_FOREJUMP_BACK: i32 = OP_FOREJUMP | OP_BACKTRACKING;
+pub const OP_ONELAZY_BACK: i32 = OP_ONELAZY | OP_BACKTRACKING;
+pub const OP_NOTONELAZY_BACK: i32 = OP_NOTONELAZY | OP_BACKTRACKING;
+pub const OP_SETLAZY_BACK: i32 = OP_SETLAZY | OP_BACKTRACKING;
+pub const OP_ONELLOOP_BACK: i32 = OP_ONELLOOP | OP_BACKTRACKING;
+pub const OP_NOTONELLOOP_BACK: i32 = OP_NOTONELLOOP | OP_BACKTRACKING;
+pub const OP_SETLOOP_BACK: i32 = OP_SETLOOP | OP_BACKTRACKING;
+pub const OP_BRANCHCOUNT_BACK: i32 = OP_BRANCHCOUNT | OP_BACKTRACKING;
+pub const OP_BRANCHCOUNT_BACK2: i32 = OP_BRANCHCOUNT | OP_BACKTRACKING_SECOND;
+pub const OP_LAZYBRANCHCOUNT_BACK: i32 = OP_LAZYBRANCHCOUNT | OP_BACKTRACKING;
+pub const OP_LAZYBRANCHCOUNT_BACK2: i32 = OP_LAZYBRANCHCOUNT | OP_BACKTRACKING_SECOND;
+
+/// .NET `RegexInterpreterCode.OpcodeBacktracks` — written out plainly.
+pub fn opcode_backtracks(op: i32) -> bool {
+    matches!(
+        op & OP_MASK,
+        OP_ONELLOOP | OP_ONELAZY | OP_NOTONELLOOP | OP_NOTONELAZY | OP_SETLOOP | OP_SETLAZY
+            | OP_LAZYBRANCH | OP_BRANCHMARK | OP_LAZYBRANCHMARK | OP_NULLCOUNT | OP_SETCOUNT
+            | OP_BRANCHCOUNT | OP_LAZYBRANCHCOUNT | OP_SETMARK | OP_CAPTUREMARK | OP_GETMARK
+            | OP_SETJUMP | OP_BACKJUMP | OP_FOREJUMP | OP_GOTO
+    )
+}
