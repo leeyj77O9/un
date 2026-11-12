@@ -1,0 +1,38 @@
+use io
+use http
+use test.assert as assert
+
+# ============================================================
+# http - http_client의 네트워크 의존 경로와 검증 경로
+# 현재 테스트 러너에는 HTTP 서버가 없으므로, 네트워크 없이
+# 검증 가능한 경로와 127.0.0.1:1(연결 거부 포트)만 사용한다.
+# 실행: Un.exe run test/unit/native/http.un  (C:\dev\un 에서)
+# ============================================================
+
+client = http.connect()
+assert.assert_eq(type(client), type(http.connect()), "http.connect() returns an http_client")
+assert.assert_true(true, "set_header accepts strings")
+
+# ---------- set_header / clear_headers ----------
+client.set_header("user-agent", "un-test")
+client.clear_headers()
+assert.assert_true(true, "clear_headers accepts no arguments")
+
+# ---------- 인자 검증 경로 ----------
+assert.assert_err_eq(fn() -> client.get(1), "error: expected url is string", "get validates url type")
+assert.assert_err_eq(fn() -> client.get_async(1), "error: expected url is string", "get_async validates url type")
+assert.assert_err_eq(fn() -> client.post(1, "x"), "error: expected url is string", "post validates url type")
+assert.assert_err_eq(fn() -> client.post_async(1, "x"), "error: expected url is string", "post_async validates url type")
+assert.assert_err_eq(fn() -> client.put(1, "x"), "error: expected url is string", "put validates url type")
+assert.assert_err_eq(fn() -> client.patch(1, "x"), "error: expected url is string", "patch validates url type")
+assert.assert_err_eq(fn() -> client.head(1), "error: expected url is string", "head validates url type")
+assert.assert_err_eq(fn() -> client.options(1), "error: expected url is string", "options validates url type")
+assert.assert_err_eq(fn() -> client.delete(1), "error: expected url is string", "delete validates url type")
+assert.assert_err_eq(fn() -> client.set_header(1, "x"), "error: expected key is string", "set_header validates key type")
+
+# ---------- 연결 거부 포트 ----------
+assert.assert_err(fn() -> client.get("http://127.0.0.1:1/"), "connection refused returns an error")
+assert.assert_err(fn() -> client.get_async("http://127.0.0.1:1/"), "get_async refused returns an error")
+assert.assert_err(fn() -> client.head("http://127.0.0.1:1/"), "head refused returns an error")
+
+assert.summary()

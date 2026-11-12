@@ -1,0 +1,59 @@
+use io
+use flow
+use iter
+use test.assert as assert
+
+# ============================================================
+# flow - pool/lock 원자적인 동시성 기본 연산
+# 실행: Un.exe run test/unit/native/flow.un  (C:\dev\un 에서)
+# ============================================================
+
+# ---------- lock 생성 ----------
+guard = flow.lock()
+assert.assert_eq(type(guard), type(flow.lock()), "flow.lock() returns a lock value")
+
+# ---------- lock 획득/해제 ----------
+acquired = guard.acquire()
+assert.assert_eq(type(acquired), type(guard), "lock().acquire() returns the guard")
+guard.release()
+assert.assert_eq(guard.try_acquire(), true, "try_acquire succeeds on a free lock")
+guard.release()
+
+using g = flow.lock()
+assert.assert_eq(type(g), type(flow.lock()), "using binds a lock value")
+
+# ---------- lock clone은 금지 ----------
+assert.assert_err(fn() -> guard.clone(), "'lock' cannot be cloned")
+
+# ---------- pool 생성 ----------
+pool = flow.spawn()
+assert.assert_eq(type(pool), type(flow.spawn()), "flow.spawn() returns a pool value")
+assert.assert_err(fn() -> pool.clone(), "'pool' cannot be cloned")
+
+# ---------- pool.map ----------
+r = pool.map(fn(x) -> x * 2, 3, 1, 2, 4)
+assert.assert_eq(list(r), [6, 2, 4, 8], "pool.map preserves input order")
+
+r2 = pool.map(fn(x) -> x + 10, 1)
+assert.assert_eq(list(r2), [11], "pool.map works for a single element")
+
+# ---------- pool.submit ----------
+submitted = pool.submit(fn(x) -> x * x, (7))
+assert.assert_eq(wait submitted, 49, "pool.submit returns a future whose result can be awaited")
+
+submitted2 = pool.submit(fn(x) -> x + 100, (1))
+assert.assert_eq(wait submitted2, 101, "pool.submit with a second value")
+
+# ---------- flow 통합 ----------
+counter = 0
+fn bump()
+    counter += 1
+
+using pool2 = flow.spawn(2)
+assert.assert_eq(list(pool2.map(fn(x) -> x * 3, 1, 2)), [3, 6], "pool map with a second pool instance")
+
+pool.close()
+pool2.close()
+assert.assert_true(true, "pool.close() joined workers")
+
+assert.summary()

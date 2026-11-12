@@ -4,7 +4,7 @@ public record RunResult(string Stdout, string? Error, bool TimedOut, int ExitCod
 
 public static class PlaygroundRunner
 {
-    private static readonly string[] DefaultAllowed = ["io", "math", "iter", "re", "random", "time", "inspect", "builtin", "sys", "atomic"];
+    private static readonly string[] DefaultAllowed = ["io", "math", "iter", "re", "random", "time", "builtin", "atomic"];
 
     public static RunResult RunCode(string code, string fileName = "playground.un", int timeoutMs = 3000, string[]? allowedModules = null)
     {

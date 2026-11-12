@@ -36,6 +36,9 @@ unit|test/unit/native/list.un
 unit|test/unit/native/dict.un
 unit|test/unit/native/set.un
 unit|test/unit/native/atomic.un
+unit|test/unit/native/flow.un
+unit|test/unit/native/http.un
+unit|test/unit/native/ws.un
 unit|test/unit/native/time.un
 unit|test/unit/native/tup.un
 unit|test/unit/native/math.un

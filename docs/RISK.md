@@ -71,6 +71,22 @@
 
 ---
 
+### R-25. `http`/`ws` 네이티브 모듈이 어떤 메서드도 호출할 수 없었던 결함
+
+- 위치: `src/Core/Object/IO/HttpClient.cs`, `src/Core/Object/IO/WebSocket.cs`
+- 증상: `[NativeType(Name = "http_client")]`/`[NativeType(Name = "web_socket")]`로 리플렉션 등록되는 동안, 인스턴스는 `UnType.Create("http")`/`UnType.Create("socket")`로 만들어졌다. 런타임에서 `client.get(...)` 등을 호출하면 타입 이름이 등록 키와 달라 네이티브 멤버를 찾지 못하고 `'http' object has no attribute 'get'`로 실패한다. 즉 `http`/`ws` 모듈은 전혀 동작하지 않았다.
+- 해결: `UnType.Create(...)` 인자를 등록 키와 동일하게 `"http_client"`/`"web_socket"`으로 정정했다. `http.connect().get("http://127.0.0.1:PORT/")`로 로컬 서버 200응답, 404 예외(catch 가능)를 검증했고, ws는 `connect`가 e2e 인자 검증을 통과함을 확인했다.
+- 상태: 해결
+
+### R-26. 플레이그라운드 샌드박스가 호스트 정보/내부 상태를 노출
+
+- 위치: `src/PlaygroundRunner.cs` `DefaultAllowed`
+- 증상: 기본 허용 목록에 `sys`(`env`/`environ`/`hostname`/`username`/`args` — 호스트 환경 변수와 명령행 인자 노출)와 `inspect`(`getattr`/`setattr` — 내장 객체의 메타/멤버 임의 읽기·쓰기, `global()` — 전역 스코프 전체 덤프)가 포함되어 있었다. 웹 샌드박스에서 시크릿(환경 변수)이 새거나 내장 동작을 monkey-patch할 수 있다.
+- 해결: 기본 허용에서 `sys`, `inspect`를 제거했다(의도적 선택: 샌드박스는 호스트 자원을 노출하지 않는다). CLI(신뢰된 환경)에서는 모두 그대로 사용 가능. 플레이그라운드에서 `use sys`/`use inspect`가 차단됨과 `math`가 정상 동작함을 별도 콘솔 앱으로 검증했다.
+- 상태: 해결
+
+---
+
 ## 중간
 
 ### R-8. `Pool`: 백그라운드 아닌 워커 스레드 + `map` 결과 순서 비결정
@@ -213,11 +229,14 @@
 
 ---
 
-## 검증 결과 (2026-11-11, macOS + .NET 10 롤포워드, `dotnet build -c Release` 경고 0/오류 0)
+## 검증 결과 (최신, macOS + .NET 10 롤포워드, `dotnet build -c Release` 경고 0/오류 0)
 
 - `test/test_suite.un`: **109 passed, 0 failed**.
-- Positive 매니페스트 33개 파일: **1258 passed / 7 failed / 0 crashed**. 실패 7건은 모두 Windows 전용 기대값을 검사하는 `unit/native/os.un`(4), `unit/native/sys.un`(1), `unit/native/fs.un`(2)로, macOS에서 원래 실패하는 플랫폼 의존 테스트다(변경 전 stash 빌드에서도 동일).
-- Negative 42건: **38 matched / 4 mismatched**. 불일치 4건은 `use_member.un`/`use_missing.un`(`C:\dev\un` 절대 경로 기대), `depth_limit_crash.un`(Windows 스택 오버플로 종료 코드 기대), `property_recursion.un`(역시 스택 오버플로 기대)로 플랫폼 의존이며, pristine 빌드에서 동일하게 재현됨을 확인했다.
+- Positive 매니페스트 39개 파일: **1356 passed / 7 failed / 0 crashed** (mac). 실패 7건은 Windows 전용 기대값이며 원래 플랫폼 종속.
+- 이후 회차에서 `test/assert.un`의 `assert_err_eq`를 f-string 비교로 정비하고, `http`/`ws` 모듈을 type-name 불일치(R-25) 수정으로 동작시켰다. 현재 기준치: Positive 39 files / 1363 passed (Windows) / 1356 passed (mac).
+- `http` e2e 스모크(별도 콘솔 앱 + 로컬 서버): 200 응답 수신, 404 catch 가능 확인.
+- 플레이그라운드 검증(별도 콘솔 앱 + Release DLL): `use sys`/`use inspect`가 차단되고 `math`는 정상 동작.
+- Negative 42건: **38 matched / 4 mismatched** (전부 플랫폼 종속, 기존과 동일).
 - KnownFailures(`regression/defects.un`): 6 assertions 실패 유지(변경 없음).
 - 플레이그라운드 격리 스모크(별도 콘솔 앱 + Release DLL):
   - 1회차 실행에서 정의한 클래스가 2회차 실행에서 "not found"로 차단됨(전역 클래스 복원).

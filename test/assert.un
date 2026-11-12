@@ -70,14 +70,14 @@ fn assert_err(f, msg)
     catch e
         state["passed"] += 1
 
-# 에러 메시지 비교. e는 "error: ..." 형식의 str로 변환해 비교한다.
+# 에러 메시지 비교. e는 f-string으로 변환해 비교한다.
 fn assert_err_eq(f, expected, msg)
     try
         f()
         state["failed"] += 1
         io.write(`[FAIL] {msg} | expected error, got none`)
     catch e
-        if str(e) == expected
+        if `{e}` == expected
             state["passed"] += 1
         else
             state["failed"] += 1

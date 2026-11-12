@@ -273,8 +273,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
-counted in the Positive pass/fail totals. The current baseline is Positive 36
-files / 1330 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
+counted in the Positive pass/fail totals. The current baseline is Positive 39
+files / 1363 passed / 0 failed / 0 crashed, Negative 42 checks matched, and
 Known 1 file.
 
 A `.NET 8` app runs on a `.NET 10` runtime when `DOTNET_ROLL_FORWARD=Major` is
