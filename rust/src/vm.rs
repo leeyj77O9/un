@@ -686,7 +686,7 @@ impl VM {
                     }
                 };
 
-                for (_, key, item) in dict.borrow().entries.iter() {
+                for (key, item) in dict.borrow().iter_pairs() {
                     let name = match obj::payload(key) {
                         Payload::Str(s) => s.to_string(),
                         _ => obj::display(&obj::repr(key)),

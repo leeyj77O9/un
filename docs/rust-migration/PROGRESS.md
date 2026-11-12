@@ -796,6 +796,18 @@ bump, len에서 멈춤)도 그대로 재현했다. `IO.write`가 > 0x7F를 `?`�
   0 crashed, Negative 42 matched, Known 1.
 - `src/main.un`은 손대지 않았다. C# 코드(`src/*.cs`), 테스트, build config 변경 없음.
 
+## Phase 20 후속(성능): `KeyMap` bucket-chained hash table(D-065)
+
+- `KeyMap`을 insertion-ordered linear scan에서 **bucket-chained hash table**로 교체했다
+  (power-of-two `buckets` + per-entry `next` chain, `Entry { hash, key, value, used }`).
+  제거는 tombstone + `next`에 threading된 free list 재사용 → live entry의 삽입 순서가
+  보존되고 `remove`도 순서를 바꾸지 않는다. duplicate key는 가장 이른 index를 반환한다.
+- `Set`도 같은 `KeyMap`으로 backed 했다(value = `none`). `native/members.rs`의 set
+  멤버 함수들도 O(n) scan에서 O(1) lookup으로 바꿨다.
+- dict5000 벤치마크: 17.9ms → ~9.3ms (reference ~6.1ms, loop-only는 양쪽 parity).
+  differential 37 PASS / 0 DIFF, negcmp 38/4(문서화된 차이), wscmp 13/0, fullcmp 37/0,
+  `cargo test --release` **199 passed / 0 failed**, `cargo build --release` 0/0.
+
 ### 남은 차이(총집합)
 
 - UTF-16 vs `char`: .NET은 surrogate 2개 code unit, Rust는 char 하나로 센다(D-064).

@@ -18,37 +18,85 @@ use crate::runtime::prims;
 use crate::runtime::types::Types;
 use crate::runtime::world;
 
-/// the ordered key/value table of a `Dict`. each entry carries the key's `hash_code`,
-/// so lookup is hash-then-`Eq`, exactly like the reference's `Dictionary<Obj, Obj>`.
+/// the ordered key/value table of a `Dict` (and the backing store of a `Set`).
+/// Entries are kept in insertion order; lookups probe a chained bucket table
+/// keyed on the key's `hash_code`, so lookup is hash-then-`Eq`, exactly like the
+/// reference's `Dictionary<Obj, Obj>`. Removed slots are kept as tombstones and
+/// threaded into a free list, which is reused for later inserts — so the table
+/// never reorders live entries and `remove` does not shift the insertion order.
 pub struct KeyMap {
-    pub entries: Vec<(u64, Obj, Obj)>,
+    entries: Vec<Entry>,
+    /// bucket heads: indices into `entries` (usize::MAX = empty bucket)
+    buckets: Vec<usize>,
+    /// per-entry next link in the bucket chain (usize::MAX = chain end),
+    /// also threads the free list through removed slots
+    next: Vec<usize>,
+    free_head: usize,
+    live: usize,
 }
+
+struct Entry {
+    hash: u64,
+    key: Obj,
+    value: Obj,
+    used: bool,
+}
+
+const NONE: usize = usize::MAX;
+const INITIAL_BUCKETS: usize = 8;
 
 impl KeyMap {
     pub fn new(entries: Vec<(Obj, Obj)>) -> Self {
-        Self {
-            entries: entries
-                .into_iter()
-                .map(|(k, v)| (obj::hash_code(&k), k, v))
-                .collect(),
+        let mut map = Self {
+            entries: Vec::new(),
+            buckets: vec![NONE; INITIAL_BUCKETS],
+            next: Vec::new(),
+            free_head: NONE,
+            live: 0,
+        };
+
+        for (k, v) in entries {
+            map.set(&k, &v);
         }
+
+        map
+    }
+
+    fn bucket(&self, hash: u64) -> usize {
+        (hash as usize) & (self.buckets.len() - 1)
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.live
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.live == 0
     }
 
     fn find(&self, key: &Obj) -> Option<usize> {
+        if self.buckets.is_empty() {
+            return None;
+        }
+
         let h = obj::hash_code(key);
-        self.entries
-            .iter()
-            .enumerate()
-            .find(|(_, (hh, k, _))| *hh == h && obj::key_eq(k, key))
-            .map(|(i, _)| i)
+        let mut idx = self.buckets[self.bucket(h)];
+        let mut found: Option<usize> = None;
+
+        // same-hash entries chain to each other; duplicates from a single
+        // `dict(...)` literal keep the earliest in insertion order, as before
+        while idx != NONE {
+            let e = &self.entries[idx];
+            if e.used && e.hash == h && obj::key_eq(&e.key, key) {
+                found = Some(match found {
+                    Some(prev) => prev.min(idx),
+                    None => idx,
+                });
+            }
+            idx = self.next[idx];
+        }
+
+        found
     }
 
     pub fn contains_key(&self, key: &Obj) -> bool {
@@ -56,17 +104,119 @@ impl KeyMap {
     }
 
     pub fn get(&self, key: &Obj) -> Option<Obj> {
-        self.find(key).map(|i| self.entries[i].2.clone())
+        self.find(key).map(|i| self.entries[i].value.clone())
+    }
+
+    /// the stored key object, for `Set`/`Dictionary.TryGetValue` semantics
+    /// (returns the stored element, not the queried one)
+    pub fn get_key(&self, key: &Obj) -> Option<Obj> {
+        self.find(key).map(|i| self.entries[i].key.clone())
+    }
+
+    /// iterate live (key, value) pairs in insertion order
+    pub fn iter_pairs(&self) -> impl Iterator<Item = (&Obj, &Obj)> {
+        self.entries
+            .iter()
+            .filter(|e| e.used)
+            .map(|e| (&e.key, &e.value))
+    }
+
+    fn link_into_bucket(&mut self, idx: usize) {
+        let b = self.bucket(self.entries[idx].hash);
+        self.next[idx] = self.buckets[b];
+        self.buckets[b] = idx;
+    }
+
+    fn unlink_from_bucket(&mut self, idx: usize) {
+        let b = self.bucket(self.entries[idx].hash);
+        let mut cur = self.buckets[b];
+
+        if cur == idx {
+            self.buckets[b] = self.next[idx];
+            return;
+        }
+
+        while cur != NONE {
+            let next = self.next[cur];
+            if next == idx {
+                self.next[cur] = self.next[idx];
+                return;
+            }
+            cur = next;
+        }
+    }
+
+    fn insert_new_entry(&mut self, hash: u64, key: Obj, value: Obj) -> usize {
+        if self.live >= self.buckets.len() {
+            self.grow();
+        }
+
+        let idx;
+        if self.free_head != NONE {
+            idx = self.free_head;
+            self.free_head = self.next[idx];
+            self.entries[idx] = Entry {
+                hash,
+                key,
+                value,
+                used: true,
+            };
+            self.next[idx] = NONE;
+        } else {
+            idx = self.entries.len();
+            self.entries.push(Entry {
+                hash,
+                key,
+                value,
+                used: true,
+            });
+            self.next.push(NONE);
+        }
+
+        self.link_into_bucket(idx);
+        self.live += 1;
+        idx
+    }
+
+    fn grow(&mut self) {
+        // compact away tombstones and double the bucket table
+        let mut live_entries: Vec<Entry> = Vec::with_capacity(self.live);
+        for e in std::mem::take(&mut self.entries) {
+            if e.used {
+                live_entries.push(e);
+            }
+        }
+
+        let new_buckets = vec![NONE; self.buckets.len() * 2];
+        self.buckets = new_buckets;
+        self.next = vec![NONE; live_entries.len()];
+        self.entries = live_entries;
+        self.free_head = NONE;
+        self.live = self.entries.len();
+
+        for i in 0..self.entries.len() {
+            self.link_into_bucket(i);
+        }
     }
 
     /// `Value[key] = value`
     pub fn set(&mut self, key: &Obj, value: &Obj) {
         match self.find(key) {
-            Some(i) => self.entries[i].2 = value.clone(),
-            None => self
-                .entries
-                .push((obj::hash_code(key), key.clone(), value.clone())),
+            Some(i) => self.entries[i].value = value.clone(),
+            None => {
+                self.insert_new_entry(obj::hash_code(key), key.clone(), value.clone());
+            }
         }
+    }
+
+    /// inserts the value only if the key is absent; returns true if it was inserted
+    pub fn try_insert(&mut self, key: &Obj, value: Obj) -> bool {
+        if self.find(key).is_some() {
+            return false;
+        }
+
+        self.insert_new_entry(obj::hash_code(key), key.clone(), value);
+        true
     }
 
     /// `dict.add`: a duplicate key throws inside the native. the inner .NET message is
@@ -81,15 +231,19 @@ impl KeyMap {
                 ),
             );
         }
-        self.entries
-            .push((obj::hash_code(key), key.clone(), value.clone()));
+
+        self.insert_new_entry(obj::hash_code(key), key.clone(), value.clone());
         obj::none()
     }
 
     pub fn remove(&mut self, key: &Obj) -> bool {
         match self.find(key) {
             Some(i) => {
-                self.entries.remove(i);
+                self.unlink_from_bucket(i);
+                self.entries[i].used = false;
+                self.next[i] = self.free_head;
+                self.free_head = i;
+                self.live -= 1;
                 true
             }
             None => false,
@@ -98,23 +252,27 @@ impl KeyMap {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.next.clear();
+        self.buckets.fill(NONE);
+        self.free_head = NONE;
+        self.live = 0;
     }
 
     pub fn keys(&self) -> Vec<Obj> {
-        self.entries.iter().map(|(_, k, _)| k.clone()).collect()
+        self.iter_pairs().map(|(k, _)| k.clone()).collect()
     }
 
     pub fn values(&self) -> Vec<Obj> {
-        self.entries.iter().map(|(_, _, v)| v.clone()).collect()
+        self.iter_pairs().map(|(_, v)| v.clone()).collect()
     }
 
     pub fn contains_value(&self, value: &Obj) -> bool {
-        self.entries.iter().any(|(_, _, v)| obj::key_eq(v, value))
+        self.iter_pairs().any(|(_, v)| obj::key_eq(v, value))
     }
 
     /// `Dict.Overlap(dict)`: every entry of the argument must be in self with an equal value.
     pub fn overlap(&self, other: &KeyMap) -> bool {
-        for (_, k, v) in &other.entries {
+        for (k, v) in other.iter_pairs() {
             match self.get(k) {
                 Some(mine) => {
                     if !obj::key_eq(&mine, v) {
@@ -142,13 +300,12 @@ pub fn dict(entries: Vec<(Obj, Obj)>) -> Obj {
 
 /// `new Set([.. values])`: a `HashSet` deduplicates on insertion.
 pub fn set(items: Vec<Obj>) -> Obj {
-    let mut kept: Vec<Obj> = Vec::new();
+    let mut map = KeyMap::new(Vec::new());
     for item in items {
-        if !kept.iter().any(|k| obj::key_eq(k, &item)) {
-            kept.push(item);
-        }
+        map.try_insert(&item, obj::none());
     }
-    obj::obj_new("set", Payload::Set(Rc::new(RefCell::new(kept))))
+
+    obj::obj_new("set", Payload::Set(Rc::new(RefCell::new(map))))
 }
 
 /// `Tup(values, names)`: non-empty names are mirrored into `Members`. the reference's
@@ -203,13 +360,6 @@ pub fn tobj(types: Types) -> Obj {
 fn list_of(o: &Obj) -> Vec<Obj> {
     match obj::payload(o) {
         Payload::List(v) => v.borrow().clone(),
-        _ => Vec::new(),
-    }
-}
-
-fn set_of(o: &Obj) -> Vec<Obj> {
-    match obj::payload(o) {
-        Payload::Set(s) => s.borrow().clone(),
         _ => Vec::new(),
     }
 }
@@ -551,9 +701,8 @@ pub fn dict_in(o: &Obj, other: &Obj) -> Obj {
 pub fn dict_to_str(km: &Rc<RefCell<KeyMap>>) -> String {
     let snapshot: Vec<String> = km
         .borrow()
-        .entries
-        .iter()
-        .map(|(_, k, v)| format!("{}:{}", obj::display(k), obj::display(v)))
+        .iter_pairs()
+        .map(|(k, v)| format!("{}:{}", obj::display(k), obj::display(v)))
         .collect();
     format!("{{{}}}", snapshot.join(", "))
 }
@@ -568,9 +717,8 @@ fn pair(key: &Obj, value: &Obj) -> Obj {
 pub fn dict_unop(km: &Rc<RefCell<KeyMap>>, op: UnOp, t: &Rc<str>) -> Obj {
     let snapshot: Vec<(Obj, Obj)> = km
         .borrow()
-        .entries
-        .iter()
-        .map(|(_, k, v)| (k.clone(), v.clone()))
+        .iter_pairs()
+        .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     match op {
         UnOp::Len => obj::int(snapshot.len() as i64),
@@ -586,9 +734,9 @@ pub fn dict_unop(km: &Rc<RefCell<KeyMap>>, op: UnOp, t: &Rc<str>) -> Obj {
 pub fn dict_clone(km: &Rc<RefCell<KeyMap>>) -> Obj {
     obj::obj_new(
         "dict",
-        Payload::Dict(Rc::new(RefCell::new(KeyMap {
-            entries: km.borrow().entries.clone(),
-        }))),
+        Payload::Dict(Rc::new(RefCell::new(KeyMap::new(
+            km.borrow().iter_pairs().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        )))),
     )
 }
 
@@ -622,30 +770,33 @@ pub fn dict_init(o: &Obj, args: &[Obj]) -> Obj {
 // ---------------------------------------------------------------------------
 
 /// `HashSet.TryGetValue` returns the stored element, not the queried key.
-pub fn set_get_item(s: &Rc<RefCell<Vec<Obj>>>, key: &Obj) -> Obj {
-    match s.borrow().iter().find(|item| obj::key_eq(item, key)).cloned() {
+pub fn set_get_item(s: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
+    match s.borrow().get_key(key) {
         Some(item) => item,
         None => obj::err(format!("key {} not found in set", obj::display(key))),
     }
 }
 
 pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
-    let mine = set_of(o);
+    let mine = match obj::payload(o) {
+        Payload::Set(s) => s.clone(),
+        _ => unreachable!("set_binop receiver is a set"),
+    };
     match op {
         BinOp::Add => match obj::payload(other) {
-            Payload::Set(s2) => set(union(&mine, &s2.borrow().clone())),
+            Payload::Set(s2) => set(union(&mine.borrow(), &s2.borrow())),
             _ => obj::err(format!(
                 "unsupported operand type(s) for +: 'set' and '{ot}'"
             )),
         },
         BinOp::Sub => match obj::payload(other) {
-            Payload::Set(s2) => set(except(&mine, &s2.borrow().clone())),
+            Payload::Set(s2) => set(except(&mine.borrow(), &s2.borrow())),
             _ => obj::err(format!(
                 "unsupported operand type(s) for -: 'set' and '{ot}'"
             )),
         },
         BinOp::BXor => match obj::payload(other) {
-            Payload::Set(s2) => set(intersect(&mine, &s2.borrow().clone())),
+            Payload::Set(s2) => set(intersect(&mine.borrow(), &s2.borrow())),
             _ => obj::err(format!(
                 "unsupported operand type(s) for ^: 'set' and '{ot}'"
             )),
@@ -654,43 +805,38 @@ pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> 
     }
 }
 
-fn union(a: &[Obj], b: &[Obj]) -> Vec<Obj> {
-    let mut out = a.to_vec();
-    for item in b {
-        if !out.iter().any(|k| obj::key_eq(k, item)) {
-            out.push(item.clone());
-        }
+fn union(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
+    let mut map = KeyMap::new(Vec::new());
+    for k in a.keys() {
+        map.try_insert(&k, obj::none());
     }
-    out
-}
 
-fn except(a: &[Obj], b: &[Obj]) -> Vec<Obj> {
-    a.iter()
-        .filter(|item| !b.iter().any(|k| obj::key_eq(k, item)))
-        .cloned()
-        .collect()
-}
-
-fn intersect(a: &[Obj], b: &[Obj]) -> Vec<Obj> {
-    let mut out: Vec<Obj> = Vec::new();
-    for item in a {
-        if b.iter().any(|k| obj::key_eq(k, item)) && !out.iter().any(|k| obj::key_eq(k, item)) {
-            out.push(item.clone());
-        }
+    for k in b.keys() {
+        map.try_insert(&k, obj::none());
     }
-    out
+
+    map.keys()
 }
 
-pub fn set_to_str(s: &Rc<RefCell<Vec<Obj>>>) -> String {
-    let parts: Vec<String> = s.borrow().iter().map(|i| obj::display(i)).collect();
+fn except(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
+    a.keys().into_iter().filter(|k| !b.contains_key(k)).collect()
+}
+
+fn intersect(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
+    // both sides are already deduplicated sets, so a single pass suffices
+    a.keys().into_iter().filter(|k| b.contains_key(k)).collect()
+}
+
+pub fn set_to_str(s: &Rc<RefCell<KeyMap>>) -> String {
+    let parts: Vec<String> = s.borrow().keys().iter().map(|i| obj::display(i)).collect();
     format!("{{{}}}", parts.join(", "))
 }
 
-pub fn set_unop(s: &Rc<RefCell<Vec<Obj>>>, op: UnOp, t: &Rc<str>) -> Obj {
+pub fn set_unop(s: &Rc<RefCell<KeyMap>>, op: UnOp, t: &Rc<str>) -> Obj {
     // `Set` overrides `Len`, `GetItem`, `Copy`, `Clone`, `ToStr` and `Spread` only
     match op {
         UnOp::Len => obj::int(s.borrow().len() as i64),
-        UnOp::Spread => spread(s.borrow().clone()),
+        UnOp::Spread => spread(s.borrow().keys()),
         _ => obj::err(UnOp::message(&op, t)),
     }
 }
@@ -701,8 +847,8 @@ pub fn set_init(o: &Obj, args: &[Obj]) -> Obj {
     set(args.to_vec())
 }
 
-pub fn set_clone(s: &Rc<RefCell<Vec<Obj>>>) -> Obj {
-    set(s.borrow().clone())
+pub fn set_clone(s: &Rc<RefCell<KeyMap>>) -> Obj {
+    set(s.borrow().keys())
 }
 
 // ---------------------------------------------------------------------------
@@ -964,9 +1110,8 @@ pub fn stringify(o: &Obj, depth: usize) -> String {
     if let Payload::Dict(km) = obj::payload(o) {
         let snapshot: Vec<(Obj, Obj)> = km
             .borrow()
-            .entries
-            .iter()
-            .map(|(_, k, v)| (k.clone(), v.clone()))
+            .iter_pairs()
+            .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let mut buf = String::from("{\n");
         for (k, v) in snapshot {

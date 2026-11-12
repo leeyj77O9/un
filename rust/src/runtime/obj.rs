@@ -70,7 +70,7 @@ pub enum Payload {    Plain,
     /// looking at the same items, exactly like the reference's `Ref<T>` cells.
     List(Rc<RefCell<Vec<Obj>>>),
     Dict(Rc<RefCell<KeyMap>>),
-    Set(Rc<RefCell<Vec<Obj>>>),
+    Set(Rc<RefCell<crate::runtime::collections::KeyMap>>),
     Tup(Rc<Vec<Obj>>, Rc<Vec<String>>),
     Spread(Rc<Vec<Obj>>),
     Json(Obj),
@@ -800,7 +800,7 @@ pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
         Payload::List(..) => collections::list_in(o, other),
         Payload::Dict(..) => collections::dict_in(o, other),
         // `Set.In(other)` is `HashSet.Contains`, the same key equality as `count`
-        Payload::Set(v) => boolean(v.borrow().iter().any(|k| key_eq(k, other))),
+        Payload::Set(v) => boolean(v.borrow().contains_key(other)),
         Payload::Tup(vals, _) => collections::tup_in(&vals, other),
         Payload::TObj(t) => collections::tobj_in(&t, other),
         Payload::Iter(st) => iters::iter_in(o, &st, other),

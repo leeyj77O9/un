@@ -251,7 +251,7 @@ fn dict_add_rejects_a_duplicate_key() {
         message(&km.borrow_mut().add(&s("a"), &obj::int(2))),
         "System.ArgumentException: An item with the same key has already been added. Key: a"
     );
-    assert_eq!(km.borrow().entries.len(), 1);
+    assert_eq!(km.borrow().len(), 1);
     // the key has to be present before the re-add throws, so it is inserted first
     km.borrow_mut().add(&obj::int(5), &obj::int(1));
     // a str key prints its value, an int key prints its CLR number

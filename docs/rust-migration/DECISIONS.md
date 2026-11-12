@@ -716,3 +716,10 @@ inner ë¬¸ìì—´ë§Œ ì €ì¥í•˜ê³  CLIëŠ” `System.ArgumentOutOfRangeException: {mes
   È®ÀÎ): `[a[:alpha:]]`´Â literal `a`, `[`, `:`, `a`, `l`, `p`...¸¦ ÁØ´Ù.
 - `Escape`ÀÇ metachar setÀº `\t \n \f \r ' ' # $ ( ) * + . ? [ \ ^ { |`ÀÌ¸ç Á¦¾î ¹®ÀÚ´Â
   `\t`/`\n`/`\r`/`\f`·Î espaceÇÑ´Ù(`Regex.Escape` ground truth).
+## D-065 | KeyMapÀº bucket-chained hash tableÀÌ´Ù(order À¯Áö) | Accepted
+
+- ±âÁ¸ `KeyMap`Àº `Vec<(hash, key, value)>`¸¦ ¸Å¹ø linear scanÇß´Ù(bucketÀÌ ¾ø¾ú´Ù). dict5000 º¥Ä¡¸¶Å©°¡ reference ´ëºñ ~10x ´À·È´Ù.
+- `entries: Vec<Entry>`(insertion-ordered store, `Entry { hash, key, value, used }`) + power-of-two `buckets`(head index) + `next`(chain link)·Î ¹Ù²å´Ù. Á¦°Å´Â tombstoneÀ¸·Î Ç¥½ÃÇÏ°í free list¸¦ `next`¿¡ threadingÇÏ¿© Àç»ç¿ëÇÑ´Ù ¡æ live entryÀÇ ¼ø¼­°¡ ¹Ù²îÁö ¾Ê°í, `remove`µµ ¼ø¼­¸¦ º¸Á¸ÇÑ´Ù.
+- duplicate key´Â find¿¡¼­ °¡Àå ÀÌ¸¥ index¸¦ ¹İÈ¯(Ã¹ »ğÀÔÀÌ get¿¡ ÀÀ´äÇÏ´Â ±âÁ¸ µ¿ÀÛ À¯Áö). bucket chainÀº head-prependÀÌ°í find´Â chainÀ» ³¡±îÁö º»´Ù(chain ±æÀÌ´Â Æò±Õ 1).
+- `Set`µµ °°Àº `KeyMap`À¸·Î backed Çß´Ù(value = `none`). member ÇÔ¼öµéÀº `try_insert`/`contains_key`/`get_key`/`remove`¸¦ ¾´´Ù.
+- °ËÁõ: cargo test 199/199, differential 37 PASS / 0 DIFF, negcmp 38/4(±âÁ¸ Â÷ÀÌ), wscmp 13/0, fullcmp 37/0. dict5000 17.9ms ¡æ ~9.3ms(ref ~6.1ms, loop-only´Â ¾çÂÊ parity). referenceº¸´Ù ´À¸° ³ª¸ÓÁö´Â interpreter dispatch overhead ¼öÁØÀÌ´Ù.

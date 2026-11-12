@@ -783,7 +783,7 @@ fn set_members(closure: &Context) -> Vec<(String, Obj)> {
 }
 
 /// the receiver of a member call, as a `Set` payload.
-fn set_self(scope: &Scope) -> Option<Rc<RefCell<Vec<Obj>>>> {
+fn set_self(scope: &Scope) -> Option<Rc<RefCell<KeyMap>>> {
     match obj::payload(&scope::get(scope, "self")) {
         Payload::Set(v) => Some(v.clone()),
         _ => None,
@@ -796,12 +796,8 @@ fn set_add(scope: &Scope) -> Obj {
     };
     let value = scope::get(scope, "value");
 
-    let mut items = set.borrow_mut();
-    if items.iter().any(|item| obj::key_eq(item, &value)) {
-        return obj::boolean(false);
-    }
-    items.push(value);
-    obj::boolean(true)
+    let added = set.borrow_mut().try_insert(&value, obj::none());
+    obj::boolean(added)
 }
 
 fn set_remove(scope: &Scope) -> Obj {
@@ -810,11 +806,8 @@ fn set_remove(scope: &Scope) -> Obj {
     };
     let value = scope::get(scope, "value");
 
-    let mut items = set.borrow_mut();
-    let before = items.len();
-    items.retain(|item| !obj::key_eq(item, &value));
-
-    obj::boolean(items.len() != before)
+    let removed = set.borrow_mut().remove(&value);
+    obj::boolean(removed)
 }
 
 fn set_contains(scope: &Scope) -> Obj {
@@ -823,8 +816,8 @@ fn set_contains(scope: &Scope) -> Obj {
     };
     let value = scope::get(scope, "value");
 
-    let items = set.borrow().clone();
-    obj::boolean(items.iter().any(|item| obj::key_eq(item, &value)))
+    let found = set.borrow().contains_key(&value);
+    obj::boolean(found)
 }
 
 fn set_clear(scope: &Scope) -> Obj {
@@ -839,7 +832,7 @@ fn set_clone(scope: &Scope) -> Obj {
     let Some(set) = set_self(scope) else {
         return obj::err("expected 'set' object");
     };
-    let items = set.borrow().clone();
+    let items = set.borrow().keys();
     collections::set(items)
 }
 
@@ -847,7 +840,7 @@ fn set_clone(scope: &Scope) -> Obj {
 fn set_other(scope: &Scope) -> Result<Vec<Obj>, Obj> {
     let other = scope::get(scope, "other");
     match obj::payload(&other) {
-        Payload::Set(values) => Ok(values.borrow().clone()),
+        Payload::Set(values) => Ok(values.borrow().keys()),
         _ => Err(obj::err("invalid argument: other")),
     }
 }
@@ -861,9 +854,14 @@ fn set_union(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
 
-    let mut items = set.borrow().clone();
+    let mut items = set.borrow().keys();
+    let mut seen = collections::KeyMap::new(Vec::new());
+    for item in &items {
+        seen.try_insert(item, obj::none());
+    }
+
     for item in other {
-        if !items.iter().any(|existing| obj::key_eq(existing, &item)) {
+        if seen.try_insert(&item, obj::none()) {
             items.push(item);
         }
     }
@@ -880,13 +878,15 @@ fn set_intersect(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
 
-    let items = set.borrow().clone();
-    let result: Vec<Obj> = items
+    let other_set = collections::KeyMap::new(other.into_iter().map(|o| (o, obj::none())).collect());
+    let items = set
+        .borrow()
+        .keys()
         .into_iter()
-        .filter(|item| other.iter().any(|o| obj::key_eq(o, item)))
+        .filter(|item| other_set.contains_key(item))
         .collect();
 
-    collections::set(result)
+    collections::set(items)
 }
 
 fn set_difference(scope: &Scope) -> Obj {
@@ -898,13 +898,15 @@ fn set_difference(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
 
-    let items = set.borrow().clone();
-    let result: Vec<Obj> = items
+    let other_set = collections::KeyMap::new(other.into_iter().map(|o| (o, obj::none())).collect());
+    let items = set
+        .borrow()
+        .keys()
         .into_iter()
-        .filter(|item| !other.iter().any(|o| obj::key_eq(o, item)))
+        .filter(|item| !other_set.contains_key(item))
         .collect();
 
-    collections::set(result)
+    collections::set(items)
 }
 
 // ---------------------------------------------------------------------------
