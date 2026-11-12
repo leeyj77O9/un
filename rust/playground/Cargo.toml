@@ -1,0 +1,12 @@
+[package]
+name = "unvm-playground"
+version = "0.1.0"
+edition = "2021"
+description = "WASM entry point for the Un playground sandbox (PlaygroundRunner.RunCode equivalent)"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+unvm = { path = ".." }

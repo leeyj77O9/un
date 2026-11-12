@@ -74,6 +74,12 @@ fn exit_impl(scope: &Scope) -> Obj {
         Payload::Int(v) => v as i32,
         _ => 0,
     };
+
+    if !world::allow_exit() {
+        // the reference throws the Panic straight out of `Builtin.exit`
+        return obj::panic("panic", "exit() is not allowed in this environment");
+    }
+
     // the reference writes straight to `Console` and `Environment.Exit` runs the
     // stdout flush, so the buffered sandbox stdout is flushed at the same point
     world::flush_stdout();

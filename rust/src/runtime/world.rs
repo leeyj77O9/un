@@ -62,6 +62,9 @@ pub struct World {
     log: Rc<RefCell<String>>,
     /// `Global.SetAllowedModules` — `None` allows everything
     allowed: Option<HashSet<String>>,
+    /// `Global.AllowProcessExit` — the playground sets it to false, so `exit()` raises
+    /// `panic : exit() is not allowed in this environment` instead of terminating
+    allow_exit: bool,
     /// `Global._moduleCache` — the loaded module maps, keyed by the full path.
     module_cache: HashMap<String, Vec<(String, Obj)>>,
     /// `Global._loading` — the paths that are being loaded right now. a path that is
@@ -99,6 +102,7 @@ impl World {
             stdout: Rc::new(RefCell::new(String::new())),
             log: Rc::new(RefCell::new(String::new())),
             allowed: None,
+            allow_exit: true,
             module_cache: HashMap::new(),
             loading: HashSet::new(),
             max_recursion_depth: crate::runtime::function::MAX_RECURSION_DEPTH,
@@ -416,6 +420,15 @@ pub fn native_members(name: &str) -> Option<Vec<(String, Obj)>> {
 /// `Global.SetAllowedModules`
 pub fn set_allowed(names: Vec<String>) {
     WORLD.with(|w| w.borrow_mut().allowed = Some(names.into_iter().collect()));
+}
+
+/// `Global.AllowProcessExit`
+pub fn set_allow_exit(allowed: bool) {
+    WORLD.with(|w| w.borrow_mut().allow_exit = allowed);
+}
+
+pub fn allow_exit() -> bool {
+    WORLD.with(|w| w.borrow().allow_exit)
 }
 
 pub fn is_allowed(name: &str) -> bool {
