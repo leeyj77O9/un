@@ -32,6 +32,11 @@ pub fn init_members(closure: &Context) {
     world::register_original_class("stopwatch", crate::native::stopwatch::members(closure));
     world::register_original_class("random", crate::native::random::object_members(closure));
 
+    // the counters and the flags are `[NativeType]` classes, so their member tables live in
+    // `originalClasses` under their own type names.
+    world::register_original_class("atomic_int", crate::native::atomic::int_members(closure));
+    world::register_original_class("atomic_bool", crate::native::atomic::bool_members(closure));
+
     // the `http_client` and `web_socket` tables are the `[NativeType]` names of the client
     // and the socket, and the objects' type names are `http` and `socket`, so the lookup
     // never reaches these tables. they are registered because `Global.Init` registers them.

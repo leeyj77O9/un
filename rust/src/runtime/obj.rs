@@ -47,6 +47,11 @@ pub enum Payload {    Plain,
     Pool(Rc<RefCell<crate::native::flow::PoolState>>),
     /// `Lock` — the held flag
     Lock(Rc<RefCell<crate::native::flow::LockState>>),
+    /// `AtomicInt` — the counter value, the `Interlocked` target of the reference.
+    /// `Clone()` is an error, `Copy()` is `this`, so the counter stays one cell.
+    AtomicInt(Rc<RefCell<i64>>),
+    /// `AtomicBool` — the flag value, the same single-cell rule as the counter.
+    AtomicBool(Rc<RefCell<bool>>),
     /// `Stream` — a file stream
     Stream(Rc<RefCell<crate::native::stream::StreamState>>),
     /// `Random` — the generator object, the `Value` of the reference's
@@ -112,6 +117,8 @@ impl std::fmt::Debug for Payload {
             Payload::Future(_) => f.write_str("Future"),
             Payload::Pool(_) => f.write_str("Pool"),
             Payload::Lock(_) => f.write_str("Lock"),
+            Payload::AtomicInt(_) => f.write_str("AtomicInt"),
+            Payload::AtomicBool(_) => f.write_str("AtomicBool"),
             Payload::List(v) => write!(f, "List({} items)", v.borrow().len()),
             Payload::Dict(km) => write!(f, "Dict({} entries)", km.borrow().len()),
             Payload::Set(s) => write!(f, "Set({} items)", s.borrow().len()),
@@ -166,6 +173,8 @@ impl PartialEq for Payload {
             (Random(a), Random(b)) => Rc::ptr_eq(a, b),
             (HttpClient(a), HttpClient(b)) => Rc::ptr_eq(a, b),
             (WebSocket(a), WebSocket(b)) => Rc::ptr_eq(a, b),
+            (AtomicInt(a), AtomicInt(b)) => Rc::ptr_eq(a, b),
+            (AtomicBool(a), AtomicBool(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -540,6 +549,10 @@ pub fn init(o: &Obj, args: &[Obj]) -> Obj {
         Payload::Int(_) | Payload::Float(_) | Payload::Bool(_) | Payload::Str(_) | Payload::Date(_) => {
             return prim_init(o, args);
         }
+        // `AtomicInt.Init` / `AtomicBool.Init` are `Init` overrides, so a call on the
+        // counter builds a new cell from the argument instead of reusing the receiver.
+        Payload::AtomicInt(_) => return crate::native::atomic::atomic_int_init(o, args),
+        Payload::AtomicBool(_) => return crate::native::atomic::atomic_bool_init(o, args),
         _ => {}
     }
     if try_method(o, "__init__", args).is_some() {
@@ -870,6 +883,13 @@ pub fn clone_obj(o: &Obj) -> Obj {
         // socket keep the same host connection.
         Payload::Property(_) | Payload::FieldRef(_) => return o.clone(),
         Payload::HttpClient(_) | Payload::WebSocket(_) => return o.clone(),
+        // `Pool.Clone()`, `Lock.Clone()`, `AtomicInt.Clone()` and `AtomicBool.Clone()` are
+        // errors: the flow objects own a host resource (the worker set, the monitor, the
+        // interlocked target), so a second cell would not be the same guard.
+        Payload::Pool(_) => return err("'pool' cannot be cloned"),
+        Payload::Lock(_) => return err("'lock' cannot be cloned"),
+        Payload::AtomicInt(_) => return err("'atomic_int' cannot be cloned"),
+        Payload::AtomicBool(_) => return err("'atomic_bool' cannot be cloned"),
         Payload::Func(_) => return function::fn_clone(o),
         _ => {}
     }
@@ -1054,6 +1074,8 @@ pub fn class_name(o: &Obj) -> &'static str {
         Payload::Stru(..) => "Stru",
         Payload::Enu(..) => "Enum",
         Payload::TObj(..) => "TObj",
+        Payload::AtomicInt(..) => "AtomicInt",
+        Payload::AtomicBool(..) => "AtomicBool",
         Payload::Iter(..) => "Iters",
         Payload::Func(..) => "Fn",
         Payload::Property(..) => "Property",
@@ -1483,6 +1505,9 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         | Payload::Lock(_)
         | Payload::Stream(_)
         | Payload::Random(_) => base_binop(o, op, other, &t, &ot),
+        // the counters and the flags have no operator override, so only the base chain
+        // message applies to them
+        Payload::AtomicInt(_) | Payload::AtomicBool(_) => base_binop(o, op, other, &t, &ot),
         // `HttpClient.Eq()` and `WebSocket.Eq()` compare the host client by reference, so a
         // client or a socket equals only itself. every other operator has no override, so
         // the base chain message applies.
@@ -1586,6 +1611,12 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         // applies to it.
         Payload::WebSocket(state) => match op {
             UnOp::ToBool => boolean(state.borrow().state == "Open"),
+            _ => err(op.message(&t)),
+        },
+        // `AtomicInt.Entry()` / `AtomicBool.Entry()` are `this`. `Exit()` has no override,
+        // so a `use` on the counter reports the base `using exit` message.
+        Payload::AtomicInt(_) | Payload::AtomicBool(_) => match op {
+            UnOp::Entry => o.clone(),
             _ => err(op.message(&t)),
         },
         Payload::TObj(..)

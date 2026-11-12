@@ -16,6 +16,7 @@ use crate::source::Source;
 use crate::runtime::types::Types;
 use crate::runtime::world;
 
+pub mod atomic;
 pub mod builtin;
 pub mod date_members;
 pub mod flow;
@@ -61,6 +62,7 @@ pub fn init(path: &str) {
     world::register_native("time", time::members(&closure));
     world::register_native("random", random::members(&closure));
     world::register_native("flow", flow::members(&closure));
+    world::register_native("atomic", atomic::members(&closure));
     world::register_native("re", re::members(&closure));
     world::register_native("http", http::members(&closure));
     world::register_native("ws", ws::members(&closure));
