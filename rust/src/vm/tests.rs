@@ -221,7 +221,11 @@ fn a_missing_file_module_is_a_panic() {
     assert!(matches!(outcome, Outcome::Panic(_)));
     assert_eq!(
         message(&outcome),
-        format!("{}panic : module '.\\nosuchmod' not found", nl())
+        format!(
+            "{}panic : module '{}' not found",
+            nl(),
+            std::path::Path::new(".").join("nosuchmod").display()
+        )
     );
     assert_eq!(out, "");
 }
@@ -235,7 +239,11 @@ fn a_builtin_module_is_not_a_native_module() {
     assert!(matches!(outcome, Outcome::Panic(_)));
     assert_eq!(
         message(&outcome),
-        format!("{}panic : module '.\\builtin' not found", nl())
+        format!(
+            "{}panic : module '{}' not found",
+            nl(),
+            std::path::Path::new(".").join("builtin").display()
+        )
     );
     assert_eq!(out, "");
 }
