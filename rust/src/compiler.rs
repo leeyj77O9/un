@@ -256,7 +256,7 @@ impl<'a> Compiler<'a> {
             new_code[ip].operand = operand;
         }
 
-        let mut final_proto = Proto {
+        let final_proto = Proto {
             name: original.name,
             arity: original.arity,
             locals: original.locals,
