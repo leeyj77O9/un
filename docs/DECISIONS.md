@@ -696,49 +696,43 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 
 ## D-064 | .NET compatible regex engine; char-based text instead of UTF-16 | Accepted
 
-- reference�� `System.Text.RegularExpressions`�� backtracking ������ ����. �� ������
-  .NET �˰�����(`RegexParser` �� `RegexWriter` �� `RegexInterpreter`)�� ����� �̽��̴�:
-  ���� �뷮 �迭(track/stack/crawl)�� peek-after-pop �Ծ�, `Branchcount` loop arm�� mark��
-  track�� �����ϰ� straight path�� `[mark, count, -codepos]`�� �����ϴ� ��Ģ,
-  `Backtrack()`�� negative marker = `BacktrackingSecond`(flag�� OR�� �ƴ϶� **��ü**),
-  `Matches()` enumeration(�� ��ġ�� �� ���� bump, len���� ����), `Regex.Split`�� ĸó
-  splice, `ScanDollar`(`$` expansion: ``, `..`�� ��ü �ڸ��� �Һ� + ����
-  ������ literal emission), `Escape`(`Regex.Escape`�� ���� metachar set)���� �����ߴ�.
-  node kind/opcode ��ȣ�� .NET�� �����ϴ�.
-- ���� �� �߰ߡ������� ���� ����(���� byte-identical �����):
-  `scan_group_open`�� Rust `break`�� loop ��ü�� Ż���� option groups�� expression
-  conditional(`(?(x)b)`)�� �׻� `Unrecognized grouping construct.`�� �Ǵ� ���� ����,
-  ī�װ��� group result�� �ʱⰪ(`false` ��� `true`�� ������ ��� ���ڰ� `\p{..}`��
-  ��Ī), `NOT_SPACE_CONST`�� double negation(`\S`�� ���鿡 ��Ī), Ŭ���� ���� shorthand
-  (`[\D]`/`[\S]`/`[\W]`/`[\p{...}]`/`\-`)�� `ch`(=`\`)�� ���� �׻� ��������
-  ������ ����, `[\b]`�� `_pos` ���� rewinding, `Branchcount` track frame�� mark�� ����
-  ��, `backtrack()`�� `back |= BACKTRACKING_SECOND`(384)�� � arm���� ���� �ʾ� capture��
-  �������� ���ϰ� `goto(31)` OOB panic�� ����� ����, `is_true_quantifier`�� ���ڶ�
-  OOB read(`a{2`���� panic).
-- ����: probes 25�� **25 PASS / 0 DIFF**(IO.write�� >0x7F�� `?`�� �ڸ��� �ͱ��� ����),
+- reference는 `System.Text.RegularExpressions`의 backtracking 엔진을 쓴다. 이 엔진은
+  .NET 알고리즘(`RegexParser` → `RegexWriter` → `RegexInterpreter`)의 충실한 이식이다:
+  고정 용량 배열(track/stack/crawl)과 peek-after-pop 규약, `Branchcount` loop arm이 mark를
+  track에 저장하고 straight path는 `[mark, count, -codepos]`로 저장하는 규칙,
+  `Backtrack()`의 negative marker = `BacktrackingSecond`(flag를 OR이 아니라 **교체**),
+  `Matches()` enumeration(빈 매치는 한 글자 bump, len에서 멈춤), `Regex.Split`의 캡처
+  splice, `ScanDollar`(`$` expansion: ``, `..`는 전체 자릿수 소비 + 슬롯
+  없으면 literal emission), `Escape`(`Regex.Escape`와 같은 metachar set)까지 재현했다.
+  node kind/opcode 번호는 .NET과 동일하다.
+- 구현 중 발견·수정한 엔진 결함(전부 byte-identical 재검증):
+  `scan_group_open`의 Rust `break`가 loop 전체를 탈출해 option groups와 expression
+  conditional(`(?(x)b)`)이 항상 `Unrecognized grouping construct.`가 되던 구조 오류,
+  카테고리 group result의 초기값(`false` 대신 `true`로 시작해 모든 문자가 `\p{..}`에
+  매칭), `NOT_SPACE_CONST`의 double negation(`\S`가 공백에 매칭), 클래스 내부 shorthand
+  (`[\D]`/`[\S]`/`[\W]`/`[\p{...}]`/`\-`)가 `ch`(=`\`)를 비교해 항상 부정절로
+  빠지던 오류, `[\b]`의 `_pos` 이중 rewinding, `Branchcount` track frame에 mark가 빠진
+  것, `backtrack()`의 `back |= BACKTRACKING_SECOND`(384)가 어떤 arm에도 맞지 않아 capture를
+  복원하지 못하고 `goto(31)` OOB panic을 만들던 문제, `is_true_quantifier`의 끝자락
+  OOB read(`a{2`에서 panic).
+- 검증: probes 25종 **25 PASS / 0 DIFF**(IO.write가 >0x7F를 `?`로 자르는 것까지 포함),
   differential suite 37 PASS / 0 DIFF, `cargo test --release` 199 passed, cargo build 0/0.
-- engine�� BMP+astral Unicode category table�� .NET numbering���� ������ ����.
-- **UTF-16 ��� Rust `char` ���**�̴�: .NET�� pattern�� input�� UTF-16 code unit����
-  �����Ƿ� astral ���ڰ� surrogate 2���� ��������, Rust ������ char �ϳ��� ����. �׷���
-  BMP literal/class�� ���������� astral ���ڿ� ���� �Ϻ� pattern�� ���ڰ� 2��ó��
-  ��Ī�Ǵ� .NET�� �ٸ��� ������ �� �ִ�(astral literal�� category table�θ� ��Ī ����).
-  ���� parity harness(probe/differential)���� astral pattern�� ���� ������.
-- case-insensitivity�� .NET�� culture-specific case equivalence table�� �ƴ϶� Rust��
-  Unicode lowercase/uppercase/titlecase�� �ܼ�ȭ�ߴ�(Turkish I, Cyrillic culture Ư��
-  ���̽��� �ٸ�). POSIX `[:name:]`�� .NETó�� literal ���� ������ �⿩���� �ʴ´�(probe��
-  Ȯ��): `[a[:alpha:]]`�� literal `a`, `[`, `:`, `a`, `l`, `p`...�� �ش�.
-- `Escape`�� metachar set�� `\t \n \f \r ' ' # $ ( ) * + . ? [ \ ^ { |`�̸� ���� ���ڴ�
-  `\t`/`\n`/`\r`/`\f`�� espace�Ѵ�(`Regex.Escape` ground truth).
-## D-065 | KeyMap�� bucket-chained hash table�̴�(order ����) | Accepted
+- engine은 BMP+astral Unicode category table을 .NET numbering으로 병합해 쓴다.
+- **UTF-16 대신 Rust `char` 기반**이다: .NET은 pattern과 input을 UTF-16 code unit으로
+  읽으므로 astral 문자가 surrogate 2개로 보이지만, Rust 엔진은 char 하나로 본다. 그래서
+  BMP literal/class는 동일하지만 astral 문자에 대한 일부 pattern은 문자가 2개처럼
+  매칭되는 .NET과 다르게 동작할 수 있다(astral literal은 category table로만 매칭 가능).
+  현재 parity harness(probe/differential)에는 astral pattern이 없어 미측정.
+- case-insensitivity는 .NET의 culture-specific case equivalence table이 아니라 Rust의
+  Unicode lowercase/uppercase/titlecase로 단순화했다(Turkish I, Cyrillic culture 특수
+  케이스는 다름). POSIX `[:name:]`는 .NET처럼 literal 문자 집합을 기여하지 않는다(probe로
+  확인): `[a[:alpha:]]`는 literal `a`, `[`, `:`, `a`, `l`, `p`...를 준다.
+- `Escape`의 metachar set은 `\t \n \f \r ' ' # $ ( ) * + . ? [ \ ^ { |`이며 제어 문자는
+  `\t`/`\n`/`\r`/`\f`로 espace한다(`Regex.Escape` ground truth).
+## D-065 | KeyMap은 bucket-chained hash table이다(order 유지) | Accepted
 
-- ���� `KeyMap`�� `Vec<(hash, key, value)>`�� �Ź� linear scan�ߴ�(bucket�� ������). dict5000 ��ġ��ũ�� reference ��� ~10x ���ȴ�.
-- `entries: Vec<Entry>`(insertion-ordered store, `Entry { hash, key, value, used }`) + power-of-two `buckets`(head index) + `next`(chain link)�� �ٲ��. ���Ŵ� tombstone���� ǥ���ϰ� free list�� `next`�� threading�Ͽ� �����Ѵ� �� live entry�� ������ �ٲ��� �ʰ�, `remove`�� ������ �����Ѵ�.
-- duplicate key�� find���� ���� �̸� index�� ��ȯ(ù ������ get�� �����ϴ� ���� ���� ����). bucket chain�� head-prepend�̰� find�� chain�� ������ ����(chain ���̴� ��� 1).
-- `Set`�� ���� `KeyMap`���� backed �ߴ�(value = `none`). member �Լ����� `try_insert`/`contains_key`/`get_key`/`remove`�� ����.
-- ����: cargo test 199/199, differential 37 PASS / 0 DIFF, negcmp 38/4(���� ����), wscmp 13/0, fullcmp 37/0. dict5000 17.9ms �� ~9.3ms(ref ~6.1ms, loop-only�� ���� parity). reference���� ���� �������� interpreter dispatch overhead �����̴�.
-
-## D-066 | http/ws �ν��Ͻ� Ÿ�� �̸��� registration key�� ����� | Accepted
-
-- ���� `client.get(1)`��`error: expected url is string` ���� ���� ���� ��ο� `client.set_header`/`clear_headers`�� Un �ڵ忡�� �����ϸ� `test/unit/native/http.un`�� differential byte-identical�̴�(16/16 assertions).
-- error �޽����� `type()` display�� Ÿ�� �̸��� `http_client` / `web_socket`���� �ٲ����(reference�� ����).
-- ����: `scripts/differential.ps1` **108 checked / 0 unexpected DIFF / 4 known-divergent**, `cargo test --release` 199 passed, `dotnet build -c Release` ���� 0 / ��� 0.
+- 기존 `KeyMap`은 `Vec<(hash, key, value)>`를 매번 linear scan했다(bucket이 없었다). dict5000 벤치마크가 reference 대비 ~10x 느렸다.
+- `entries: Vec<Entry>`(insertion-ordered store, `Entry { hash, key, value, used }`) + power-of-two `buckets`(head index) + `next`(chain link)로 바꿨다. 제거는 tombstone으로 표시하고 free list를 `next`에 threading하여 재사용한다 → live entry의 순서가 바뀌지 않고, `remove`도 순서를 보존한다.
+- duplicate key는 find에서 가장 이른 index를 반환(첫 삽입이 get에 응답하는 기존 동작 유지). bucket chain은 head-prepend이고 find는 chain을 끝까지 본다(chain 길이는 평균 1).
+- `Set`도 같은 `KeyMap`으로 backed 했다(value = `none`). member 함수들은 `try_insert`/`contains_key`/`get_key`/`remove`를 쓴다.
+- 검증: cargo test 199/199, differential 37 PASS / 0 DIFF, negcmp 38/4(기존 차이), wscmp 13/0, fullcmp 37/0. dict5000 17.9ms → ~9.3ms(ref ~6.1ms, loop-only는 양쪽 parity). reference보다 느린 나머지는 interpreter dispatch overhead 수준이다.
