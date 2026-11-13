@@ -331,6 +331,21 @@ fn check_indices(
         Op::LoadLocal | Op::StoreLocal => {
             index_range(label, "slot", operand, proto.locals.len())
         }
+        Op::FusedIntMulAdd => {
+            let dst = ((operand >> 20) & 0x3FF) as usize;
+            let x = ((operand >> 10) & 0x3FF) as usize;
+            let y = (operand & 0x3FF) as usize;
+            if dst >= proto.locals.len() {
+                return Err(format!("{label}: destination slot {dst} out of range"));
+            }
+            if x >= proto.locals.len() {
+                return Err(format!("{label}: source slot {x} out of range"));
+            }
+            if y >= proto.locals.len() {
+                return Err(format!("{label}: source slot {y} out of range"));
+            }
+            Ok(())
+        }
 
         Op::LoadUpv | Op::StoreUpv => {
             let slot = operand & 0xFFFF;
@@ -382,7 +397,8 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         | Op::MakeClass
         | Op::LoadBaseClass
         | Op::MakeEnum
-        | Op::Use => 1,
+        | Op::Use
+        | Op::FusedIntMulAdd => 1,
         Op::Dup2 => 2,
         Op::StoreLocal | Op::StoreUpv | Op::Return => -1,
 

@@ -400,6 +400,57 @@ impl VM {
             Op::Gt => self.bin(BinOp::Gt)?,
             Op::Le => self.bin(BinOp::LtEq)?,
             Op::Ge => self.bin(BinOp::GtEq)?,
+ Op::FusedIntMulAdd => {
+                let dst = ((operand >> 20) & 0x3FF) as usize;
+                let x = ((operand >> 10) & 0x3FF) as usize;
+                let y = (operand & 0x3FF) as usize;
+                let scope = context::scope(&self.ctx);
+
+                let a = {
+                    if let Some(v) = scope::get_slot(&scope, dst) { v } else {
+                        let name_idx = self.proto.locals.get(dst).copied().unwrap_or(0);
+                        let name = self.name(name_idx);
+                        if let Some(v) = scope::get_opt(&scope, &name) {
+                            if function::is_field_ref(&v) { function::field_get(&v) } else { v }
+                        } else if let Some(v) = world::try_get_global(&name) { v } else if world::get_class(&name).is_some() { collections::tobj(Types::single(&name)) } else { world::none_obj() }
+                    }
+                };
+                let b = {
+                    if let Some(v) = scope::get_slot(&scope, x) { v } else {
+                        let name_idx = self.proto.locals.get(x).copied().unwrap_or(0);
+                        let name = self.name(name_idx);
+                        if let Some(v) = scope::get_opt(&scope, &name) {
+                            if function::is_field_ref(&v) { function::field_get(&v) } else { v }
+                        } else if let Some(v) = world::try_get_global(&name) { v } else if world::get_class(&name).is_some() { collections::tobj(Types::single(&name)) } else { world::none_obj() }
+                    }
+                };
+                let c = {
+                    if let Some(v) = scope::get_slot(&scope, y) { v } else {
+                        let name_idx = self.proto.locals.get(y).copied().unwrap_or(0);
+                        let name = self.name(name_idx);
+                        if let Some(v) = scope::get_opt(&scope, &name) {
+                            if function::is_field_ref(&v) { function::field_get(&v) } else { v }
+                        } else if let Some(v) = world::try_get_global(&name) { v } else if world::get_class(&name).is_some() { collections::tobj(Types::single(&name)) } else { world::none_obj() }
+                    }
+                };
+
+                let fast = match (obj::payload(&a), obj::payload(&b), obj::payload(&c)) {
+                    (Payload::Int(acc), Payload::Int(v), Payload::Int(w)) => {
+                        Some(obj::int(acc.wrapping_add(v.wrapping_mul(w))))
+                    }
+                    _ => None,
+                };
+                let result = match fast {
+                    Some(r) => r,
+                    None => {
+                        let mul = obj::binop(&b, obj::BinOp::Mul, &c);
+                        obj::binop(&a, obj::BinOp::Add, &mul)
+                    }
+                };
+
+                scope::set_slot(&scope, dst, result.clone());
+                self.push(result);
+            }
             Op::Range => {
                 let right = self.pop()?;
                 let left = self.pop()?;

@@ -161,9 +161,124 @@ impl<'a> Compiler<'a> {
         index
     }
 
+    fn fuse_int_mul_add(&mut self, proto_index: usize) {
+        let dummy = Proto {
+            name: 0,
+            arity: 0,
+            locals: Vec::new(),
+            params: Vec::new(),
+            code: Vec::new(),
+            consts: Vec::new(),
+            names: Vec::new(),
+            protos: Vec::new(),
+            call_names: Vec::new(),
+            source_map: Vec::new(),
+            exc: Vec::new(),
+            flags: 0,
+            patterns: Vec::new(),
+            ext_type: None,
+        };
+        let original = std::mem::replace(&mut self.program.protos[proto_index], dummy);
+        let original_code = original.code;
+        let original_map = original.source_map;
+
+        let mut new_code: Vec<Instr> = Vec::with_capacity(original_code.len());
+        let mut new_map: Vec<(usize, usize)> = Vec::with_capacity(original_code.len());
+        let mut original_to_new: Vec<usize> = vec![0; original_code.len()];
+
+        let mut i = 0usize;
+        while i < original_code.len() {
+            if i + 8 < original_code.len() {
+                let a = original_code[i].op_code();
+                let b = original_code[i + 1].op_code();
+                let c = original_code[i + 2].op_code();
+                let d = original_code[i + 3].op_code();
+                let e = original_code[i + 4].op_code();
+                let f = original_code[i + 5].op_code();
+                let g = original_code[i + 6].op_code();
+                let h = original_code[i + 7].op_code();
+                let k = original_code[i + 8].op_code();
+                if a == Some(Op::LoadLocal)
+                    && b == Some(Op::LoadLocal)
+                    && c == Some(Op::LoadLocal)
+                    && d == Some(Op::Mul)
+                    && e == Some(Op::Unwrap)
+                    && f == Some(Op::Add)
+                    && g == Some(Op::Unwrap)
+                    && h == Some(Op::Dup)
+                    && k == Some(Op::StoreLocal)
+                    && original_code[i].flags == 0
+                    && original_code[i + 1].flags == 0
+                    && original_code[i + 2].flags == 0
+                    && original_code[i + 3].flags == 0
+                    && original_code[i + 4].flags == 0
+                    && original_code[i + 5].flags == 0
+                    && original_code[i + 6].flags == 0
+                    && original_code[i + 7].flags == 0
+                    && original_code[i + 8].flags == 0
+                {
+                    let dst = original_code[i].operand as u32;
+                    let sx = original_code[i + 1].operand as u32;
+                    let sy = original_code[i + 2].operand as u32;
+                    let store_dst = original_code[i + 8].operand as u32;
+                    if dst == store_dst && sx <= 0x3FF && sy <= 0x3FF && dst <= 0x3FF {
+                        let fused = ((dst << 20) | (sx << 10) | sy) as i32;
+                        original_to_new[i] = new_code.len();
+                        new_code.push(Instr::new(Op::FusedIntMulAdd, fused));
+                        new_map.push(original_map[i]);
+                        i += 9;
+                        continue;
+                    }
+                }
+            }
+            original_to_new[i] = new_code.len();
+            new_code.push(original_code[i]);
+            new_map.push(original_map[i]);
+            i += 1;
+        }
+
+        for ip in 0..new_code.len() {
+            let op = match new_code[ip].op_code() {
+                Some(o) => o,
+                None => continue,
+            };
+            let is_jump = matches!(op, Op::Jmp | Op::JmpIf | Op::ForNext | Op::Break | Op::Skip);
+            if !is_jump {
+                continue;
+            }
+            // locate the original instruction that became new_code[ip]
+            let original_ip = (0..original_code.len())
+                .find(|&o| original_to_new[o] == ip)
+                .expect("original ip not found for jump");
+            let original_target = original_ip + 1 + new_code[ip].operand as usize;
+            let new_target = original_to_new[original_target];
+            let operand = new_target as i32 - ip as i32 - 1;
+            new_code[ip].operand = operand;
+        }
+
+        let mut final_proto = Proto {
+            name: original.name,
+            arity: original.arity,
+            locals: original.locals,
+            params: original.params,
+            code: new_code,
+            consts: original.consts,
+            names: original.names,
+            protos: original.protos,
+            call_names: original.call_names,
+            source_map: new_map,
+            exc: original.exc,
+            flags: original.flags,
+            patterns: original.patterns,
+            ext_type: original.ext_type,
+        };
+        self.program.protos[proto_index] = final_proto;
+    }
+
     fn end_proto(&mut self) -> usize {
         let index = self.current;
         self.slot_stack.pop().expect("slot stack underflow");
+        self.fuse_int_mul_add(index);
         let slot_state = self.proto_slot_stack.pop().expect("proto slot stack");
         if !slot_state.names.is_empty() {
             let mut indices: Vec<usize> = Vec::with_capacity(slot_state.names.len());

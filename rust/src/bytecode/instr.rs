@@ -122,6 +122,8 @@ pub enum Op {
     MakeFuture = 0x63,
 
     Await = 0x64,
+
+    FusedIntMulAdd = 0x7F,
 }
 impl Op {
 
@@ -227,6 +229,7 @@ impl Op {
             0x62 => Some(Op::MatchPattern),
             0x63 => Some(Op::MakeFuture),
             0x64 => Some(Op::Await),
+            0x7F => Some(Op::FusedIntMulAdd),
             _ => None,
         }
     }
@@ -331,14 +334,15 @@ mod tests {
         assert_eq!(Op::MatchPattern as u8, 0x62);
         assert_eq!(Op::MakeFuture as u8, 0x63);
         assert_eq!(Op::Await as u8, 0x64);
+        assert_eq!(Op::FusedIntMulAdd as u8, 0x7F);
     }
     #[test]
     fn reserved_area_is_free() {
 
-        for v in 0x65u8..=0x7F {
+        for v in 0x65u8..=0x7E {
             assert_eq!(Op::from_u8(v), None, "{v:#04x} must stay reserved");
         }
-        for v in 0x65u8..=0x7F {
+        for v in 0x65u8..=0x7E {
             let bytes = [v, 0, 0, 0, 0, 0, 0];
             let instr = Instr::decode(&bytes);
             assert_eq!(instr.op_code(), None);
