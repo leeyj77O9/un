@@ -1,26 +1,13 @@
-//! Phase 7 iterators: the lazy generator model behind `Un.Object.Iter`.
-//!
-//! the reference stores an `IEnumerable<Obj>` in `Iters.Value` and re-enumerates it on
-//! every `Count()` / `ToList()` / `foreach`, so a sequence definition is reusable. the
-//! Rust model keeps the definition as an immutable tree (`StageDef`) and puts the
-//! enumeration position in mutable cells (`Stage`), so `Copy`/`Clone` build fresh
-//! cursors over the same data and `Iter()` returns the same cell.
-
 use std::cell::RefCell;
 use std::rc::Rc;
-
 use super::collections;
 use super::obj::{self, BinOp, Obj, Payload, UnOp};
 use super::world;
-
-/// the data a sequence walks over. a `Live` source sees items appended during iteration,
-/// like the reference's `foreach` over the same `List<Obj>` cell.
 #[derive(Clone)]
 pub enum Source {
     Live(Rc<RefCell<Vec<Obj>>>),
     Fixed(Rc<Vec<Obj>>),
 }
-
 impl Source {
     fn len(&self) -> i64 {
         match self {
@@ -28,7 +15,6 @@ impl Source {
             Source::Fixed(v) => v.len() as i64,
         }
     }
-
     fn get(&self, i: usize) -> Option<Obj> {
         match self {
             Source::Live(v) => v.borrow().get(i).cloned(),
@@ -36,9 +22,6 @@ impl Source {
         }
     }
 }
-
-/// a reusable sequence definition. the wrapper stages keep their inner definition, so
-/// a chain is a tree and `Take`/`Skip`/`Repeat` can be re-enumerated from the start.
 #[derive(Clone)]
 pub enum StageDef {
     Source(Source),
@@ -48,17 +31,15 @@ pub enum StageDef {
     Repeat { inner: Rc<StageDef>, count: i64 },
     Take { inner: Rc<StageDef>, n: i64 },
     Skip { inner: Rc<StageDef>, n: i64 },
-    /// `Iters.Map` — the transform runs while the sequence is consumed
+
     Map {
         inner: Rc<StageDef>,
         func: Obj,
         wants_index: bool,
     },
-    /// `Iters.Filter` — the predicate runs while the sequence is consumed
+
     Filter { inner: Rc<StageDef>, func: Obj },
 }
-
-/// the enumeration position of one stage.
 #[derive(Clone, Copy)]
 enum Cursor {
     Pos(i64),
@@ -66,7 +47,6 @@ enum Cursor {
     Rem(i64),
     Round(i64),
 }
-
 fn init_cursor(def: &StageDef) -> Cursor {
     match def {
         StageDef::Source(..) | StageDef::Reverse(..) => Cursor::Pos(0),
@@ -78,16 +58,12 @@ fn init_cursor(def: &StageDef) -> Cursor {
         StageDef::Filter { .. } => Cursor::Pos(0),
     }
 }
-
 pub struct StageCell {
     def: Rc<StageDef>,
     cursor: Cursor,
     inner: Option<Stage>,
 }
-
-/// a stage with its mutable position.
 pub type Stage = Rc<RefCell<StageCell>>;
-
 fn build(def: &Rc<StageDef>) -> Stage {
     let inner = match def.as_ref() {
         StageDef::Repeat { inner, .. }
@@ -103,9 +79,6 @@ fn build(def: &Rc<StageDef>) -> Stage {
         inner,
     }))
 }
-
-/// `foreach` over the same enumerable starts a fresh enumerator, so a finished round
-/// resets the inner chain's positions.
 fn reset(stage: &Stage) {
     let (def, inner) = {
         let cell = stage.borrow();
@@ -116,21 +89,17 @@ fn reset(stage: &Stage) {
         reset(&i);
     }
 }
-
 enum Step {
     Value(Obj),
     End,
-    /// `Default(step == 0)` throws on the first `MoveNext`, so the panic is lazy and
-    /// `ToStr()` / `Clone()` of a zero-step range still work.
+
     Panic(Obj),
 }
-
 fn next(stage: &Stage) -> Step {
     let (def, cursor, inner) = {
         let cell = stage.borrow();
         (cell.def.clone(), cell.cursor, cell.inner.clone())
     };
-
     match def.as_ref() {
         StageDef::Source(src) => {
             let Cursor::Pos(p) = cursor else { return Step::End };
@@ -168,7 +137,7 @@ fn next(stage: &Stage) -> Step {
             if !in_bound {
                 return Step::End;
             }
-            // `i += step` is unchecked in the reference, so it wraps
+
             stage.borrow_mut().cursor = Cursor::Val(v.wrapping_add(*step));
             Step::Value(obj::int(v))
         }
@@ -230,17 +199,14 @@ fn next(stage: &Stage) -> Step {
             let inner = inner.expect("map has an inner stage");
             match next(&inner) {
                 Step::Value(o) => {
-                    // the index of the mapped value, the reference counts the values
-                    // of the inner sequence
+
                     let index = cursor_val(cursor);
                     stage.borrow_mut().cursor = Cursor::Val(index + 1);
-
                     let args = if *wants_index {
                         vec![o, obj::int(index)]
                     } else {
                         vec![o]
                     };
-
                     let value = crate::runtime::function::fn_call(
                         func,
                         &crate::runtime::function::Args::positional(args),
@@ -269,26 +235,21 @@ fn next(stage: &Stage) -> Step {
         }
     }
 }
-
 fn cursor_val(cursor: Cursor) -> i64 {
     match cursor {
         Cursor::Pos(v) | Cursor::Val(v) | Cursor::Rem(v) | Cursor::Round(v) => v,
     }
 }
-
-/// `Value.Count()`: a formula, not an enumeration, so counting a sequence does not
-/// consume it. the reference's LINQ counts `Take`/`Skip`/`Repeat` arithmetically too.
 fn count(stage: &Stage) -> Obj {
     let (def, inner) = {
         let cell = stage.borrow();
         (cell.def.clone(), cell.inner.clone())
     };
-
     match def.as_ref() {
         StageDef::Source(src) | StageDef::Reverse(src) => obj::int(src.len()),
         StageDef::Range { start, stop, step } => {
             if *step == 0 {
-                // `Len()` divides by zero inside the host
+
                 return obj::divide_by_zero();
             }
             if (*step > 0 && start >= stop) || (*step < 0 && start <= stop) {
@@ -315,7 +276,7 @@ fn count(stage: &Stage) -> Obj {
         }
         StageDef::Map { inner: def, .. } => count(&build(def)),
         StageDef::Filter { .. } => {
-            // the predicate decides how many values survive, so the sequence is walked
+
             let values = match collect(stage) {
                 Ok(values) => values,
                 Err(e) => return e,
@@ -324,15 +285,12 @@ fn count(stage: &Stage) -> Obj {
         }
     }
 }
-
 fn combine(counted: Obj, f: impl Fn(i64) -> i64) -> Obj {
     match obj::payload(&counted) {
         Payload::Int(v) => obj::int(f(v)),
         _ => counted,
     }
 }
-
-/// a chain can be enumerated to the end only when every stage is bounded.
 fn bounded(def: &Rc<StageDef>) -> bool {
     match def.as_ref() {
         StageDef::Counter { .. } => false,
@@ -345,13 +303,10 @@ fn bounded(def: &Rc<StageDef>) -> bool {
         StageDef::Filter { inner, .. } => bounded(inner),
     }
 }
-
-/// `new List([.. Value])`: a fresh enumerator over the definition, so the shared
-/// enumeration position of `Next()` is untouched.
 fn collect(stage: &Stage) -> Result<Vec<Obj>, Obj> {
     let def = stage.borrow().def.clone();
     if !bounded(&def) {
-        // documented divergence: the reference hangs here
+
         return Err(obj::panic("panic", "iteration is infinite"));
     }
     let fresh = build(&def);
@@ -364,7 +319,6 @@ fn collect(stage: &Stage) -> Result<Vec<Obj>, Obj> {
         }
     }
 }
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Iters,
@@ -373,7 +327,6 @@ pub enum Kind {
     Repeat,
     Reverse,
 }
-
 impl Kind {
     pub fn name(&self) -> &'static str {
         match self {
@@ -385,21 +338,15 @@ impl Kind {
         }
     }
 }
-
 pub struct IterState {
     pub kind: Kind,
     pub head: Stage,
 }
-
-/// `Iters` and its subclasses share one payload; the `Kind` carries the subclass rules
-/// (`Type`, `ToStr`, `Len`, `Init`) that the reference splits across classes.
 pub type IterCell = Rc<RefCell<IterState>>;
-
 pub fn head(st: &IterCell) -> (Kind, Stage) {
     let s = st.borrow();
     (s.kind, s.head.clone())
 }
-
 pub fn iter_new(kind: Kind, def: Rc<StageDef>) -> Obj {
     let name = world::intern_type(kind.name());
     obj::obj_new(
@@ -410,49 +357,39 @@ pub fn iter_new(kind: Kind, def: Rc<StageDef>) -> Obj {
         }))),
     )
 }
-
 pub fn seq(values: Vec<Obj>) -> Obj {
     iter_new(Kind::Iters, Rc::new(StageDef::Source(Source::Fixed(Rc::new(values)))))
 }
-
 pub fn seq_live(values: &Rc<RefCell<Vec<Obj>>>) -> Obj {
     iter_new(
         Kind::Iters,
         Rc::new(StageDef::Source(Source::Live(values.clone()))),
     )
 }
-
 pub fn range_new(start: i64, stop: i64, step: i64) -> Obj {
     iter_new(Kind::Range, Rc::new(StageDef::Range { start, stop, step }))
 }
-
 pub fn counter_new(start: i64) -> Obj {
     iter_new(Kind::Counter, Rc::new(StageDef::Counter { start }))
 }
-
 pub fn repeat_new(inner: Rc<StageDef>, count: i64) -> Obj {
     iter_new(Kind::Repeat, Rc::new(StageDef::Repeat { inner, count }))
 }
-
 pub fn repeat_source(values: Vec<Obj>, count: i64) -> Obj {
     repeat_new(
         Rc::new(StageDef::Source(Source::Fixed(Rc::new(values)))),
         count,
     )
 }
-
 pub fn reverse_new(values: Vec<Obj>) -> Obj {
     iter_new(
         Kind::Reverse,
         Rc::new(StageDef::Reverse(Source::Fixed(Rc::new(values)))),
     )
 }
-
 pub fn take_new(inner: Rc<StageDef>, n: i64) -> Obj {
     iter_new(Kind::Iters, Rc::new(StageDef::Take { inner, n }))
 }
-
-/// `Iters.Map` — a lazy transform over a sequence definition.
 pub fn map_new(inner: Rc<StageDef>, func: Obj, wants_index: bool) -> Rc<StageDef> {
     Rc::new(StageDef::Map {
         inner,
@@ -460,29 +397,20 @@ pub fn map_new(inner: Rc<StageDef>, func: Obj, wants_index: bool) -> Rc<StageDef
         wants_index,
     })
 }
-
-/// `Iters.Filter` — a lazy predicate over a sequence definition.
 pub fn filter_new(inner: Rc<StageDef>, func: Obj) -> Rc<StageDef> {
     Rc::new(StageDef::Filter { inner, func })
 }
-
-/// an iterator object over a sequence definition.
 pub fn seq_obj(def: Rc<StageDef>) -> Obj {
     iter_new(Kind::Iters, def)
 }
-
-/// a fresh enumerator over a sequence definition. the reference's `Zip` walks several
-/// enumerators in parallel, so the enumerators are independent of the shared position.
 pub struct Enumerator {
     stage: Stage,
 }
-
 impl Enumerator {
     pub fn new(def: &Rc<StageDef>) -> Self {
         Self { stage: build(def) }
     }
 
-    /// the next value, `None` when the sequence ended
     pub fn next(&mut self) -> Option<Obj> {
         match next(&self.stage) {
             Step::Value(value) => Some(value),
@@ -491,38 +419,28 @@ impl Enumerator {
         }
     }
 }
-
 pub fn skip_new(inner: Rc<StageDef>, n: i64) -> Obj {
     iter_new(Kind::Iters, Rc::new(StageDef::Skip { inner, n }))
 }
-
-/// `iterator.take(n)` / `iterator.skip(n)` build a wrapper stage over the receiver's
-/// definition, so the receiver keeps its own position.
 pub fn take_of(st: &IterCell, n: i64) -> Obj {
     let (_kind, stage) = head(st);
     let def = stage.borrow().def.clone();
     take_new(def, n)
 }
-
 pub fn skip_of(st: &IterCell, n: i64) -> Obj {
     let (_kind, stage) = head(st);
     let def = stage.borrow().def.clone();
     skip_new(def, n)
 }
-
 pub fn def_of(st: &IterCell) -> Rc<StageDef> {
     st.borrow().head.borrow().def.clone()
 }
-
 fn contains(start: i64, stop: i64, step: i64, value: i64) -> bool {
     if step > 0 {
         return value >= start && value < stop && (value - start) % step == 0;
     }
     value <= start && value > stop && (start - value) % -step == 0
 }
-
-/// `Str.Iter()`: one `Str` per UTF-16 code unit. a lone surrogate cannot exist in a Rust
-/// `String`, so it becomes U+FFFD (D-020, divergence list).
 pub fn str_units(s: &str) -> Vec<String> {
     let units: Vec<u16> = s.encode_utf16().collect();
     let mut out = Vec::new();
@@ -530,8 +448,7 @@ pub fn str_units(s: &str) -> Vec<String> {
     while i < units.len() {
         let u = units[i];
         if (0xD800..=0xDFFF).contains(&u) {
-            // .NET yields a lone surrogate char as '?'; a Rust String cannot hold one,
-            // so U+FFFD is used (D-020 divergence).
+
             if u <= 0xDBFF && i + 1 < units.len() && (0xDC00..=0xDFFF).contains(&units[i + 1]) {
                 let c = char::decode_utf16([u, units[i + 1]])
                     .next()
@@ -550,27 +467,17 @@ pub fn str_units(s: &str) -> Vec<String> {
     }
     out
 }
-
 pub fn str_iter(s: &str) -> Obj {
     seq(str_units(s).into_iter().map(|c| obj::str(&c)).collect())
 }
-
 pub fn str_list(s: &str) -> Obj {
     collections::list(str_units(s).into_iter().map(|c| obj::str(&c)).collect())
 }
-
 pub fn str_tuple(s: &str) -> Obj {
     collections::tup(str_units(s).into_iter().map(|c| obj::str(&c)).collect(), Vec::new())
 }
-
-// ---------------------------------------------------------------------------
-// dispatch arms
-// ---------------------------------------------------------------------------
-
-/// `Iters.Next()`, `Len()`, `Iter()`, `ToList()`, `ToTuple()`, `ToStr()`, `Spread()`.
 pub fn iter_unop(o: &Obj, st: &IterCell, op: UnOp, t: &Rc<str>) -> Obj {
     let (kind, stage) = head(st);
-
     match op {
         UnOp::Iter => o.clone(),
         UnOp::Len => count(&stage),
@@ -599,11 +506,10 @@ pub fn iter_unop(o: &Obj, st: &IterCell, op: UnOp, t: &Rc<str>) -> Obj {
                 Err(p) => p,
             }
         }
-        // `ToStr` is not a `UnOp`; `obj::to_str` calls `iter_to_str` from its payload arm
+
         _ => obj::err(UnOp::message(&op, t)),
     }
 }
-
 fn materialize(kind: Kind, stage: &Stage) -> Result<Vec<Obj>, Obj> {
     if kind == Kind::Counter {
         return Err(obj::err("counter is infinite"));
@@ -613,13 +519,9 @@ fn materialize(kind: Kind, stage: &Stage) -> Result<Vec<Obj>, Obj> {
     }
     collect(stage)
 }
-
-/// `Iters.ToStr()` joins the elements, `Range.ToStr()` prints the bounds,
-/// `Counter.ToStr()` is the infinite error, and `Repeat.ToStr()` is `Repr()`.
 pub fn iter_to_str(o: &Obj, st: &IterCell) -> Obj {
     let (kind, stage) = head(st);
     let def = stage.borrow().def.clone();
-
     match kind {
         Kind::Counter => obj::err("counter is infinite"),
         Kind::Repeat => obj::repr(o),
@@ -646,10 +548,8 @@ pub fn iter_to_str(o: &Obj, st: &IterCell) -> Obj {
         },
     }
 }
-
 pub fn iter_binop(o: &Obj, st: &IterCell, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     let (kind, stage) = head(st);
-
     if kind == Kind::Range && op == BinOp::Eq {
         if let Payload::Iter(os) = obj::payload(other) {
             let (okind, odef) = head(&os);
@@ -674,13 +574,10 @@ pub fn iter_binop(o: &Obj, st: &IterCell, op: BinOp, other: &Obj, t: &Rc<str>, o
             }
         }
     }
-
     obj::base_binop(o, op, other, t, ot)
 }
-
 pub fn iter_in(o: &Obj, st: &IterCell, other: &Obj) -> Obj {
     let (kind, stage) = head(st);
-
     if kind == Kind::Range {
         if let Payload::Int(v) = obj::payload(other) {
             if let StageDef::Range { start, stop, step } = stage.borrow().def.as_ref() {
@@ -688,21 +585,16 @@ pub fn iter_in(o: &Obj, st: &IterCell, other: &Obj) -> Obj {
             }
         }
     }
-
     obj::err(format!(
         "unsupported operand type(s) for in: '{}'",
         obj::type_name(o)
     ))
 }
-
 pub fn iter_clone(o: &Obj, st: &IterCell) -> Obj {
     let (kind, stage) = head(st);
     let def = stage.borrow().def.clone();
-
     match kind {
-        // `Counter.Clone() => new(current)`. `current` is the constructor field and the
-        // enumerator uses a separate local, so it never advances: a clone restarts at
-        // the original start, not at the cursor.
+
         Kind::Counter => {
             let start = match def.as_ref() {
                 StageDef::Counter { start } => *start,
@@ -720,17 +612,13 @@ pub fn iter_clone(o: &Obj, st: &IterCell) -> Obj {
         Kind::Iters | Kind::Repeat | Kind::Reverse => iter_new(kind, def),
     }
 }
-
-/// `Iters.Copy()` is `this` and no subclass overrides it.
 pub fn iter_copy(o: &Obj) -> Obj {
     o.clone()
 }
-
 pub fn iter_init(o: &Obj, st: &IterCell, args: &[Obj]) -> Obj {
     let (kind, _) = head(st);
-
     match kind {
-        // `invaild` is the reference's spelling
+
         Kind::Iters => {
             if args.len() == 1 {
                 obj::iter(&args[0])
@@ -779,7 +667,7 @@ pub fn iter_init(o: &Obj, st: &IterCell, args: &[Obj]) -> Obj {
         }
         Kind::Reverse => {
             if args.len() == 1 {
-                // `Reverse.Init` materializes the reversed sequence, so the clone is a snapshot
+
                 match obj::payload(&obj::iter(&args[0])) {
                     Payload::Iter(is) => {
                         let items = is.borrow().head.borrow().def.clone();
@@ -794,16 +682,13 @@ pub fn iter_init(o: &Obj, st: &IterCell, args: &[Obj]) -> Obj {
                 obj::err("invalid 'reverse' initialization")
             }
         }
-        // `Range` has no `Init` override, so the base chain returns `this`
+
         Kind::Range => o.clone(),
     }
 }
-
-/// the forward items of a definition, taken with fresh cursors
 fn collect_items(def: &Rc<StageDef>) -> Result<Vec<Obj>, Obj> {
     collect(&build(def))
 }
-
 pub fn next_of(st: &IterCell) -> Obj {
     let stage = st.borrow().head.clone();
     match next(&stage) {
@@ -812,10 +697,8 @@ pub fn next_of(st: &IterCell) -> Obj {
         Step::Panic(p) => p,
     }
 }
-
 pub fn count_of(st: &IterCell) -> Obj {
     count(&st.borrow().head.clone())
 }
-
 #[cfg(test)]
 mod tests;

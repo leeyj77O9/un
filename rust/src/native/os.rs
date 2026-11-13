@@ -1,14 +1,9 @@
-//! `Un.Native.Os` — the native `os` module.
-
 use std::process::Command;
-
 use crate::runtime::collections;
 use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
-
 use super::{arg, native};
-
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     vec![
         (
@@ -103,32 +98,25 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-
-/// `GetString` — the argument has to be a `Str`.
 fn get_string(value: &Obj) -> Result<String, Obj> {
     match obj::payload(value) {
         Payload::Str(s) => Ok(s.to_string()),
         _ => Err(obj::err("expected value is string")),
     }
 }
-
 fn env_impl(scope: &Scope) -> Obj {
     env_of(&scope::get(scope, "name"))
 }
-
-/// `Os.Env` — the environment variable by name.
 pub fn env_of(name: &Obj) -> Obj {
     let name = match get_string(name) {
         Ok(name) => name,
         Err(e) => return e,
     };
-
     match std::env::var(&name) {
         Ok(value) => obj::str(&value),
         Err(_) => obj::err("environment variable not found"),
     }
 }
-
 fn setenv_impl(scope: &Scope) -> Obj {
     let name = match get_string(&scope::get(scope, "name")) {
         Ok(name) => name,
@@ -138,60 +126,43 @@ fn setenv_impl(scope: &Scope) -> Obj {
         Ok(value) => value,
         Err(e) => return e,
     };
-
     std::env::set_var(name, value);
     obj::none()
 }
-
 fn unsetenv_impl(scope: &Scope) -> Obj {
     let name = match get_string(&scope::get(scope, "name")) {
         Ok(name) => name,
         Err(e) => return e,
     };
-
     std::env::remove_var(name);
     obj::none()
 }
-
 fn environ_impl(_scope: &Scope) -> Obj {
     environ_of()
 }
-
-/// `Os.Environ` — every environment variable as a `KEY=VALUE` entry.
 pub fn environ_of() -> Obj {
     let mut entries: Vec<Obj> = Vec::new();
-
     for (key, value) in std::env::vars() {
         entries.push(obj::str(&format!("{key}={value}")));
     }
-
     collections::list(entries)
 }
-
 fn expand_vars_impl(scope: &Scope) -> Obj {
     expand_vars_of(&scope::get(scope, "text"))
 }
-
-/// `Os.ExpandVars`
 pub fn expand_vars_of(text: &Obj) -> Obj {
     let text = match get_string(text) {
         Ok(text) => text,
         Err(e) => return e,
     };
-
     obj::str(&expand_environment_variables(&text))
 }
-
-/// `Environment.ExpandEnvironmentVariables` — the `%NAME%` (Windows) and `$NAME`
-/// (Unix) forms.
 fn expand_environment_variables(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
-
     while i < chars.len() {
         let c = chars[i];
-
         if c == '%' {
             if let Some(end) = chars[i + 1..].iter().position(|c| *c == '%') {
                 let name: String = chars[i + 1..i + 1 + end].iter().collect();
@@ -202,7 +173,6 @@ fn expand_environment_variables(text: &str) -> String {
                 }
             }
         }
-
         if c == '$' && i + 1 < chars.len() {
             let next = chars[i + 1];
             if next == '{' {
@@ -227,18 +197,14 @@ fn expand_environment_variables(text: &str) -> String {
                 }
             }
         }
-
         out.push(c);
         i += 1;
     }
-
     out
 }
-
 fn pid_impl(_scope: &Scope) -> Obj {
     obj::int(std::process::id() as i64)
 }
-
 fn name_impl(_scope: &Scope) -> Obj {
     if cfg!(target_os = "windows") {
         return obj::str("windows");
@@ -251,7 +217,6 @@ fn name_impl(_scope: &Scope) -> Obj {
     }
     obj::str("unknown")
 }
-
 fn arch_impl(_scope: &Scope) -> Obj {
     if cfg!(target_arch = "x86_64") {
         obj::str("X64")
@@ -263,62 +228,49 @@ fn arch_impl(_scope: &Scope) -> Obj {
         obj::str("unknown")
     }
 }
-
 fn version_impl(_scope: &Scope) -> Obj {
-    // the reference reads `Environment.OSVersion.VersionString`
+
     obj::str(&format!(
         "{} {}",
         if cfg!(target_os = "windows") { "Microsoft Windows NT" } else { "Unix" },
         "10.0.0"
     ))
 }
-
 fn cpu_count_impl(_scope: &Scope) -> Obj {
     obj::int(std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(1))
 }
-
 fn is_64bit_impl(_scope: &Scope) -> Obj {
     obj::boolean(cfg!(target_pointer_width = "64"))
 }
-
 fn hostname_impl(_scope: &Scope) -> Obj {
     obj::str(&std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_default())
 }
-
 fn username_impl(_scope: &Scope) -> Obj {
     obj::str(&std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_default())
 }
-
 fn args_impl(_scope: &Scope) -> Obj {
     let args: Vec<Obj> = std::env::args().map(|a| obj::str(&a)).collect();
     collections::list(args)
 }
-
 fn sep_impl(_scope: &Scope) -> Obj {
     obj::str(if cfg!(target_os = "windows") { "\\" } else { "/" })
 }
-
 fn pathsep_impl(_scope: &Scope) -> Obj {
     obj::str(if cfg!(target_os = "windows") { ";" } else { ":" })
 }
-
 fn linesep_impl(_scope: &Scope) -> Obj {
     obj::str(crate::error::nl())
 }
-
 fn tick_count_impl(_scope: &Scope) -> Obj {
-    // `Environment.TickCount64` is the uptime of the machine, the Rust runtime has no
-    // portable form of it, so the epoch milliseconds are used (D-051)
+
     obj::int(crate::runtime::clock::unix_millis())
 }
-
 fn exit_impl(scope: &Scope) -> Obj {
     let code = scope::get(scope, "code");
-
     let mut value = 0i32;
     if !obj::is_none(&code) {
         match obj::payload(&code) {
@@ -326,25 +278,20 @@ fn exit_impl(scope: &Scope) -> Obj {
             _ => return obj::err("expected code is int"),
         }
     }
-
     crate::runtime::world::flush_stdout();
     std::process::exit(value);
 }
-
 fn exec_impl(scope: &Scope) -> Obj {
     let command = match get_string(&scope::get(scope, "command")) {
         Ok(command) => command,
         Err(e) => return e,
     };
-
     if command.trim().is_empty() {
         return obj::err("command is empty");
     }
-
     if command.chars().count() > 8192 {
         return obj::err("command too long");
     }
-
     let mut process = if cfg!(target_os = "windows") {
         let mut process = Command::new("cmd.exe");
         process.arg("/c").arg(&command);
@@ -354,14 +301,11 @@ fn exec_impl(scope: &Scope) -> Obj {
         process.arg("-c").arg(&command);
         process
     };
-
     let output = process.output();
-
     match output {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
             if !output.status.success() && stdout.trim().is_empty() {
                 if stderr.trim().is_empty() {
                     return obj::err(format!(
@@ -371,7 +315,6 @@ fn exec_impl(scope: &Scope) -> Obj {
                 }
                 return obj::err(stderr.trim());
             }
-
             obj::str(&stdout)
         }
         Err(e) => obj::err(&e.to_string()),

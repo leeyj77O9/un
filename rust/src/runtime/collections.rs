@@ -1,15 +1,5 @@
-//! collection objects: `List`, `Dict`, `Set`, `Tup`, `Spreads`, `Json`, `Stru`, `Enu`, `TObj`.
-//!
-//! every collection payload is a shared cell. key equality is `Eq()` (the reference
-//! stores `Obj` keys in a `Dictionary`/`HashSet`, whose comparer is `Obj.Equals` -> `Eq`),
-//! and bucketing uses `obj::hash_code`. per D-021 the reference's string hash is
-//! process-randomised, so per D-025 Rust collections keep insertion order: int keys
-//! already iterate in insertion order in the reference, and str-key order is not a
-//! parity target.
-
 use std::cell::RefCell;
 use std::rc::Rc;
-
 use crate::runtime::function;
 use crate::runtime::iters;
 use crate::runtime::obj;
@@ -17,34 +7,23 @@ use crate::runtime::obj::{BinOp, Obj, Payload, UnOp};
 use crate::runtime::prims;
 use crate::runtime::types::Types;
 use crate::runtime::world;
-
-/// the ordered key/value table of a `Dict` (and the backing store of a `Set`).
-/// Entries are kept in insertion order; lookups probe a chained bucket table
-/// keyed on the key's `hash_code`, so lookup is hash-then-`Eq`, exactly like the
-/// reference's `Dictionary<Obj, Obj>`. Removed slots are kept as tombstones and
-/// threaded into a free list, which is reused for later inserts — so the table
-/// never reorders live entries and `remove` does not shift the insertion order.
 pub struct KeyMap {
     entries: Vec<Entry>,
-    /// bucket heads: indices into `entries` (usize::MAX = empty bucket)
+
     buckets: Vec<usize>,
-    /// per-entry next link in the bucket chain (usize::MAX = chain end),
-    /// also threads the free list through removed slots
+
     next: Vec<usize>,
     free_head: usize,
     live: usize,
 }
-
 struct Entry {
     hash: u64,
     key: Obj,
     value: Obj,
     used: bool,
 }
-
 const NONE: usize = usize::MAX;
 const INITIAL_BUCKETS: usize = 8;
-
 impl KeyMap {
     pub fn new(entries: Vec<(Obj, Obj)>) -> Self {
         let mut map = Self {
@@ -54,37 +33,28 @@ impl KeyMap {
             free_head: NONE,
             live: 0,
         };
-
         for (k, v) in entries {
             map.set(&k, &v);
         }
-
         map
     }
-
     fn bucket(&self, hash: u64) -> usize {
         (hash as usize) & (self.buckets.len() - 1)
     }
-
     pub fn len(&self) -> usize {
         self.live
     }
-
     pub fn is_empty(&self) -> bool {
         self.live == 0
     }
-
     fn find(&self, key: &Obj) -> Option<usize> {
         if self.buckets.is_empty() {
             return None;
         }
-
         let h = obj::hash_code(key);
         let mut idx = self.buckets[self.bucket(h)];
         let mut found: Option<usize> = None;
 
-        // same-hash entries chain to each other; duplicates from a single
-        // `dict(...)` literal keep the earliest in insertion order, as before
         while idx != NONE {
             let e = &self.entries[idx];
             if e.used && e.hash == h && obj::key_eq(&e.key, key) {
@@ -95,47 +65,37 @@ impl KeyMap {
             }
             idx = self.next[idx];
         }
-
         found
     }
-
     pub fn contains_key(&self, key: &Obj) -> bool {
         self.find(key).is_some()
     }
-
     pub fn get(&self, key: &Obj) -> Option<Obj> {
         self.find(key).map(|i| self.entries[i].value.clone())
     }
 
-    /// the stored key object, for `Set`/`Dictionary.TryGetValue` semantics
-    /// (returns the stored element, not the queried one)
     pub fn get_key(&self, key: &Obj) -> Option<Obj> {
         self.find(key).map(|i| self.entries[i].key.clone())
     }
 
-    /// iterate live (key, value) pairs in insertion order
     pub fn iter_pairs(&self) -> impl Iterator<Item = (&Obj, &Obj)> {
         self.entries
             .iter()
             .filter(|e| e.used)
             .map(|e| (&e.key, &e.value))
     }
-
     fn link_into_bucket(&mut self, idx: usize) {
         let b = self.bucket(self.entries[idx].hash);
         self.next[idx] = self.buckets[b];
         self.buckets[b] = idx;
     }
-
     fn unlink_from_bucket(&mut self, idx: usize) {
         let b = self.bucket(self.entries[idx].hash);
         let mut cur = self.buckets[b];
-
         if cur == idx {
             self.buckets[b] = self.next[idx];
             return;
         }
-
         while cur != NONE {
             let next = self.next[cur];
             if next == idx {
@@ -145,12 +105,10 @@ impl KeyMap {
             cur = next;
         }
     }
-
     fn insert_new_entry(&mut self, hash: u64, key: Obj, value: Obj) -> usize {
         if self.live >= self.buckets.len() {
             self.grow();
         }
-
         let idx;
         if self.free_head != NONE {
             idx = self.free_head;
@@ -172,34 +130,29 @@ impl KeyMap {
             });
             self.next.push(NONE);
         }
-
         self.link_into_bucket(idx);
         self.live += 1;
         idx
     }
-
     fn grow(&mut self) {
-        // compact away tombstones and double the bucket table
+
         let mut live_entries: Vec<Entry> = Vec::with_capacity(self.live);
         for e in std::mem::take(&mut self.entries) {
             if e.used {
                 live_entries.push(e);
             }
         }
-
         let new_buckets = vec![NONE; self.buckets.len() * 2];
         self.buckets = new_buckets;
         self.next = vec![NONE; live_entries.len()];
         self.entries = live_entries;
         self.free_head = NONE;
         self.live = self.entries.len();
-
         for i in 0..self.entries.len() {
             self.link_into_bucket(i);
         }
     }
 
-    /// `Value[key] = value`
     pub fn set(&mut self, key: &Obj, value: &Obj) {
         match self.find(key) {
             Some(i) => self.entries[i].value = value.clone(),
@@ -209,18 +162,14 @@ impl KeyMap {
         }
     }
 
-    /// inserts the value only if the key is absent; returns true if it was inserted
     pub fn try_insert(&mut self, key: &Obj, value: Obj) -> bool {
         if self.find(key).is_some() {
             return false;
         }
-
         self.insert_new_entry(obj::hash_code(key), key.clone(), value);
         true
     }
 
-    /// `dict.add`: a duplicate key throws inside the native. the inner .NET message is
-    /// reproduced verbatim and the `TargetInvocationException` wrapper is dropped (D-024).
     pub fn add(&mut self, key: &Obj, value: &Obj) -> Obj {
         if self.find(key).is_some() {
             return obj::panic(
@@ -231,11 +180,9 @@ impl KeyMap {
                 ),
             );
         }
-
         self.insert_new_entry(obj::hash_code(key), key.clone(), value.clone());
         obj::none()
     }
-
     pub fn remove(&mut self, key: &Obj) -> bool {
         match self.find(key) {
             Some(i) => {
@@ -249,7 +196,6 @@ impl KeyMap {
             None => false,
         }
     }
-
     pub fn clear(&mut self) {
         self.entries.clear();
         self.next.clear();
@@ -257,20 +203,16 @@ impl KeyMap {
         self.free_head = NONE;
         self.live = 0;
     }
-
     pub fn keys(&self) -> Vec<Obj> {
         self.iter_pairs().map(|(k, _)| k.clone()).collect()
     }
-
     pub fn values(&self) -> Vec<Obj> {
         self.iter_pairs().map(|(_, v)| v.clone()).collect()
     }
-
     pub fn contains_value(&self, value: &Obj) -> bool {
         self.iter_pairs().any(|(_, v)| obj::key_eq(v, value))
     }
 
-    /// `Dict.Overlap(dict)`: every entry of the argument must be in self with an equal value.
     pub fn overlap(&self, other: &KeyMap) -> bool {
         for (k, v) in other.iter_pairs() {
             match self.get(k) {
@@ -285,38 +227,24 @@ impl KeyMap {
         true
     }
 }
-
-// ---------------------------------------------------------------------------
-// constructors
-// ---------------------------------------------------------------------------
-
 pub fn list(values: Vec<Obj>) -> Obj {
     obj::obj_new("list", Payload::List(Rc::new(RefCell::new(values))))
 }
-
 pub fn dict(entries: Vec<(Obj, Obj)>) -> Obj {
     obj::obj_new("dict", Payload::Dict(Rc::new(RefCell::new(KeyMap::new(entries)))))
 }
-
-/// `new Set([.. values])`: a `HashSet` deduplicates on insertion.
 pub fn set(items: Vec<Obj>) -> Obj {
     let mut map = KeyMap::new(Vec::new());
     for item in items {
         map.try_insert(&item, obj::none());
     }
-
     obj::obj_new("set", Payload::Set(Rc::new(RefCell::new(map))))
 }
-
-/// `Tup(values, names)`: non-empty names are mirrored into `Members`. the reference's
-/// name array always has the length of the value array, so the missing names are
-/// empty strings here too.
 pub fn tup(values: Vec<Obj>, names: Vec<String>) -> Obj {
     let mut names = names;
     while names.len() < values.len() {
         names.push(String::new());
     }
-
     let o = obj::obj_new("tuple", Payload::Tup(Rc::new(values), Rc::new(names)));
     let pairs: Vec<(String, Obj)> = {
         let d = o.borrow();
@@ -336,61 +264,46 @@ pub fn tup(values: Vec<Obj>, names: Vec<String>) -> Obj {
     }
     o
 }
-
 pub fn spread(values: Vec<Obj>) -> Obj {
     obj::obj_new("spread", Payload::Spread(Rc::new(values)))
 }
-
 pub fn json(inner: Obj) -> Obj {
     obj::obj_new("json", Payload::Json(inner))
 }
-
 pub fn stru(type_name: &str, names: Vec<String>) -> Obj {
     obj::obj_new(type_name, Payload::Stru(Rc::new(names)))
 }
-
 pub fn enu(type_name: &str, n: i64) -> Obj {
     obj::obj_new(type_name, Payload::Enu(n))
 }
-
 pub fn tobj(types: Types) -> Obj {
     obj::obj_new("type", Payload::TObj(types))
 }
-
 fn list_of(o: &Obj) -> Vec<Obj> {
     match obj::payload(o) {
         Payload::List(v) => v.borrow().clone(),
         _ => Vec::new(),
     }
 }
-
 fn tup_of(o: &Obj) -> (Vec<Obj>, Vec<String>) {
     match obj::payload(o) {
         Payload::Tup(v, n) => (v.to_vec(), n.to_vec()),
         _ => (Vec::new(), Vec::new()),
     }
 }
-
 fn out_of_range(index: i64, count: i64) -> bool {
     index < 0 || index >= count
 }
-
-/// `List.Overlap(self, list)`: every element of the argument appears in self.
 fn overlap(needle: &[Obj], haystack: &[Obj]) -> bool {
     needle
         .iter()
         .all(|n| haystack.iter().any(|h| obj::key_eq(h, n)))
 }
-
-// ---------------------------------------------------------------------------
-// List
-// ---------------------------------------------------------------------------
-
 pub fn list_get_item(v: &Rc<RefCell<Vec<Obj>>>, key: &Obj) -> Obj {
     match obj::payload(key) {
         Payload::Int(i) => {
             let count = v.borrow().len() as i64;
-            // the reference casts the long index through `(int)`, so a wide index wraps
+
             let idx = i as i32 as i64;
             if out_of_range(idx, count) {
                 let wrapped = (i + count) as i32 as i64;
@@ -404,7 +317,6 @@ pub fn list_get_item(v: &Rc<RefCell<Vec<Obj>>>, key: &Obj) -> Obj {
         _ => obj::err("invalid index type"),
     }
 }
-
 pub fn list_set_item(v: &Rc<RefCell<Vec<Obj>>>, key: &Obj, value: &Obj) -> Obj {
     match obj::payload(key) {
         Payload::Int(i) => {
@@ -424,18 +336,11 @@ pub fn list_set_item(v: &Rc<RefCell<Vec<Obj>>>, key: &Obj, value: &Obj) -> Obj {
         _ => obj::err("invalid index type"),
     }
 }
-
-/// `List.Insert` (`List.cs:277`) — the shape `BindPattern`'s slice branch uses.
-/// The tail shift runs from `Count-1` down to `idx`, the stored element is a copy
-/// (`obj.Copy()`), so the caller's object is not aliased into the list.
-/// An index outside `0..=Count` is `Err` here; the reference lets the .NET array indexer
-/// throw `IndexOutOfRange` instead, which is documented as a divergence in phase 14.
 pub fn list_insert(v: &Rc<RefCell<Vec<Obj>>>, value: &Obj, index: &Obj) -> Result<(), Obj> {
     let idx = match obj::payload(index) {
         Payload::Int(i) => i as i32 as i64,
         _ => return Err(obj::err("invalid arguments: index")),
     };
-
     let count = v.borrow().len() as i64;
     if count == 0 {
         v.borrow_mut().push(value.clone());
@@ -444,45 +349,33 @@ pub fn list_insert(v: &Rc<RefCell<Vec<Obj>>>, value: &Obj, index: &Obj) -> Resul
     if idx < 0 || idx > count {
         return Err(obj::err("list index out of range"));
     }
-
     let mut data = v.borrow_mut();
-    // `List` has spare capacity (`Resize`), so grow before shifting; the reference shifts
-    // from `Count-1` down to `idx` and writes the copy at `idx`.
+
     data.push(obj::none());
     for i in (idx..count).rev() {
         let moved = data[i as usize].clone();
         data[i as usize + 1] = moved;
     }
     data[idx as usize] = obj::copy_obj(value);
-
     Ok(())
 }
-
-/// `List.RemoveAt` (`List.cs:358`) — out of range is `Bool.False`, otherwise the tail
-/// shifts left and the count drops. The reference returns `self`, which `BindPattern`
-/// ignores, so the result is dropped here.
 pub fn list_remove_at(v: &Rc<RefCell<Vec<Obj>>>, index: &Obj) -> Result<(), Obj> {
     let idx = match obj::payload(index) {
         Payload::Int(i) => i as i32 as i64,
         _ => return Err(obj::err("invalid arguments: index")),
     };
-
     let mut data = v.borrow_mut();
     let count = data.len() as i64;
     if idx < 0 || idx >= count {
         return Ok(());
     }
-
     for i in idx..count - 1 {
         let moved = data[i as usize + 1].clone();
         data[i as usize] = moved;
     }
     data.pop();
-
     Ok(())
 }
-
-/// `List.Slice`: the `step == 1` fast path is an `Array.Copy`, so it never calls `Add`.
 pub fn list_slice(
     v: &Rc<RefCell<Vec<Obj>>>,
     start: &Option<Obj>,
@@ -492,7 +385,6 @@ pub fn list_slice(
     let mine = v.borrow().clone();
     let len = mine.len() as i64;
     let (mut a, mut b, mut st) = (0usize, mine.len(), 1i64);
-
     if let Some(start) = start {
         let i = match obj::payload(start) {
             Payload::Int(i) => i,
@@ -525,7 +417,6 @@ pub fn list_slice(
             return obj::err("slice step cannot be zero");
         }
     }
-
     if st == 1 {
         let count = b as i64 - a as i64;
         if count <= 0 {
@@ -534,10 +425,6 @@ pub fn list_slice(
         return list(mine[a..a + count as usize].to_vec());
     }
 
-    // `new List()` has capacity 0, so every `Add` in the step loop answers `Err` and
-    // `Slice` drops it: any step != 1 gives an empty list. the `this[i]` evaluation is
-    // kept, because a negative step with `s == len` throws
-    // `IndexOutOfRangeException` out of the host.
     if st > 0 {
         let mut i = a as i64;
         while i < b as i64 {
@@ -549,8 +436,7 @@ pub fn list_slice(
     } else {
         let mut i = a as i64;
         while i > b as i64 {
-            // the reference clamps `s` to `len`, so `s == len` with a negative step
-            // indexes past the end and throws inside the host
+
             if i >= len {
                 return index_out_of_range();
             }
@@ -559,8 +445,6 @@ pub fn list_slice(
     }
     list(Vec::new())
 }
-
-/// `List.In`: the argument must be a list or a tuple.
 pub fn list_in(o: &Obj, other: &Obj) -> Obj {
     let ot = obj::type_name(other);
     let mine = list_of(o);
@@ -573,7 +457,6 @@ pub fn list_in(o: &Obj, other: &Obj) -> Obj {
         )),
     }
 }
-
 pub fn list_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     if op == BinOp::Eq {
         return element_eq(&list_of(o), other, |p| match p {
@@ -583,8 +466,6 @@ pub fn list_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) ->
     }
     obj::base_binop(o, op, other, t, ot)
 }
-
-/// the shared `Eq` loop of `List` and `Tup`: compare lengths, then `NEq` each pair.
 fn element_eq(
     mine: &[Obj],
     other: &Obj,
@@ -611,7 +492,6 @@ fn element_eq(
     }
     obj::boolean(true)
 }
-
 pub fn list_unop(v: &Rc<RefCell<Vec<Obj>>>, op: UnOp, t: &Rc<str>) -> Obj {
     let items = v.borrow().len();
     match op {
@@ -620,13 +500,11 @@ pub fn list_unop(v: &Rc<RefCell<Vec<Obj>>>, op: UnOp, t: &Rc<str>) -> Obj {
         UnOp::ToList => list(v.borrow().iter().map(|e| obj::copy_obj(e)).collect()),
         UnOp::ToTuple => tup(v.borrow().clone(), vec![String::new(); items]),
         UnOp::Spread => spread(v.borrow().clone()),
-        // `List.Iter() => new(this)`: the enumerator walks the same cell, so items
-        // appended during iteration are seen.
+
         UnOp::Iter => iters::seq_live(v),
         _ => obj::err(obj::UnOp::message(&op, t)),
     }
 }
-
 pub fn list_to_str(v: &Rc<RefCell<Vec<Obj>>>) -> String {
     let elements = v.borrow().clone();
     let mut out = String::from("[");
@@ -646,12 +524,9 @@ pub fn list_to_str(v: &Rc<RefCell<Vec<Obj>>>) -> String {
     out.push(']');
     out
 }
-
 pub fn list_clone(v: &Rc<RefCell<Vec<Obj>>>) -> Obj {
     list(v.borrow().iter().map(|e| obj::clone_obj(e)).collect())
 }
-
-/// `List.Init`: 0 args keeps the object, 1 arg converts it, more become the args list.
 pub fn list_init(o: &Obj, args: &[Obj]) -> Obj {
     match args.len() {
         0 => o.clone(),
@@ -665,11 +540,6 @@ pub fn list_init(o: &Obj, args: &[Obj]) -> Obj {
         _ => list(args.to_vec()),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Dict
-// ---------------------------------------------------------------------------
-
 pub fn dict_get_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
     match km.borrow().get(key) {
         Some(v) => v,
@@ -679,12 +549,10 @@ pub fn dict_get_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
         )),
     }
 }
-
 pub fn dict_set_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Obj {
     km.borrow_mut().set(key, value);
     value.clone()
 }
-
 pub fn dict_in(o: &Obj, other: &Obj) -> Obj {
     match obj::payload(o) {
         Payload::Dict(km) => {
@@ -697,7 +565,6 @@ pub fn dict_in(o: &Obj, other: &Obj) -> Obj {
         _ => obj::boolean(false),
     }
 }
-
 pub fn dict_to_str(km: &Rc<RefCell<KeyMap>>) -> String {
     let snapshot: Vec<String> = km
         .borrow()
@@ -706,14 +573,12 @@ pub fn dict_to_str(km: &Rc<RefCell<KeyMap>>) -> String {
         .collect();
     format!("{{{}}}", snapshot.join(", "))
 }
-
 fn pair(key: &Obj, value: &Obj) -> Obj {
     tup(
         vec![key.clone(), value.clone()],
         vec!["key".to_owned(), "value".to_owned()],
     )
 }
-
 pub fn dict_unop(km: &Rc<RefCell<KeyMap>>, op: UnOp, t: &Rc<str>) -> Obj {
     let snapshot: Vec<(Obj, Obj)> = km
         .borrow()
@@ -725,12 +590,11 @@ pub fn dict_unop(km: &Rc<RefCell<KeyMap>>, op: UnOp, t: &Rc<str>) -> Obj {
         UnOp::ToList => list(snapshot.iter().map(|(k, v)| pair(k, v)).collect()),
         UnOp::ToTuple => tup(snapshot.iter().map(|(k, v)| pair(k, v)).collect(), Vec::new()),
         UnOp::Spread => spread(snapshot.iter().map(|(k, v)| pair(k, v)).collect()),
-        // `Dict.Iter() => new([.. key/value pairs])`, materialized at construction
+
         UnOp::Iter => iters::seq(snapshot.iter().map(|(k, v)| pair(k, v)).collect()),
         _ => obj::err(UnOp::message(&op, t)),
     }
 }
-
 pub fn dict_clone(km: &Rc<RefCell<KeyMap>>) -> Obj {
     obj::obj_new(
         "dict",
@@ -739,13 +603,11 @@ pub fn dict_clone(km: &Rc<RefCell<KeyMap>>) -> Obj {
         )))),
     )
 }
-
 pub fn dict_init(o: &Obj, args: &[Obj]) -> Obj {
     match args.len() {
         0 => dict(Vec::new()),
         1 => {
-            // `Tup` entries keep the `Name` order; `Stru` has no `ToTuple`, so the
-            // reference's `Init(new([st.ToTuple()]))` path ends in the same error.
+
             match obj::payload(&args[0]) {
                 Payload::Tup(vals, names) => {
                     let mut entries: Vec<(Obj, Obj)> = Vec::new();
@@ -764,19 +626,12 @@ pub fn dict_init(o: &Obj, args: &[Obj]) -> Obj {
         _ => obj::err("invaild 'dict' initialize"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Set
-// ---------------------------------------------------------------------------
-
-/// `HashSet.TryGetValue` returns the stored element, not the queried key.
 pub fn set_get_item(s: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
     match s.borrow().get_key(key) {
         Some(item) => item,
         None => obj::err(format!("key {} not found in set", obj::display(key))),
     }
 }
-
 pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     let mine = match obj::payload(o) {
         Payload::Set(s) => s.clone(),
@@ -804,57 +659,43 @@ pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> 
         _ => obj::base_binop(o, op, other, t, ot),
     }
 }
-
 fn union(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
     let mut map = KeyMap::new(Vec::new());
     for k in a.keys() {
         map.try_insert(&k, obj::none());
     }
-
     for k in b.keys() {
         map.try_insert(&k, obj::none());
     }
-
     map.keys()
 }
-
 fn except(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
     a.keys().into_iter().filter(|k| !b.contains_key(k)).collect()
 }
-
 fn intersect(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
-    // both sides are already deduplicated sets, so a single pass suffices
+
     a.keys().into_iter().filter(|k| b.contains_key(k)).collect()
 }
-
 pub fn set_to_str(s: &Rc<RefCell<KeyMap>>) -> String {
     let parts: Vec<String> = s.borrow().keys().iter().map(|i| obj::display(i)).collect();
     format!("{{{}}}", parts.join(", "))
 }
-
 pub fn set_unop(s: &Rc<RefCell<KeyMap>>, op: UnOp, t: &Rc<str>) -> Obj {
-    // `Set` overrides `Len`, `GetItem`, `Copy`, `Clone`, `ToStr` and `Spread` only
+
     match op {
         UnOp::Len => obj::int(s.borrow().len() as i64),
         UnOp::Spread => spread(s.borrow().keys()),
         _ => obj::err(UnOp::message(&op, t)),
     }
 }
-
 pub fn set_init(o: &Obj, args: &[Obj]) -> Obj {
-    // `new Set([.. args.ToList()])`
+
     let _ = o;
     set(args.to_vec())
 }
-
 pub fn set_clone(s: &Rc<RefCell<KeyMap>>) -> Obj {
     set(s.borrow().keys())
 }
-
-// ---------------------------------------------------------------------------
-// Tup
-// ---------------------------------------------------------------------------
-
 pub fn tup_get_item(vals: &Rc<Vec<Obj>>, _names: &Rc<Vec<String>>, o: &Obj, key: &Obj) -> Obj {
     match obj::payload(key) {
         Payload::Int(i) => {
@@ -876,8 +717,6 @@ pub fn tup_get_item(vals: &Rc<Vec<Obj>>, _names: &Rc<Vec<String>>, o: &Obj, key:
         _ => obj::err("invalid index type"),
     }
 }
-
-/// `Tup.Slice` keeps the parallel `Name` entries.
 pub fn tup_slice(
     vals: &Rc<Vec<Obj>>,
     names: &Rc<Vec<String>>,
@@ -887,7 +726,6 @@ pub fn tup_slice(
 ) -> Obj {
     let len = vals.len() as i64;
     let (mut a, mut b, mut st) = (0usize, vals.len(), 1i64);
-
     if let Some(start) = start {
         let i = match obj::payload(start) {
             Payload::Int(i) => i,
@@ -920,7 +758,6 @@ pub fn tup_slice(
             return obj::err("slice step cannot be zero");
         }
     }
-
     let mut new_values: Vec<Obj> = Vec::new();
     let mut new_names: Vec<String> = Vec::new();
     if st > 0 {
@@ -946,17 +783,12 @@ pub fn tup_slice(
     }
     tup(new_values, new_names)
 }
-
-/// `Tup.Slice` / `List.Slice` index the backing array directly, so a clamped
-/// `start == len` with a negative step throws inside the host (D-024)
 fn index_out_of_range() -> Obj {
     obj::panic(
         "System.IndexOutOfRangeException",
         "Index was outside the bounds of the array.",
     )
 }
-
-/// `Tup.In`: `Eq` each element; a non-boolean result is the error.
 pub fn tup_in(vals: &Rc<Vec<Obj>>, other: &Obj) -> Obj {
     for value in vals.iter() {
         let eq = obj::binop(value, BinOp::Eq, other);
@@ -972,7 +804,6 @@ pub fn tup_in(vals: &Rc<Vec<Obj>>, other: &Obj) -> Obj {
     }
     obj::boolean(false)
 }
-
 pub fn tup_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     if op == BinOp::Eq {
         let (mine, _) = tup_of(o);
@@ -983,12 +814,10 @@ pub fn tup_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> 
     }
     obj::base_binop(o, op, other, t, ot)
 }
-
 pub fn tup_to_str(vals: &Rc<Vec<Obj>>) -> String {
     let parts: Vec<String> = vals.iter().map(|v| obj::display(v)).collect();
     format!("({})", parts.join(", "))
 }
-
 pub fn tup_unop(vals: &Rc<Vec<Obj>>, names: &Rc<Vec<String>>, op: UnOp, t: &Rc<str>) -> Obj {
     match op {
         UnOp::Len => obj::int(vals.len() as i64),
@@ -996,13 +825,11 @@ pub fn tup_unop(vals: &Rc<Vec<Obj>>, names: &Rc<Vec<String>>, op: UnOp, t: &Rc<s
         UnOp::ToList => list(vals.to_vec()),
         UnOp::ToTuple => tup(vals.to_vec(), names.to_vec()),
         UnOp::Spread => spread(vals.to_vec()),
-        // `Tup.Iter() => new(this)`: walks the tuple's values
+
         UnOp::Iter => iters::seq(vals.to_vec()),
         _ => obj::err(UnOp::message(&op, t)),
     }
 }
-
-/// `Tup.Init`: 0 args keeps the object, 1 arg converts it, more become the args tuple.
 pub fn tup_init(o: &Obj, args: &[Obj]) -> Obj {
     match args.len() {
         0 => o.clone(),
@@ -1013,49 +840,35 @@ pub fn tup_init(o: &Obj, args: &[Obj]) -> Obj {
             }
             o.clone()
         }
-        // `args` is the argument tuple, whose names are all empty
+
         _ => tup(args.to_vec(), vec![String::new(); args.len()]),
     }
 }
-
 pub fn tup_copy(vals: &Rc<Vec<Obj>>, names: &Rc<Vec<String>>) -> Obj {
     tup(vals.iter().map(|e| obj::copy_obj(e)).collect(), names.to_vec())
 }
-
 pub fn tup_clone(vals: &Rc<Vec<Obj>>, names: &Rc<Vec<String>>) -> Obj {
     tup(
         vals.iter().map(|e| obj::clone_obj(e)).collect(),
         names.to_vec(),
     )
 }
-
 pub fn is_single(vals: &Rc<Vec<Obj>>, names: &Rc<Vec<String>>) -> bool {
     vals.len() == 1 && (names.is_empty() || names[0].is_empty())
 }
-
-// ---------------------------------------------------------------------------
-// Spread
-// ---------------------------------------------------------------------------
-
 pub fn spread_unop(o: &Obj, op: UnOp, t: &Rc<str>) -> Obj {
-    // `Spreads.Spread() => this`
+
     if op == UnOp::Spread {
         return o.clone();
     }
     obj::err(obj::UnOp::message(&op, t))
 }
-
-// ---------------------------------------------------------------------------
-// Json
-// ---------------------------------------------------------------------------
-
 pub fn json_unop(inner: &Obj, op: UnOp, t: &Rc<str>) -> Obj {
     match op {
         UnOp::Len => obj::int(json_len(inner)),
         _ => obj::err(UnOp::message(&op, t)),
     }
 }
-
 pub fn json_len(inner: &Obj) -> i64 {
     match obj::payload(inner) {
         Payload::Dict(km) => km.borrow().len() as i64,
@@ -1063,15 +876,12 @@ pub fn json_len(inner: &Obj) -> i64 {
         _ => 1,
     }
 }
-
 pub fn json_to_str(inner: &Obj) -> String {
     stringify(inner, 0)
 }
-
 pub fn json_clone(inner: &Obj) -> Obj {
     json(obj::clone_obj(inner))
 }
-
 pub fn json_init(o: &Obj, args: &[Obj]) -> Obj {
     let _ = o;
     match args.len() {
@@ -1087,7 +897,6 @@ pub fn json_init(o: &Obj, args: &[Obj]) -> Obj {
         n => obj::err(format!("invalid json: expected 1 argument, got {n}")),
     }
 }
-
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -1104,8 +913,6 @@ pub fn escape(s: &str) -> String {
     }
     out
 }
-
-/// `Json.Stringfy`: dicts are indented 3 spaces per depth, lists stay compact.
 pub fn stringify(o: &Obj, depth: usize) -> String {
     if let Payload::Dict(km) = obj::payload(o) {
         let snapshot: Vec<(Obj, Obj)> = km
@@ -1131,7 +938,6 @@ pub fn stringify(o: &Obj, depth: usize) -> String {
         buf.push('}');
         return buf;
     }
-
     match obj::payload(o) {
         Payload::Plain if obj::is_none(o) => "null".to_owned(),
         Payload::Json(inner) => stringify(&inner, depth),
@@ -1149,16 +955,6 @@ pub fn stringify(o: &Obj, depth: usize) -> String {
         _ => format!("\"{}\"", escape(&obj::display(o))),
     }
 }
-
-// ---------------------------------------------------------------------------
-// JSON parsing (`json(str)`)
-// ---------------------------------------------------------------------------
-
-/// `Json.ToJson` runs `JsonDocument.Parse`, so a malformed document throws inside the
-/// host. the inner `System.Text.Json.JsonException` name is kept; the reference message
-/// text (which encodes byte offsets) is not reproduced, recorded as a divergence.
-/// `JsonDocument.Parse` + `Convert`: the raw document value, without the `Json`
-/// wrapper. `Json.Init` adds the wrapper, so its display is `Stringfy`.
 pub fn parse_json_value(text: &str) -> Obj {
     let mut p = JsonParser { s: text, i: 0 };
     p.skip_ws();
@@ -1172,10 +968,6 @@ pub fn parse_json_value(text: &str) -> Obj {
     }
     value
 }
-
-/// `Json.Init` on a string is `new Json(ToJson(text))`, so the parsed document is
-/// always wrapped and its display is `Stringfy`, not the inner object's `ToStr`.
-/// a parse failure is a host exception, and the wrapper is not added to it.
 pub fn json_parse(text: &str) -> Obj {
     let value = parse_json_value(text);
     if obj::is_panic(&value) {
@@ -1183,24 +975,20 @@ pub fn json_parse(text: &str) -> Obj {
     }
     json(value)
 }
-
 fn json_exception(message: &str) -> Obj {
     obj::panic(
         "System.Text.Json.JsonException",
         format!("The input does not contain any JSON tokens. {message}"),
     )
 }
-
 struct JsonParser<'a> {
     s: &'a str,
     i: usize,
 }
-
 impl JsonParser<'_> {
     fn byte(&self) -> Option<u8> {
         self.s.as_bytes().get(self.i).copied()
     }
-
     fn skip_ws(&mut self) {
         loop {
             match self.byte() {
@@ -1215,7 +1003,6 @@ impl JsonParser<'_> {
         }
     }
 
-    /// `JsonDocument.Parse` skips comments; `//` and `/* */` are handled here.
     fn consume_comment(&mut self) -> bool {
         let bytes = self.s.as_bytes();
         if bytes.get(self.i + 1) == Some(&b'/') {
@@ -1239,7 +1026,6 @@ impl JsonParser<'_> {
         }
         false
     }
-
     fn value(&mut self) -> Result<Obj, Obj> {
         match self.byte() {
             Some(b'{') => self.object(),
@@ -1252,7 +1038,6 @@ impl JsonParser<'_> {
             _ => Err(json_exception("expected a JSON value")),
         }
     }
-
     fn word(&mut self, word: &str, value: Obj) -> Result<Obj, Obj> {
         if self.s[self.i..].starts_with(word) {
             self.i += word.len();
@@ -1260,7 +1045,6 @@ impl JsonParser<'_> {
         }
         Err(json_exception("expected a JSON value"))
     }
-
     fn object(&mut self) -> Result<Obj, Obj> {
         self.i += 1;
         let mut entries: Vec<(Obj, Obj)> = Vec::new();
@@ -1294,7 +1078,6 @@ impl JsonParser<'_> {
             }
         }
     }
-
     fn array(&mut self) -> Result<Obj, Obj> {
         self.i += 1;
         let mut items: Vec<Obj> = Vec::new();
@@ -1317,7 +1100,6 @@ impl JsonParser<'_> {
             }
         }
     }
-
     fn string(&mut self) -> Result<String, Obj> {
         self.i += 1;
         let mut out = String::new();
@@ -1344,8 +1126,7 @@ impl JsonParser<'_> {
                             let code = hex
                                 .and_then(|h| u32::from_str_radix(h, 16).ok())
                                 .ok_or_else(|| json_exception("invalid unicode escape"))?;
-                            // `self.i` is on the `u`, so advance to the last hex digit and
-                            // let the shared `self.i += 1` below land on the next character
+
                             self.i += 4;
                             out.push(
                                 char::from_u32(code)
@@ -1367,7 +1148,6 @@ impl JsonParser<'_> {
             }
         }
     }
-
     fn number(&mut self) -> Result<Obj, Obj> {
         let bytes = self.s.as_bytes();
         let start = self.i;
@@ -1386,7 +1166,7 @@ impl JsonParser<'_> {
             }
         }
         let token = &self.s[start..self.i];
-        // `TryGetInt64` first: a token without a '.' is an int when it fits.
+
         if !token.contains('.') {
             if let Ok(v) = token.parse::<i64>() {
                 return Ok(obj::int(v));
@@ -1394,7 +1174,7 @@ impl JsonParser<'_> {
         }
         match token.parse::<f64>() {
             Ok(v) => {
-                // `TryGetInt64` accepts exponent notation, so `1e2` is int 100.
+
                 if !token.contains('.') && v.fract() == 0.0 && v.abs() < 9.2233720368547758e18 {
                     return Ok(obj::int(v as i64));
                 }
@@ -1404,19 +1184,12 @@ impl JsonParser<'_> {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Stru
-// ---------------------------------------------------------------------------
-
 pub fn stru_names(o: &Obj) -> Vec<String> {
     match obj::payload(o) {
         Payload::Stru(names) => names.to_vec(),
         _ => Vec::new(),
     }
 }
-
-/// `Stru.GetAllNames`: base-stru names first (recursive), then the instance's own names.
 pub fn all_names(o: &Obj) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
     let mut seen: Vec<Obj> = Vec::new();
@@ -1424,7 +1197,6 @@ pub fn all_names(o: &Obj) -> Vec<String> {
     result.extend(stru_names(o));
     result
 }
-
 fn collect(cur: &Obj, result: &mut Vec<String>, seen: &mut Vec<Obj>) {
     for base in obj::base_chain(cur) {
         if !matches!(obj::payload(&base), Payload::Stru(_)) {
@@ -1438,11 +1210,9 @@ fn collect(cur: &Obj, result: &mut Vec<String>, seen: &mut Vec<Obj>) {
         result.extend(stru_names(&base));
     }
 }
-
 pub fn stru_len(o: &Obj) -> i64 {
     all_names(o).len() as i64
 }
-
 pub fn stru_unop(o: &Obj, op: UnOp, t: &Rc<str>) -> Obj {
     match op {
         UnOp::Len => obj::int(stru_len(o)),
@@ -1456,8 +1226,6 @@ pub fn stru_unop(o: &Obj, op: UnOp, t: &Rc<str>) -> Obj {
         _ => obj::err(UnOp::message(&op, t)),
     }
 }
-
-/// `Stru.Init`: property members are written through the property, others directly.
 pub fn stru_init(o: &Obj, args: &[Obj]) -> Obj {
     let names = all_names(o);
     if args.len() != names.len() {
@@ -1466,8 +1234,7 @@ pub fn stru_init(o: &Obj, args: &[Obj]) -> Obj {
     for (i, name) in names.iter().enumerate() {
         if let Some(m) = obj::member(o, name) {
             if obj::is_property(&m) {
-                // `property.Write(this, args[i])` — the header initializer stores the
-                // backing value directly, it does not go through the setter
+
                 function::prop_write(&m, o, &args[i]);
                 continue;
             }
@@ -1476,13 +1243,12 @@ pub fn stru_init(o: &Obj, args: &[Obj]) -> Obj {
     }
     o.clone()
 }
-
 pub fn stru_to_str(o: &Obj) -> Obj {
     let mut parts: Vec<String> = Vec::new();
     for name in stru_names(o) {
         match obj::member(o, &name) {
             Some(v) => parts.push(format!("{}: {}", name, obj::display(&v))),
-            // `Members[name]` on a missing key throws inside the host (D-024)
+
             None => return obj::key_not_found(&name),
         }
     }
@@ -1492,7 +1258,6 @@ pub fn stru_to_str(o: &Obj) -> Obj {
         parts.join(", ")
     ))
 }
-
 pub fn stru_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     match op {
         BinOp::Add => match obj::payload(other) {
@@ -1503,7 +1268,6 @@ pub fn stru_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) ->
         _ => obj::base_binop(o, op, other, t, ot),
     }
 }
-
 pub fn stru_eq(o: &Obj, other: &Obj) -> Obj {
     if obj::type_name(o) != obj::type_name(other) {
         return obj::boolean(false);
@@ -1530,9 +1294,6 @@ pub fn stru_eq(o: &Obj, other: &Obj) -> Obj {
     }
     obj::boolean(true)
 }
-
-/// `Stru.Copy` / `Stru.Clone` build a new `Stru` with the same names and an empty
-/// `Members`; `Annotations`, `Super`, `Parents` carry over and `Self` is dropped.
 pub fn stru_copy(o: &Obj) -> Obj {
     let (type_name, names, annotations, parents, super_, members) = {
         let d = o.borrow();
@@ -1551,24 +1312,17 @@ pub fn stru_copy(o: &Obj) -> Obj {
         d.annotations = annotations;
         d.parents = parents;
         d.super_ = super_;
-        // `Stru.Clone` copies the member table
+
         d.members = members;
     }
     created
 }
-
 pub fn stru_clone(o: &Obj) -> Obj {
     stru_copy(o)
 }
-
-// ---------------------------------------------------------------------------
-// Enu
-// ---------------------------------------------------------------------------
-
 pub fn enu_to_str(o: &Obj, n: i64) -> Obj {
     obj::str(&format!("{}:{}", obj::type_name(o), n))
 }
-
 pub fn enu_binop(o: &Obj, n: i64, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     match op {
         BinOp::Eq => match obj::payload(other) {
@@ -1584,35 +1338,27 @@ pub fn enu_binop(o: &Obj, n: i64, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<s
         _ => obj::base_binop(o, op, other, t, ot),
     }
 }
-
 pub fn enu_unop(n: i64, op: UnOp, t: &Rc<str>) -> Obj {
     match op {
         UnOp::ToInt => obj::int(n),
         _ => obj::err(UnOp::message(&op, t)),
     }
 }
-
 pub fn enu_clone(o: &Obj, n: i64) -> Obj {
     enu(&obj::type_name(o), n)
 }
-
 pub fn enu_init(o: &Obj, _n: i64, args: &[Obj]) -> Obj {
     let t = obj::type_name(o);
     match args.len() {
         0 => enu(&t, 0),
         1 => match obj::payload(&args[0]) {
-            // `Enu.Init` casts the long index through `(int)`
+
             Payload::Int(i) => enu(&t, i as i32 as i64),
             _ => obj::err(format!("'{t}' takes at most 1 argument, 1 given")),
         },
         count => obj::err(format!("'{t}' takes at most 1 argument, {count} given")),
     }
 }
-
-// ---------------------------------------------------------------------------
-// TObj
-// ---------------------------------------------------------------------------
-
 pub fn tobj_binop(t: &Types, op: BinOp, other: &Obj, tname: &Rc<str>, ot: &Rc<str>) -> Obj {
     match op {
         BinOp::BOr => match obj::payload(other) {
@@ -1623,15 +1369,12 @@ pub fn tobj_binop(t: &Types, op: BinOp, other: &Obj, tname: &Rc<str>, ot: &Rc<st
         _ => obj::base_binop_of(op, tname, ot),
     }
 }
-
-/// `TObj.Is`: `Value == o.Value` for a type, `Matches(obj)` otherwise.
 pub fn tobj_is(t: &Types, other: &Obj) -> Obj {
     match obj::payload(other) {
         Payload::TObj(t2) => obj::boolean(t == &t2),
         _ => obj::boolean(obj::types_of(other).contains(t) || *obj::type_name(other) == t.display()),
     }
 }
-
 pub fn tobj_in(t: &Types, other: &Obj) -> Obj {
     let target = match obj::payload(other) {
         Payload::TObj(t2) => t2,
@@ -1639,12 +1382,9 @@ pub fn tobj_in(t: &Types, other: &Obj) -> Obj {
     };
     obj::boolean(t == &target || t.contains(&target))
 }
-
 pub fn tobj_to_str(t: &Types) -> Obj {
     obj::str(&format!("<type: {}>", t.display()))
 }
-
-/// `TObj.Call` = `Global.GetClass(this).Clone().Init(args)`
 pub fn tobj_call(t: &Types, args: &[Obj]) -> Obj {
     let name = match t.name() {
         Some(n) => n,
@@ -1657,11 +1397,6 @@ pub fn tobj_call(t: &Types, args: &[Obj]) -> Obj {
         None => obj::err(format!("class '{name}' not found")),
     }
 }
-
-// ---------------------------------------------------------------------------
-// `Obj.ToString()`: the CLR form used inside host exception messages (D-024)
-// ---------------------------------------------------------------------------
-
 pub fn clr_to_string(o: &Obj) -> String {
     match obj::payload(o) {
         Payload::Str(s) => s.to_string(),
@@ -1672,7 +1407,6 @@ pub fn clr_to_string(o: &Obj) -> String {
         _ => clr_type_name(&obj::type_name(o)),
     }
 }
-
 fn clr_type_name(t: &str) -> String {
     match t {
         "obj" | "none" | "null" => "Un.Object.Obj".to_owned(),
@@ -1697,6 +1431,5 @@ fn clr_type_name(t: &str) -> String {
         _ => format!("Un.{t}"),
     }
 }
-
 #[cfg(test)]
 mod tests;

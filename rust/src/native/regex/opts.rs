@@ -1,5 +1,3 @@
-// Internal option bits, node kinds and opcodes, numbered exactly as in the .NET engine.
-
 pub const OPT_NONE: i32 = 0;
 pub const OPT_ICASE: i32 = 1;
 pub const OPT_EXPLICIT: i32 = 4;
@@ -8,8 +6,6 @@ pub const OPT_ECMASPEC: i32 = 16;
 pub const OPT_MULTILINE: i32 = 0x100;
 pub const OPT_SINGLELINE: i32 = 0x200;
 pub const OPT_RTL: i32 = 0x40;
-
-// node kinds == the same numbers as the opcode of the same name (.NET mirrors them)
 pub const K_ONEREP: i32 = 0;
 pub const K_NOTONEREP: i32 = 1;
 pub const K_SETREP: i32 = 2;
@@ -51,17 +47,13 @@ pub const K_ONELLOOP_ATOMIC: i32 = 43;
 pub const K_NOTONELLOOP_ATOMIC: i32 = 44;
 pub const K_SETLOOP_ATOMIC: i32 = 45;
 pub const K_UPDATEBUMPALONG: i32 = 46;
-
 pub const K_BEFORE_CHILD: i32 = 64;
 pub const K_AFTER_CHILD: i32 = 128;
-
-// opcodes (.NET RegexOpcode)
 pub const OP_MASK: i32 = 63;
 pub const OP_RTL: i32 = 64;
 pub const OP_BACKTRACKING: i32 = 128;
 pub const OP_BACKTRACKING_SECOND: i32 = 256;
 pub const OP_CASEINS: i32 = 512;
-
 pub const OP_ONEREP: i32 = 0;
 pub const OP_NOTONEREP: i32 = 1;
 pub const OP_SETREP: i32 = 2;
@@ -108,11 +100,8 @@ pub const OP_ONELLOOP_ATOMIC: i32 = 43;
 pub const OP_NOTONELLOOP_ATOMIC: i32 = 44;
 pub const OP_SETLOOP_ATOMIC: i32 = 45;
 pub const OP_UPDATEBUMPALONG: i32 = 46;
-
 pub const MULTI_VS_REPEATER_LIMIT: i32 = 10;
 pub const OP_BACKREF_CI: i32 = OP_BACKREF | OP_CASEINS;
-
-// combined opcode values (.NET `OpcodeA | OpcodeB` case constants)
 pub const OP_LAZYBRANCH_BACK: i32 = OP_LAZYBRANCH | OP_BACKTRACKING;
 pub const OP_SETMARK_BACK: i32 = OP_SETMARK | OP_BACKTRACKING;
 pub const OP_NULLMARK_BACK: i32 = OP_NULLMARK | OP_BACKTRACKING;
@@ -136,8 +125,6 @@ pub const OP_BRANCHCOUNT_BACK: i32 = OP_BRANCHCOUNT | OP_BACKTRACKING;
 pub const OP_BRANCHCOUNT_BACK2: i32 = OP_BRANCHCOUNT | OP_BACKTRACKING_SECOND;
 pub const OP_LAZYBRANCHCOUNT_BACK: i32 = OP_LAZYBRANCHCOUNT | OP_BACKTRACKING;
 pub const OP_LAZYBRANCHCOUNT_BACK2: i32 = OP_LAZYBRANCHCOUNT | OP_BACKTRACKING_SECOND;
-
-/// .NET `RegexInterpreterCode.OpcodeBacktracks` — written out plainly.
 pub fn opcode_backtracks(op: i32) -> bool {
     matches!(
         op & OP_MASK,

@@ -1,37 +1,27 @@
-//! the `stream` payload — the file streams of `Un.Object.IO.Stream`.
-
 use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::rc::Rc;
-
 use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
-
 use super::{arg, native};
-
-/// the handle of a stream, the mode decides what it can do.
 pub enum StreamHandle {
-    /// `"r"`
+
     Read(BufReader<File>),
-    /// `"w"` and `"a"`
+
     Write(File),
-    /// `"rw"`
+
     ReadWrite(File),
 }
-
-/// the state of a stream.
 pub struct StreamState {
     pub path: String,
     pub mode: String,
     pub handle: Option<StreamHandle>,
-    /// the read buffer of the `"rw"` mode, the handle reads the bytes one by one
+
     pub pending: Option<String>,
     pub closed: bool,
 }
-
-/// a new stream object.
 pub fn new_stream(path: &str, mode: &str, handle: StreamHandle) -> Obj {
     obj::obj_new(
         "stream",
@@ -44,29 +34,21 @@ pub fn new_stream(path: &str, mode: &str, handle: StreamHandle) -> Obj {
         }))),
     )
 }
-
-/// the receiver of a member call, as a `Stream` payload.
 fn stream_self(scope: &Scope) -> Option<Rc<RefCell<StreamState>>> {
     match obj::payload(&scope::get(scope, "self")) {
         Payload::Stream(state) => Some(state.clone()),
         _ => None,
     }
 }
-
-/// the mode of a stream decides what it can do.
 pub fn can_read(mode: &str) -> bool {
     mode == "r" || mode == "rw"
 }
-
 pub fn can_write(mode: &str) -> bool {
     mode == "w" || mode == "a" || mode == "rw"
 }
-
 pub fn can_seek(mode: &str) -> bool {
     mode == "r" || mode == "rw"
 }
-
-/// the text of a value, the reference's `Str.To(value)`.
 fn value_text(value: &Obj) -> String {
     let converted = obj::to_str(value);
     match obj::payload(&converted) {
@@ -74,8 +56,6 @@ fn value_text(value: &Obj) -> String {
         _ => obj::display(value),
     }
 }
-
-/// the line ending of a line, the reference's `StreamReader.ReadLine` drops it.
 fn trim_line_end(line: &str) -> String {
     let mut text = line.to_string();
     if text.ends_with('\n') {
@@ -86,8 +66,6 @@ fn trim_line_end(line: &str) -> String {
     }
     text
 }
-
-/// opens a file, the reference's `File.Open` with the mode.
 pub fn open_file(path: &str, mode: &str) -> Result<StreamHandle, Obj> {
     let result = match mode {
         "r" => OpenOptions::new()
@@ -117,17 +95,13 @@ pub fn open_file(path: &str, mode: &str) -> Result<StreamHandle, Obj> {
             ))
         }
     };
-
     result.map_err(|e| obj::err(&e.to_string()))
 }
-
-/// reads the rest of the text of a stream.
 pub fn read_all(state: &Rc<RefCell<StreamState>>) -> Result<String, Obj> {
     let mut state = state.borrow_mut();
     if state.closed {
         return Err(obj::err("stream is closed"));
     }
-
     let mut out = String::new();
     match state.handle.as_mut() {
         Some(StreamHandle::Read(reader)) => {
@@ -146,22 +120,17 @@ pub fn read_all(state: &Rc<RefCell<StreamState>>) -> Result<String, Obj> {
         Some(StreamHandle::Write(_)) => return Err(obj::err("stream is not readable")),
         None => return Err(obj::err("stream is closed")),
     }
-
     Ok(out)
 }
-
-/// reads the next line of a stream, `None` at the end of the file.
 pub fn read_line(state: &Rc<RefCell<StreamState>>) -> Result<Option<String>, Obj> {
     let mut state = state.borrow_mut();
     if state.closed {
         return Err(obj::err("stream is closed"));
     }
 
-    // the line the end-of-file check read
     if let Some(pending) = state.pending.take() {
         return Ok(Some(pending));
     }
-
     match state.handle.as_mut() {
         Some(StreamHandle::Read(reader)) => {
             let mut line = String::new();
@@ -173,7 +142,6 @@ pub fn read_line(state: &Rc<RefCell<StreamState>>) -> Result<Option<String>, Obj
         Some(StreamHandle::ReadWrite(file)) => {
             let mut line = String::new();
             let mut byte = [0u8; 1];
-
             loop {
                 match file.read(&mut byte) {
                     Ok(0) => break,
@@ -186,7 +154,6 @@ pub fn read_line(state: &Rc<RefCell<StreamState>>) -> Result<Option<String>, Obj
                     Err(e) => return Err(obj::err(&e.to_string())),
                 }
             }
-
             if line.is_empty() {
                 Ok(None)
             } else {
@@ -197,14 +164,11 @@ pub fn read_line(state: &Rc<RefCell<StreamState>>) -> Result<Option<String>, Obj
         None => Err(obj::err("stream is closed")),
     }
 }
-
-/// writes a text to a stream.
 pub fn write_text(state: &Rc<RefCell<StreamState>>, text: &str) -> Result<(), Obj> {
     let mut state = state.borrow_mut();
     if state.closed {
         return Err(obj::err("stream is closed"));
     }
-
     match state.handle.as_mut() {
         Some(StreamHandle::Write(file)) => file
             .write_all(text.as_bytes())
@@ -216,14 +180,11 @@ pub fn write_text(state: &Rc<RefCell<StreamState>>, text: &str) -> Result<(), Ob
         None => Err(obj::err("stream is closed")),
     }
 }
-
-/// flushes the buffered output of a stream.
 pub fn flush(state: &Rc<RefCell<StreamState>>) -> Result<(), Obj> {
     let mut state = state.borrow_mut();
     if state.closed {
         return Err(obj::err("stream is closed"));
     }
-
     match state.handle.as_mut() {
         Some(StreamHandle::Write(file)) => file.flush().map_err(|e| obj::err(&e.to_string())),
         Some(StreamHandle::ReadWrite(file)) => file.flush().map_err(|e| obj::err(&e.to_string())),
@@ -231,21 +192,16 @@ pub fn flush(state: &Rc<RefCell<StreamState>>) -> Result<(), Obj> {
         None => Err(obj::err("stream is closed")),
     }
 }
-
-/// closes a stream.
 pub fn close(state: &Rc<RefCell<StreamState>>) {
     let mut state = state.borrow_mut();
     state.closed = true;
     state.handle = None;
 }
-
-/// seeks to an absolute position.
 pub fn seek(state: &Rc<RefCell<StreamState>>, position: i64) -> Result<(), Obj> {
     let mut state = state.borrow_mut();
     if state.closed {
         return Err(obj::err("stream is closed"));
     }
-
     match state.handle.as_mut() {
         Some(StreamHandle::Read(reader)) => reader
             .seek(SeekFrom::Start(position.max(0) as u64))
@@ -258,14 +214,11 @@ pub fn seek(state: &Rc<RefCell<StreamState>>, position: i64) -> Result<(), Obj> 
         _ => Err(obj::err("stream is not seekable")),
     }
 }
-
-/// the current position of a stream.
 pub fn position(state: &Rc<RefCell<StreamState>>) -> Result<i64, Obj> {
     let mut state = state.borrow_mut();
     if state.closed {
         return Err(obj::err("stream is closed"));
     }
-
     match state.handle.as_mut() {
         Some(StreamHandle::Read(reader)) => reader
             .stream_position()
@@ -278,14 +231,11 @@ pub fn position(state: &Rc<RefCell<StreamState>>) -> Result<i64, Obj> {
         _ => Err(obj::err("stream is not seekable")),
     }
 }
-
-/// the length of a stream in bytes.
 pub fn length(state: &Rc<RefCell<StreamState>>) -> Result<i64, Obj> {
     let state = state.borrow();
     if state.closed {
         return Err(obj::err("stream is closed"));
     }
-
     match state.handle.as_ref() {
         Some(StreamHandle::Read(reader)) => reader
             .get_ref()
@@ -299,16 +249,11 @@ pub fn length(state: &Rc<RefCell<StreamState>>) -> Result<i64, Obj> {
         _ => Err(obj::err("stream is not seekable")),
     }
 }
-
-/// the text of a value, the `write` members use it.
 pub fn text_of(value: &Obj) -> String {
     value_text(value)
 }
-
-/// the member table of the stream type.
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     let one = |name: &str| vec![arg(name, true, false, false)];
-
     vec![
         (
             "read".to_owned(),
@@ -368,192 +313,154 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-
-/// the receiver of a member call, as a `Stream` payload.
 fn state_of(scope: &Scope) -> Option<Rc<RefCell<StreamState>>> {
     stream_self(scope)
 }
-
-/// the mode of the receiver.
 fn mode_of(scope: &Scope) -> String {
     match state_of(scope) {
         Some(state) => state.borrow().mode.clone(),
         None => String::new(),
     }
 }
-
 fn read_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_read(&mode_of(scope)) {
         return obj::err("stream is not readable");
     }
-
     match read_all(&state) {
         Ok(text) => obj::str(&text),
         Err(e) => e,
     }
 }
-
 fn read_line_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_read(&mode_of(scope)) {
         return obj::err("stream is not readable");
     }
-
     match read_line(&state) {
         Ok(Some(line)) => obj::str(&line),
         Ok(None) => obj::none(),
         Err(e) => e,
     }
 }
-
 fn write_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_write(&mode_of(scope)) {
         return obj::err("stream is not writable");
     }
-
     let value = scope::get(scope, "value");
     match write_text(&state, &text_of(&value)) {
         Ok(()) => obj::none(),
         Err(e) => e,
     }
 }
-
 fn write_line_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_write(&mode_of(scope)) {
         return obj::err("stream is not writable");
     }
-
     let value = scope::get(scope, "value");
     match write_text(&state, &format!("{}\n", text_of(&value))) {
         Ok(()) => obj::none(),
         Err(e) => e,
     }
 }
-
 fn flush_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_write(&mode_of(scope)) {
         return obj::err("stream is not writable");
     }
-
     match flush(&state) {
         Ok(()) => obj::none(),
         Err(e) => e,
     }
 }
-
 fn close_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     close(&state);
     obj::none()
 }
-
 fn seek_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_seek(&mode_of(scope)) {
         return obj::err("stream is not seekable");
     }
-
     let position = scope::get(scope, "position");
     let position = match obj::payload(&position) {
         Payload::Int(v) => v,
         _ => return obj::err("expected 'position' argument to be of type 'int'"),
     };
-
     match seek(&state, position) {
         Ok(()) => obj::none(),
         Err(e) => e,
     }
 }
-
 fn position_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_seek(&mode_of(scope)) {
         return obj::err("stream is not seekable");
     }
-
     match position(&state) {
         Ok(position) => obj::int(position),
         Err(e) => e,
     }
 }
-
 fn set_position_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_seek(&mode_of(scope)) {
         return obj::err("stream is not seekable");
     }
-
     let position = scope::get(scope, "position");
     let position = match obj::payload(&position) {
         Payload::Int(v) => v,
         _ => return obj::err("expected 'position' argument to be of type 'int'"),
     };
-
     match seek(&state, position) {
         Ok(()) => obj::none(),
         Err(e) => e,
     }
 }
-
 fn length_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_seek(&mode_of(scope)) {
         return obj::err("stream is not seekable");
     }
-
     match length(&state) {
         Ok(length) => obj::int(length),
         Err(e) => e,
     }
 }
-
 fn eof_impl(scope: &Scope) -> Obj {
     let Some(state) = state_of(scope) else {
         return obj::err("expected 'stream' object");
     };
-
     if !can_read(&mode_of(scope)) {
         return obj::err("stream is not readable");
     }
 
-    // the end of the file is reached when a line cannot be read any more
     match read_line(&state) {
         Ok(Some(line)) => {
-            // the line is put back, the next read returns it
+
             let mut pending = state.borrow_mut();
             pending.pending = Some(line);
             obj::boolean(false)
@@ -562,15 +469,12 @@ fn eof_impl(scope: &Scope) -> Obj {
         Err(e) => e,
     }
 }
-
 fn can_read_impl(scope: &Scope) -> Obj {
     obj::boolean(can_read(&mode_of(scope)))
 }
-
 fn can_write_impl(scope: &Scope) -> Obj {
     obj::boolean(can_write(&mode_of(scope)))
 }
-
 fn can_seek_impl(scope: &Scope) -> Obj {
     obj::boolean(can_seek(&mode_of(scope)))
 }

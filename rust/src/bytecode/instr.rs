@@ -1,12 +1,7 @@
-//! `Instr { op: u8, flags: u16, operand: i32 }` — the fixed-size instruction of BYTECODE.md §1.
-
-/// opcode set. the numeric values are part of the `.unbc` contract, so every variant is
-/// written with an explicit discriminant. `0x60..=0x7F` is the reserved extension area of
-/// BYTECODE.md §16 and `0x00` is the unused sentinel, so no opcode lives in either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Op {
-    // §2 value load/store
+
     LoadNone = 0x01,
     LoadNull = 0x02,
     LoadTrue = 0x03,
@@ -19,8 +14,6 @@ pub enum Op {
     StoreLocal = 0x0A,
     StoreUpv = 0x0B,
 
-    // stack shuffles (not in BYTECODE.md's table; they are the minimal units the
-    // `Property`/`Index`/`Slice` assignment and tuple-pattern forms need)
     Dup = 0x0C,
     Dup2 = 0x0D,
     Swap = 0x0E,
@@ -28,7 +21,6 @@ pub enum Op {
     Pop = 0x10,
     PopN = 0x11,
 
-    // §3 object builders
     BuildList = 0x12,
     BuildDict = 0x13,
     BuildSet = 0x14,
@@ -37,7 +29,6 @@ pub enum Op {
     FString = 0x17,
     Tag = 0x18,
 
-    // §4 operators
     Add = 0x19,
     Sub = 0x1A,
     Mul = 0x1B,
@@ -52,7 +43,6 @@ pub enum Op {
     Rsh = 0x24,
     Range = 0x25,
 
-    // §4 comparisons and membership
     Eq = 0x26,
     Ne = 0x27,
     Lt = 0x28,
@@ -64,7 +54,6 @@ pub enum Op {
     In = 0x2E,
     Xor = 0x2F,
 
-    // §4 unary
     Not = 0x30,
     Pos = 0x31,
     Neg = 0x32,
@@ -72,13 +61,11 @@ pub enum Op {
     Spread = 0x34,
     ToBool = 0x35,
 
-    // §6 jumps (`JMP_IF` carries the condition shape in flags)
     JmpIf = 0x36,
     Jmp = 0x37,
     PushTryProp = 0x38,
     Propagate = 0x39,
 
-    // §5 attribute / item / slice
     GetAttr = 0x3A,
     SetAttr = 0x3B,
     GetItem = 0x3C,
@@ -86,7 +73,6 @@ pub enum Op {
     Slice = 0x3E,
     SetSlice = 0x3F,
 
-    // §7 call
     ArgBegin = 0x40,
     ArgPos = 0x41,
     ArgKw = 0x42,
@@ -95,18 +81,15 @@ pub enum Op {
     Call = 0x45,
     Unwrap = 0x46,
 
-    // §6 scopes
     NewScope = 0x47,
     PopScope = 0x48,
 
-    // §6 loops and function boundary
     PrepIter = 0x49,
     ForNext = 0x4A,
     Break = 0x4B,
     Skip = 0x4C,
     Return = 0x4D,
 
-    // §9 exceptions, defer, using
     PushTry = 0x4E,
     PopTry = 0x4F,
     Raise = 0x50,
@@ -115,7 +98,6 @@ pub enum Op {
     FlushDefers = 0x53,
     FlushUsings = 0x54,
 
-    // §8 class / enum
     MakeClass = 0x55,
     LoadBaseClass = 0x56,
     SetBases = 0x57,
@@ -125,44 +107,24 @@ pub enum Op {
     RegisterClass = 0x5B,
     MakeEnum = 0x5C,
 
-    // §7 function creation. it sits at the tail of the assigned range so `0x60..=0x7F`
-    // stays free for the extension fields of §16.
     MakeFunc = 0x5D,
 
-    // `use` statement. the reference resolves the module during evaluation, not compilation.
     Use = 0x5E,
 
-    /// the reference `Eval` throws `unsupported node kind {Kind}` for every kind it has no
-    /// case for. the compiler keeps that behaviour observable instead of failing the build.
     Unsupported = 0x5F,
 
-    /// tuple pattern unpack. operand is the number of values to pop, the last one is
-    /// deepest, so the binder runs the targets in reverse.
-    /// `Evaluator.Unpack` (`Evaluator.cs:1309`) is the reference this opcode implements.
     Unpack = 0x60,
 
-    /// `ToStr()` conversion. `EvalFString` (`Evaluator.cs:1087`) converts every expression
-    /// part with `Eval(child).ToStr()` and requires the result to be a `Str`, so the
-    /// conversion is an opcode and the check is part of `FSTRING`.
-    /// `0x61` is the second slot of the §16 extension area.
     ToStr = 0x61,
 
-    /// match pattern test. the operand is the index of the pattern in the proto's
-    /// pattern table, the value is on the stack and stays there, and the result is a
-    /// boolean. the pattern binds its names in the current scope when it matches.
-    /// `0x62` is the third slot of the §16 extension area.
     MatchPattern = 0x62,
 
-    /// `go expr` — the operand is the proto slot of the expression, the future runs it at
-    /// the `wait` point.
     MakeFuture = 0x63,
 
-    /// `wait expr` — the future on the stack is replaced by its value.
     Await = 0x64,
 }
-
 impl Op {
-    /// `.unbc` validation rejects an opcode outside this set (BYTECODE.md §14.2).
+
     pub fn from_u8(v: u8) -> Option<Op> {
         match v {
             0x01 => Some(Op::LoadNone),
@@ -269,88 +231,51 @@ impl Op {
         }
     }
 }
-
-/// `JMP_IF` shape: how the popped condition decides the jump.
 pub const FLAG_JUMP_TRUE: u16 = 1 << 0;
 pub const FLAG_JUMP_POP: u16 = 1 << 1;
-/// strict boolean test (`while` uses `As<Bool>`, not `ToBool`)
 pub const FLAG_STRICT: u16 = 1 << 2;
-/// jump when the top is `None` (`??` coalesce), no boolean conversion
 pub const FLAG_JUMP_NONE: u16 = 1 << 3;
-
-/// optional-chain flag of `?.` (BYTECODE.md §5 `JMP_NONE` is folded into the flag)
 pub const FLAG_OPT_CHAIN: u16 = 1 << 4;
-
-/// `STORE_NAME` with `localOnly: true` — the `for`/`match`/`catch` loop variable form
 pub const FLAG_LOCAL_ONLY: u16 = 1 << 5;
-
-/// `STORE_NAME` with the `Scope.Set` rule — the chain of the scopes is walked and the
-/// binding is updated where the name is declared. the function definitions use it.
 pub const FLAG_SCOPE_SET: u16 = 1 << 8;
-
-/// `ARG_POS` inside a call site: `EvalArguments` checks `value is Err` and rethrows with
-/// the header preserved. container literals (`EvalList` / `EvalDict` / `EvalTuple`) do
-/// not check, so they emit `ARG_POS` without this flag.
 pub const FLAG_ARG_CHECK: u16 = 1 << 6;
-
-/// `UNSUPPORTED` raises a host exception instead of a language error. the message
-/// table entry is the .NET text `Name: Message`, the way `Exception.ToString()` prints
-/// it. the reference reaches this state when it indexes a missing child node.
 pub const FLAG_HOST_ERROR: u16 = 1 << 7;
-
-/// slice bound presence, bit0 = start, bit1 = end, bit2 = step
 pub const FLAG_SLICE_START: u16 = 1 << 0;
 pub const FLAG_SLICE_END: u16 = 1 << 1;
 pub const FLAG_SLICE_STEP: u16 = 1 << 2;
-
-/// `NEW_SCOPE` shape
 pub const FLAG_SCOPE_FUNCTION: u16 = 1 << 0;
 pub const FLAG_SCOPE_LOOP: u16 = 1 << 1;
-
-/// `Proto.flags`
 pub const PROTO_FUNCTION: u16 = 1 << 0;
 pub const PROTO_HAS_SELF: u16 = 1 << 1;
 pub const PROTO_HAS_SUPER: u16 = 1 << 2;
-
-/// `Param.flags` — mirrors `Arg.IsEssential/IsOptional/IsPositional/IsKeyword`
 pub const PARAM_ESSENTIAL: u16 = 1 << 0;
 pub const PARAM_OPTIONAL: u16 = 1 << 1;
 pub const PARAM_POSITIONAL: u16 = 1 << 2;
 pub const PARAM_KEYWORD: u16 = 1 << 3;
 pub const PARAM_DEFAULT: u16 = 1 << 4;
-
-/// `MAKE_FUNC` flags — what the reference does with the created `LFn`
 pub const FLAG_FUNC_BIND: u16 = 1 << 0;
 pub const FLAG_FUNC_EXT: u16 = 1 << 1;
 pub const FLAG_FUNC_PROP: u16 = 1 << 2;
-
-/// `MAKE_CLASS` flags
 pub const FLAG_CLASS_PARAMS: u16 = 1 << 0;
 pub const FLAG_CLASS_BASES: u16 = 1 << 1;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Instr {
     pub op: u8,
     pub flags: u16,
     pub operand: i32,
 }
-
 impl Instr {
     pub fn new(op: Op, operand: i32) -> Self {
         Self { op: op as u8, flags: 0, operand }
     }
-
     pub fn with_flags(op: Op, flags: u16, operand: i32) -> Self {
         Self { op: op as u8, flags, operand }
     }
 
-    /// decodes `op` back into the typed opcode. a `Program` that fails this check is
-    /// malformed and never reaches the VM.
     pub fn op_code(&self) -> Option<Op> {
         Op::from_u8(self.op)
     }
 
-    /// `op(1) | flags(2) | operand(4)`, little-endian, 7 bytes (BYTECODE.md §1)
     pub fn encode(&self) -> [u8; 7] {
         let mut out = [0u8; 7];
         out[0] = self.op;
@@ -358,7 +283,6 @@ impl Instr {
         out[3..7].copy_from_slice(&self.operand.to_le_bytes());
         out
     }
-
     pub fn decode(bytes: &[u8; 7]) -> Self {
         Self {
             op: bytes[0],
@@ -367,15 +291,12 @@ impl Instr {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn opcode_values_are_the_contract() {
-        // the numbers are written down in BYTECODE.md §16 as the reserved split, so pin
-        // the boundaries explicitly instead of trusting the enum order
+
         assert_eq!(Op::LoadNone as u8, 0x01);
         assert_eq!(Op::StoreUpv as u8, 0x0B);
         assert_eq!(Op::Dup as u8, 0x0C);
@@ -411,13 +332,9 @@ mod tests {
         assert_eq!(Op::MakeFuture as u8, 0x63);
         assert_eq!(Op::Await as u8, 0x64);
     }
-
     #[test]
     fn reserved_area_is_free() {
-        // `0x60` .. `0x64` are the first slots of the reserved extension area, and
-        // `UNPACK` / `TO_STR` / `MATCH_PATTERN` / `MAKE_FUTURE` / `AWAIT` take them.
-        // `0x65..=0x7F` must stay free so a `.unbc` written by an older compiler is
-        // readable.
+
         for v in 0x65u8..=0x7F {
             assert_eq!(Op::from_u8(v), None, "{v:#04x} must stay reserved");
         }
@@ -427,7 +344,6 @@ mod tests {
             assert_eq!(instr.op_code(), None);
         }
     }
-
     #[test]
     fn encoding_is_little_endian_round_trip() {
         let instr = Instr::with_flags(Op::JmpIf, 0xABCD, -12345);
@@ -437,7 +353,6 @@ mod tests {
         assert_eq!(bytes[3..7], (-12345i32).to_le_bytes());
         assert_eq!(Instr::decode(&bytes), instr);
     }
-
     #[test]
     fn every_assigned_opcode_is_decodable() {
         for v in 0x01u8..=0x60 {

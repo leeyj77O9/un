@@ -1,24 +1,20 @@
 ﻿use std::fmt;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenType {
     Eof,
     Error,
     NoneKw,
     NullKw,
-
     LParen,
     RParen,
     LBrace,
     RBrace,
     LBrack,
     RBrack,
-
     DoubleQuestion,
     Dot,
     DotDot,
     Question,
-
     Assign,
     ColonAssign,
     PlusAssign,
@@ -35,58 +31,46 @@ pub enum TokenType {
     RightShiftAssign,
     QuestionAssign,
     DoubleQuestionAssign,
-
     Or,
     And,
     Xor,
     Not,
-
     In,
     Is,
     IsNot,
     As,
-
     Equal,
     Unequal,
     LessOrEqual,
     GreaterOrEqual,
     LessThan,
     GreaterThan,
-
     BOr,
     BXor,
     BAnd,
-
     LeftShift,
     RightShift,
-
     Plus,
     Minus,
     Positive,
     Negative,
-
     Asterisk,
     DoubleAsterisk,
     Spread,
     DictSpread,
-
     Slash,
     DoubleSlash,
     Percent,
     At,
-
     BNot,
     Bang,
-
     Indexer,
     Slicer,
     Property,
     NullableProperty,
-
     Comma,
     Colon,
     QuestionDot,
-
     Func,
     Class,
     Enum,
@@ -104,9 +88,7 @@ pub enum TokenType {
     Use,
     Using,
     Comment,
-
     Identifier,
-
     Integer,
     Float,
     String,
@@ -117,19 +99,14 @@ pub enum TokenType {
     Set,
     Tuple,
     Iter,
-
     Pair,
     Annotation,
-
     Call,
-
     Go,
     Wait,
-
     Try,
     Catch,
     Defer,
-
     NewLine,
     Indent,
     Dedent,
@@ -137,7 +114,6 @@ pub enum TokenType {
     Wildcard,
     Underscore,
 }
-
 impl TokenType {
     pub fn text(&self) -> &'static str {
         match self {
@@ -256,10 +232,6 @@ impl TokenType {
         }
     }
 }
-
-/// The C# `TokenType` enum member name. The reference implementation prints the
-/// enum name in parse errors (`unexpected token Indent`, `unexpected primary
-/// token Indent`), so `Display` uses this and not the literal text.
 impl TokenType {
     pub fn name(&self) -> &'static str {
         match self {
@@ -378,13 +350,11 @@ impl TokenType {
         }
     }
 }
-
 impl fmt::Display for TokenType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
     }
 }
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub start: usize,
@@ -392,7 +362,6 @@ pub struct Token {
     pub typ: TokenType,
     pub message: Option<String>,
 }
-
 impl Token {
     pub fn new(start: usize, length: usize, typ: TokenType) -> Self {
         Self {
@@ -402,7 +371,6 @@ impl Token {
             message: None,
         }
     }
-
     pub fn error(start: usize, length: usize, message: impl Into<String>) -> Self {
         Self {
             start,
@@ -411,7 +379,6 @@ impl Token {
             message: Some(message.into()),
         }
     }
-
     pub fn end(&self) -> usize {
         self.start + self.length
     }

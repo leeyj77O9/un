@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-
 use crate::runtime::collections;
 use crate::runtime::collections::KeyMap;
 use crate::runtime::date;
@@ -9,66 +8,48 @@ use crate::runtime::iters::{self, IterCell};
 use crate::runtime::prims;
 use crate::runtime::types::Types;
 use crate::runtime::world;
-
-/// a reference object. the reference model is class-based and mutable
-/// (`Obj.Members`, `Self`, `Super`, `Type`), so every object is a shared,
-/// interior-mutable cell.
 pub type Obj = Rc<RefCell<ObjData>>;
-
-/// the state of a `Stopwatch`: the elapsed ticks, the running flag and the lap.
 #[derive(Default)]
 pub struct StopwatchState {
-    /// the accumulated ticks of the finished runs
+
     pub elapsed: i64,
-    /// the tick count of the current run
+
     pub started: i64,
     pub running: bool,
     pub lap: i64,
 }
-
 #[derive(Clone)]
 pub enum Payload {    Plain,
-    /// `Err` — `ToStr()` renders `"{header}: {message}"`
+
     Error { header: String, message: String },
-    /// uncaught host exception (`System.X`, `Panic`); the VM aborts when it reaches
-    /// the top of a statement. the reference throws, Rust has no exception
-    /// unwinding, so it travels as a value.
+
     Panic { name: String, message: String },
     Int(i64),
     Float(f64),
     Bool(bool),
     Str(Rc<str>),
     Date(i64),
-    /// `Stopwatch` — the elapsed ticks, the running flag and the lap of the timer
+
     Stopwatch(Rc<RefCell<StopwatchState>>),
-    /// `Future` — the value the work produced
+
     Future(Rc<RefCell<crate::native::flow::FutureState>>),
-    /// `Pool` — the worker count and the closed flag
+
     Pool(Rc<RefCell<crate::native::flow::PoolState>>),
-    /// `Lock` — the held flag
+
     Lock(Rc<RefCell<crate::native::flow::LockState>>),
-    /// `AtomicInt` — the counter value, the `Interlocked` target of the reference.
-    /// `Clone()` is an error, `Copy()` is `this`, so the counter stays one cell.
+
     AtomicInt(Rc<RefCell<i64>>),
-    /// `AtomicBool` — the flag value, the same single-cell rule as the counter.
+
     AtomicBool(Rc<RefCell<bool>>),
-    /// `Stream` — a file stream
+
     Stream(Rc<RefCell<crate::native::stream::StreamState>>),
-    /// `Random` — the generator object, the `Value` of the reference's
-    /// `Ref<System.Random>`. the cell is shared by `Clone()`, so the clone keeps drawing
-    /// from the same sequence.
+
     Random(Rc<RefCell<crate::native::random::Rng>>),
-    /// `HttpClient` — the client object, the `Value` of the reference's
-    /// `Ref<System.Net.Http.HttpClient>`. reachable as `http_client`, matching the
-    /// reference's `[NativeType]` registration key (fixed in the C# reference to
-    /// match the instance type name).
+
     HttpClient(Rc<RefCell<crate::native::net::HttpState>>),
-    /// `WebSocket` — the socket object, the `Value` of the reference's
-    /// `Ref<ClientWebSocket>`. reachable as `web_socket`, matching the
-    /// reference's `[NativeType]` registration key.
+
     WebSocket(Rc<RefCell<crate::native::net::WsState>>),
-    /// every collection payload is a shared cell, so `b = a` keeps `b` and `a`
-    /// looking at the same items, exactly like the reference's `Ref<T>` cells.
+
     List(Rc<RefCell<Vec<Obj>>>),
     Dict(Rc<RefCell<KeyMap>>),
     Set(Rc<RefCell<crate::runtime::collections::KeyMap>>),
@@ -78,23 +59,15 @@ pub enum Payload {    Plain,
     Stru(Rc<Vec<String>>),
     Enu(i64),
     TObj(Types),
-    /// `Iters` and its subclasses share one cell: the sequence definition is
-    /// immutable and the enumeration position lives inside it, so `Iter()` returns
-    /// the same cell and `Clone()` rebuilds fresh cursors over the same definition.
+
     Iter(IterCell),
-    /// `Fn` / `LFn` / `NFn` share one payload. the closure `Context`, the `Args` list,
-    /// and the `Property` link live in the `FnData` cell.
+
     Func(FnCell),
-    /// `Property` — the accessor pair plus the `$name` backing member. `Clone` / `Copy`
-    /// are `this`, so every instance shares the same property object.
+
     Property(PropCell),
-    /// `FieldRef` — the `field` local of a bound accessor, a view on the backing member
-    /// of its owner. `Clone` / `Copy` are `this`.
+
     FieldRef(FieldCell),
 }
-
-/// `Payload` is printed as a summary: an `Obj` payload cannot be printed by
-/// recursion (a list holds objects that hold lists), so the count is shown instead.
 impl std::fmt::Debug for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -146,9 +119,6 @@ impl std::fmt::Debug for Payload {
         }
     }
 }
-
-/// payload identity, not Un equality: Un's `==` is the `Eq()` dunder. object payloads
-/// compare by cell identity, the same way the reference's `ReferenceEquals` does.
 impl PartialEq for Payload {
     fn eq(&self, other: &Self) -> bool {
         use Payload::*;
@@ -180,7 +150,6 @@ impl PartialEq for Payload {
         }
     }
 }
-
 pub struct ObjData {
     pub type_name: Rc<str>,
     pub declared: Rc<str>,
@@ -192,7 +161,6 @@ pub struct ObjData {
     pub annotations: Vec<(String, Obj)>,
     pub payload: Payload,
 }
-
 impl ObjData {
     fn new(type_name: Rc<str>, obj_type: Rc<str>, payload: Payload) -> Self {
         Self {
@@ -208,7 +176,6 @@ impl ObjData {
         }
     }
 }
-
 pub fn obj_new(type_name: &str, payload: Payload) -> Obj {
     Rc::new(RefCell::new(ObjData::new(
         world::intern_type(type_name),
@@ -216,56 +183,42 @@ pub fn obj_new(type_name: &str, payload: Payload) -> Obj {
         payload,
     )))
 }
-
 pub fn plain(type_name: Rc<str>, obj_type: Rc<str>) -> Obj {
     Rc::new(RefCell::new(ObjData::new(type_name, obj_type, Payload::Plain)))
 }
-
 pub fn int_obj(value: i64, type_name: Rc<str>, obj_type: Rc<str>) -> Obj {
     Rc::new(RefCell::new(ObjData::new(type_name, obj_type, Payload::Int(value))))
 }
-
 pub fn str_obj(value: Rc<str>, type_name: Rc<str>, obj_type: Rc<str>) -> Obj {
     Rc::new(RefCell::new(ObjData::new(type_name, obj_type, Payload::Str(value))))
 }
-
 pub fn bool_obj_new(value: bool, type_name: Rc<str>, obj_type: Rc<str>) -> Obj {
     Rc::new(RefCell::new(ObjData::new(type_name, obj_type, Payload::Bool(value))))
 }
-
 pub fn none() -> Obj {
     world::none_obj()
 }
-
 pub fn null() -> Obj {
     world::null_obj()
 }
-
 pub fn int(value: i64) -> Obj {
     world::int_cached(value)
 }
-
 pub fn float(value: f64) -> Obj {
     obj_new("float", Payload::Float(value))
 }
-
 pub fn boolean(value: bool) -> Obj {
     world::bool_obj(value)
 }
-
 pub fn str(value: &str) -> Obj {
     world::str_pooled(value)
 }
-
-/// `new Str(value)` — bypasses the pool, so identity is observable
 pub fn str_new(value: &str) -> Obj {
     obj_new("str", Payload::Str(Rc::from(value)))
 }
-
 pub fn date_obj(ticks: i64) -> Obj {
     obj_new("date", Payload::Date(ticks))
 }
-
 pub fn err(message: impl Into<String>) -> Obj {
     obj_new(
         "obj",
@@ -275,7 +228,6 @@ pub fn err(message: impl Into<String>) -> Obj {
         },
     )
 }
-
 pub fn err_with_header(header: impl Into<String>, message: impl Into<String>) -> Obj {
     obj_new(
         "obj",
@@ -285,7 +237,6 @@ pub fn err_with_header(header: impl Into<String>, message: impl Into<String>) ->
         },
     )
 }
-
 pub fn panic(name: impl Into<String>, message: impl Into<String>) -> Obj {
     obj_new(
         "obj",
@@ -295,48 +246,30 @@ pub fn panic(name: impl Into<String>, message: impl Into<String>) -> Obj {
         },
     )
 }
-
 pub fn divide_by_zero() -> Obj {
     panic("System.DivideByZeroException", "Attempted to divide by zero.")
 }
-
 pub fn type_name(o: &Obj) -> Rc<str> {
     o.borrow().type_name.clone()
 }
-
 pub fn payload(o: &Obj) -> Payload {
     o.borrow().payload.clone()
 }
-
 pub fn is_none(o: &Obj) -> bool {
     &*type_name(o) == "none"
 }
-
 pub fn is_err(o: &Obj) -> bool {
     matches!(payload(o), Payload::Error { .. })
 }
-
 pub fn is_panic(o: &Obj) -> bool {
     matches!(payload(o), Payload::Panic { .. })
 }
-
 pub fn is_bool(o: &Obj) -> bool {
     matches!(payload(o), Payload::Bool(_))
 }
-
-/// `Obj.Equals` as a collection key test: `Eq()` coerced to a boolean. a non-boolean
-/// result (an `Err`) is `false`, exactly like the reference's `As<Bool>` pattern.
 pub fn key_eq(a: &Obj, b: &Obj) -> bool {
     matches!(payload(&binop(a, BinOp::Eq, b)), Payload::Bool(true))
 }
-
-/// `Obj.GetHashCode()`. the reference overrides it in `Val<T>` / `Ref<T>` (the CLR value
-/// hash, so an int key hashes to its own value, a `Date` to its tick count), `Str`,
-/// `Enu`, `List` and `Tup`. `Dict`, `Set`, `Stru`, `Spreads` and `Json` keep the default
-/// object hash, and .NET string / reference hashing is process-randomised, so string-key
-/// iteration order is not a parity target (D-025). the type-name FNV stand-in is used for
-/// those, which keeps int keys hashing to their value and int-key dictionaries iterating
-/// in insertion order in the reference too.
 pub fn hash_code(o: &Obj) -> u64 {
     match payload(o) {
         Payload::Int(i) => i as u64,
@@ -344,7 +277,7 @@ pub fn hash_code(o: &Obj) -> u64 {
         Payload::Float(v) => v.to_bits(),
         Payload::Bool(b) => b as u64,
         Payload::Enu(n) => n as u64,
-        // `Val<T>.GetHashCode() => Value.GetHashCode()`, so `Date` hashes its tick count
+
         Payload::Date(t) => t as u64,
         Payload::List(v) => {
             let mut h = 0u64;
@@ -360,36 +293,27 @@ pub fn hash_code(o: &Obj) -> u64 {
             }
             h
         }
-        // `Json` delegates to its wrapped value
+
         Payload::Json(inner) => hash_code(&inner),
-        // `Ref<T>.GetHashCode() => Value.GetHashCode()`, so an `Iters` hash is the
-        // host enumerator's identity hash. that is process-randomised in .NET, so the
-        // type-name fallback is used instead (D-025: str-key order is not a parity target).
+
         _ => prims::str_hash(&type_name(o)) as u64,
     }
 }
-
 fn combine_hash(seed: u64, value: u64) -> u64 {
     seed.rotate_left(13) ^ value
 }
-
 pub fn types_of(o: &Obj) -> Types {
     o.borrow().types.clone()
 }
-
-/// `Members[name]` on a missing key throws inside the host; the inner .NET message is
-/// reproduced verbatim and the `TargetInvocationException` wrapper is dropped (D-024).
 pub fn key_not_found(name: &str) -> Obj {
     panic(
         "System.Collections.Generic.KeyNotFoundException",
         format!("The given key '{name}' was not present in the dictionary."),
     )
 }
-
 pub fn bool_value(o: &Obj) -> bool {
     matches!(payload(o), Payload::Bool(true))
 }
-
 fn valid_super(o: &Obj) -> Option<Obj> {
     let s = o.borrow().super_.clone();
     match s {
@@ -397,7 +321,6 @@ fn valid_super(o: &Obj) -> Option<Obj> {
         _ => None,
     }
 }
-
 pub fn member(o: &Obj, name: &str) -> Option<Obj> {
     o.borrow()
         .members
@@ -405,11 +328,9 @@ pub fn member(o: &Obj, name: &str) -> Option<Obj> {
         .find(|(k, _)| k == name)
         .map(|(_, v)| v.clone())
 }
-
 fn has_member(o: &Obj, name: &str) -> bool {
     o.borrow().members.iter().any(|(k, _)| k == name)
 }
-
 pub fn member_set(o: &Obj, name: &str, value: &Obj) {
     let mut d = o.borrow_mut();
     for slot in &mut d.members {
@@ -420,16 +341,12 @@ pub fn member_set(o: &Obj, name: &str, value: &Obj) {
     }
     d.members.push((name.to_owned(), value.clone()));
 }
-
 pub fn parents(o: &Obj) -> Vec<Obj> {
     o.borrow().parents.clone()
 }
-
-/// `Obj.BaseChain()` — super first, then `Parents[1..]`, de-duplicated by identity
 pub fn base_chain(o: &Obj) -> Vec<Obj> {
     let mut seen: Vec<Obj> = Vec::new();
     let mut queue: Vec<Obj> = Vec::new();
-
     fn push(b: &Obj, seen: &mut Vec<Obj>, queue: &mut Vec<Obj>) {
         if is_none(b) {
             return;
@@ -446,19 +363,14 @@ pub fn base_chain(o: &Obj) -> Vec<Obj> {
             push(&s, seen, queue);
         }
     }
-
     if let Some(s) = o.borrow().super_.clone() {
         push(&s, &mut seen, &mut queue);
     }
     for p in parents(o).iter().skip(1) {
         push(p, &mut seen, &mut queue);
     }
-
     queue
 }
-
-/// `Obj.TryMethod` — bind `Self`/`Super` on the member and call it.
-/// phase 7 makes members callable; until then this always reports "not found".
 fn try_method(o: &Obj, name: &str, args: &[Obj]) -> Option<Obj> {
     let m = member(o, name)?;
     {
@@ -468,24 +380,15 @@ fn try_method(o: &Obj, name: &str, args: &[Obj]) -> Option<Obj> {
     }
     invoke(&m, args)
 }
-
-/// `method.Call(args)` inside `TryMethod`. a `Func` payload runs `Fn.Call`; any other
-/// payload has no callable override, so the caller continues with its own dispatch.
 pub fn invoke(f: &Obj, args: &[Obj]) -> Option<Obj> {
     match payload(f) {
         Payload::Func(..) => Some(function::fn_call(f, &function::Args::positional(args.to_vec()))),
         _ => None,
     }
 }
-
-/// `Obj.Call` — `Invoke("__call__", args, s => s.Call(args), fallback)`. a `Func`
-/// payload is `LFn` / `NFn`, whose `Call` override replaces the whole base dispatch.
 pub fn call(o: &Obj, args: &[Obj]) -> Obj {
     call_args(o, &function::Args::positional(args.to_vec()))
 }
-
-/// `Obj.Call` for the VM: the same dispatch, but the argument names reach `Fn.Call`,
-/// which is what makes `kw` arguments and `**kwargs` spread work at runtime.
 pub fn call_args(o: &Obj, args: &function::Args) -> Obj {
     if let Payload::Func(..) = payload(o) {
         return function::fn_call(o, args);
@@ -501,9 +404,6 @@ pub fn call_args(o: &Obj, args: &function::Args) -> Obj {
     }
     err(format!("unsupported operand type(s) for (): '{}'", type_name(o)))
 }
-
-/// `Invoke` as a function that always returns a value (`Obj.Invoke` is `void` and
-/// overwrites `ref result`; this shape keeps the `Option` dispatch of `TryMethod`).
 pub fn invoke_obj(f: &Obj, args: &function::Args) -> Obj {
     match payload(f) {
         Payload::Func(..) => function::fn_call(f, args),
@@ -513,9 +413,6 @@ pub fn invoke_obj(f: &Obj, args: &function::Args) -> Obj {
         )),
     }
 }
-
-/// `TryMethod` with named arguments. `Self`/`Super` are bound on the member exactly as
-/// the reference does, so a method call carries the receiver's identity.
 pub fn try_method_named(o: &Obj, name: &str, args: &function::Args) -> Option<Obj> {
     let m = member(o, name)?;
     {
@@ -525,19 +422,14 @@ pub fn try_method_named(o: &Obj, name: &str, args: &function::Args) -> Option<Ob
     }
     invoke_args(&m, args)
 }
-
-/// `method.Call(args)` inside `TryMethod`, named form. a `Func` payload runs `Fn.Call`;
-/// any other payload has no callable override, so the caller continues its own dispatch.
 pub fn invoke_args(f: &Obj, args: &function::Args) -> Option<Obj> {
     match payload(f) {
         Payload::Func(..) => Some(function::fn_call(f, args)),
         _ => None,
     }
 }
-
-/// `Obj.Init`
 pub fn init(o: &Obj, args: &[Obj]) -> Obj {
-    // the builtin collections override `Init`, so their rule runs before the base chain
+
     match payload(o) {
         Payload::List(..) => return collections::list_init(o, args),
         Payload::Dict(..) => return collections::dict_init(o, args),
@@ -550,8 +442,7 @@ pub fn init(o: &Obj, args: &[Obj]) -> Obj {
         Payload::Int(_) | Payload::Float(_) | Payload::Bool(_) | Payload::Str(_) | Payload::Date(_) => {
             return prim_init(o, args);
         }
-        // `AtomicInt.Init` / `AtomicBool.Init` are `Init` overrides, so a call on the
-        // counter builds a new cell from the argument instead of reusing the receiver.
+
         Payload::AtomicInt(_) => return crate::native::atomic::atomic_int_init(o, args),
         Payload::AtomicBool(_) => return crate::native::atomic::atomic_bool_init(o, args),
         _ => {}
@@ -567,14 +458,10 @@ pub fn init(o: &Obj, args: &[Obj]) -> Obj {
     }
     o.clone()
 }
-
-/// the `Init` the primitive types override: a builtin type call converts its arguments
-/// directly. every message is the reference string.
 fn prim_init(o: &Obj, args: &[Obj]) -> Obj {
     let t = type_name(o);
-
     match payload(o) {
-        // `Int.Init`: 0 → 0, 1 → `ToInt()`, (str, int) → base parse
+
         Payload::Int(_) => match args.len() {
             0 => int(0),
             1 => to_int(&args[0]),
@@ -591,7 +478,7 @@ fn prim_init(o: &Obj, args: &[Obj]) -> Obj {
             1 => to_float(&args[0]),
             _ => err(format!("cannot convert to '{t}'")),
         },
-        // `Bool.Init` answers `False` for every extra argument
+
         Payload::Bool(_) => match args.len() {
             0 => boolean(false),
             1 => to_bool(&args[0]),
@@ -602,8 +489,7 @@ fn prim_init(o: &Obj, args: &[Obj]) -> Obj {
             1 => to_str(&args[0]),
             2 => {
                 if let (Payload::Str(s), Payload::Int(i)) = (payload(&args[0]), payload(&args[1])) {
-                    // `Math.Min(i, int.MaxValue)`, and `Enumerable.Repeat` of a negative
-                    // count is an empty sequence
+
                     let n = i.min(i32::MAX as i64);
                     let text = if n > 0 { s.repeat(n as usize) } else { String::new() };
                     return str(&text);
@@ -612,8 +498,7 @@ fn prim_init(o: &Obj, args: &[Obj]) -> Obj {
             }
             _ => err("too many arguments"),
         },
-        // `DateTime.TryParse` accepts the ISO forms, and `new Date()` is `DateTime.Now`,
-        // a time the VM cannot fix.
+
         Payload::Date(_) => match args.len() {
             0 => date_obj(0),
             1 => match payload(&args[0]) {
@@ -628,15 +513,11 @@ fn prim_init(o: &Obj, args: &[Obj]) -> Obj {
         _ => o.clone(),
     }
 }
-
-/// `Int.ParseWithBase`. `Convert.ToInt64(text, base)` reports
-/// `Input string was not in a correct format.` on a format failure.
 fn parse_with_base(text: &str, base: i64) -> Obj {
     let base = base as i32;
     if base < 2 || base > 36 {
         return err("int: base must be between 2 and 36");
     }
-
     let mut text = text.trim().to_string();
     let lower = text.to_lowercase();
     if base == 2 && lower.starts_with("0b") {
@@ -646,7 +527,6 @@ fn parse_with_base(text: &str, base: i64) -> Obj {
     } else if base == 16 && lower.starts_with("0x") {
         text = text[2..].to_string();
     }
-
     let mut sign = 1i64;
     if text.starts_with('-') {
         sign = -1;
@@ -654,23 +534,17 @@ fn parse_with_base(text: &str, base: i64) -> Obj {
     } else if text.starts_with('+') {
         text = text[1..].to_string();
     }
-
     if text.is_empty() {
         return err(format!("int: invalid literal for base {base}"));
     }
-
     match i64::from_str_radix(&text, base as u32) {
         Ok(v) => int(sign * v),
         Err(_) => err("int: Input string was not in a correct format."),
     }
 }
-
 pub fn get_attr(o: &Obj, name: &str) -> Obj {
     get_attr_from(o, name, o)
 }
-
-/// `Obj.GetAttrFrom` — property, `__getattr__`, members, super, global original
-/// values, `Parents[1..]`, then the missing-attribute error.
 fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
     if let Some(m) = member(o, name) {
         if is_property(&m) {
@@ -702,7 +576,6 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
         name
     ))
 }
-
 fn bind_self(value: Obj, receiver: &Obj) -> Obj {
     if is_bound_fn(&value) {
         let mut d = value.borrow_mut();
@@ -711,31 +584,21 @@ fn bind_self(value: Obj, receiver: &Obj) -> Obj {
     }
     value
 }
-
-/// `value is Function.Fn`
 fn is_bound_fn(o: &Obj) -> bool {
     function::is_func(o)
 }
-
-/// `member is Property`
 pub fn is_property(o: &Obj) -> bool {
     function::is_property(o)
 }
-
-/// `Property.Get(receiver)`
 fn property_get(member: &Obj, receiver: &Obj) -> Obj {
     function::prop_get(member, receiver)
 }
-
-/// `Property.Set(receiver, value)`
 pub fn property_set(member: &Obj, receiver: &Obj, value: &Obj) -> Obj {
     function::prop_set(member, receiver, value.clone())
 }
-
 pub fn set_attr(o: &Obj, name: &str, value: &Obj) -> Obj {
     set_attr_from(o, name, value, o)
 }
-
 pub fn set_attr_from(o: &Obj, name: &str, value: &Obj, receiver: &Obj) -> Obj {
     if let Some(m) = member(o, name) {
         if is_property(&m) {
@@ -759,7 +622,6 @@ pub fn set_attr_from(o: &Obj, name: &str, value: &Obj, receiver: &Obj) -> Obj {
     member_set(o, name, value);
     value.clone()
 }
-
 pub fn has(o: &Obj, name: &str) -> bool {
     if has_member(o, name) {
         return true;
@@ -771,7 +633,6 @@ pub fn has(o: &Obj, name: &str) -> bool {
     }
     parents(o).iter().skip(1).any(|p| has(p, name))
 }
-
 pub fn obj_is(o: &Obj, other: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__is__", &[other.clone()]) {
         return v;
@@ -789,7 +650,6 @@ pub fn obj_is(o: &Obj, other: &Obj) -> Obj {
         None => boolean(false),
     }
 }
-
 pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__in__", &[other.clone()]) {
         return v;
@@ -800,7 +660,7 @@ pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
     match payload(o) {
         Payload::List(..) => collections::list_in(o, other),
         Payload::Dict(..) => collections::dict_in(o, other),
-        // `Set.In(other)` is `HashSet.Contains`, the same key equality as `count`
+
         Payload::Set(v) => boolean(v.borrow().contains_key(other)),
         Payload::Tup(vals, _) => collections::tup_in(&vals, other),
         Payload::TObj(t) => collections::tobj_in(&t, other),
@@ -811,7 +671,6 @@ pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
         )),
     }
 }
-
 pub fn repr(o: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__repr__", &[]) {
         return v;
@@ -825,7 +684,7 @@ pub fn repr(o: &Obj) -> Obj {
             return r;
         }
     }
-    // `Fn.Repr()` / `Property.Repr()` are overrides, so they live in the payload dispatch
+
     match payload(o) {
         Payload::Func(_) => return str(&function::fn_repr(o)),
         Payload::Property(_) => return str(&function::prop_repr(o)),
@@ -833,8 +692,6 @@ pub fn repr(o: &Obj) -> Obj {
     }
     str(&type_name(o))
 }
-
-/// `io.write` rendering: `ToStr()` first, `Repr()` as the fallback
 pub fn display(o: &Obj) -> String {
     let t = to_str(o);
     if let Payload::Str(s) = payload(&t) {
@@ -846,7 +703,6 @@ pub fn display(o: &Obj) -> String {
     }
     String::new()
 }
-
 pub fn clone_obj(o: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__clone__", &[]) {
         return v;
@@ -856,11 +712,8 @@ pub fn clone_obj(o: &Obj) -> Obj {
             return clone_obj(&s);
         }
     }
-
     match payload(o) {
-        // every primitive overrides `Clone()` and keeps its value. `Int` / `Bool` go
-        // through `From`, so small values and the shared booleans stay identical cells;
-        // `Str` / `Float` / `Date` build a fresh object, bypassing the string pool.
+
         Payload::Int(v) => return int(v),
         Payload::Float(v) => return float(v),
         Payload::Bool(b) => return boolean(b),
@@ -873,22 +726,16 @@ pub fn clone_obj(o: &Obj) -> Obj {
         Payload::Json(inner) => return collections::json_clone(&inner),
         Payload::Stru(_) => return collections::stru_clone(o),
         Payload::Enu(n) => return collections::enu_clone(o, n),
-        // `Spreads` and `TObj` have no `Clone` override, so the base clone rebuilds the
-        // payload cell with the same content.
+
         Payload::Spread(v) => return collections::spread(v.to_vec()),
         Payload::TObj(t) => return collections::tobj(t),
         Payload::Iter(st) => return iters::iter_clone(o, &st),
-        // `Property.Clone()` / `FieldRef.Clone()` are `this`: every instance shares the
-        // same property object, and the field view is not detachable from its owner.
-        // `HttpClient.Clone()` and `WebSocket.Clone()` are `this` too, so the client and the
-        // socket keep the same host connection.
+
         Payload::Property(_) | Payload::FieldRef(_) => return o.clone(),
         Payload::HttpClient(_) | Payload::WebSocket(_) => return o.clone(),
-        // `Future.Clone()` wraps the same task, so the clone shares the memoized result.
+
         Payload::Future(_) => return o.clone(),
-        // `Pool.Clone()`, `Lock.Clone()`, `AtomicInt.Clone()` and `AtomicBool.Clone()` are
-        // errors: the flow objects own a host resource (the worker set, the monitor, the
-        // interlocked target), so a second cell would not be the same guard.
+
         Payload::Pool(_) => return err("'pool' cannot be cloned"),
         Payload::Lock(_) => return err("'lock' cannot be cloned"),
         Payload::AtomicInt(_) => return err("'atomic_int' cannot be cloned"),
@@ -896,7 +743,6 @@ pub fn clone_obj(o: &Obj) -> Obj {
         Payload::Func(_) => return function::fn_clone(o),
         _ => {}
     }
-
     let (type_name, types, members, annotations, self_, parents, super_) = {
         let d = o.borrow();
         (
@@ -909,7 +755,6 @@ pub fn clone_obj(o: &Obj) -> Obj {
             d.super_.clone(),
         )
     };
-
     let mut created = ObjData::new(type_name, world::obj_type(), Payload::Plain);
     created.types = types;
     created.members = members;
@@ -921,10 +766,8 @@ pub fn clone_obj(o: &Obj) -> Obj {
         Some(s) => Some(clone_obj(s)),
         None => Some(none()),
     };
-
     Rc::new(RefCell::new(created))
 }
-
 pub fn copy_obj(o: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__copy__", &[]) {
         return v;
@@ -937,7 +780,7 @@ pub fn copy_obj(o: &Obj) -> Obj {
         Payload::Date(t) => date_obj(t),
         Payload::Tup(vals, names) => collections::tup_copy(&vals, &names),
         Payload::Stru(_) => collections::stru_copy(o),
-        // `List.Copy` / `Dict.Copy` / `Set.Copy` / `Json.Copy` / `Enu.Copy` / `Iters.Copy` are all `this`
+
         Payload::List(..)
         | Payload::Dict(..)
         | Payload::Set(..)
@@ -948,7 +791,6 @@ pub fn copy_obj(o: &Obj) -> Obj {
         _ => o.clone(),
     }
 }
-
 pub fn compare_to(o: &Obj, other: &Obj) -> Result<i64, Obj> {
     let eq = binop(o, BinOp::Eq, other);
     if is_bool(&eq) && bool_value(&eq) {
@@ -964,7 +806,6 @@ pub fn compare_to(o: &Obj, other: &Obj) -> Result<i64, Obj> {
     }
     Err(panic("panic", "types that are not comparable to each other."))
 }
-
 pub fn not_obj(o: &Obj) -> Obj {
     if let Payload::Bool(b) = payload(o) {
         return boolean(!b);
@@ -975,7 +816,6 @@ pub fn not_obj(o: &Obj) -> Obj {
         _ => err("operand must be a boolean"),
     }
 }
-
 pub fn xor_obj(o: &Obj, other: &Obj) -> Obj {
     if let Payload::Bool(b) = payload(o) {
         return if b { not_obj(other) } else { o.clone() };
@@ -990,39 +830,27 @@ pub fn xor_obj(o: &Obj, other: &Obj) -> Obj {
     }
     boolean(bool_value(&left) ^ bool_value(&right))
 }
-
 pub fn len(o: &Obj) -> Obj {
     unary(o, UnOp::Len)
 }
-
 pub fn hash(o: &Obj) -> Obj {
     unary(o, UnOp::Hash)
 }
-
 pub fn iter(o: &Obj) -> Obj {
     unary(o, UnOp::Iter)
 }
-
 pub fn next(o: &Obj) -> Obj {
     unary(o, UnOp::Next)
 }
-
 pub fn entry(o: &Obj) -> Obj {
     unary(o, UnOp::Entry)
 }
-
 pub fn exit(o: &Obj) -> Obj {
     unary(o, UnOp::Exit)
 }
-
 pub fn spread(o: &Obj) -> Obj {
     unary(o, UnOp::Spread)
 }
-
-/// `Evaluator.Unpack(Obj)` (`Evaluator.cs:1309`). `Tup` / `List` / `Spreads` are the direct
-/// forms; anything else goes through `Spread()`, and a result that is not `Spreads` becomes
-/// `[Err("cannot unpack {Class}")]`. The reference prints `obj.GetType().Name`, the .NET
-/// class name, so `int` shows as `Int` in the message.
 pub fn unpack_items(o: &Obj) -> Vec<Obj> {
     match payload(o) {
         Payload::Tup(v, _) => v.to_vec(),
@@ -1037,9 +865,6 @@ pub fn unpack_items(o: &Obj) -> Vec<Obj> {
         }
     }
 }
-
-/// the spellings `double.TryParse` accepts for an infinite value. the Rust parser also
-/// accepts the short "inf", so the extra spellings are rejected here.
 fn is_dotnet_infinity(text: &str) -> bool {
     let text = text.trim().to_ascii_lowercase();
     matches!(
@@ -1047,9 +872,6 @@ fn is_dotnet_infinity(text: &str) -> bool {
         "infinity" | "+infinity" | "-infinity" | "∞" | "+∞" | "-∞"
     )
 }
-
-/// the .NET class name of an object payload, the string the reference uses in
-/// `cannot unpack {Name}`.
 pub fn class_name(o: &Obj) -> &'static str {
     match payload(o) {
         Payload::Plain => "Obj",
@@ -1085,29 +907,23 @@ pub fn class_name(o: &Obj) -> &'static str {
         Payload::FieldRef(..) => "FieldRef",
     }
 }
-
 pub fn to_int(o: &Obj) -> Obj {
     unary(o, UnOp::ToInt)
 }
-
 pub fn to_float(o: &Obj) -> Obj {
     unary(o, UnOp::ToFloat)
 }
-
 pub fn to_bool(o: &Obj) -> Obj {
     unary(o, UnOp::ToBool)
 }
-
 pub fn to_list(o: &Obj) -> Obj {
     unary(o, UnOp::ToList)
 }
-
 pub fn to_tuple(o: &Obj) -> Obj {
     unary(o, UnOp::ToTuple)
 }
-
 pub fn to_str(o: &Obj) -> Obj {
-    // `Obj.ToStr` answers `none` before any dunder lookup
+
     if is_none(o) {
         return str("none");
     }
@@ -1134,13 +950,11 @@ pub fn to_str(o: &Obj) -> Obj {
         Payload::TObj(t) => collections::tobj_to_str(&t),
         Payload::Iter(st) => iters::iter_to_str(o, &st),
         Payload::Func(_) => str(&function::fn_to_str(o)),
-        // `WebSocket.ToStr()` is the .NET state name inside the angle brackets. `HttpClient`
-        // has no `ToStr` override, so it falls through to the base message.
+
         Payload::WebSocket(state) => str(&format!("<socket {}>", state.borrow().state)),
         _ => err(format!("unsupported operand type(s) for str(): '{}'", type_name(o))),
     }
 }
-
 pub fn get_item(o: &Obj, key: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__getitem__", &[key.clone()]) {
         return v;
@@ -1172,7 +986,6 @@ pub fn get_item(o: &Obj, key: &Obj) -> Obj {
         _ => err(format!("unsupported operand type(s) for []: '{}'", type_name(o))),
     }
 }
-
 pub fn set_item(o: &Obj, key: &Obj, value: &Obj) -> Obj {
     if try_method(o, "__setitem__", &[key.clone(), value.clone()]).is_some() {
         return value.clone();
@@ -1191,7 +1004,6 @@ pub fn set_item(o: &Obj, key: &Obj, value: &Obj) -> Obj {
         type_name(o)
     ))
 }
-
 pub fn slice(o: &Obj, start: Option<Obj>, end: Option<Obj>, step: Option<Obj>) -> Obj {
     let args = [
         start.clone().unwrap_or_else(none),
@@ -1204,13 +1016,11 @@ pub fn slice(o: &Obj, start: Option<Obj>, end: Option<Obj>, step: Option<Obj>) -
     if let Some(s) = valid_super(o) {
         return slice(&s, start, end, step);
     }
-
     match payload(o) {
         Payload::Str(s) => {
             let units: Vec<u16> = s.encode_utf16().collect();
             let len = units.len() as i64;
             let (mut a, mut b, mut st) = (0usize, units.len(), 1i64);
-
             if let Some(start) = start {
                 let i = match payload(&start) {
                     Payload::Int(i) => i,
@@ -1243,14 +1053,12 @@ pub fn slice(o: &Obj, start: Option<Obj>, end: Option<Obj>, step: Option<Obj>) -
                     return err("slice step cannot be zero");
                 }
             }
-
             if st == 1 {
                 if b < a {
                     b = a;
                 }
                 return str(&date::utf16_join(&units[a..b]));
             }
-
             let mut out: Vec<u16> = Vec::new();
             if st > 0 {
                 let mut i = a as i64;
@@ -1272,8 +1080,6 @@ pub fn slice(o: &Obj, start: Option<Obj>, end: Option<Obj>, step: Option<Obj>) -
         _ => err(format!("unsupported slice for '{}'", type_name(o))),
     }
 }
-
-/// `Obj.RangeTo` — `..`. the reference builds an `Iter.Range`; phase 7 supplies it.
 pub fn range_to(o: &Obj, other: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__range__", &[other.clone()]) {
         return v;
@@ -1281,23 +1087,20 @@ pub fn range_to(o: &Obj, other: &Obj) -> Obj {
     if let Some(s) = valid_super(o) {
         return range_to(&s, other);
     }
-
     if range_bound(o).is_some() && range_bound(other).is_some() {
-        // `new Iter.Range(start, stop)`, an inclusive-lower / exclusive-upper range with step 1
+
         return iters::range_new(
             range_bound(o).unwrap(),
             range_bound(other).unwrap(),
             1,
         );
     }
-
     err(format!(
         "unsupported operand type(s) for ..: '{}' and '{}'",
         type_name(o),
         type_name(other)
     ))
 }
-
 fn range_bound(o: &Obj) -> Option<i64> {
     match payload(o) {
         Payload::Int(v) => Some(v),
@@ -1311,7 +1114,6 @@ fn range_bound(o: &Obj) -> Option<i64> {
         _ => None,
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
@@ -1335,7 +1137,6 @@ pub enum BinOp {
     Range,
     GetItem,
 }
-
 impl BinOp {
     fn symbol(&self) -> &'static str {
         match self {
@@ -1361,7 +1162,6 @@ impl BinOp {
             BinOp::GetItem => "[]",
         }
     }
-
     fn dunder(&self) -> &'static str {
         match self {
             BinOp::Add => "__add__",
@@ -1387,7 +1187,6 @@ impl BinOp {
         }
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
     Pos,
@@ -1406,7 +1205,6 @@ pub enum UnOp {
     Exit,
     Spread,
 }
-
 impl UnOp {
     fn dunder(&self) -> &'static str {
         match self {
@@ -1427,7 +1225,6 @@ impl UnOp {
             UnOp::Spread => "__spread__",
         }
     }
-
     pub fn message(&self, t: &str) -> String {
         match self {
             UnOp::Len => "unsupported operand type(s) for len()".to_owned(),
@@ -1454,7 +1251,6 @@ impl UnOp {
         }
     }
 }
-
 pub fn binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
     if let Some(v) = try_method(o, op.dunder(), &[other.clone()]) {
         return v;
@@ -1464,7 +1260,6 @@ pub fn binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
     }
     builtin_binop(o, op, other)
 }
-
 pub fn unary(o: &Obj, op: UnOp) -> Obj {
     if let Some(v) = try_method(o, op.dunder(), &[]) {
         return v;
@@ -1474,11 +1269,9 @@ pub fn unary(o: &Obj, op: UnOp) -> Obj {
     }
     builtin_unop(o, op)
 }
-
 fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
     let t = type_name(o);
     let ot = type_name(other);
-
     match payload(o) {
         Payload::Int(a) => int_binop(a, op, other, &ot),
         Payload::Float(a) => float_binop(a, op, other, &ot),
@@ -1492,13 +1285,11 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         Payload::Enu(n) => collections::enu_binop(o, n, op, other, &t, &ot),
         Payload::TObj(ty) => collections::tobj_binop(&ty, op, other, &t, &ot),
         Payload::Iter(st) => iters::iter_binop(o, &st, op, other, &t, &ot),
-        // `Json` delegates every operation to its wrapped value; the dict / spread
-        // payloads have no operator override, so they fall through to the base chain.
+
         Payload::Json(inner) => binop(&inner, op, other),
         Payload::Dict(..) | Payload::Spread(..) => base_binop(o, op, other, &t, &ot),
         Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => base_binop(o, op, other, &t, &ot),
-        // function, property, and field payloads have no operator override, so the base
-        // chain message is what the reference produces for them too
+
         Payload::Func(_)
         | Payload::Property(_)
         | Payload::FieldRef(_)
@@ -1508,12 +1299,9 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         | Payload::Lock(_)
         | Payload::Stream(_)
         | Payload::Random(_) => base_binop(o, op, other, &t, &ot),
-        // the counters and the flags have no operator override, so only the base chain
-        // message applies to them
+
         Payload::AtomicInt(_) | Payload::AtomicBool(_) => base_binop(o, op, other, &t, &ot),
-        // `HttpClient.Eq()` and `WebSocket.Eq()` compare the host client by reference, so a
-        // client or a socket equals only itself. every other operator has no override, so
-        // the base chain message applies.
+
         Payload::HttpClient(state) => match op {
             BinOp::Eq => boolean(matches!(payload(other), Payload::HttpClient(o) if Rc::ptr_eq(&state, &o))),
             BinOp::NEq => boolean(!matches!(payload(other), Payload::HttpClient(o) if Rc::ptr_eq(&state, &o))),
@@ -1526,10 +1314,8 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         },
     }
 }
-
 fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
     let t = type_name(o);
-
     match payload(o) {
         Payload::Int(a) => match op {
             UnOp::Pos => int(a),
@@ -1552,13 +1338,13 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         },
         Payload::Str(a) => match op {
             UnOp::Len => int(a.encode_utf16().count() as i64),
-            // `long.TryParse` allows the leading and trailing white space
+
             UnOp::ToInt => match a.trim().parse::<i64>() {
                 Ok(v) => int(v),
                 Err(_) => err(format!("cannot convert '{a}' to 'int'")),
             },
             UnOp::ToFloat => match a.trim().parse::<f64>() {
-                // `double.TryParse` accepts "Infinity", but not the short "inf"
+
                 Ok(v) if v.is_infinite() && !is_dotnet_infinity(&a) => {
                     err(format!("cannot convert '{a}' to 'float'"))
                 }
@@ -1570,7 +1356,7 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
                 Err(_) => boolean(!a.is_empty()),
             },
             UnOp::Hash => int(prims::str_hash(&a) as i64),
-            // one `Str` per UTF-16 code unit, like `Value.Select(c => From($"{c}"))`
+
             UnOp::Iter => iters::str_iter(&a),
             UnOp::ToList => iters::str_list(&a),
             UnOp::ToTuple => iters::str_tuple(&a),
@@ -1589,8 +1375,7 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         Payload::Stru(_) => collections::stru_unop(o, op, &t),
         Payload::Enu(n) => collections::enu_unop(n, op, &t),
         Payload::Iter(st) => iters::iter_unop(o, &st, op, &t),
-        // `Pool.Entry()` and `Lock.Entry()` return the object itself, and their exit
-        // closes the pool or releases the lock
+
         Payload::Pool(state) => match op {
             UnOp::Entry => o.clone(),
             UnOp::Exit => {
@@ -1607,17 +1392,12 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
             }
             _ => err(op.message(&t)),
         },
-        // `TObj` has no unop override, so only the base message applies. function,
-        // property, and field payloads behave the same way.
-        // `WebSocket.ToBool()` is the `State == Open` check, the only operator the socket
-        // payload answers. `HttpClient` has no operator override, so the base message
-        // applies to it.
+
         Payload::WebSocket(state) => match op {
             UnOp::ToBool => boolean(state.borrow().state == "Open"),
             _ => err(op.message(&t)),
         },
-        // `AtomicInt.Entry()` / `AtomicBool.Entry()` are `this`. `Exit()` has no override,
-        // so a `use` on the counter reports the base `using exit` message.
+
         Payload::AtomicInt(_) | Payload::AtomicBool(_) => match op {
             UnOp::Entry => o.clone(),
             _ => err(op.message(&t)),
@@ -1636,10 +1416,8 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
         }
     }
 }
-
 fn int_binop(a: i64, op: BinOp, other: &Obj, ot: &Rc<str>) -> Obj {
     let b = payload(other);
-
     match op {
         BinOp::Add => match b {
             Payload::Int(v) => int(a.wrapping_add(v)),
@@ -1755,10 +1533,8 @@ fn int_binop(a: i64, op: BinOp, other: &Obj, ot: &Rc<str>) -> Obj {
         _ => base_binop_of(op, "int", ot),
     }
 }
-
 fn float_binop(a: f64, op: BinOp, other: &Obj, ot: &Rc<str>) -> Obj {
     let b = payload(other);
-
     match op {
         BinOp::Add => match b {
             Payload::Int(v) => float(a + v as f64),
@@ -1854,7 +1630,6 @@ fn float_binop(a: f64, op: BinOp, other: &Obj, ot: &Rc<str>) -> Obj {
         _ => base_binop_of(op, "float", ot),
     }
 }
-
 fn str_binop(o: &Obj, a: Rc<str>, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     match op {
         BinOp::Add | BinOp::Sub => {
@@ -1888,7 +1663,7 @@ fn str_binop(o: &Obj, a: Rc<str>, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<s
             }
             match payload(other) {
                 Payload::Str(v) => boolean(a != v),
-                // the reference reuses the `==` wording in `Str.NEq`
+
                 _ => unsupported("==", t, ot),
             }
         }
@@ -1896,25 +1671,21 @@ fn str_binop(o: &Obj, a: Rc<str>, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<s
             Payload::Str(v) => boolean(a < v),
             _ => unsupported("<", t, ot),
         },
-        // `Str` does not override `>`, `<=` and `>=`, so the base class answers them
-        // with the `<` and `==` results
+
         _ => base_binop(o, op, other, t, ot),
     }
 }
-
 fn bool_binop(a: bool, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     match op {
-        // `Bool.Eq` answers false for every non-boolean, never an error
+
         BinOp::Eq => boolean(matches!(payload(other), Payload::Bool(v) if v == a)),
         _ => base_binop_of(op, t, ot),
     }
 }
-
 fn date_binop(a: i64, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     match op {
         BinOp::Add => match payload(other) {
-            // `Date.Add` adds `other.Day`, the day-of-month of the right operand
-            // (a reference quirk kept for parity), in 100 ns tick units.
+
             Payload::Date(d) => date_obj(a + date::day(d) * date::TICKS_PER_DAY),
             Payload::Str(s) => str(&format!("{}{s}", date::format_date(a))),
             _ => unsupported("+", t, ot),
@@ -1926,7 +1697,6 @@ fn date_binop(a: i64, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj 
         _ => base_binop_of(op, t, ot),
     }
 }
-
 pub fn base_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     match op {
         BinOp::Eq => {
@@ -1977,21 +1747,17 @@ pub fn base_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) ->
         op => base_binop_of(op, t, ot),
     }
 }
-
 pub fn base_binop_of(op: BinOp, t: &str, ot: &str) -> Obj {
     unsupported(op.symbol(), t, ot)
 }
-
 fn unsupported(op: &str, a: &str, b: &str) -> Obj {
     err(format!(
         "unsupported operand type(s) for {op}: '{a}' and '{b}'"
     ))
 }
-
 fn div_zero(t: &str) -> Obj {
     err(format!("{t} division by zero"))
 }
-
 fn bit(a: i64, op: BinOp, b: Payload, ot: &Rc<str>) -> Obj {
     match b {
         Payload::Int(v) => match op {
@@ -2003,7 +1769,6 @@ fn bit(a: i64, op: BinOp, b: Payload, ot: &Rc<str>) -> Obj {
         _ => unsupported(op.symbol(), "int", ot),
     }
 }
-
 fn numeric(t: &str, a: f64, op: BinOp, b: Payload, ot: &Rc<str>) -> Obj {
     let symbol = op.symbol();
     match b {
@@ -2012,7 +1777,6 @@ fn numeric(t: &str, a: f64, op: BinOp, b: Payload, ot: &Rc<str>) -> Obj {
         _ => unsupported(symbol, t, ot),
     }
 }
-
 fn compare(op: BinOp, a: f64, b: f64) -> Obj {
     match op {
         BinOp::Lt => boolean(a < b),
@@ -2022,11 +1786,9 @@ fn compare(op: BinOp, a: f64, b: f64) -> Obj {
         _ => boolean(false),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn message(o: &Obj) -> String {
         match payload(o) {
             Payload::Error { header, message } => format!("{header}: {message}"),
@@ -2041,8 +1803,6 @@ mod tests {
         }
     }
 
-    /// the UTF-16 code units of a string payload, so surrogate cases can be asserted
-    /// without depending on the console encoding
     fn units(o: &Obj) -> Vec<u16> {
         match payload(o) {
             Payload::Str(s) => s.encode_utf16().collect(),
@@ -2050,7 +1810,6 @@ mod tests {
         }
     }
 
-    /// every user-visible failure string measured from the reference CLI
     #[test]
     fn error_strings_match_reference() {
         assert_eq!(message(&binop(&int(1), BinOp::Div, &int(0))), "Error: int division by zero");
@@ -2086,7 +1845,6 @@ mod tests {
             "Error: cannot convert 'abc' to 'int'"
         );
     }
-
     #[test]
     fn host_exceptions_travel_as_panic_values() {
         assert_eq!(
@@ -2094,24 +1852,21 @@ mod tests {
             "System.DivideByZeroException: Attempted to divide by zero."
         );
     }
-
     #[test]
     fn int_arithmetic_is_wrapping_at_runtime() {
         let max = int(i64::MAX);
         assert!(matches!(payload(&binop(&max, BinOp::Add, &int(1))), Payload::Int(i64::MIN)));
         assert!(matches!(payload(&binop(&max, BinOp::Mul, &int(2))), Payload::Int(-2)));
-        // `1 << 64` masks the shift count to 6 bits in C#, so it wraps to 1
+
         assert!(matches!(payload(&binop(&int(1), BinOp::LShift, &int(64))), Payload::Int(1)));
         assert!(matches!(payload(&binop(&int(7), BinOp::IDiv, &int(2))), Payload::Int(3)));
         assert!(matches!(payload(&binop(&int(7), BinOp::Mod, &int(2))), Payload::Int(1)));
     }
-
     #[test]
     fn int_pow_uses_double_and_truncates() {
         assert!(matches!(payload(&binop(&int(2), BinOp::Pow, &int(10))), Payload::Int(1024)));
         assert!(matches!(payload(&binop(&int(10), BinOp::Pow, &float(0.5))), Payload::Float(v) if v == 3.1622776601683795));
     }
-
     #[test]
     fn display_covers_every_primitive() {
         assert_eq!(display(&int(42)), "42");
@@ -2125,19 +1880,14 @@ mod tests {
         assert_eq!(display(&repr(&int(5))), "int");
         assert_eq!(display(&to_str(&int(5))), "5");
     }
-
     #[test]
     fn string_index_and_slice_use_utf16_units() {
-        // escapes keep the source ASCII-only: the two Hangul syllables and the
-        // surrogate pair of the emoji
+
         let s = str("\u{D55C}\u{ADF8}\u{1F600}");
-        // Rust stores `Str` as UTF-8, so a slice that cuts a surrogate pair cannot
-        // keep the lone surrogate. It becomes U+FFFD here, while .NET keeps the lone
-        // surrogate in the `string` and prints it as '?'. Documented divergence, so
-        // the tests compare the UTF-16 unit sequences of the lossy result.
+
         assert!(matches!(payload(&unary(&s, UnOp::Len)), Payload::Int(4)));
         assert_eq!(display(&get_item(&s, &int(0))), "한");
-        // `s[-1]` is normalized to index 3, the low surrogate of the emoji
+
         assert_eq!(units(&get_item(&s, &int(-1))), [0xFFFD]);
         assert_eq!(message(&get_item(&s, &int(9))), "Error: list index out of range");
         assert_eq!(units(&slice(&s, Some(int(1)), Some(int(3)), None)), [0xADF8, 0xFFFD]);
@@ -2151,25 +1901,24 @@ mod tests {
         assert_eq!(display(&slice(&str("abc"), Some(int(1)), Some(int(2)), Some(int(-1)))), "");
         assert_eq!(display(&slice(&str("abc"), Some(int(2)), Some(int(0)), None)), "");
     }
-
     #[test]
     fn string_add_sub_and_compare() {
         assert_eq!(display(&binop(&str("a"), BinOp::Add, &int(1))), "a1");
         assert_eq!(display(&binop(&int(1), BinOp::Add, &str("a"))), "1a");
-        // `Str.Sub` removes every occurrence (`Replace(old, "")`), so "abab" - "ab" is empty
+
         assert_eq!(display(&binop(&str("abab"), BinOp::Sub, &str("ab"))), "");
         assert_eq!(display(&binop(&str("aXb"), BinOp::Sub, &str("X"))), "ab");
-        // `Str.Add` calls `other.ToStr()`, so a bool operand concatenates as "true"
+
         assert_eq!(display(&binop(&str("a"), BinOp::Add, &boolean(true))), "atrue");
         assert_eq!(display(&binop(&str("a"), BinOp::Add, &none())), "anone");
         assert_eq!(display(&binop(&str("aXb"), BinOp::Sub, &boolean(true))), "aXb");
-        // `cannot add 'T' to 'Type'` needs a ToStr() result that is neither Str nor Err
+
         assert_eq!(
             message(&binop(&str("a"), BinOp::Add, &obj_new("obj", Payload::Plain))),
             "Error: unsupported operand type(s) for str(): 'obj'"
         );
         assert!(matches!(payload(&binop(&str("a"), BinOp::Eq, &none())), Payload::Bool(false)));
-        // `Str.NEq` reuses the `==` wording, a reference quirk
+
         assert_eq!(
             message(&binop(&str("a"), BinOp::NEq, &int(1))),
             "Error: unsupported operand type(s) for ==: 'str' and 'int'"
@@ -2179,7 +1928,6 @@ mod tests {
             "Error: unsupported operand type(s) for !=: 'int' and 'bool'"
         );
     }
-
     #[test]
     fn interning_is_observable() {
         assert!(Rc::ptr_eq(&int(100), &int(100)));
@@ -2189,21 +1937,19 @@ mod tests {
         assert!(Rc::ptr_eq(&none(), &none()));
         assert!(Rc::ptr_eq(&str("abc"), &str("abc")));
         assert!(!Rc::ptr_eq(&str_new("abc"), &str("abc")));
-        // the pool is keyed by UTF-16 length, and long strings bypass it
+
         let long = "x".repeat(1001);
         assert!(!Rc::ptr_eq(&str(&long), &str(&long)));
     }
-
     #[test]
     fn none_and_type_identity() {
         assert!(matches!(payload(&binop(&none(), BinOp::Eq, &none())), Payload::Bool(true)));
         assert!(matches!(payload(&binop(&int(1), BinOp::Eq, &none())), Payload::Bool(false)));
         assert!(matches!(payload(&binop(&int(1), BinOp::NEq, &none())), Payload::Bool(true)));
-        // `Bool.Eq` never fails: any non-boolean compares false
+
         assert!(matches!(payload(&binop(&boolean(true), BinOp::Eq, &int(1))), Payload::Bool(false)));
         assert_eq!(message(&binop(&boolean(true), BinOp::Gt, &int(1))), "Error: unsupported operand type(s) for >: 'bool' and 'int'");
     }
-
     #[test]
     fn comparison_falls_back_to_lt_then_eq() {
         let a = int(1);
@@ -2213,7 +1959,6 @@ mod tests {
         assert!(matches!(payload(&binop(&a, BinOp::LtEq, &a)), Payload::Bool(true)));
         assert_eq!(message(&binop(&boolean(true), BinOp::LtEq, &int(1))), "Error: unsupported operand type(s) for <=: 'bool' and 'int'");
     }
-
     #[test]
     fn types_canonicalize_unions() {
         let t = Types::create(&[Types::single("int"), Types::single("str"), Types::single("int")]);
@@ -2223,14 +1968,13 @@ mod tests {
         assert_eq!(Types::create(&[]).display(), "none");
         assert!(Types::create(&[Types::single("int")]).contains(&Types::single("int")));
     }
-
     #[test]
     fn attribute_lookup_follows_the_member_super_chain() {
         let o = obj_new("myclass", Payload::Plain);
         set_attr(&o, "x", &int(7));
         assert!(matches!(payload(&get_attr(&o, "x")), Payload::Int(7)));
         assert_eq!(message(&get_attr(&o, "y")), "Error: 'myclass' object has no attribute 'y'");
-        // assigning on a primitive type name fails with the same wording
+
         assert_eq!(
             message(&set_attr(&int(5), "x", &int(1))),
             "Error: 'int' object has no attribute 'x'"

@@ -1,12 +1,8 @@
-//! `Un.Native.Sys` — the native `sys` module. every function delegates to `os`.
-
 use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj};
 use crate::runtime::scope::{self, Scope};
 use crate::runtime::world;
-
 use super::{arg, native};
-
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     vec![
         (
@@ -91,25 +87,20 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-
 fn env_impl(scope: &Scope) -> Obj {
     let name = scope::get(scope, "name");
     super::os::env_of(&name)
 }
-
 fn environ_impl(_scope: &Scope) -> Obj {
     super::os::environ_of()
 }
-
 fn expand_vars_impl(scope: &Scope) -> Obj {
     let text = scope::get(scope, "text");
     super::os::expand_vars_of(&text)
 }
-
 fn pid_impl(_scope: &Scope) -> Obj {
     obj::int(std::process::id() as i64)
 }
-
 fn name_impl(_scope: &Scope) -> Obj {
     if cfg!(target_os = "windows") {
         return obj::str("windows");
@@ -122,7 +113,6 @@ fn name_impl(_scope: &Scope) -> Obj {
     }
     obj::str("unknown")
 }
-
 fn arch_impl(_scope: &Scope) -> Obj {
     if cfg!(target_arch = "x86_64") {
         obj::str("X64")
@@ -134,7 +124,6 @@ fn arch_impl(_scope: &Scope) -> Obj {
         obj::str("unknown")
     }
 }
-
 fn version_impl(_scope: &Scope) -> Obj {
     obj::str(&format!(
         "{} {}",
@@ -142,66 +131,51 @@ fn version_impl(_scope: &Scope) -> Obj {
         "10.0.0"
     ))
 }
-
 fn cpu_count_impl(_scope: &Scope) -> Obj {
     obj::int(std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(1))
 }
-
 fn is_64bit_impl(_scope: &Scope) -> Obj {
     obj::boolean(cfg!(target_pointer_width = "64"))
 }
-
 fn hostname_impl(_scope: &Scope) -> Obj {
     obj::str(&std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_default())
 }
-
 fn username_impl(_scope: &Scope) -> Obj {
     obj::str(&std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_default())
 }
-
 fn args_impl(_scope: &Scope) -> Obj {
     let args: Vec<Obj> = std::env::args().map(|a| obj::str(&a)).collect();
     crate::runtime::collections::list(args)
 }
-
 fn sep_impl(_scope: &Scope) -> Obj {
     obj::str(if cfg!(target_os = "windows") { "\\" } else { "/" })
 }
-
 fn pathsep_impl(_scope: &Scope) -> Obj {
     obj::str(if cfg!(target_os = "windows") { ";" } else { ":" })
 }
-
 fn linesep_impl(_scope: &Scope) -> Obj {
     obj::str(crate::error::nl())
 }
-
 fn tick_count_impl(_scope: &Scope) -> Obj {
-    // `Environment.TickCount64` is the uptime of the machine, the Rust runtime has no
-    // portable form of it, so the epoch milliseconds are used (D-051)
+
     obj::int(crate::runtime::clock::unix_millis())
 }
-
 fn get_call_depth_impl(_scope: &Scope) -> Obj {
     obj::int(world::max_recursion_depth() as i64)
 }
-
 fn set_call_depth_impl(scope: &Scope) -> Obj {
     let depth = scope::get(scope, "depth");
-
     let value = match crate::runtime::obj::payload(&depth) {
         crate::runtime::obj::Payload::Int(v) => v,
         _ => return obj::err("expected 'depth' to be int"),
     };
-
     if value < 1 {
         return obj::err("depth must be >= 1");
     }
-
     world::set_max_recursion_depth(value as usize);
     obj::none()
 }

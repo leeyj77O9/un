@@ -1,31 +1,15 @@
-//! the `atomic_int` / `atomic_bool` payloads and the `atomic` native module.
-//!
-//! the reference stores the value in an `Interlocked` target. the runtime has no threads
-//! for the object model (the objects are not `Send`), so the cell holds the same value the
-//! interlocked operations produce, and the operations keep the reference's order of the
-//! checks and messages.
-
 use std::cell::RefCell;
 use std::rc::Rc;
-
 use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
-
 use super::{arg, native};
-
-/// a new atomic integer counter.
 pub fn new_atomic_int(initial: i64) -> Obj {
     obj::obj_new("atomic_int", Payload::AtomicInt(Rc::new(RefCell::new(initial))))
 }
-
-/// a new atomic boolean flag.
 pub fn new_atomic_bool(initial: bool) -> Obj {
     obj::obj_new("atomic_bool", Payload::AtomicBool(Rc::new(RefCell::new(initial))))
 }
-
-/// `Atomic` — the `atomic` native module. the parameter names are the reference's
-/// `[ArgInfo]` names, so a keyword call binds the same slot.
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     vec![
         (
@@ -48,37 +32,26 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-
-/// `Atomic.Int(initial)` — no argument is `null` in the reference, which binds `none`
-/// in the runtime, so `is_none` is the `initial is null` test.
 fn int_impl(scope: &Scope) -> Obj {
     let initial = scope::get(scope, "initial");
-
     if obj::is_none(&initial) {
         return new_atomic_int(0);
     }
-
     match obj::payload(&initial) {
         Payload::Int(v) => new_atomic_int(v),
         _ => obj::err("expected 'initial' argument to be of type 'int'"),
     }
 }
-
-/// `Atomic.Bool(initial)`
 fn bool_impl(scope: &Scope) -> Obj {
     let initial = scope::get(scope, "initial");
-
     if obj::is_none(&initial) {
         return new_atomic_bool(false);
     }
-
     match obj::payload(&initial) {
         Payload::Bool(b) => new_atomic_bool(b),
         _ => obj::err("expected 'initial' argument to be of type 'bool'"),
     }
 }
-
-/// `AtomicInt.Init(args)` — the class call form, `atomic_int(10)`.
 pub fn atomic_int_init(_o: &Obj, args: &[Obj]) -> Obj {
     match args.len() {
         0 => new_atomic_int(0),
@@ -89,8 +62,6 @@ pub fn atomic_int_init(_o: &Obj, args: &[Obj]) -> Obj {
         _ => obj::err("atomic_int takes at most one argument"),
     }
 }
-
-/// `AtomicBool.Init(args)`
 pub fn atomic_bool_init(_o: &Obj, args: &[Obj]) -> Obj {
     match args.len() {
         0 => new_atomic_bool(false),
@@ -101,11 +72,6 @@ pub fn atomic_bool_init(_o: &Obj, args: &[Obj]) -> Obj {
         _ => obj::err("atomic_bool takes at most one argument"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// the member tables of the counter and the flag
-// ---------------------------------------------------------------------------
-
 pub fn int_members(closure: &Context) -> Vec<(String, Obj)> {
     vec![
         ("get".to_owned(), native(closure, "get", Vec::new(), int_get)),
@@ -152,7 +118,6 @@ pub fn int_members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-
 pub fn bool_members(closure: &Context) -> Vec<(String, Obj)> {
     vec![
         ("get".to_owned(), native(closure, "get", Vec::new(), bool_get)),
@@ -188,35 +153,28 @@ pub fn bool_members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-
-/// the receiver of a member call, as the counter cell.
 fn int_cell(scope: &Scope) -> Option<Rc<RefCell<i64>>> {
     match obj::payload(&scope::get(scope, "self")) {
         Payload::AtomicInt(cell) => Some(cell.clone()),
         _ => None,
     }
 }
-
-/// the receiver of a member call, as the flag cell.
 fn bool_cell(scope: &Scope) -> Option<Rc<RefCell<bool>>> {
     match obj::payload(&scope::get(scope, "self")) {
         Payload::AtomicBool(cell) => Some(cell.clone()),
         _ => None,
     }
 }
-
 fn int_get(scope: &Scope) -> Obj {
     match int_cell(scope) {
         Some(cell) => obj::int(*cell.borrow()),
         None => obj::err("expected 'atomic_int' object"),
     }
 }
-
 fn int_set(scope: &Scope) -> Obj {
     let Some(cell) = int_cell(scope) else {
         return obj::err("expected 'atomic_int' object");
     };
-
     match obj::payload(&scope::get(scope, "amount")) {
         Payload::Int(v) => {
             *cell.borrow_mut() = v;
@@ -225,12 +183,10 @@ fn int_set(scope: &Scope) -> Obj {
         _ => obj::err("expected 'value' argument to be of type 'int'"),
     }
 }
-
 fn int_add(scope: &Scope) -> Obj {
     let Some(cell) = int_cell(scope) else {
         return obj::err("expected 'atomic_int' object");
     };
-
     match obj::payload(&scope::get(scope, "amount")) {
         Payload::Int(v) => {
             let mut value = cell.borrow_mut();
@@ -240,7 +196,6 @@ fn int_add(scope: &Scope) -> Obj {
         _ => obj::err("expected 'value' argument to be of type 'int'"),
     }
 }
-
 fn int_inc(scope: &Scope) -> Obj {
     match int_cell(scope) {
         Some(cell) => {
@@ -251,7 +206,6 @@ fn int_inc(scope: &Scope) -> Obj {
         None => obj::err("expected 'atomic_int' object"),
     }
 }
-
 fn int_dec(scope: &Scope) -> Obj {
     match int_cell(scope) {
         Some(cell) => {
@@ -262,12 +216,10 @@ fn int_dec(scope: &Scope) -> Obj {
         None => obj::err("expected 'atomic_int' object"),
     }
 }
-
 fn int_exchange(scope: &Scope) -> Obj {
     let Some(cell) = int_cell(scope) else {
         return obj::err("expected 'atomic_int' object");
     };
-
     match obj::payload(&scope::get(scope, "amount")) {
         Payload::Int(v) => {
             let mut value = cell.borrow_mut();
@@ -278,45 +230,35 @@ fn int_exchange(scope: &Scope) -> Obj {
         _ => obj::err("expected 'value' argument to be of type 'int'"),
     }
 }
-
-/// `Interlocked.CompareExchange(value, new_value, expected) == expected`
 fn int_compare_and_swap(scope: &Scope) -> Obj {
     let Some(cell) = int_cell(scope) else {
         return obj::err("expected 'atomic_int' object");
     };
-
     let expected = match obj::payload(&scope::get(scope, "expected")) {
         Payload::Int(v) => v,
         _ => return obj::err("expected 'expected' argument to be of type 'int'"),
     };
-
     let new_value = match obj::payload(&scope::get(scope, "newValue")) {
         Payload::Int(v) => v,
         _ => return obj::err("expected 'new_value' argument to be of type 'int'"),
     };
-
     let mut value = cell.borrow_mut();
     let swapped = *value == expected;
-
     if swapped {
         *value = new_value;
     }
-
     obj::boolean(swapped)
 }
-
 fn bool_get(scope: &Scope) -> Obj {
     match bool_cell(scope) {
         Some(cell) => obj::boolean(*cell.borrow()),
         None => obj::err("expected 'atomic_bool' object"),
     }
 }
-
 fn bool_set(scope: &Scope) -> Obj {
     let Some(cell) = bool_cell(scope) else {
         return obj::err("expected 'atomic_bool' object");
     };
-
     match obj::payload(&scope::get(scope, "amount")) {
         Payload::Bool(b) => {
             *cell.borrow_mut() = b;
@@ -325,12 +267,10 @@ fn bool_set(scope: &Scope) -> Obj {
         _ => obj::err("expected 'value' argument to be of type 'bool'"),
     }
 }
-
 fn bool_exchange(scope: &Scope) -> Obj {
     let Some(cell) = bool_cell(scope) else {
         return obj::err("expected 'atomic_bool' object");
     };
-
     match obj::payload(&scope::get(scope, "amount")) {
         Payload::Bool(b) => {
             let mut value = cell.borrow_mut();
@@ -341,28 +281,22 @@ fn bool_exchange(scope: &Scope) -> Obj {
         _ => obj::err("expected 'value' argument to be of type 'bool'"),
     }
 }
-
 fn bool_compare_and_swap(scope: &Scope) -> Obj {
     let Some(cell) = bool_cell(scope) else {
         return obj::err("expected 'atomic_bool' object");
     };
-
     let expected = match obj::payload(&scope::get(scope, "expected")) {
         Payload::Bool(b) => b,
         _ => return obj::err("expected 'expected' argument to be of type 'bool'"),
     };
-
     let new_value = match obj::payload(&scope::get(scope, "newValue")) {
         Payload::Bool(b) => b,
         _ => return obj::err("expected 'new_value' argument to be of type 'bool'"),
     };
-
     let mut value = cell.borrow_mut();
     let swapped = *value == expected;
-
     if swapped {
         *value = new_value;
     }
-
     obj::boolean(swapped)
 }

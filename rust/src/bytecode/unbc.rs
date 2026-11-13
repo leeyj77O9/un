@@ -1,72 +1,36 @@
-//! the `.unbc` container — the serialized form of a `Program` (BYTECODE.md §13).
-//!
-//! ```text
-//! magic   "UNB1"          (4 bytes)
-//! version u16             (minor/major)
-//! flags   u16             (source embed flag, sandbox hints)
-//! source path: length-prefixed UTF-8
-//! name table: count u32 + length-prefixed UTF-8 strings
-//! constant pool: count u32 + entries
-//! proto table: count u32 + protos
-//!   proto: { name u32, arity u32, flags u16, locals: count+u32s, params: count+entries,
-//!            code: count+instrs(7 bytes each), consts: count+u32s, names: count+u32s,
-//!            protos: count+u32s, call_names: count+(count+u32s), source_map: count+(u32,u32),
-//!            exc: count+(kind u8, start u32, end u32, handler u32, var_slot u32=NONE),
-//!            patterns: count+entries, ext_type: u32=NONE }
-//! ```
-//!
-//! every number is little-endian, every string and every list is count-prefixed. an
-//! unknown opcode, version or flag fails the validation, so a newer file is rejected
-//! instead of misread.
-
 use crate::bytecode::instr::{Instr, Op};
 use crate::bytecode::{Constant, ExcEntry, ExcKind, Param, Pattern, Program, Proto, MAGIC, VERSION};
-
-/// the `NONE` marker of the optional indices.
 const NONE: u32 = u32::MAX;
-
-/// the tags of the constant pool.
 const CONST_INT: u8 = 0;
 const CONST_FLOAT: u8 = 1;
 const CONST_STR: u8 = 2;
 const CONST_BOOL: u8 = 3;
 const CONST_NONE: u8 = 4;
 const CONST_NULL: u8 = 5;
-
-/// the tags of the pattern table.
 const PATTERN_WILDCARD: u8 = 0;
 const PATTERN_BIND: u8 = 1;
 const PATTERN_LITERAL: u8 = 2;
 const PATTERN_TUPLE: u8 = 3;
-
-/// the tags of the exception table.
 const EXC_CATCH: u8 = 0;
 const EXC_FINALLY: u8 = 1;
 const EXC_PROPAGATE: u8 = 2;
-
-/// writes the program into the `.unbc` container.
 pub fn write(program: &Program) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
-
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
-    // the flags: bit0 is the embedded source
+
     let flags: u16 = if program.source.is_some() { 1 } else { 0 };
     out.extend_from_slice(&flags.to_le_bytes());
-
     write_string(&mut out, &program.source_path);
-
     if let Some(source) = &program.source {
         write_string(&mut out, source);
     }
 
-    // the name table
     out.extend_from_slice(&(program.names.len() as u32).to_le_bytes());
     for name in &program.names {
         write_string(&mut out, name);
     }
 
-    // the constant pool
     out.extend_from_slice(&(program.consts.len() as u32).to_le_bytes());
     for value in &program.consts {
         match value {
@@ -91,39 +55,32 @@ pub fn write(program: &Program) -> Vec<u8> {
         }
     }
 
-    // the message table, the `UNSUPPORTED` operands point into it
     out.extend_from_slice(&(program.msgs.len() as u32).to_le_bytes());
     for message in &program.msgs {
         write_string(&mut out, message);
     }
 
-    // the proto table
     out.extend_from_slice(&(program.protos.len() as u32).to_le_bytes());
     for proto in &program.protos {
         write_proto(&mut out, proto);
     }
-
     out
 }
-
 fn write_string(out: &mut Vec<u8>, text: &str) {
     let bytes = text.as_bytes();
     out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(bytes);
 }
-
 fn write_proto(out: &mut Vec<u8>, proto: &Proto) {
     out.extend_from_slice(&(proto.name as u32).to_le_bytes());
     out.extend_from_slice(&(proto.arity as u32).to_le_bytes());
     out.extend_from_slice(&proto.flags.to_le_bytes());
 
-    // the local slots
     out.extend_from_slice(&(proto.locals.len() as u32).to_le_bytes());
     for slot in &proto.locals {
         out.extend_from_slice(&(*slot as u32).to_le_bytes());
     }
 
-    // the parameters
     out.extend_from_slice(&(proto.params.len() as u32).to_le_bytes());
     for param in &proto.params {
         out.extend_from_slice(&(param.name as u32).to_le_bytes());
@@ -138,13 +95,11 @@ fn write_proto(out: &mut Vec<u8>, proto: &Proto) {
         }
     }
 
-    // the code
     out.extend_from_slice(&(proto.code.len() as u32).to_le_bytes());
     for instr in &proto.code {
         out.extend_from_slice(&instr.encode());
     }
 
-    // the proto local tables
     for table in [&proto.consts, &proto.names, &proto.protos] {
         out.extend_from_slice(&(table.len() as u32).to_le_bytes());
         for index in table {
@@ -152,7 +107,6 @@ fn write_proto(out: &mut Vec<u8>, proto: &Proto) {
         }
     }
 
-    // the call site names
     out.extend_from_slice(&(proto.call_names.len() as u32).to_le_bytes());
     for names in &proto.call_names {
         out.extend_from_slice(&(names.len() as u32).to_le_bytes());
@@ -161,14 +115,12 @@ fn write_proto(out: &mut Vec<u8>, proto: &Proto) {
         }
     }
 
-    // the source map
     out.extend_from_slice(&(proto.source_map.len() as u32).to_le_bytes());
     for (start, length) in &proto.source_map {
         out.extend_from_slice(&(*start as u32).to_le_bytes());
         out.extend_from_slice(&(*length as u32).to_le_bytes());
     }
 
-    // the exception table
     out.extend_from_slice(&(proto.exc.len() as u32).to_le_bytes());
     for entry in &proto.exc {
         let kind = match entry.kind {
@@ -186,7 +138,6 @@ fn write_proto(out: &mut Vec<u8>, proto: &Proto) {
         }
     }
 
-    // the pattern table
     out.extend_from_slice(&(proto.patterns.len() as u32).to_le_bytes());
     for pattern in &proto.patterns {
         match pattern {
@@ -209,13 +160,11 @@ fn write_proto(out: &mut Vec<u8>, proto: &Proto) {
         }
     }
 
-    // the extended type
     match proto.ext_type {
         Some(index) => out.extend_from_slice(&(index as u32).to_le_bytes()),
         None => out.extend_from_slice(&NONE.to_le_bytes()),
     }
 }
-
 fn write_pattern(out: &mut Vec<u8>, pattern: &Pattern) {
     match pattern {
         Pattern::Wildcard => out.push(PATTERN_WILDCARD),
@@ -236,58 +185,46 @@ fn write_pattern(out: &mut Vec<u8>, pattern: &Pattern) {
         }
     }
 }
-
-/// reads a program from the `.unbc` container.
 pub fn read(bytes: &[u8]) -> Result<Program, String> {
     let mut reader = Reader { bytes, pos: 0 };
-
     let magic = reader.take(4)?;
     if magic != MAGIC {
         return Err("not a .unbc file".to_string());
     }
-
     let version = reader.u16()?;
     if version != VERSION {
         return Err(format!("unsupported .unbc version {version}"));
     }
-
     let flags = reader.u16()?;
     if flags & !1 != 0 {
         return Err(format!("unsupported .unbc flags {flags:#06x}"));
     }
-
     let source_path = reader.string()?;
-
     let source = if flags & 1 != 0 {
         Some(reader.string()?)
     } else {
         None
     };
-
     let name_count = reader.u32()? as usize;
     let mut names = Vec::with_capacity(name_count);
     for _ in 0..name_count {
         names.push(reader.string()?);
     }
-
     let const_count = reader.u32()? as usize;
     let mut consts = Vec::with_capacity(const_count);
     for _ in 0..const_count {
         consts.push(read_constant(&mut reader)?);
     }
-
     let msg_count = reader.u32()? as usize;
     let mut msgs = Vec::with_capacity(msg_count);
     for _ in 0..msg_count {
         msgs.push(reader.string()?);
     }
-
     let proto_count = reader.u32()? as usize;
     let mut protos = Vec::with_capacity(proto_count);
     for _ in 0..proto_count {
         protos.push(read_proto(&mut reader)?);
     }
-
     let program = Program {
         source_path,
         source,
@@ -297,11 +234,9 @@ pub fn read(bytes: &[u8]) -> Result<Program, String> {
         msgs,
         root: 0,
     };
-
     program.validate()?;
     Ok(program)
 }
-
 fn read_constant(reader: &mut Reader) -> Result<Constant, String> {
     let tag = reader.u8()?;
     Ok(match tag {
@@ -314,18 +249,15 @@ fn read_constant(reader: &mut Reader) -> Result<Constant, String> {
         other => return Err(format!("unknown constant tag {other}")),
     })
 }
-
 fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
     let name = reader.u32()? as usize;
     let arity = reader.u32()? as usize;
     let flags = reader.u16()?;
-
     let local_count = reader.u32()? as usize;
     let mut locals = Vec::with_capacity(local_count);
     for _ in 0..local_count {
         locals.push(reader.u32()? as usize);
     }
-
     let param_count = reader.u32()? as usize;
     let mut params = Vec::with_capacity(param_count);
     for _ in 0..param_count {
@@ -340,7 +272,6 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
             default,
         });
     }
-
     let code_count = reader.u32()? as usize;
     let mut code = Vec::with_capacity(code_count);
     for _ in 0..code_count {
@@ -352,11 +283,9 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
         }
         code.push(instr);
     }
-
     let consts = read_table(reader)?;
     let names = read_table(reader)?;
     let protos = read_table(reader)?;
-
     let call_count = reader.u32()? as usize;
     let mut call_names = Vec::with_capacity(call_count);
     for _ in 0..call_count {
@@ -367,7 +296,6 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
         }
         call_names.push(entries);
     }
-
     let map_count = reader.u32()? as usize;
     let mut source_map = Vec::with_capacity(map_count);
     for _ in 0..map_count {
@@ -375,7 +303,6 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
         let length = reader.u32()? as usize;
         source_map.push((start, length));
     }
-
     let exc_count = reader.u32()? as usize;
     let mut exc = Vec::with_capacity(exc_count);
     for _ in 0..exc_count {
@@ -397,15 +324,12 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
             var_slot,
         });
     }
-
     let pattern_count = reader.u32()? as usize;
     let mut patterns = Vec::with_capacity(pattern_count);
     for _ in 0..pattern_count {
         patterns.push(read_pattern(reader)?);
     }
-
     let ext_type = reader.optional_u32()?;
-
     Ok(Proto {
         name,
         arity,
@@ -423,7 +347,6 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
         ext_type,
     })
 }
-
 fn read_pattern(reader: &mut Reader) -> Result<Pattern, String> {
     let tag = reader.u8()?;
     Ok(match tag {
@@ -441,7 +364,6 @@ fn read_pattern(reader: &mut Reader) -> Result<Pattern, String> {
         other => return Err(format!("unknown pattern tag {other}")),
     })
 }
-
 fn read_table(reader: &mut Reader) -> Result<Vec<usize>, String> {
     let count = reader.u32()? as usize;
     let mut table = Vec::with_capacity(count);
@@ -450,58 +372,47 @@ fn read_table(reader: &mut Reader) -> Result<Vec<usize>, String> {
     }
     Ok(table)
 }
-
-/// the reader of the container.
 struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
-
 impl<'a> Reader<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8], String> {
         if self.pos + count > self.bytes.len() {
             return Err("unexpected end of the .unbc file".to_string());
         }
-
         let slice = &self.bytes[self.pos..self.pos + count];
         self.pos += count;
         Ok(slice)
     }
-
     fn u8(&mut self) -> Result<u8, String> {
         Ok(self.take(1)?[0])
     }
-
     fn u16(&mut self) -> Result<u16, String> {
         let bytes = self.take(2)?;
         Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
     }
-
     fn u32(&mut self) -> Result<u32, String> {
         let bytes = self.take(4)?;
         Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
-
     fn i64(&mut self) -> Result<i64, String> {
         let bytes = self.take(8)?;
         let mut raw = [0u8; 8];
         raw.copy_from_slice(bytes);
         Ok(i64::from_le_bytes(raw))
     }
-
     fn f64(&mut self) -> Result<f64, String> {
         let bytes = self.take(8)?;
         let mut raw = [0u8; 8];
         raw.copy_from_slice(bytes);
         Ok(f64::from_le_bytes(raw))
     }
-
     fn string(&mut self) -> Result<String, String> {
         let length = self.u32()? as usize;
         let bytes = self.take(length)?;
         String::from_utf8(bytes.to_vec()).map_err(|_| "the .unbc file has an invalid string".to_string())
     }
-
     fn optional_u32(&mut self) -> Result<Option<usize>, String> {
         let value = self.u32()?;
         if value == NONE {
@@ -511,16 +422,12 @@ impl<'a> Reader<'a> {
         }
     }
 }
-
-/// the opcode of an instruction, the reader checks it.
 pub fn opcode_of(instr: &Instr) -> Option<Op> {
     instr.op_code()
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn sample() -> Program {
         let mut program = Program {
             source_path: "test.un".to_string(),
@@ -538,7 +445,6 @@ mod tests {
             msgs: vec!["unsupported node kind Match".to_string()],
             root: 0,
         };
-
         let mut proto = Proto::new(0, 0);
         proto.arity = 1;
         proto.locals = vec![2];
@@ -573,24 +479,20 @@ mod tests {
             Pattern::Tuple(vec![Pattern::Wildcard, Pattern::Bind(1)]),
         ];
         proto.ext_type = Some(1);
-
         program.protos.push(proto);
         program
     }
-
     #[test]
     fn the_container_round_trips() {
         let program = sample();
         let bytes = write(&program);
         let read_back = read(&bytes).expect("read");
-
         assert_eq!(read_back.source_path, program.source_path);
         assert_eq!(read_back.source, program.source);
         assert_eq!(read_back.names, program.names);
         assert_eq!(read_back.consts, program.consts);
         assert_eq!(read_back.msgs, program.msgs);
         assert_eq!(read_back.protos.len(), program.protos.len());
-
         let proto = &read_back.protos[0];
         let original = &program.protos[0];
         assert_eq!(proto.code, original.code);
@@ -603,14 +505,12 @@ mod tests {
         assert_eq!(proto.patterns, original.patterns);
         assert_eq!(proto.ext_type, original.ext_type);
     }
-
     #[test]
     fn a_foreign_magic_is_rejected() {
         let mut bytes = write(&sample());
         bytes[0] = b'X';
         assert!(read(&bytes).is_err());
     }
-
     #[test]
     fn a_truncated_file_is_rejected() {
         let bytes = write(&sample());

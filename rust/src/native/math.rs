@@ -1,23 +1,12 @@
-//! `Un.Native.Math` — the native `math` module.
-//!
-//! the reference keeps the argument types (`int` / `float`) and wraps the result the
-//! same way: `Wrap` returns an `Int` for an `Int` argument and a `Float` otherwise.
-//! `Math.Round` is .NET's midpoint rounding to even, so it is not `f64::round`.
-
 use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
 use crate::runtime::world;
-
 use super::{arg, native};
-
-/// `Math.MaxDigits`
 const MAX_DIGITS: i64 = 15;
-
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     let one = |name: &str| vec![arg(name, true, false, false)];
     let optional = |name: &str| vec![arg(name, false, true, false)];
-
     vec![
         (
             "round".to_owned(),
@@ -134,8 +123,6 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-
-/// `GetNumber` — an `Int` or a `Float`, anything else is an error.
 fn get_number(value: &Obj) -> Result<f64, Obj> {
     match obj::payload(value) {
         Payload::Int(v) => Ok(v as f64),
@@ -143,16 +130,12 @@ fn get_number(value: &Obj) -> Result<f64, Obj> {
         _ => Err(obj::err("expected number type")),
     }
 }
-
-/// `GetInt`
 fn get_int(value: &Obj) -> Result<i64, Obj> {
     match obj::payload(value) {
         Payload::Int(v) => Ok(v),
         _ => Err(obj::err("expected integer type")),
     }
 }
-
-/// `Wrap` — an `Int` argument keeps the `Int` type of the result.
 fn wrap(original: &Obj, value: f64) -> Obj {
     if matches!(obj::payload(original), Payload::Int(_)) {
         obj::int(value as i64)
@@ -160,35 +143,27 @@ fn wrap(original: &Obj, value: f64) -> Obj {
         obj::float(value)
     }
 }
-
-/// `Math.Round(value, digits)` — the midpoint rounds to even, and the digits are
-/// applied by scaling, like the reference does.
 fn round_to_even(value: f64) -> f64 {
     let abs = value.abs();
     let mut rounded = abs.floor();
-
     if abs - rounded > 0.5 {
         rounded += 1.0;
     } else if abs - rounded == 0.5 && rounded % 2.0 != 0.0 {
         rounded += 1.0;
     }
-
     if value < 0.0 {
         -rounded
     } else {
         rounded
     }
 }
-
 fn round_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let digit = scope::get(scope, "digit");
-
     let v = match get_number(&value) {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     let mut digits = 0i64;
     if !obj::is_none(&digit) {
         let d = match get_int(&digit) {
@@ -200,21 +175,18 @@ fn round_impl(scope: &Scope) -> Obj {
         }
         digits = d;
     }
-
     let rounded = if digits == 0 {
         round_to_even(v)
     } else {
         let power = 10f64.powi(digits as i32);
         round_to_even(v * power) / power
     };
-
     if digits == 0 || rounded.fract() == 0.0 {
         obj::int(rounded as i64)
     } else {
         obj::float(rounded)
     }
 }
-
 fn abs_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -223,7 +195,6 @@ fn abs_impl(scope: &Scope) -> Obj {
     };
     wrap(&value, v.abs())
 }
-
 fn ceil_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -236,7 +207,6 @@ fn ceil_impl(scope: &Scope) -> Obj {
         obj::float(v.ceil())
     }
 }
-
 fn floor_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -249,7 +219,6 @@ fn floor_impl(scope: &Scope) -> Obj {
         obj::float(v.floor())
     }
 }
-
 fn trunc_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -262,7 +231,6 @@ fn trunc_impl(scope: &Scope) -> Obj {
         obj::int(v.trunc() as i64)
     }
 }
-
 fn sign_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -270,7 +238,6 @@ fn sign_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
 
-    // `Math.Sign` returns 0 for NaN
     let sign = if v.is_nan() || v == 0.0 {
         0
     } else if v > 0.0 {
@@ -278,24 +245,19 @@ fn sign_impl(scope: &Scope) -> Obj {
     } else {
         -1
     };
-
     obj::int(sign)
 }
-
 fn sqrt_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     if v < 0.0 {
         return obj::err("cannot compute sqrt of a negative number");
     }
-
     obj::float(v.sqrt())
 }
-
 fn cbrt_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -304,11 +266,9 @@ fn cbrt_impl(scope: &Scope) -> Obj {
     };
     obj::float(v.cbrt())
 }
-
 fn pow_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let exponent = scope::get(scope, "exponent");
-
     let v = match get_number(&value) {
         Ok(v) => v,
         Err(e) => return e,
@@ -317,19 +277,15 @@ fn pow_impl(scope: &Scope) -> Obj {
         Ok(e) => e,
         Err(e) => return e,
     };
-
     let result = v.powf(e);
-
     let both_int = matches!(obj::payload(&value), Payload::Int(_))
         && matches!(obj::payload(&exponent), Payload::Int(_));
-
     if both_int && e >= 0.0 && result.fract() == 0.0 && result.is_finite() {
         obj::int(result as i64)
     } else {
         obj::float(result)
     }
 }
-
 fn exp_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -338,60 +294,47 @@ fn exp_impl(scope: &Scope) -> Obj {
     };
     obj::float(v.exp())
 }
-
 fn log_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let base = scope::get(scope, "base");
-
     let v = match get_number(&value) {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     if v <= 0.0 {
         return obj::err("expected value greater than 0");
     }
-
     if obj::is_none(&base) {
         return obj::float(v.ln());
     }
-
     let b = match get_number(&base) {
         Ok(b) => b,
         Err(e) => return e,
     };
-
     obj::float(v.ln() / b.ln())
 }
-
 fn log2_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     if v <= 0.0 {
         return obj::err("expected value greater than 0");
     }
-
     obj::float(v.log2())
 }
-
 fn log10_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     if v <= 0.0 {
         return obj::err("expected value greater than 0");
     }
-
     obj::float(v.log10())
 }
-
 fn sin_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -400,7 +343,6 @@ fn sin_impl(scope: &Scope) -> Obj {
     };
     obj::float(v.sin())
 }
-
 fn cos_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -409,7 +351,6 @@ fn cos_impl(scope: &Scope) -> Obj {
     };
     obj::float(v.cos())
 }
-
 fn tan_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -418,7 +359,6 @@ fn tan_impl(scope: &Scope) -> Obj {
     };
     obj::float(v.tan())
 }
-
 fn asin_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -427,7 +367,6 @@ fn asin_impl(scope: &Scope) -> Obj {
     };
     obj::float(v.asin())
 }
-
 fn acos_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -436,7 +375,6 @@ fn acos_impl(scope: &Scope) -> Obj {
     };
     obj::float(v.acos())
 }
-
 fn atan_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -445,11 +383,9 @@ fn atan_impl(scope: &Scope) -> Obj {
     };
     obj::float(v.atan())
 }
-
 fn atan2_impl(scope: &Scope) -> Obj {
     let y = scope::get(scope, "y");
     let x = scope::get(scope, "x");
-
     let yv = match get_number(&y) {
         Ok(v) => v,
         Err(e) => return e,
@@ -458,14 +394,11 @@ fn atan2_impl(scope: &Scope) -> Obj {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     obj::float(yv.atan2(xv))
 }
-
 fn hypot_impl(scope: &Scope) -> Obj {
     let x = scope::get(scope, "x");
     let y = scope::get(scope, "y");
-
     let xv = match get_number(&x) {
         Ok(v) => v,
         Err(e) => return e,
@@ -474,15 +407,12 @@ fn hypot_impl(scope: &Scope) -> Obj {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     obj::float((xv * xv + yv * yv).sqrt())
 }
-
 fn clamp_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let min = scope::get(scope, "min");
     let max = scope::get(scope, "max");
-
     let v = match get_number(&value) {
         Ok(v) => v,
         Err(e) => return e,
@@ -495,11 +425,9 @@ fn clamp_impl(scope: &Scope) -> Obj {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     if lo > hi {
         return obj::err("min must be less than or equal to max");
     }
-
     let clamped = if v < lo {
         lo
     } else if v > hi {
@@ -507,14 +435,11 @@ fn clamp_impl(scope: &Scope) -> Obj {
     } else {
         v
     };
-
     wrap(&value, clamped)
 }
-
 fn gcd_impl(scope: &Scope) -> Obj {
     let a = scope::get(scope, "a");
     let b = scope::get(scope, "b");
-
     let av = match get_int(&a) {
         Ok(v) => v,
         Err(e) => return e,
@@ -523,23 +448,18 @@ fn gcd_impl(scope: &Scope) -> Obj {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     let mut x = av.wrapping_abs();
     let mut y = bv.wrapping_abs();
-
     while y != 0 {
         let t = x % y;
         x = y;
         y = t;
     }
-
     obj::int(x)
 }
-
 fn lcm_impl(scope: &Scope) -> Obj {
     let a = scope::get(scope, "a");
     let b = scope::get(scope, "b");
-
     let av = match get_int(&a) {
         Ok(v) => v,
         Err(e) => return e,
@@ -548,14 +468,11 @@ fn lcm_impl(scope: &Scope) -> Obj {
         Ok(v) => v,
         Err(e) => return e,
     };
-
     if av == 0 || bv == 0 {
         return obj::int(0);
     }
-
     let x = av.wrapping_abs();
     let y = bv.wrapping_abs();
-
     let mut gcd = x;
     let mut rem = y;
     while rem != 0 {
@@ -563,10 +480,8 @@ fn lcm_impl(scope: &Scope) -> Obj {
         gcd = rem;
         rem = t;
     }
-
     obj::int(x / gcd * y)
 }
-
 fn is_nan_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -575,7 +490,6 @@ fn is_nan_impl(scope: &Scope) -> Obj {
     };
     world::bool_obj(v.is_nan())
 }
-
 fn is_infinite_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -584,7 +498,6 @@ fn is_infinite_impl(scope: &Scope) -> Obj {
     };
     world::bool_obj(v.is_infinite())
 }
-
 fn is_finite_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
     let v = match get_number(&value) {
@@ -593,15 +506,12 @@ fn is_finite_impl(scope: &Scope) -> Obj {
     };
     world::bool_obj(v.is_finite())
 }
-
 fn pi_impl(_scope: &Scope) -> Obj {
     obj::float(std::f64::consts::PI)
 }
-
 fn e_impl(_scope: &Scope) -> Obj {
     obj::float(std::f64::consts::E)
 }
-
 fn tau_impl(_scope: &Scope) -> Obj {
     obj::float(std::f64::consts::TAU)
 }

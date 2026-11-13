@@ -1,9 +1,3 @@
-//! primitive-level helpers: the exact display form of `double`, the string hash
-//! used by str-keyed collections, and the saturating `long` cast.
-
-/// `Double.ToString()` in .NET Core: shortest round-trippable digits, positional
-/// notation, and exponential notation only when the decimal exponent is `>= 17`
-/// or `<= -5`. Exponent digits are padded to a minimum of two (`1E-05`).
 pub fn fmt_double(v: f64) -> String {
     if v.is_nan() {
         return "NaN".to_owned();
@@ -14,7 +8,6 @@ pub fn fmt_double(v: f64) -> String {
     if v == 0.0 {
         return if v.is_sign_negative() { "-0".to_owned() } else { "0".to_owned() };
     }
-
     let neg = v < 0.0;
     let abs = v.abs();
     let sci = format!("{:e}", abs);
@@ -22,9 +15,7 @@ pub fn fmt_double(v: f64) -> String {
         Some((m, e)) => (m, e.parse::<i64>().unwrap_or(0)),
         None => (sci.as_str(), 0),
     };
-
     let digits: String = mant.chars().filter(|c| *c != '.').collect();
-
     let body = if exp >= 17 || exp <= -5 {
         let sign = if exp < 0 { "-" } else { "+" };
         let ae = exp.unsigned_abs();
@@ -35,19 +26,15 @@ pub fn fmt_double(v: f64) -> String {
             format!("{}.{}E{sign}{pad}", &digits[..1], &digits[1..])
         }
     } else {
-        // Rust's positional form is the same shortest round-trip notation .NET
-        // uses inside this range, so it can be reused directly.
+
         format!("{abs}")
     };
-
     if neg {
         format!("-{body}")
     } else {
         body
     }
 }
-
-/// `(long)value` in an unchecked context: saturates outside the `long` range.
 pub fn cast_long(v: f64) -> i64 {
     if v.is_nan() {
         return i64::MIN;
@@ -60,11 +47,6 @@ pub fn cast_long(v: f64) -> i64 {
     }
     v.trunc() as i64
 }
-
-/// str-keyed collections need a hash function. .NET's `string.GetHashCode` is
-/// randomized per process, so str-keyed `Dict`/`Set` iteration order is already
-/// not reproducible across implementations; FNV-1a over UTF-16 code units is the
-/// deterministic stand-in, and it is a documented divergence.
 pub fn str_hash(s: &str) -> i32 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for unit in s.encode_utf16() {
@@ -73,16 +55,13 @@ pub fn str_hash(s: &str) -> i32 {
     }
     hash as i32
 }
-
 #[cfg(test)]
 mod tests {
     use super::fmt_double;
 
-    /// the exact `Double.ToString()` table measured from the reference CLI
     fn case(v: f64, expected: &str) {
         assert_eq!(fmt_double(v), expected, "{v}");
     }
-
     #[test]
     fn double_display_matches_reference() {
         case(1.0, "1");
@@ -106,7 +85,6 @@ mod tests {
         case(f64::NEG_INFINITY, "-∞");
         case(f64::NAN, "NaN");
     }
-
     #[test]
     fn str_hash_is_deterministic() {
         assert_eq!(super::str_hash("abc"), super::str_hash("abc"));

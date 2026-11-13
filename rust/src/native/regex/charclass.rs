@@ -1,35 +1,25 @@
-//! The .NET `RegexCharClass` equivalent — ranges, categories, negation and
-//! subtraction, with the same invariants (canonicalized ranges) and the same
-//! membership semantics. Ranges are always kept canonical (sorted, merged);
-//! mutators re-canonicalize eagerly.
-
 use crate::native::regex::unicode;
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CharClass {
-    /// inclusive code-unit ranges, ascending and non-overlapping
+
     ranges: Vec<(u16, u16)>,
-    /// flat category entries with `0` group delimiters (like .NET `_categories`)
+
     pub categories: Vec<i16>,
     pub negate: bool,
     pub subtraction: Option<Box<CharClass>>,
 }
-
 impl CharClass {
     pub fn new() -> Self {
         Self::default()
     }
-
     pub fn add_char(&mut self, c: char) {
         if (c as u32) <= 0xFFFF {
             let c = c as u16;
             self.ranges.push((c, c));
             self.ensure_canonical();
         }
-        // astral literals can't be represented in the BMP table, and are
-        // handled (or dropped) at the parser level instead
-    }
 
+    }
     pub fn add_range(&mut self, first: char, last: char) {
         let a = first as u32;
         let b = last as u32;
@@ -39,22 +29,17 @@ impl CharClass {
         self.ranges.push((a as u16, (b.min(0xFFFF)) as u16));
         self.ensure_canonical();
     }
-
     pub fn add_ranges(&mut self, ranges: impl IntoIterator<Item = (u16, u16)>) {
         self.ranges.extend(ranges);
         self.ensure_canonical();
     }
-
     pub fn add_categories(&mut self, entries: &[i16]) {
         self.categories.extend_from_slice(entries);
     }
-
     pub fn add_subtraction(&mut self, other: CharClass) {
         self.subtraction = Some(Box::new(other));
     }
 
-    /// .NET `AddCaseEquivalences` — add every case-equivalent of every character
-    /// in the class. Used when IgnoreCase is set.
     pub fn add_case_equivalences(&mut self) {
         let snapshot = self.ranges.clone();
         let mut added: Vec<(u16, u16)> = Vec::new();
@@ -74,16 +59,12 @@ impl CharClass {
         self.ranges.extend(added);
         self.ensure_canonical();
     }
-
     pub fn char_in_class(&self, ch: char) -> bool {
-        // `CharInClassRecursive`: negate applies before the subtraction,
-        // and subtraction excludes only what is in the subtractor.
-        let mut in_class = self.char_in_class_internal(ch);
 
+        let mut in_class = self.char_in_class_internal(ch);
         if self.negate {
             in_class = !in_class;
         }
-
         if in_class {
             if let Some(sub) = &self.subtraction {
                 if sub.char_in_class(ch) {
@@ -91,26 +72,19 @@ impl CharClass {
                 }
             }
         }
-
         in_class
     }
-
     fn char_in_class_internal(&self, ch: char) -> bool {
         let cp = ch as u32;
         if cp <= 0xFFFF && in_ranges(&self.ranges, cp as u16) {
             return true;
         }
-
         if !self.categories.is_empty() && char_in_categories(&self.categories, ch) {
             return true;
         }
-
         false
     }
 
-    /// sort + merge ranges; then the negation/everything normalizations from
-    /// .NET's `Canonicalize` (the single-missing-character normalization is
-    /// omitted, it is perf-only).
     pub fn ensure_canonical(&mut self) {
         if self.ranges.len() > 1 {
             self.ranges.sort_by_key(|&(a, _)| a);
@@ -129,9 +103,8 @@ impl CharClass {
             merged.push(cur);
             self.ranges = merged;
         }
-
         if !self.negate && self.subtraction.is_none() {
-            // two ranges forming a single omitted interval => flip to one negated range
+
             if self.categories.is_empty() {
                 if self.ranges.len() == 2 {
                     let [(a0, a1), (b0, b1)] = [self.ranges[0], self.ranges[1]];
@@ -151,7 +124,6 @@ impl CharClass {
                 }
             }
 
-            // a range that covers everything makes the categories redundant
             if !self.categories.is_empty()
                 && self.ranges.len() == 1
                 && self.ranges[0].0 == 0
@@ -161,11 +133,9 @@ impl CharClass {
             }
         }
     }
-
     pub fn is_empty(&self) -> bool {
         self.categories.is_empty() && self.ranges.is_empty() && !self.negate && self.subtraction.is_none()
     }
-
     pub fn is_singleton(&self) -> bool {
         self.subtraction.is_none()
             && self.categories.is_empty()
@@ -173,7 +143,6 @@ impl CharClass {
             && self.ranges.len() == 1
             && self.ranges[0].0 == self.ranges[0].1
     }
-
     pub fn is_singleton_inverse(&self) -> bool {
         self.subtraction.is_none()
             && self.categories.is_empty()
@@ -181,12 +150,10 @@ impl CharClass {
             && self.ranges.len() == 1
             && self.ranges[0].0 == self.ranges[0].1
     }
-
     pub fn singleton_char(&self) -> char {
         char::from_u32(self.ranges[0].0 as u32).unwrap_or('\u{FFFD}')
     }
 }
-
 fn in_ranges(ranges: &[(u16, u16)], cp: u16) -> bool {
     let mut lo = 0usize;
     let mut hi = ranges.len();
@@ -203,14 +170,11 @@ fn in_ranges(ranges: &[(u16, u16)], cp: u16) -> bool {
     }
     false
 }
-
 fn char_in_categories(cats: &[i16], ch: char) -> bool {
     let cat = unicode::category_of(ch) as i16;
     let ws = unicode::is_whitespace(ch);
-
     let entry_hit = |entry: i16| -> bool {
-        // .NET semantics: the test is always the *positive* one; the caller
-        // applies the sign of the entry to include/exclude.
+
         if entry == unicode::SPACE_CONST {
             ws
         } else if entry == unicode::NOT_SPACE_CONST {
@@ -221,12 +185,11 @@ fn char_in_categories(cats: &[i16], ch: char) -> bool {
             cat == -1 - entry
         }
     };
-
     let mut i = 0usize;
     while i < cats.len() {
         let cur = cats[i];
         if cur == 0 {
-            // a group of categories, treated as a unit
+
             let mut pos = i + 1;
             let positive = cats[pos] > 0;
             let mut result = !positive;
@@ -258,11 +221,8 @@ fn char_in_categories(cats: &[i16], ch: char) -> bool {
             i += 1;
         }
     }
-
     false
 }
-
-/// the ranges of the complement of `ranges` within the BMP.
 pub fn invert_ranges(ranges: &[(u16, u16)]) -> Vec<(u16, u16)> {
     let mut out: Vec<(u16, u16)> = Vec::new();
     let mut next: u32 = 0;

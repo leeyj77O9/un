@@ -1,11 +1,7 @@
 use std::sync::OnceLock;
-
 use crate::native::regex::{defined_cats, prop_table, unicode_table};
-
 pub const SPACE_CONST: i16 = 100;
 pub const NOT_SPACE_CONST: i16 = -100;
-
-/// the Unicode general category of a character, matching `char.GetUnicodeCategory` (0..29).
 pub fn category_of(ch: char) -> u8 {
     static TABLE: OnceLock<Vec<Vec<(u32, u32)>>> = OnceLock::new();
     let table = TABLE.get_or_init(build_table);
@@ -25,9 +21,8 @@ pub fn category_of(ch: char) -> u8 {
             }
         }
     }
-    29 // OtherNotAssigned
+    29 
 }
-
 fn build_table() -> Vec<Vec<(u32, u32)>> {
     let mut out: Vec<Vec<(u32, u32)>> = Vec::new();
     for line in unicode_table::BMP_RANGES.iter() {
@@ -60,21 +55,14 @@ fn build_table() -> Vec<Vec<(u32, u32)>> {
     }
     out
 }
-
-/// .NET `char.IsWhiteSpace`, which equals the Unicode White_Space property.
 pub fn is_whitespace(ch: char) -> bool {
     ch.is_whitespace()
 }
-
-/// the ASCII word-character bitmap (.NET `WordCharAsciiLookup`).
 const WORD_ASCII: [u8; 16] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x03,
     0xFE, 0xFF, 0xFF, 0x87, 0xFE, 0xFF, 0xFF, 0x07,
 ];
-
-/// the mask of raw UnicodeCategory values that combine to form `\w`.
 const WORD_MASK: u32 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 8) | (1 << 18);
-
 pub fn is_word_char(ch: char) -> bool {
     let cp = ch as u32;
     if cp < 128 {
@@ -83,17 +71,12 @@ pub fn is_word_char(ch: char) -> bool {
         (WORD_MASK & (1 << category_of(ch))) != 0
     }
 }
-
 pub fn is_boundary_word_char(ch: char) -> bool {
     is_word_char(ch) || ch == '\u{200C}' || ch == '\u{200D}'
 }
-
 pub fn is_ecma_word_char(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch.is_ascii_digit() || ch == '_' || ch == '\u{130}'
 }
-
-/// the set of characters equivalent to `ch` under case-insensitive comparison,
-/// simplified from .NET's culture-aware `RegexCaseEquivalences` table.
 pub fn case_equivalents(ch: char) -> Vec<char> {
     let mut out: Vec<char> = Vec::new();
     out.push(ch);
@@ -108,12 +91,9 @@ pub fn case_equivalents(ch: char) -> Vec<char> {
     push_first(ch.to_uppercase().collect::<String>());
     out
 }
-
 pub fn participates_in_case_conversion(text: &[char]) -> bool {
     text.iter().any(|&c| case_equivalents(c).len() > 1)
 }
-
-/// the inclusive ranges of an XML-schema-style property (`\p{IsGreek}` etc.).
 pub fn prop_ranges(name: &str) -> Option<Vec<(u16, u16)>> {
     let t = prop_table::PROP_TABLE;
     let mut lo = 0usize;
@@ -138,8 +118,6 @@ pub fn prop_ranges(name: &str) -> Option<Vec<(u16, u16)>> {
     }
     None
 }
-
-/// the category group for a defined name (`L`, `Nd`, ...), or None if unknown.
 pub fn defined_category(name: &str) -> Option<&'static [i16]> {
     let t = defined_cats::DEFINED_CATEGORIES;
     let mut lo = 0usize;

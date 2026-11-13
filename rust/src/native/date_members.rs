@@ -1,14 +1,9 @@
-//! the date member table — `Un.Object.Primitive.Date`'s `[Native]` members.
-
 use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
-
 use super::{arg, native};
-
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     let one = |name: &str| vec![arg(name, true, false, false)];
-
     vec![
         (
             "year".to_owned(),
@@ -117,100 +112,83 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-
-/// the receiver of a member call, as a `Date` payload.
 fn date_self(scope: &Scope) -> Option<i64> {
     match obj::payload(&scope::get(scope, "self")) {
         Payload::Date(ticks) => Some(ticks),
         _ => None,
     }
 }
-
 fn year(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::year(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn month(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::month(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn day(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::day(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn hour(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::hour(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn minute(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::minute(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn second(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::second(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn ms(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::ms(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn timestamp(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::timestamp(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn timestamp_ms(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::timestamp_ms(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn format(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
     };
     let format = scope::get(scope, "format");
-
     let format = match obj::payload(&format) {
         Payload::Str(s) => s.to_string(),
         _ => return obj::err("expected 'format' argument to be of type 'str'"),
     };
-
     obj::str(&crate::runtime::date::format_pattern(ticks, &format))
 }
-
-/// the number of the units an `add_*` member takes.
 fn amount(scope: &Scope, name: &str) -> Option<i64> {
     match obj::payload(&scope::get(scope, name)) {
         Payload::Int(v) => Some(v),
         _ => None,
     }
 }
-
 fn add_years(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
@@ -218,7 +196,6 @@ fn add_years(scope: &Scope) -> Obj {
     let Some(years) = amount(scope, "years") else {
         return obj::err("expected 'years' argument to be of type 'int'");
     };
-
     let (year, month, day, hour, minute, second, ms) = crate::runtime::date::parts(ticks);
     let ticks = crate::runtime::date::ticks_from_civil(
         year + years,
@@ -231,7 +208,6 @@ fn add_years(scope: &Scope) -> Obj {
     );
     obj::date_obj(ticks)
 }
-
 fn add_months(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
@@ -239,13 +215,11 @@ fn add_months(scope: &Scope) -> Obj {
     let Some(months) = amount(scope, "months") else {
         return obj::err("expected 'months' argument to be of type 'int'");
     };
-
     let (year, month, day, hour, minute, second, ms) = crate::runtime::date::parts(ticks);
     let total = year * 12 + (month - 1) + months;
     let new_year = total.div_euclid(12);
     let new_month = total.rem_euclid(12) + 1;
     let new_day = day.min(crate::runtime::date::days_in_month(new_year, new_month));
-
     let ticks = crate::runtime::date::ticks_from_civil(
         new_year,
         new_month,
@@ -257,7 +231,6 @@ fn add_months(scope: &Scope) -> Obj {
     );
     obj::date_obj(ticks)
 }
-
 fn add_days(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
@@ -265,10 +238,8 @@ fn add_days(scope: &Scope) -> Obj {
     let Some(days) = amount(scope, "days") else {
         return obj::err("expected 'days' argument to be of type 'int'");
     };
-
     obj::date_obj(ticks + days * crate::runtime::date::TICKS_PER_DAY)
 }
-
 fn add_hours(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
@@ -276,10 +247,8 @@ fn add_hours(scope: &Scope) -> Obj {
     let Some(hours) = amount(scope, "hours") else {
         return obj::err("expected 'hours' argument to be of type 'int'");
     };
-
     obj::date_obj(ticks + hours * 36_000_000_000)
 }
-
 fn add_minutes(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
@@ -287,10 +256,8 @@ fn add_minutes(scope: &Scope) -> Obj {
     let Some(minutes) = amount(scope, "minutes") else {
         return obj::err("expected 'minutes' argument to be of type 'int'");
     };
-
     obj::date_obj(ticks + minutes * 600_000_000)
 }
-
 fn add_seconds(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
@@ -298,10 +265,8 @@ fn add_seconds(scope: &Scope) -> Obj {
     let Some(seconds) = amount(scope, "seconds") else {
         return obj::err("expected 'seconds' argument to be of type 'int'");
     };
-
     obj::date_obj(ticks + seconds * 10_000_000)
 }
-
 fn add_ms(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
@@ -309,24 +274,20 @@ fn add_ms(scope: &Scope) -> Obj {
     let Some(ms) = amount(scope, "milliseconds") else {
         return obj::err("expected 'milliseconds' argument to be of type 'int'");
     };
-
     obj::date_obj(ticks + ms * 10_000)
 }
-
 fn weekday(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::weekday(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn day_of_year(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::int(crate::runtime::date::day_of_year(ticks)),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn days_in_month(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => {
@@ -336,7 +297,6 @@ fn days_in_month(scope: &Scope) -> Obj {
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn is_leap_year(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => {
@@ -346,7 +306,6 @@ fn is_leap_year(scope: &Scope) -> Obj {
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn date_only(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => {
@@ -357,37 +316,31 @@ fn date_only(scope: &Scope) -> Obj {
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn before(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
     };
     let other = scope::get(scope, "other");
-
     match obj::payload(&other) {
         Payload::Date(other) => obj::boolean(ticks < other),
         _ => obj::err("expected 'other' argument to be of type 'date'"),
     }
 }
-
 fn after(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
     };
     let other = scope::get(scope, "other");
-
     match obj::payload(&other) {
         Payload::Date(other) => obj::boolean(ticks > other),
         _ => obj::err("expected 'other' argument to be of type 'date'"),
     }
 }
-
 fn compare(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
     };
     let other = scope::get(scope, "other");
-
     match obj::payload(&other) {
         Payload::Date(other) => {
             if ticks == other {
@@ -401,14 +354,12 @@ fn compare(scope: &Scope) -> Obj {
         _ => obj::err("expected 'other' argument to be of type 'date'"),
     }
 }
-
 fn to_utc(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::date_obj(ticks),
         None => obj::err("expected 'date' object"),
     }
 }
-
 fn to_local(scope: &Scope) -> Obj {
     match date_self(scope) {
         Some(ticks) => obj::date_obj(ticks),
