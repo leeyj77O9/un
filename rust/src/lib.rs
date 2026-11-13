@@ -13,3 +13,4 @@ pub mod runtime;
 pub mod source;
 pub mod token;
 pub mod vm;
+pub mod vm2;
