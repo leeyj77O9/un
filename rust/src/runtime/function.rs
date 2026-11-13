@@ -100,6 +100,7 @@ pub struct FnData {
     pub closure: Context,
     pub property: Option<Obj>,
     pub body: Body,
+    local_names_cache: RefCell<Option<Rc<Vec<String>>>>,
 }
 pub fn fn_cell(o: &Obj) -> Option<FnCell> {
     match obj::payload(o) {
@@ -117,6 +118,7 @@ pub fn lfn(name: Option<String>, args: Vec<ArgData>, return_type: Types, body: V
             closure,
             property: None,
             body: Body::Nodes(Rc::new(body)),
+            local_names_cache: RefCell::new(None),
         }))),
     )
 }
@@ -140,6 +142,7 @@ pub fn proto_fn(
                 index: proto_index,
                 program,
             },
+            local_names_cache: RefCell::new(None),
         }))),
     )
 }
@@ -156,6 +159,7 @@ pub fn nfn_in(name: &str, args: Vec<ArgData>, closure: Context, host: Rc<dyn Fn(
             closure,
             property: None,
             body: Body::Native(host),
+            local_names_cache: RefCell::new(None),
         }))),
     )
 }
@@ -328,10 +332,48 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) els
     };
     end_call(&frame, result)
 }
+pub fn fn_local_names(cell: &FnCell) -> Rc<Vec<String>> {
+    {
+        let c = cell.borrow();
+        let cache = c.local_names_cache.borrow_mut().take();
+        if let Some(cache) = cache {
+            *c.local_names_cache.borrow_mut() = Some(cache.clone());
+            return cache;
+        }
+    }
+    let computed = {
+        let c = cell.borrow();
+        match &c.body {
+            Body::Proto { index, program } => {
+                let proto = &program.protos[*index];
+                if proto.locals.is_empty() {
+                    Rc::new(Vec::new())
+                } else {
+                    let names: Vec<String> = proto
+                        .locals
+                        .iter()
+                        .map(|&pi| program.names[proto.names[pi]].clone())
+                        .collect();
+                    Rc::new(names)
+                }
+            }
+            _ => Rc::new(Vec::new()),
+        }
+    };
+    *cell.borrow_mut().local_names_cache.borrow_mut() = Some(computed.clone());
+    computed
+}
+
 pub fn bind(f: &Obj, scope: &Scope, args: &Args) -> Obj {
     let Some(cell) = fn_cell(f) else {
         return obj::none();
     };
+    {
+        let names = fn_local_names(&cell);
+        if !names.is_empty() {
+            scope::preseed_slots(scope, &names);
+        }
+    }
     let property = cell.borrow().property.clone();
     let self_ = f.borrow().self_.clone().unwrap_or_else(obj::none);
     let super_ = f.borrow().super_.clone().unwrap_or_else(obj::none);
@@ -504,14 +546,18 @@ pub fn fn_clone(f: &Obj) -> Obj {
     };
     let data = {
         let c = cell.borrow();
-        FnData {
+        let cache = c.local_names_cache.borrow_mut().take();
+        let result = FnData {
             name: c.name.clone(),
             args: c.args.clone(),
             return_type: c.return_type.clone(),
             closure: c.closure.clone(),
             property: c.property.clone(),
             body: c.body.clone(),
-        }
+            local_names_cache: RefCell::new(cache.clone()),
+        };
+        *c.local_names_cache.borrow_mut() = cache;
+        result
     };
     let src = f.borrow();
     let created = ObjData {

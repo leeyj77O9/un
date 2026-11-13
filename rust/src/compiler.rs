@@ -4,11 +4,24 @@ use crate::bytecode::{Constant, ExcEntry, ExcKind, Param, Pattern, Program, Prot
 use crate::error::Panic;
 use crate::source::Source;
 use crate::token::TokenType;
+use std::collections::HashMap;
 #[derive(Debug, Default)]
 pub struct Group {
     pub breaks: Vec<usize>,
     pub skips: Vec<usize>,
     pub is_loop: bool,
+}
+
+#[derive(Debug, Default)]
+struct SlotScope {
+    map: HashMap<String, usize>,
+    is_fn_boundary: bool,
+}
+
+#[derive(Debug, Default)]
+struct ProtoSlotState {
+    names: Vec<String>,
+    count: usize,
 }
 pub struct Compiler<'a> {
     pub source: &'a Source,
@@ -21,6 +34,9 @@ pub struct Compiler<'a> {
     pub groups: Vec<Group>,
 
     pub raises: bool,
+
+    slot_stack: Vec<SlotScope>,
+    proto_slot_stack: Vec<ProtoSlotState>,
 }
 pub fn compile(source: &Source, ast: &Node) -> Result<Program, Panic> {
     let mut c = Compiler::new(source);
@@ -47,6 +63,8 @@ impl<'a> Compiler<'a> {
             proto_stack: Vec::new(),
             groups: Vec::new(),
             raises: false,
+            slot_stack: Vec::new(),
+            proto_slot_stack: vec![ProtoSlotState::default()],
         }
     }
 
@@ -90,6 +108,44 @@ impl<'a> Compiler<'a> {
         self.program.protos[self.current].code.len()
     }
 
+    fn slot_alloc(&mut self, name: &str) -> usize {
+        let state = self.proto_slot_stack.last_mut().expect("proto slot scope");
+        let idx = state.count;
+        state.count += 1;
+        state.names.push(name.to_string());
+        let scope = self.slot_stack.last_mut().expect("slot scope");
+        scope.map.insert(name.to_string(), idx);
+        idx
+    }
+
+    fn slot_lookup(&self, name: &str) -> Option<usize> {
+        if self.proto_stack.is_empty() {
+            return None;
+        }
+        for scope in self.slot_stack.iter().rev() {
+            if let Some(&idx) = scope.map.get(name) {
+                return Some(idx);
+            }
+            if scope.is_fn_boundary {
+                return None;
+            }
+        }
+        None
+    }
+
+    fn in_function(&self) -> bool {
+        !self.proto_stack.is_empty()
+    }
+
+    fn push_slot_scope(&mut self, is_fn_boundary: bool) -> usize {
+        let scope = SlotScope {
+            map: std::collections::HashMap::new(),
+            is_fn_boundary,
+        };
+        self.slot_stack.push(scope);
+        self.slot_stack.len() - 1
+    }
+
     fn begin_proto(&mut self, name: &str, ext_type: Option<&str>) -> usize {
         let name_index = push_name(&mut self.program, name);
         let mut proto = Proto::new(name_index, PROTO_FUNCTION);
@@ -99,12 +155,23 @@ impl<'a> Compiler<'a> {
         self.program.protos.push(proto);
         let index = self.program.protos.len() - 1;
         self.proto_stack.push(self.current);
+        self.proto_slot_stack.push(ProtoSlotState::default());
+        self.push_slot_scope(true);
         self.current = index;
         index
     }
 
     fn end_proto(&mut self) -> usize {
         let index = self.current;
+        self.slot_stack.pop().expect("slot stack underflow");
+        let slot_state = self.proto_slot_stack.pop().expect("proto slot stack");
+        if !slot_state.names.is_empty() {
+            let mut indices: Vec<usize> = Vec::with_capacity(slot_state.names.len());
+            for name in &slot_state.names {
+                indices.push(self.name_index(name));
+            }
+            self.program.protos[index].locals = indices;
+        }
         self.current = self.proto_stack.pop().expect("proto stack");
         let parent = self.current;
         self.program.protos[parent].protos.push(index);
@@ -242,8 +309,13 @@ impl<'a> Compiler<'a> {
             NodeKind::Null => self.emit(Op::LoadNull, 0, 0, span),
             NodeKind::Identifier => {
                 let name = self.text(node);
-                let ni = self.name_index(&name);
-                self.emit(Op::LoadName, 0, ni as i32, span);
+                match self.slot_lookup(&name) {
+                    Some(slot) => self.emit(Op::LoadLocal, 0, slot as i32, span),
+                    None => {
+                        let ni = self.name_index(&name);
+                        self.emit(Op::LoadName, 0, ni as i32, span);
+                    }
+                }
             }
             NodeKind::FString => {
                 for child in &node.children {
@@ -333,9 +405,21 @@ impl<'a> Compiler<'a> {
         match pattern.kind {
             NodeKind::Identifier => {
                 let name = self.text(pattern);
-                let ni = self.name_index(&name);
                 let flags = if local_only { FLAG_LOCAL_ONLY } else { 0 };
-                self.emit(Op::StoreName, flags, ni as i32, span);
+                if self.in_function() {
+                    let slot = if local_only {
+                        self.slot_alloc(&name)
+                    } else {
+                        match self.slot_lookup(&name) {
+                            Some(slot) => slot,
+                            None => self.slot_alloc(&name),
+                        }
+                    };
+                    self.emit(Op::StoreLocal, flags, slot as i32, span);
+                } else {
+                    let ni = self.name_index(&name);
+                    self.emit(Op::StoreName, flags, ni as i32, span);
+                }
             }
             NodeKind::Typed => {
 
@@ -492,6 +576,7 @@ impl<'a> Compiler<'a> {
         let mi = self.msg_index(&msg);
         self.emit(Op::PrepIter, 0, mi as i32, span_of(iterable));
         self.emit(Op::NewScope, FLAG_SCOPE_LOOP, 0, span);
+        self.push_slot_scope(false);
         self.open_group(true);
         let loop_start = self.ip();
         let jend = self.emit_jump(Op::ForNext, 0, span_of(iterable));
@@ -501,6 +586,7 @@ impl<'a> Compiler<'a> {
         let exhausted = self.ip();
         self.patch(jend, exhausted);
 
+        self.slot_stack.pop();
         self.emit(Op::PopScope, 0, 0, span);
         let jafter = self.emit_jump(Op::Jmp, 0, span);
         let break_cleanup = self.ip();
@@ -701,6 +787,7 @@ impl<'a> Compiler<'a> {
             let case_body = &case.children[1];
 
             self.emit(Op::NewScope, 0, 0, span);
+            self.push_slot_scope(false);
             let compiled = self.compile_pattern(pattern)?;
             let pattern_index = self.add_pattern(compiled);
             self.emit(Op::MatchPattern, 0, pattern_index as i32, span);
@@ -709,10 +796,12 @@ impl<'a> Compiler<'a> {
 
             self.emit(Op::Pop, 0, 0, span);
             self.code(case_body)?;
+            self.slot_stack.pop();
             self.emit(Op::PopScope, 0, 0, span);
             ends.push(self.emit_jump(Op::Jmp, 0, span));
 
             self.patch(fail, self.ip());
+            self.slot_stack.pop();
             self.emit(Op::PopScope, 0, 0, span);
         }
 

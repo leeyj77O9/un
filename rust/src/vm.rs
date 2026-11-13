@@ -164,7 +164,8 @@ impl VM {
                     self.acc.truncate(entry.acc_depth);
 
                     let parent = context::scope(&self.ctx);
-                    let catch_scope = scope::new(Some(parent), false);
+                    let catch_scope = scope::new(Some(parent.clone()), false);
+                    scope::inherit_slot_scope(&parent, &catch_scope);
                     context::set_scope(&self.ctx, catch_scope.clone());
                     if let Some(slot) = entry.var_slot {
                         let name = self.name(slot);
@@ -246,6 +247,48 @@ impl VM {
                 } else {
                     scope::set(&scope, &name, value);
                 }
+            }
+
+            Op::LoadLocal => {
+                let slot = operand as usize;
+                let scope = context::scope(&self.ctx);
+                if let Some(v) = scope::get_slot(&scope, slot) {
+                    self.push(v);
+                    return Ok(true);
+                }
+                let name_idx = self.proto.locals.get(slot).copied().unwrap_or(0);
+                let name = self.name(name_idx);
+                if let Some(v) = scope::get_opt(&scope, &name) {
+                    let v = if function::is_field_ref(&v) { function::field_get(&v) } else { v };
+                    self.push(v);
+                    return Ok(true);
+                }
+                if let Some(v) = world::try_get_global(&name) {
+                    self.push(v);
+                    return Ok(true);
+                }
+                if world::get_class(&name).is_some() {
+                    self.push(collections::tobj(Types::single(&name)));
+                    return Ok(true);
+                }
+                return Err(self.error(format!("undefined variable '{name}'"), span));
+            }
+            Op::StoreLocal => {
+                let scope_set = flags & FLAG_SCOPE_SET != 0;
+                let value = if scope_set {
+                    self.peek()?.clone()
+                } else {
+                    self.pop()?
+                };
+                let slot = operand as usize;
+                let scope = context::scope(&self.ctx);
+                if let Some(current) = scope::get_slot(&scope, slot) {
+                    if function::is_field_ref(&current) {
+                        function::field_set(&current, &value);
+                        return Ok(true);
+                    }
+                }
+                scope::set_slot(&scope, slot, value);
             }
 
             Op::Dup => {
@@ -630,7 +673,8 @@ impl VM {
             Op::NewScope => {
                 let cur = context::scope(&self.ctx);
                 let is_fn = flags & FLAG_SCOPE_FUNCTION != 0;
-                let child = scope::new(Some(cur), is_fn);
+                let child = scope::new(Some(cur.clone()), is_fn);
+                scope::inherit_slot_scope(&cur, &child);
                 context::set_scope(&self.ctx, child);
             }
             Op::PopScope => {

@@ -14,6 +14,7 @@ pub const MAX_POOLED_LEN: usize = 1000;
 const REGISTERED_TYPES: &[&str] = &[
     "obj", "error", "null", "none", "any", "int", "float", "bool", "str", "date", "list", "tuple", "set",
     "dict", "func", "iter", "spread", "future", "type", "module", "T", "U", "...", "skip", "break",
+    "__uninitialized__",
 ];
 pub struct World {
 
@@ -26,6 +27,7 @@ pub struct World {
     int_cache: Vec<Obj>,
     none: Option<Obj>,
     null: Option<Obj>,
+    uninitialized: Option<Obj>,
     true_: Option<Obj>,
     false_: Option<Obj>,
     original_classes: HashMap<String, Vec<(String, Obj)>>,
@@ -72,6 +74,7 @@ impl World {
             int_cache: Vec::new(),
             none: None,
             null: None,
+            uninitialized: None,
             true_: None,
             false_: None,
             original_classes: HashMap::new(),
@@ -190,6 +193,25 @@ pub fn null_obj() -> Obj {
         o
     })
 }
+pub fn uninitialized_obj() -> Obj {
+    WORLD.with(|w| {
+        let mut w = w.borrow_mut();
+        if let Some(u) = &w.uninitialized {
+            return u.clone();
+        }
+        let o = crate::runtime::obj::plain(
+            w.type_cache["__uninitialized__"].clone(),
+            w.type_cache["obj"].clone(),
+        );
+        w.uninitialized = Some(o.clone());
+        o
+    })
+}
+
+pub fn is_uninitialized(o: &Obj) -> bool {
+    Rc::ptr_eq(o, &uninitialized_obj())
+}
+
 pub fn bool_obj(value: bool) -> Obj {
     WORLD.with(|w| {
         let mut w = w.borrow_mut();
