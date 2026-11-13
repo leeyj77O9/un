@@ -1,4 +1,30 @@
+//! `vm2` ??a register-based interpreter for Un.
+//!
+//! Phase 3 (full integration). The frontend (lexer/parser/desugar/optimizer/
+//! stack compiler) is reused unchanged and emits the validated stack bytecode
+//! of `bytecode::Program`. At load time [`transfer`] lowers each proto 1:1 to
+//! register instructions; [`VM`] executes them on a per-frame `Vec<Obj>`
+//! register file.
+//!
+//! - Locals live in the scope slot table (same as the stack VM).
+//! - Temporaries live in scratch slots indexed by the *static* virtual stack
+//!   depth; the same value is always in the same slot, which is why jump
+//!   targets observe consistent state.
+//! - Calls are staged through a per-frame value/name buffer (used uniformly
+//!   for positional/keyword/spread arguments), which is what makes
+//!   dynamically-sized spreads work in a statically allocated frame.
+//! - Exceptions use the same `ExcEntry` tables as the stack VM, with the
+//!   frame's scratch slot boundary recorded in `TryEntry::depth`.
+//!
+//! The public surface mirrors the stack VM: `VM::new(program, source)`,
+//! `run() -> Outcome`, and the same outcome vocabulary.
+
+pub(crate) mod transfer;
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+
 use crate::bytecode::instr::*;
 use crate::bytecode::{Constant, ExcKind, Pattern, Program, Proto};
 use crate::error::{LangError, Panic};
@@ -13,64 +39,104 @@ use crate::runtime::scope;
 use crate::runtime::types::{self, Types};
 use crate::runtime::world;
 use crate::source::Source;
+
+/// A register instruction. `a`/`b`/`c` index the frame's register file
+/// (locals first, then scratch). `d` holds an immediate: a jump target, a
+/// const index, a name index, a pattern index, or a call-names index, as
+/// appropriate for the opcode. `flags` reuses the stack-VM definitions.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Ins {
+    pub(crate) op: Op,
+    pub(crate) a: u8,
+    pub(crate) b: u8,
+    pub(crate) c: u8,
+    pub(crate) d: i32,
+    pub(crate) flags: u16,
+}
+
+/// Load-time translated program. `code` lives per proto; everything else
+/// (names, consts, patterns, messages) stays in the original `Program`.
+pub struct ProtoPlan {
+    pub(crate) scratch_base: usize,
+    pub(crate) reg_count: usize,
+    pub(crate) code: Vec<Ins>,
+    /// depth at every ip (len = code.len() + 1)
+    pub(crate) depths: Vec<u8>,
+}
+
+pub struct Plan {
+    pub protos: Vec<ProtoPlan>,
+}
+
 #[derive(Clone)]
 pub enum Outcome {
-
     Value(Obj),
     Return(Obj, usize, usize),
     Break(usize, usize),
     Skip(usize, usize),
-
     Propagate(Obj, usize, usize),
     Panic(Obj),
     Error(LangError),
 }
+
 #[derive(Debug, Clone, Copy)]
 pub struct TryEntry {
     pub kind: ExcKind,
     pub start: usize,
     pub end: usize,
     pub handler: usize,
+    /// register index boundary for truncation on catch/finally
     pub depth: usize,
-
     pub acc_depth: usize,
-
     pub var_slot: Option<usize>,
 }
+
+struct ArgFrame {
+    values: Vec<Obj>,
+    names: Vec<String>,
+}
+
 pub struct VM {
     pub ctx: Context,
-    pub program: Rc<Program>,
-    pub proto: Rc<Proto>,
     pub ip: usize,
-    pub stack: Vec<Obj>,
-
-    pub acc: Vec<Vec<String>>,
-
-    pub tries: Vec<TryEntry>,
-
-    pub pending: Option<LangError>,
-
-    pub pending_finally_error: Option<LangError>,
-
-    pub pending_return: Option<Obj>,
-
-    pub pending_propagate: Option<Outcome>,
+    pub program: Rc<Program>,
+    proto_idx: usize,
+    plan: Rc<Plan>,
+    regs: Vec<Obj>,
+    args: Vec<ArgFrame>,
+    tries: Vec<TryEntry>,
+    /// cached handle to the slot table this frame reads/writes through
+    /// (valid until `ctx.scope` changes; refreshed by `invalidate_slot_scope`).
+    slot_scope: Option<scope::Scope>,
+    pending: Option<LangError>,
+    pending_finally_error: Option<LangError>,
+    pending_return: Option<Obj>,
+    pending_propagate: Option<Outcome>,
 }
+
 impl VM {
     pub fn new(program: Rc<Program>, source: Rc<Source>) -> Result<Self, String> {
         program.validate()?;
-        let proto = program.protos[program.root].clone();
-
         world::set_current_program(Some(program.clone()));
-        world::set_proto_executor(Some(Rc::new(execute_proto)));
+        world::set_proto_executor(Some(Rc::new(
+            |program: &Rc<Program>, ctx: &Context, proto_index: usize| {
+                let plan = plan_for(program);
+                execute_proto(program, ctx, proto_index, plan)
+            },
+        )));
+        let plan = plan_for(&program);
+        let root = program.root;
+        let reg_count = plan.protos[root].reg_count;
         Ok(Self {
             ctx: context::new(world::global_scope(), source, context::new_frames()),
-            program,
-            proto: Rc::new(proto),
             ip: 0,
-            stack: Vec::new(),
-            acc: Vec::new(),
+            program,
+            proto_idx: root,
+            plan,
+            regs: vec![world::none_obj(); reg_count],
+            args: Vec::new(),
             tries: Vec::new(),
+            slot_scope: None,
             pending: None,
             pending_finally_error: None,
             pending_return: None,
@@ -78,16 +144,23 @@ impl VM {
         })
     }
 
-    pub fn with_context(program: Rc<Program>, _source: Rc<Source>, ctx: Context) -> Self {
-        let proto = program.protos[program.root].clone();
+    fn new_proto(
+        program: Rc<Program>,
+        plan: Rc<Plan>,
+        proto_idx: usize,
+        ctx: Context,
+    ) -> Self {
+        let reg_count = plan.protos[proto_idx].reg_count;
         Self {
             ctx,
-            program,
-            proto: Rc::new(proto),
             ip: 0,
-            stack: Vec::new(),
-            acc: Vec::new(),
+            program,
+            proto_idx,
+            plan,
+            regs: vec![world::none_obj(); reg_count],
+            args: Vec::new(),
             tries: Vec::new(),
+            slot_scope: None,
             pending: None,
             pending_finally_error: None,
             pending_return: None,
@@ -95,38 +168,51 @@ impl VM {
         }
     }
 
-    fn new_proto(program: Rc<Program>, proto_index: usize, ctx: Context) -> Self {
-        let proto = program.protos[proto_index].clone();
-        Self {
-            ctx,
-            program,
-            proto: Rc::new(proto),
-            ip: 0,
-            stack: Vec::new(),
-            acc: Vec::new(),
-            tries: Vec::new(),
-            pending: None,
-            pending_finally_error: None,
-            pending_return: None,
-            pending_propagate: None,
+    fn cur_slot_scope(&mut self) -> scope::Scope {
+        // owner of the local slot table (children inherit it)
+        if let Some(s) = &self.slot_scope {
+            return s.clone();
         }
+        let cur = context::scope(&self.ctx);
+        let owner = cur.borrow().slot_scope.clone().unwrap_or_else(|| cur.clone());
+        self.slot_scope = Some(owner.clone());
+        owner
+    }
+
+    fn plan(&self) -> &ProtoPlan {
+        &self.plan.protos[self.proto_idx]
+    }
+
+    fn proto(&self) -> &Proto {
+        &self.program.protos[self.proto_idx]
     }
 
     pub fn run(&mut self) -> Outcome {
         loop {
-            let Some((op, flags, operand)) = self.proto.instruction(self.ip) else {
-                return Outcome::Value(self.stack.pop().unwrap_or_else(world::none_obj));
+            let Some(&ins) = self.plan().code.get(self.ip) else {
+                let scratch_base = self.plan().scratch_base;
+                let final_depth = self.plan().depths[self.plan().code.len()] as usize;
+                let value = if final_depth > 0 {
+                    self.regs[scratch_base + final_depth - 1].clone()
+                } else {
+                    world::none_obj()
+                };
+                return Outcome::Value(value);
             };
-            match self.exec(op, flags, operand) {
+            let depth_before = self.plan().depths[self.ip] as usize;
+            match self.step(&ins, depth_before) {
                 Ok(advance) => {
                     if advance {
                         self.ip += 1;
                     }
-
-                    if let Some(top) = self.stack.last() {
-                        if matches!(obj::payload(top), Payload::Panic { .. }) {
-                            let o = top.clone();
-                            return Outcome::Panic(o);
+                    let depth = self.plan().depths.get(self.ip).copied().unwrap_or(depth_before as u8) as usize;
+                    if depth > 0 {
+                        let slot = self.plan().scratch_base + depth - 1;
+                        if let Some(top) = self.regs.get(slot) {
+                            if matches!(obj::payload(top), Payload::Panic { .. }) {
+                                let o = top.clone();
+                                return Outcome::Panic(o);
+                            }
                         }
                     }
                 }
@@ -138,12 +224,34 @@ impl VM {
             }
         }
     }
+}
+
+impl VM {
+    pub fn with_context(program: Rc<Program>, _source: Rc<Source>, ctx: Context) -> Self {
+        let plan = plan_for(&program);
+        let root = program.root;
+        let reg_count = plan.protos[root].reg_count;
+        Self {
+            ctx,
+            ip: 0,
+            program,
+            proto_idx: root,
+            plan,
+            regs: vec![world::none_obj(); reg_count],
+            args: Vec::new(),
+            tries: Vec::new(),
+            slot_scope: None,
+            pending: None,
+            pending_finally_error: None,
+            pending_return: None,
+            pending_propagate: None,
+        }
+    }
 
     fn handle(&mut self, outcome: &Outcome) -> bool {
         let Outcome::Error(e) = outcome else {
             return false;
         };
-
         for index in (0..self.tries.len()).rev() {
             let entry = self.tries[index];
             if entry.start > self.ip || self.ip >= entry.end {
@@ -151,24 +259,22 @@ impl VM {
             }
             match entry.kind {
                 ExcKind::Propagate => {
-                    self.stack.truncate(entry.depth);
-                    self.acc.truncate(entry.acc_depth);
+                    self.args.truncate(entry.acc_depth);
                     self.pending = Some(e.clone());
                     self.ip = entry.handler;
                     return true;
                 }
                 ExcKind::Catch => {
-
                     self.tries.remove(index);
-                    self.stack.truncate(entry.depth);
-                    self.acc.truncate(entry.acc_depth);
+                    self.args.truncate(entry.acc_depth);
 
                     let parent = context::scope(&self.ctx);
                     let catch_scope = scope::new(Some(parent.clone()), false);
                     scope::inherit_slot_scope(&parent, &catch_scope);
                     context::set_scope(&self.ctx, catch_scope.clone());
+                    self.slot_scope = None;
                     if let Some(slot) = entry.var_slot {
-                        let name = self.name(slot);
+                        let name = self.plan_name(slot);
                         let error = obj::err_with_header(&e.header, &e.message);
                         scope::set(&catch_scope, &name, error);
                     }
@@ -176,10 +282,8 @@ impl VM {
                     return true;
                 }
                 ExcKind::Finally => {
-
                     self.tries.remove(index);
-                    self.stack.truncate(entry.depth);
-                    self.acc.truncate(entry.acc_depth);
+                    self.args.truncate(entry.acc_depth);
                     self.pending_finally_error = Some(e.clone());
                     self.ip = entry.handler;
                     return true;
@@ -189,48 +293,112 @@ impl VM {
         false
     }
 
-    fn exec(&mut self, op: Op, flags: u16, operand: i32) -> Result<bool, Outcome> {
-        let span = self.proto.span(self.ip);
-        match op {
+    fn pending_finally(&self) -> Option<usize> {
+        for index in (0..self.tries.len()).rev() {
+            let entry = self.tries[index];
+            if entry.kind == ExcKind::Finally && entry.start <= self.ip && self.ip < entry.end {
+                return Some(index);
+            }
+        }
+        None
+    }
 
-            Op::LoadNone => self.push(world::none_obj()),
-            Op::LoadNull => self.push(world::null_obj()),
-            Op::LoadTrue => self.push(world::bool_obj(true)),
-            Op::LoadFalse => self.push(world::bool_obj(false)),
+    fn name(&self, index: usize) -> String {
+        self.program.name(self.proto(), index).to_string()
+    }
+
+    fn error(&self, message: impl Into<String>, span: (usize, usize)) -> Outcome {
+        Outcome::Error(LangError::new(span.0, span.1, message))
+    }
+
+    fn header_error(&self, err: &Obj, span: (usize, usize)) -> Outcome {
+        match obj::payload(err) {
+            Payload::Error { header, message } => {
+                Outcome::Error(LangError::new(span.0, span.1, message).with_header(header))
+            }
+            _ => self.error(obj::display(err), span),
+        }
+    }
+
+    fn plan_name(&self, slot: usize) -> String {
+        self.program.name(self.proto(), slot).to_string()
+    }
+
+    fn s(&self, k: usize) -> usize {
+        self.plan().scratch_base + k
+    }
+
+    fn bin(&mut self, op: BinOp, a: usize, b: usize, c: usize) {
+        let l = self.regs[b].clone();
+        let r = self.regs[c].clone();
+        self.regs[a] = obj::binop(&l, op, &r);
+    }
+
+    fn slice_bounds(&mut self, flags: u16) -> (Option<Obj>, Option<Obj>, Option<Obj>) {
+        let nb = slice_bounds_count(flags);
+        let base = self.depth_of_current();
+        let target = base - nb;
+        let s_i = target + 1;
+        let e_i = if flags & FLAG_SLICE_START != 0 { s_i + 1 } else { s_i };
+        let st_i = if flags & FLAG_SLICE_END != 0 { e_i + 1 } else { e_i };
+        let read = |i: usize| self.regs[self.s(i)].clone();
+        let start = if flags & FLAG_SLICE_START != 0 { Some(read(s_i)) } else { None };
+        let end = if flags & FLAG_SLICE_END != 0 { Some(read(e_i)) } else { None };
+        let step = if flags & FLAG_SLICE_STEP != 0 { Some(read(st_i)) } else { None };
+        (step, end, start)
+    }
+
+    fn depth_of_current(&self) -> usize {
+        self.plan().depths[self.ip] as usize
+    }
+}
+
+fn slice_bounds_count(flags: u16) -> usize {
+    // validate-style count: the target object plus each bound flag
+    1 + (flags & FLAG_SLICE_START != 0) as usize
+        + (flags & FLAG_SLICE_END != 0) as usize
+        + (flags & FLAG_SLICE_STEP != 0) as usize
+}
+
+impl VM {
+    fn step(&mut self, ins: &Ins, depth: usize) -> Result<bool, Outcome> {
+        let src = {
+            let base = self.plan().scratch_base;
+            move |k: usize| base + k
+        };
+        let span = self.proto().span(self.ip);
+        match ins.op {
+            Op::LoadNone => self.regs[src(depth)] = world::none_obj(),
+            Op::LoadNull => self.regs[src(depth)] = world::null_obj(),
+            Op::LoadTrue => self.regs[src(depth)] = world::bool_obj(true),
+            Op::LoadFalse => self.regs[src(depth)] = world::bool_obj(false),
             Op::LoadConst => {
-                let c = self.program.constant(&self.proto, operand as usize).clone();
-                self.push(materialize(&c));
+                let c = self.program.constant(self.proto(), ins.d as usize).clone();
+                self.regs[src(depth)] = materialize(&c);
             }
             Op::LoadName => {
-                let name = self.name(operand as usize);
+                let name = self.name(ins.d as usize);
                 let scope = context::scope(&self.ctx);
                 if let Some(v) = scope::get_opt(&scope, &name) {
-                    self.push(if function::is_field_ref(&v) {
-                        function::field_get(&v)
-                    } else {
-                        v
-                    });
+                    self.regs[src(depth)] = if function::is_field_ref(&v) { function::field_get(&v) } else { v };
                 } else if let Some(v) = world::try_get_global(&name) {
-                    self.push(v);
+                    self.regs[src(depth)] = v;
                 } else if world::get_class(&name).is_some() {
-
-                    self.push(collections::tobj(Types::single(&name)));
+                    self.regs[src(depth)] = collections::tobj(Types::single(&name));
                 } else {
                     return Err(self.error(format!("undefined variable '{name}'"), span));
                 }
             }
             Op::StoreName => {
-                let scope_set = flags & FLAG_SCOPE_SET != 0;
-
+                let scope_set = ins.flags & FLAG_SCOPE_SET != 0;
                 let value = if scope_set {
-                    self.peek()?.clone()
+                    self.regs[src(depth - 1)].clone()
                 } else {
-                    self.pop()?
+                    self.regs[src(depth - 1)].clone()
                 };
-                let name = self.name(operand as usize);
-                let local_only = flags & FLAG_LOCAL_ONLY != 0;
+                let name = self.name(ins.d as usize);
+                let local_only = ins.flags & FLAG_LOCAL_ONLY != 0;
                 let scope = context::scope(&self.ctx);
-
                 if !local_only {
                     if let Some(current) = scope::get_opt(&scope, &name) {
                         if function::is_field_ref(&current) {
@@ -240,7 +408,6 @@ impl VM {
                     }
                 }
                 if scope_set {
-
                     scope::set(&scope, &name, value);
                 } else if local_only || scope::is_function_scope(&scope) {
                     scope::set_local(&scope, &name, value);
@@ -248,39 +415,42 @@ impl VM {
                     scope::set(&scope, &name, value);
                 }
             }
-
             Op::LoadLocal => {
-                let slot = operand as usize;
-                let scope = context::scope(&self.ctx);
-                if let Some(v) = scope::get_slot(&scope, slot) {
-                    self.push(v);
+                let slot = ins.d as usize;
+                let owner = self.cur_slot_scope();
+                let slot_opt = {
+                    let d = owner.borrow();
+                    d.slots.get(slot).cloned().filter(|v| !world::is_uninitialized(v))
+                };
+                if let Some(v) = slot_opt {
+                    self.regs[src(depth)] = if function::is_field_ref(&v) { function::field_get(&v) } else { v };
                     return Ok(true);
                 }
-                let name_idx = self.proto.locals.get(slot).copied().unwrap_or(0);
+                let scope = context::scope(&self.ctx);
+                let name_idx = self.proto().locals.get(slot).copied().unwrap_or(0);
                 let name = self.name(name_idx);
                 if let Some(v) = scope::get_opt(&scope, &name) {
-                    let v = if function::is_field_ref(&v) { function::field_get(&v) } else { v };
-                    self.push(v);
+                    self.regs[src(depth)] = if function::is_field_ref(&v) { function::field_get(&v) } else { v };
                     return Ok(true);
                 }
                 if let Some(v) = world::try_get_global(&name) {
-                    self.push(v);
+                    self.regs[src(depth)] = v;
                     return Ok(true);
                 }
                 if world::get_class(&name).is_some() {
-                    self.push(collections::tobj(Types::single(&name)));
+                    self.regs[src(depth)] = collections::tobj(Types::single(&name));
                     return Ok(true);
                 }
                 return Err(self.error(format!("undefined variable '{name}'"), span));
             }
             Op::StoreLocal => {
-                let scope_set = flags & FLAG_SCOPE_SET != 0;
+                let scope_set = ins.flags & FLAG_SCOPE_SET != 0;
                 let value = if scope_set {
-                    self.peek()?.clone()
+                    self.regs[src(depth - 1)].clone()
                 } else {
-                    self.pop()?
+                    self.regs[src(depth - 1)].clone()
                 };
-                let slot = operand as usize;
+                let slot = ins.d as usize;
                 let scope = context::scope(&self.ctx);
                 if let Some(current) = scope::get_slot(&scope, slot) {
                     if function::is_field_ref(&current) {
@@ -290,26 +460,17 @@ impl VM {
                 }
                 scope::set_slot(&scope, slot, value);
             }
-
             Op::Dup => {
-                let v = self.peek()?.clone();
-                self.push(v);
+                self.regs[src(depth)] = self.regs[src(depth - 1)].clone();
             }
-            Op::Pop => {
-                self.pop()?;
-            }
+            Op::Pop => {}
             Op::Swap => {
-
-                let top = self.pop()?;
-                let below = self.pop()?;
-                self.push(top);
-                self.push(below);
+                self.regs.swap(src(depth - 2), src(depth - 1));
             }
             Op::Unpack => {
-                let count = operand as usize;
-                let value = self.pop()?;
+                let count = ins.d as usize;
+                let value = self.regs[src(depth - 1)].clone();
                 let items = obj::unpack_items(&value);
-
                 if let Some(first) = items.first() {
                     if obj::is_err(first) {
                         return Err(self.header_error(first, span));
@@ -318,120 +479,180 @@ impl VM {
                 if items.len() != count {
                     return Err(self.error("tuple unpack mismatch", span));
                 }
-
-                for item in items.iter().rev() {
-                    self.push(item.clone());
+                // items land on the stack in reverse order (last item deepest),
+                // same as the stack VM's push order
+                for (i, item) in items.iter().enumerate() {
+                    self.regs[src(depth - 1 + (count - 1 - i))] = item.clone();
                 }
             }
-
             Op::BuildList => {
-                let n = operand as usize;
-                let values = self.take(n);
-                self.acc.pop();
-                self.push(collections::list(values));
+                let n = ins.d as usize;
+                let values: Vec<Obj> = (src(depth - n)..src(depth)).map(|i| self.regs[i].clone()).collect();
+                self.args.pop();
+                self.regs[src(depth - n)] = collections::list(values);
             }
             Op::BuildSet => {
-                let n = operand as usize;
-                let items = self.take(n);
-                self.acc.pop();
-                self.push(collections::set(items));
+                let n = ins.d as usize;
+                let items: Vec<Obj> = (src(depth - n)..src(depth)).map(|i| self.regs[i].clone()).collect();
+                self.args.pop();
+                self.regs[src(depth - n)] = collections::set(items);
             }
             Op::BuildTuple => {
-                let n = operand as usize;
-                let values = self.take(n);
-                self.acc.pop();
-                self.push(collections::tup(values, Vec::new()));
+                let n = ins.d as usize;
+                let values: Vec<Obj> = (src(depth - n)..src(depth)).map(|i| self.regs[i].clone()).collect();
+                self.args.pop();
+                self.regs[src(depth - n)] = collections::tup(values, Vec::new());
             }
             Op::BuildTupleNamed => {
-                let first = flags as usize;
-                let n = operand as usize;
+                let first = ins.flags as usize;
+                let n = ins.d as usize;
                 let mut names = Vec::with_capacity(n);
                 for i in 0..n {
-                    names.push(self.program.name(&self.proto, first + i).to_string());
+                    names.push(self.program.name(self.proto(), first + i).to_string());
                 }
-                let values = self.take(n);
-                self.acc.pop();
-                self.push(collections::tup(values, names));
+                let values: Vec<Obj> = (src(depth - n)..src(depth)).map(|i| self.regs[i].clone()).collect();
+                self.args.pop();
+                self.regs[src(depth - n)] = collections::tup(values, names);
             }
             Op::BuildDict => {
-                let n = operand as usize;
-                let flat = self.take(2 * n);
-                self.acc.pop();
+                let n = ins.d as usize;
+                let flat: Vec<Obj> = (src(depth - 2 * n)..src(depth)).map(|i| self.regs[i].clone()).collect();
+                self.args.pop();
                 let mut entries = Vec::with_capacity(n);
                 for i in 0..n {
                     entries.push((flat[2 * i].clone(), flat[2 * i + 1].clone()));
                 }
-                self.push(collections::dict(entries));
+                self.regs[src(depth - 2 * n)] = collections::dict(entries);
             }
             Op::FString => {
-
-                let n = operand as usize;
-                let parts = self.take(n);
+                let n = ins.d as usize;
+                let parts: Vec<Obj> = (src(depth - n)..src(depth)).map(|i| self.regs[i].clone()).collect();
                 let mut out = String::new();
                 for part in &parts {
                     match obj::payload(part) {
                         Payload::Str(s) => out.push_str(&s),
-                        _ => {
-                            return Err(self.error(
-                                "f-string expression must be a string",
-                                span,
-                            ))
-                        }
+                        _ => return Err(self.error("f-string expression must be a string", span)),
                     }
                 }
-                self.push(obj::str(&out));
+                self.regs[src(depth - n)] = obj::str(&out);
             }
 
-            Op::Add => self.bin(BinOp::Add)?,
-            Op::Sub => self.bin(BinOp::Sub)?,
-            Op::Mul => self.bin(BinOp::Mul)?,
-            Op::Div => self.bin(BinOp::Div)?,
-            Op::Idiv => self.bin(BinOp::IDiv)?,
-            Op::Mod => self.bin(BinOp::Mod)?,
-            Op::Pow => self.bin(BinOp::Pow)?,
-            Op::Band => self.bin(BinOp::BAnd)?,
-            Op::Bor => self.bin(BinOp::BOr)?,
-            Op::Bxor => self.bin(BinOp::BXor)?,
-            Op::Lsh => self.bin(BinOp::LShift)?,
-            Op::Rsh => self.bin(BinOp::RShift)?,
-            Op::Eq => self.bin(BinOp::Eq)?,
-            Op::Ne => self.bin(BinOp::NEq)?,
-            Op::Lt => self.bin(BinOp::Lt)?,
-            Op::Gt => self.bin(BinOp::Gt)?,
-            Op::Le => self.bin(BinOp::LtEq)?,
-            Op::Ge => self.bin(BinOp::GtEq)?,
- Op::FusedIntMulAdd => {
-                let dst = ((operand >> 20) & 0x3FF) as usize;
-                let x = ((operand >> 10) & 0x3FF) as usize;
-                let y = (operand & 0x3FF) as usize;
-                let scope = context::scope(&self.ctx);
+            Op::Add => self.bin(BinOp::Add, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Sub => self.bin(BinOp::Sub, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Mul => self.bin(BinOp::Mul, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Div => self.bin(BinOp::Div, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Idiv => self.bin(BinOp::IDiv, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Mod => self.bin(BinOp::Mod, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Pow => self.bin(BinOp::Pow, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Band => self.bin(BinOp::BAnd, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Bor => self.bin(BinOp::BOr, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Bxor => self.bin(BinOp::BXor, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Lsh => self.bin(BinOp::LShift, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Rsh => self.bin(BinOp::RShift, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Eq => self.bin(BinOp::Eq, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Ne => self.bin(BinOp::NEq, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Lt => self.bin(BinOp::Lt, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Gt => self.bin(BinOp::Gt, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Le => self.bin(BinOp::LtEq, ins.a as usize, ins.b as usize, ins.c as usize),
+            Op::Ge => self.bin(BinOp::GtEq, ins.a as usize, ins.b as usize, ins.c as usize),
 
-                let a = {
-                    if let Some(v) = scope::get_slot(&scope, dst) { v } else {
-                        let name_idx = self.proto.locals.get(dst).copied().unwrap_or(0);
-                        let name = self.name(name_idx);
-                        if let Some(v) = scope::get_opt(&scope, &name) {
-                            if function::is_field_ref(&v) { function::field_get(&v) } else { v }
-                        } else if let Some(v) = world::try_get_global(&name) { v } else if world::get_class(&name).is_some() { collections::tobj(Types::single(&name)) } else { world::none_obj() }
+            Op::Range => {
+                let right = self.regs[ins.c as usize].clone();
+                let left = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::range_to(&left, &right);
+            }
+            Op::In => {
+                let right = self.regs[ins.c as usize].clone();
+                let left = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::obj_in(&right, &left);
+            }
+            Op::Is => {
+                let right = self.regs[ins.c as usize].clone();
+                let left = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = is_obj(&left, &right);
+            }
+            Op::IsNot => {
+                let right = self.regs[ins.c as usize].clone();
+                let left = self.regs[ins.b as usize].clone();
+                let result = is_obj(&left, &right);
+                self.regs[ins.a as usize] = match obj::payload(&result) {
+                    Payload::Bool(b) => world::bool_obj(!b),
+                    _ => result,
+                };
+            }
+            Op::Xor => {
+                let right = self.regs[ins.c as usize].clone();
+                let left = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::xor_obj(&left, &right);
+            }
+            Op::Not => {
+                let v = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::not_obj(&v);
+            }
+            Op::Pos => {
+                let v = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::unary(&v, obj::UnOp::Pos);
+            }
+            Op::Neg => {
+                let v = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::unary(&v, obj::UnOp::Neg);
+            }
+            Op::Bnot => {
+                let v = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::unary(&v, obj::UnOp::BNot);
+            }
+            Op::Spread => {
+                let v = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::unary(&v, obj::UnOp::Spread);
+            }
+            Op::ToStr => {
+                let v = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::to_str(&v);
+            }
+            Op::ToBool => {
+                let v = self.regs[ins.b as usize].clone();
+                let b = obj::to_bool(&v);
+                if ins.flags & FLAG_STRICT != 0 && obj::is_err(&b) {
+                    return Err(self.error(err_message(&b), span));
+                }
+                self.regs[ins.a as usize] = b;
+            }
+            Op::FusedIntMulAdd => {
+                let dst = ((ins.d >> 20) & 0x3FF) as usize;
+                let x = ((ins.d >> 10) & 0x3FF) as usize;
+                let y = (ins.d & 0x3FF) as usize;
+                let scope = context::scope(&self.ctx);
+                let owner = self.cur_slot_scope();
+
+                let a = owner.borrow().slots.get(dst).cloned().filter(|v| !world::is_uninitialized(v));
+                let b = owner.borrow().slots.get(x).cloned().filter(|v| !world::is_uninitialized(v));
+                let c = owner.borrow().slots.get(y).cloned().filter(|v| !world::is_uninitialized(v));
+
+                let load = |slot: usize| -> Obj {
+                    let name_idx = self.proto().locals.get(slot).copied().unwrap_or(0);
+                    let name = self.name(name_idx);
+                    if let Some(v) = scope::get_opt(&scope, &name) {
+                        if function::is_field_ref(&v) { function::field_get(&v) } else { v }
+                    } else if let Some(v) = world::try_get_global(&name) {
+                        v
+                    } else if world::get_class(&name).is_some() {
+                        collections::tobj(Types::single(&name))
+                    } else {
+                        world::none_obj()
                     }
                 };
-                let b = {
-                    if let Some(v) = scope::get_slot(&scope, x) { v } else {
-                        let name_idx = self.proto.locals.get(x).copied().unwrap_or(0);
-                        let name = self.name(name_idx);
-                        if let Some(v) = scope::get_opt(&scope, &name) {
-                            if function::is_field_ref(&v) { function::field_get(&v) } else { v }
-                        } else if let Some(v) = world::try_get_global(&name) { v } else if world::get_class(&name).is_some() { collections::tobj(Types::single(&name)) } else { world::none_obj() }
-                    }
+
+                let a = match a {
+                    Some(v) => if function::is_field_ref(&v) { function::field_get(&v) } else { v },
+                    None => load(dst),
                 };
-                let c = {
-                    if let Some(v) = scope::get_slot(&scope, y) { v } else {
-                        let name_idx = self.proto.locals.get(y).copied().unwrap_or(0);
-                        let name = self.name(name_idx);
-                        if let Some(v) = scope::get_opt(&scope, &name) {
-                            if function::is_field_ref(&v) { function::field_get(&v) } else { v }
-                        } else if let Some(v) = world::try_get_global(&name) { v } else if world::get_class(&name).is_some() { collections::tobj(Types::single(&name)) } else { world::none_obj() }
-                    }
+                let b = match b {
+                    Some(v) => if function::is_field_ref(&v) { function::field_get(&v) } else { v },
+                    None => load(x),
+                };
+                let c = match c {
+                    Some(v) => if function::is_field_ref(&v) { function::field_get(&v) } else { v },
+                    None => load(y),
                 };
 
                 let fast = match (obj::payload(&a), obj::payload(&b), obj::payload(&c)) {
@@ -443,120 +664,51 @@ impl VM {
                 let result = match fast {
                     Some(r) => r,
                     None => {
-                        let mul = obj::binop(&b, obj::BinOp::Mul, &c);
-                        obj::binop(&a, obj::BinOp::Add, &mul)
+                        let mul = obj::binop(&b, BinOp::Mul, &c);
+                        obj::binop(&a, BinOp::Add, &mul)
                     }
                 };
-
-                scope::set_slot(&scope, dst, result.clone());
-                self.push(result);
-            }
-            Op::Range => {
-                let right = self.pop()?;
-                let left = self.pop()?;
-                self.push(obj::range_to(&left, &right));
-            }
-            Op::In => {
-
-                let right = self.pop()?;
-                let left = self.pop()?;
-                self.push(obj::obj_in(&right, &left));
-            }
-            Op::Is => {
-                let right = self.pop()?;
-                let left = self.pop()?;
-                self.push(is_obj(&left, &right));
-            }
-            Op::IsNot => {
-                let right = self.pop()?;
-                let left = self.pop()?;
-                let result = is_obj(&left, &right);
-                match obj::payload(&result) {
-                    Payload::Bool(b) => self.push(world::bool_obj(!b)),
-                    _ => self.push(result),
+                match owner.borrow_mut().slots.get_mut(dst) {
+                    Some(slot) => *slot = result.clone(),
+                    None => {
+                        scope::set_slot(&scope, dst, result.clone());
+                    }
                 }
+                self.regs[ins.a as usize] = result;
             }
-            Op::Xor => {
-                let right = self.pop()?;
-                let left = self.pop()?;
-                self.push(obj::xor_obj(&left, &right));
-            }
-            Op::Not => {
-                let v = self.pop()?;
-                self.push(obj::not_obj(&v));
-            }
-            Op::Pos => {
-                let v = self.pop()?;
-                self.push(obj::unary(&v, obj::UnOp::Pos));
-            }
-            Op::Neg => {
-                let v = self.pop()?;
-                self.push(obj::unary(&v, obj::UnOp::Neg));
-            }
-            Op::Bnot => {
-                let v = self.pop()?;
-                self.push(obj::unary(&v, obj::UnOp::BNot));
-            }
-            Op::Spread => {
-                let v = self.pop()?;
-                self.push(obj::unary(&v, obj::UnOp::Spread));
-            }
-            Op::ToStr => {
-
-                let v = self.pop()?;
-                self.push(obj::to_str(&v));
-            }
-            Op::ToBool => {
-
-                let v = self.pop()?;
-                let b = obj::to_bool(&v);
-                if flags & FLAG_STRICT != 0 && obj::is_err(&b) {
-                    return Err(self.error(err_message(&b), span));
-                }
-                self.push(b);
-            }
-
             Op::Jmp => {
-                self.ip = self.proto.jump_target(self.ip, operand);
+                self.ip = self.proto().jump_target(self.ip, ins.d);
                 return Ok(false);
             }
             Op::JmpIf => {
-                let value = self.pop()?;
-                let cond = if flags & FLAG_JUMP_NONE != 0 {
+                let value = self.regs[ins.a as usize].clone();
+                let cond = if ins.flags & FLAG_JUMP_NONE != 0 {
                     obj::is_none(&value)
                 } else {
-
                     match obj::payload(&value) {
                         Payload::Bool(b) => b,
                         _ => false,
                     }
                 };
-                let jump = if flags & FLAG_JUMP_TRUE != 0 { cond } else { !cond };
-                if flags & FLAG_JUMP_POP != 0 {
-
-                } else {
-                    self.push(value);
-                }
+                let jump = if ins.flags & FLAG_JUMP_TRUE != 0 { cond } else { !cond };
                 if jump {
-                    self.ip = self.proto.jump_target(self.ip, operand);
+                    self.ip = self.proto().jump_target(self.ip, ins.d);
                     return Ok(false);
                 }
             }
-
-            Op::PushTryProp => {
-                let entry = self.proto.exc[operand as usize];
+            Op::PushTry | Op::PushTryProp => {
+                let entry = self.proto().exc[ins.d as usize];
                 self.tries.push(TryEntry {
                     kind: entry.kind,
                     start: entry.start,
                     end: entry.end,
                     handler: entry.handler,
-                    depth: self.stack.len(),
-                    acc_depth: self.acc.len(),
+                    depth: self.s(depth),
+                    acc_depth: self.args.len(),
                     var_slot: entry.var_slot,
                 });
             }
             Op::Propagate => {
-
                 if self.tries.last().is_some_and(|last| last.handler == self.ip) {
                     self.tries.pop();
                 }
@@ -575,10 +727,9 @@ impl VM {
                         }
                         return Err(outcome);
                     }
-
                     return Err(Outcome::Error(e));
                 }
-                let top = self.peek()?.clone();
+                let top = self.regs[ins.a as usize].clone();
                 if obj::is_err(&top) {
                     if frames > 0 {
                         let outcome = Outcome::Propagate(top, span.0, span.1);
@@ -594,105 +745,124 @@ impl VM {
                     return Err(self.header_error(&top, span));
                 }
             }
+            Op::PopTry => {
+                self.tries.pop();
+            }
+            Op::Raise => {
+                if let Some(error) = self.pending_finally_error.take() {
+                    return Err(Outcome::Error(error));
+                }
 
+                if let Some(value) = self.pending_return.take() {
+                    return Err(Outcome::Return(value, span.0, span.1));
+                }
+
+                if let Some(outcome) = self.pending_propagate.take() {
+                    return Err(outcome);
+                }
+            }
             Op::GetAttr => {
-                let target = self.pop()?;
-                let name = self.name(operand as usize);
-                self.push(obj::get_attr(&target, &name));
+                let target = self.regs[ins.b as usize].clone();
+                let name = self.name(ins.d as usize);
+                self.regs[ins.a as usize] = obj::get_attr(&target, &name);
             }
             Op::SetAttr => {
-                let target = self.pop()?;
-                let value = self.pop()?;
-                let name = self.name(operand as usize);
-                self.push(obj::set_attr(&target, &name, &value));
+                let target = self.regs[ins.b as usize].clone();
+                let value = self.regs[ins.c as usize].clone();
+                let name = self.name(ins.d as usize);
+                self.regs[ins.a as usize] = obj::set_attr(&target, &name, &value);
             }
             Op::GetItem => {
-                let key = self.pop()?;
-                let target = self.pop()?;
-                self.push(obj::get_item(&target, &key));
+                let key = self.regs[ins.c as usize].clone();
+                let target = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::get_item(&target, &key);
             }
             Op::SetItem => {
-
-                let index = self.pop()?;
-                let target = self.pop()?;
-                let value = self.pop()?;
-                self.push(obj::set_item(&target, &index, &value));
+                let index = self.regs[ins.c as usize].clone();
+                let target = self.regs[ins.b as usize].clone();
+                let value = self.regs[ins.a as usize].clone();
+                self.regs[ins.a as usize] = obj::set_item(&target, &index, &value);
             }
+
             Op::Slice => {
-                let (step, end, start) = self.slice_bounds(flags);
-                let target = self.pop()?;
-                self.push(obj::slice(&target, start, end, step));
+                let (step, end, start) = self.slice_bounds(ins.flags);
+                let target = self.regs[ins.b as usize].clone();
+                self.regs[ins.a as usize] = obj::slice(&target, start, end, step);
             }
             Op::SetSlice => {
-                let (step, end, start) = self.slice_bounds(flags);
-                let target = self.pop()?;
-                let value = self.pop()?;
+                let (step, end, start) = self.slice_bounds(ins.flags);
+                let value = self.regs[ins.a as usize].clone();
+                let target = self.regs[ins.b as usize].clone();
                 self.set_slice(&target, &value, start, end, step, span)?;
-
-                self.push(value);
+                self.regs[ins.a as usize] = value;
             }
 
             Op::ArgBegin => {
-                self.acc.push(Vec::new());
-
-                let n = operand as usize;
-                self.acc.last_mut().unwrap().reserve(n);
+                let n = ins.d as usize;
+                self.args.push(ArgFrame {
+                    values: Vec::with_capacity(n),
+                    names: Vec::with_capacity(n),
+                });
             }
             Op::ArgPos => {
-
-                if flags & FLAG_ARG_CHECK != 0 {
-                    let v = self.peek()?;
+                if ins.flags & FLAG_ARG_CHECK != 0 {
+                    let v = &self.regs[ins.a as usize];
                     if obj::is_err(v) {
-                        return Err(self.header_error(v, span));
+                        let e = v.clone();
+                        return Err(self.header_error(&e, span));
                     }
                 }
-                self.acc.last_mut().unwrap().push(String::new());
+                let v = self.regs[ins.a as usize].clone();
+                let frame = self.args.last_mut().expect("argument list");
+                frame.values.push(v);
+                frame.names.push(String::new());
             }
             Op::ArgKw => {
-                let name = self.name(operand as usize);
-                self.acc.last_mut().unwrap().push(name);
+                let name = self.name(ins.d as usize);
+                let v = self.regs[ins.a as usize].clone();
+                let frame = self.args.last_mut().expect("argument list");
+                frame.values.push(v);
+                frame.names.push(name);
             }
             Op::ArgSpread => {
-
-                let source = self.pop()?;
+                let source = self.regs[ins.a as usize].clone();
                 let items = obj::unpack_items(&source);
                 if let Some(first) = items.first() {
                     if obj::is_err(first) {
                         return Err(self.header_error(first, span));
                     }
                 }
+                let frame = self.args.last_mut().expect("argument list");
                 for item in items {
-                    self.push(item);
-                    self.acc.last_mut().unwrap().push(String::new());
+                    frame.values.push(item);
+                    frame.names.push(String::new());
                 }
             }
             Op::ArgKwSpread => {
-                let value = self.pop()?;
+                let value = self.regs[ins.a as usize].clone();
                 let dict = match obj::payload(&value) {
                     Payload::Dict(map) => map,
-                    _ => {
-                        return Err(self.error("** argument must be dict", span));
-                    }
+                    _ => return Err(self.error("** argument must be dict", span)),
                 };
+                let frame = self.args.last_mut().expect("argument list");
                 for (key, item) in dict.borrow().iter_pairs() {
                     let name = match obj::payload(key) {
                         Payload::Str(s) => s.to_string(),
                         _ => obj::display(&obj::repr(key)),
                     };
-                    self.push(item.clone());
-                    self.acc.last_mut().unwrap().push(name);
+                    frame.values.push(item.clone());
+                    frame.names.push(name);
                 }
             }
 
             Op::Call => {
-                let names = self.acc.pop().unwrap_or_default();
-                let n = names.len();
-                if self.stack.len() < n + 1 {
-                    return Err(Outcome::Panic(obj::panic("panic", "vm stack is empty")));
-                }
-                let values: Vec<Obj> = self.stack[self.stack.len() - n..].to_vec();
-                self.stack.truncate(self.stack.len() - n);
-                let callable = self.stack.pop().unwrap();
+                let frame = self.args.pop().unwrap_or(ArgFrame {
+                    values: Vec::new(),
+                    names: Vec::new(),
+                });
+                let callable = self.regs[ins.a as usize].clone();
+                let values = frame.values;
+                let names = frame.names;
 
                 let source = context::source(&self.ctx);
                 context::push_frame(
@@ -708,14 +878,13 @@ impl VM {
                 let popped = context::pop_frame(&self.ctx);
                 match outcome {
                     Ok(result) => {
-
                         if obj::is_err(&result) {
                             return Err(self.error(err_message(&result), span));
                         }
                         if popped.is_err() {
                             return Err(Outcome::Panic(obj::panic("panic", "stack is empty")));
                         }
-                        self.push(result);
+                        self.regs[ins.a as usize] = result;
                     }
                     Err(outcome) => return Err(outcome),
                 }
@@ -723,51 +892,64 @@ impl VM {
 
             Op::NewScope => {
                 let cur = context::scope(&self.ctx);
-                let is_fn = flags & FLAG_SCOPE_FUNCTION != 0;
+                let is_fn = ins.flags & FLAG_SCOPE_FUNCTION != 0;
                 let child = scope::new(Some(cur.clone()), is_fn);
                 scope::inherit_slot_scope(&cur, &child);
                 context::set_scope(&self.ctx, child);
+                self.slot_scope = None;
             }
             Op::PopScope => {
                 let cur = context::scope(&self.ctx);
                 let parent = scope::parent(&cur).unwrap_or_else(|| cur.clone());
                 context::set_scope(&self.ctx, parent);
+                self.slot_scope = None;
             }
             Op::PrepIter => {
-                let iterable = self.pop()?;
+                let iterable = self.regs[ins.a as usize].clone();
                 let iter = obj::unary(&iterable, obj::UnOp::Iter);
                 if !matches!(obj::payload(&iter), Payload::Iter(_)) {
-                    let msg = self.program.message(operand as usize).to_string();
+                    let msg = self.program.message(ins.d as usize).to_string();
                     return Err(self.error(msg, span));
                 }
-                self.push(iter);
+                self.regs[ins.a as usize] = iter;
             }
             Op::ForNext => {
-                let iter = self.peek()?.clone();
-                let next = obj::unary(&iter, obj::UnOp::Next);
+                let iter = self.regs[ins.b as usize].clone();
+                // fast path: a Range iterator ??avoid cloning + Obj::int allocation
+                // when the value fits in the cached small-int range.
+                let next = if let Payload::Iter(cell) = obj::payload(&iter) {
+                    if cell.borrow().kind == crate::runtime::iters::Kind::Range {
+                        if let Some(value) = crate::runtime::iters::range_next(&cell) {
+                            world::int_cached(value)
+                        } else {
+                            obj::err("iteration stopped")
+                        }
+                    } else {
+                        obj::unary(&iter, obj::UnOp::Next)
+                    }
+                } else {
+                    obj::unary(&iter, obj::UnOp::Next)
+                };
                 match obj::payload(&next) {
                     Payload::Error { message, .. } if message == "iteration stopped" => {
-                        self.pop()?;
-                        self.ip = self.proto.jump_target(self.ip, operand);
+                        self.ip = self.proto().jump_target(self.ip, ins.d);
                         return Ok(false);
                     }
                     Payload::Panic { .. } => {
-                        self.push(next);
-                        self.ip += 1;
+                        self.regs[ins.a as usize] = next;
                         return Ok(true);
                     }
                     _ => {
-                        self.push(next);
+                        self.regs[ins.a as usize] = next;
                     }
                 }
             }
             Op::Break | Op::Skip => {
-                self.ip = self.proto.jump_target(self.ip, operand);
+                self.ip = self.proto().jump_target(self.ip, ins.d);
                 return Ok(false);
             }
             Op::Return => {
-
-                let value = self.pop()?;
+                let value = self.regs[ins.a as usize].clone();
 
                 if let Some(index) = self.pending_finally() {
                     let entry = self.tries[index];
@@ -778,43 +960,17 @@ impl VM {
                 }
                 return Err(Outcome::Return(value, span.0, span.1));
             }
-            Op::PushTry => {
-                let entry = self.proto.exc[operand as usize];
-                self.tries.push(TryEntry {
-                    kind: entry.kind,
-                    start: entry.start,
-                    end: entry.end,
-                    handler: entry.handler,
-                    depth: self.stack.len(),
-                    acc_depth: self.acc.len(),
-                    var_slot: entry.var_slot,
-                });
-            }
-            Op::PopTry => {
-                self.tries.pop();
-            }
-            Op::Raise => {
-
-                if let Some(error) = self.pending_finally_error.take() {
-                    return Err(Outcome::Error(error));
-                }
-
-                if let Some(value) = self.pending_return.take() {
-                    return Err(Outcome::Return(value, span.0, span.1));
-                }
-
-                if let Some(outcome) = self.pending_propagate.take() {
-                    return Err(outcome);
-                }
-            }
 
             Op::MakeFunc => {
-                let slot = operand as usize;
-                let module_index = self.proto.protos[slot];
+                let slot = ins.d as usize;
+                let module_index = self.proto().protos[slot];
                 let proto = self.program.protos[module_index].clone();
 
-                let defaults = (flags >> 8) as usize;
-                let mut values = self.take(defaults).into_iter();
+                let defaults = (ins.flags >> 8) as usize;
+                let mut values = (src(depth - defaults)..src(depth))
+                    .map(|i| self.regs[i].clone())
+                    .collect::<Vec<_>>()
+                    .into_iter();
                 let mut args = Vec::with_capacity(proto.params.len());
                 for param in &proto.params {
                     let name = self.program.names[param.name].clone();
@@ -829,10 +985,8 @@ impl VM {
                     let default = if optional {
                         values.next().unwrap_or_else(obj::none)
                     } else if positional {
-
                         collections::tup(Vec::new(), Vec::new())
                     } else if keyword {
-
                         collections::dict(Vec::new())
                     } else {
                         obj::null()
@@ -856,66 +1010,58 @@ impl VM {
                     self.program.clone(),
                     self.ctx.clone(),
                 );
-                if flags & FLAG_FUNC_BIND != 0 {
-
+                if ins.flags & FLAG_FUNC_BIND != 0 {
                     let scope = context::scope(&self.ctx);
                     scope::set(&scope, &name, created.clone());
                 }
-                if flags & FLAG_FUNC_EXT != 0 {
+                if ins.flags & FLAG_FUNC_EXT != 0 {
                     if let Some(ext) = proto.ext_type {
                         let type_name = self.program.names[ext].clone();
                         world::try_set_original_class(&type_name, &name, created.clone());
                     }
                 }
-                self.push(created);
+                self.regs[ins.a as usize] = created;
             }
 
             Op::MakeClass => {
-
-                let name_slot = operand as usize;
+                let name_slot = ins.d as usize;
                 let name = self.name(name_slot);
-                let field_count = (flags >> 8) as usize;
+                let field_count = (ins.flags >> 8) as usize;
                 let mut fields = Vec::with_capacity(field_count);
                 for i in 0..field_count {
                     fields.push(self.name(name_slot + 1 + i));
                 }
-                let created = if flags & FLAG_CLASS_PARAMS != 0 {
-
+                let created = if ins.flags & FLAG_CLASS_PARAMS != 0 {
                     collections::stru(&name, fields)
                 } else {
-
                     obj::obj_new(&name, Payload::Plain)
                 };
-                self.push(created);
+                self.regs[ins.a as usize] = created;
             }
             Op::RegisterClass => {
-
-                let name = self.name(operand as usize);
-                let created = self.peek()?.clone();
+                let name = self.name(ins.d as usize);
+                let created = self.regs[ins.a as usize].clone();
                 world::set_class(&name, created);
             }
             Op::LoadBaseClass => {
-                let name = self.name(operand as usize);
+                let name = self.name(ins.d as usize);
                 match world::get_class(&name) {
-                    Some(class) => self.push(class),
+                    Some(class) => self.regs[ins.a as usize] = class,
                     None => {
                         return Err(self.error(format!("unknown base class '{name}'"), span));
                     }
                 }
             }
             Op::SetBases => {
-
-                let count = operand as usize;
+                let count = ins.d as usize;
                 let mut bases = Vec::with_capacity(count);
-                for _ in 0..count {
-                    bases.push(self.pop()?);
+                for i in 0..count {
+                    bases.push(self.regs[src(depth - 1 - i)].clone());
                 }
-
                 bases.reverse();
-                let created = self.peek()?.clone();
+                let created = self.regs[ins.a as usize].clone();
                 for (index, base) in bases.iter().enumerate() {
                     if index == 0 {
-
                         created.borrow_mut().super_ = Some(base.clone());
                     }
                     created.borrow_mut().parents.push(base.clone());
@@ -924,27 +1070,20 @@ impl VM {
                     created.borrow_mut().types = merged;
                 }
             }
-            Op::AddMember => {
-                let value = self.pop()?;
-                let name = self.name(operand as usize);
-                let created = self.peek()?.clone();
-                obj::member_set(&created, &name, &value);
-            }
-            Op::AddMethod => {
-                let value = self.pop()?;
-                let name = self.name(operand as usize);
-                let created = self.peek()?.clone();
+            Op::AddMember | Op::AddMethod => {
+                let value = self.regs[ins.b as usize].clone();
+                let name = self.name(ins.d as usize);
+                let created = self.regs[ins.a as usize].clone();
                 obj::member_set(&created, &name, &value);
             }
             Op::MakeProperty => {
-
-                let setter = self.pop()?;
-                let getter = self.pop()?;
-                let mut default = self.pop()?;
-                let name = self.name(operand as usize);
+                let setter = self.regs[src(depth - 1)].clone();
+                let getter = self.regs[src(depth - 2)].clone();
+                let mut default = self.regs[src(depth - 3)].clone();
+                let name = self.name(ins.d as usize);
 
                 if obj::is_none(&default) {
-                    let created = self.peek()?.clone();
+                    let created = self.regs[src(depth - 4)].clone();
                     let base = created.borrow().super_.clone();
                     if let Some(base) = base {
                         if let Some(member) = obj::member(&base, &name) {
@@ -960,34 +1099,31 @@ impl VM {
                     if obj::is_none(&setter) { None } else { Some(setter) },
                     default,
                 );
-                self.push(property);
+                self.regs[ins.a as usize] = property;
             }
             Op::MakeEnum => {
-                let name = self.name(operand as usize);
+                let name = self.name(ins.d as usize);
                 let created = collections::enu(&name, 0);
-                self.push(created);
+                self.regs[ins.a as usize] = created;
             }
             Op::MatchPattern => {
-
-                let pattern = self.proto.patterns[operand as usize].clone();
-                let value = self.peek()?.clone();
+                let pattern = self.proto().patterns[ins.d as usize].clone();
+                let value = self.regs[ins.b as usize].clone();
                 let scope = context::scope(&self.ctx);
                 let matched = self.match_pattern(&pattern, &value, &scope);
-                self.push(world::bool_obj(matched));
+                self.regs[ins.a as usize] = world::bool_obj(matched);
             }
             Op::MakeFuture => {
-
-                let slot = operand as usize;
-                let module_index = self.proto.protos[slot];
-                self.push(crate::native::flow::future_pending(
+                let slot = ins.d as usize;
+                let module_index = self.proto().protos[slot];
+                self.regs[ins.a as usize] = crate::native::flow::future_pending(
                     module_index,
                     self.program.clone(),
                     scope::snapshot(&context::scope(&self.ctx)),
-                ));
+                );
             }
             Op::Await => {
-
-                let value = self.pop()?;
+                let value = self.regs[ins.a as usize].clone();
                 let state = match obj::payload(&value) {
                     Payload::Future(state) => state.clone(),
                     _ => return Err(self.error("'wait' requires Future", span)),
@@ -1006,9 +1142,8 @@ impl VM {
                             (c.source.clone(), c.frames.clone())
                         };
                         let ctx = context::new(scope, source, frames);
-                        match world::execute_proto(&program, &ctx, index) {
+                        match execute_proto(&program, &ctx, index, plan_for(&program)) {
                             function::Flow::Return(v) => v,
-
                             function::Flow::Propagate(v) => {
                                 return Err(Outcome::Propagate(v, span.0, span.1))
                             }
@@ -1022,12 +1157,11 @@ impl VM {
                 };
 
                 state.borrow_mut().value = Some(result.clone());
-                self.push(result);
+                self.regs[ins.a as usize] = result;
             }
             Op::PushDefer => {
-
-                let slot = operand as usize;
-                let module_index = self.proto.protos[slot];
+                let slot = ins.d as usize;
+                let module_index = self.proto().protos[slot];
                 context::push_defer(
                     &self.ctx,
                     context::Defer::Proto {
@@ -1037,25 +1171,24 @@ impl VM {
                 );
             }
             Op::PushUsing => {
-
-                let value = self.pop()?;
+                let value = self.regs[ins.a as usize].clone();
                 let entry = obj::entry(&value);
                 if obj::is_err(&entry) {
                     return Err(self.error(err_message(&entry), span));
                 }
                 context::push_using(&self.ctx, entry);
             }
-
             Op::Unwrap => {
-                let v = self.peek()?;
+                let v = &self.regs[ins.a as usize];
                 if obj::is_err(v) {
-                    return Err(self.error(err_message(v), span));
+                    let e = v.clone();
+                    return Err(self.error(err_message(&e), span));
                 }
             }
             Op::Use => {
-                let path = self.name(operand as usize);
-                let mut cursor = operand as usize + 1;
-                let alias = if flags & 1 != 0 {
+                let path = self.name(ins.d as usize);
+                let mut cursor = ins.d as usize + 1;
+                let alias = if ins.flags & 1 != 0 {
                     let a = self.name(cursor);
                     cursor += 1;
                     Some(a)
@@ -1063,8 +1196,8 @@ impl VM {
                     None
                 };
                 let mut imports = Vec::new();
-                if flags & 2 != 0 {
-                    let count = (flags >> 8) as usize;
+                if ins.flags & 2 != 0 {
+                    let count = (ins.flags >> 8) as usize;
                     for _ in 0..count {
                         let name = self.name(cursor);
                         cursor += 1;
@@ -1088,9 +1221,8 @@ impl VM {
                 }
             }
             Op::Unsupported => {
-                let message = self.program.message(operand as usize).to_string();
-                if flags & FLAG_HOST_ERROR != 0 {
-
+                let message = self.program.message(ins.d as usize).to_string();
+                if ins.flags & FLAG_HOST_ERROR != 0 {
                     let (name, text) = match message.split_once(": ") {
                         Some((name, text)) => (name.to_owned(), text.to_owned()),
                         None => ("System.Exception".to_owned(), message),
@@ -1099,17 +1231,19 @@ impl VM {
                 }
                 return Err(self.error(message, span));
             }
-
             _ => {
                 return Err(Outcome::Panic(obj::panic(
                     "panic",
-                    format!("vm: opcode {op:?} is not implemented yet"),
+                    format!("vm2: opcode {:?} is not implemented yet", ins.op),
                 )))
             }
         }
         Ok(true)
     }
+}
 
+
+impl VM {
     fn call_value(
         &mut self,
         callable: &Obj,
@@ -1134,11 +1268,19 @@ impl VM {
         args: &Args,
         span: (usize, usize),
     ) -> Result<Obj, Outcome> {
-        let frame = match function::begin_call(callable, args) {
+    // JIT fast-path: pure-Int Un function with exactly one Int parameter
+    if let Some(jit_fn) = crate::jit_cache::get_jit_fn(&program.names[program.protos[proto_index].name]) {
+        if args.names.iter().all(|n| n.is_empty()) && args.values.len() == 1 {
+            if let crate::runtime::obj::Payload::Int(v) = obj::payload(&args.values[0]) {
+                return Ok(obj::int(unsafe { jit_fn(v) }));
+            }
+        }
+    }
+    let frame = match function::begin_call(callable, args) {
             Ok(frame) => frame,
             Err(error) => return Err(self.header_error(&error, span)),
         };
-        let flow = world::execute_proto(&program, &frame.ctx, proto_index);
+        let flow = execute_proto(&program, &frame.ctx, proto_index, plan_for(&program));
         match flow {
             function::Flow::Return(value) => Ok(function::end_call(&frame, value)),
 
@@ -1161,16 +1303,6 @@ impl VM {
                 Err(Outcome::Skip(start, length))
             }
         }
-    }
-
-    fn pending_finally(&self) -> Option<usize> {
-        for index in (0..self.tries.len()).rev() {
-            let entry = self.tries[index];
-            if entry.kind == ExcKind::Finally && entry.start <= self.ip && self.ip < entry.end {
-                return Some(index);
-            }
-        }
-        None
     }
 
     fn match_pattern(&self, pattern: &Pattern, value: &Obj, scope: &scope::Scope) -> bool {
@@ -1207,31 +1339,6 @@ impl VM {
                 true
             }
         }
-    }
-    fn bin(&mut self, op: BinOp) -> Result<(), Outcome> {
-        let right = self.pop()?;
-        let left = self.pop()?;
-        self.push(obj::binop(&left, op, &right));
-        Ok(())
-    }
-
-    fn slice_bounds(&mut self, flags: u16) -> (Option<Obj>, Option<Obj>, Option<Obj>) {
-        let step = if flags & FLAG_SLICE_STEP != 0 {
-            Some(self.pop().unwrap_or_else(|_| world::none_obj()))
-        } else {
-            None
-        };
-        let end = if flags & FLAG_SLICE_END != 0 {
-            Some(self.pop().unwrap_or_else(|_| world::none_obj()))
-        } else {
-            None
-        };
-        let start = if flags & FLAG_SLICE_START != 0 {
-            Some(self.pop().unwrap_or_else(|_| world::none_obj()))
-        } else {
-            None
-        };
-        (step, end, start)
     }
 
     fn set_slice(
@@ -1274,10 +1381,7 @@ impl VM {
             };
             let i = i as i32 as i64;
             if i != 1 {
-                return Err(self.error(
-                    "slice assignment with step != 1 not supported",
-                    span,
-                ));
+                return Err(self.error("slice assignment with step != 1 not supported", span));
             }
         }
         if b < a {
@@ -1311,47 +1415,28 @@ impl VM {
         }
         Ok(())
     }
-    fn push(&mut self, value: Obj) {
-        self.stack.push(value);
-    }
-    fn peek(&self) -> Result<&Obj, Outcome> {
-        self.stack
-            .last()
-            .ok_or_else(|| Outcome::Panic(obj::panic("panic", "vm stack is empty")))
-    }
-    fn pop(&mut self) -> Result<Obj, Outcome> {
-        self.stack
-            .pop()
-            .ok_or_else(|| Outcome::Panic(obj::panic("panic", "vm stack is empty")))
-    }
-
-    fn take(&mut self, n: usize) -> Vec<Obj> {
-        if self.stack.len() < n {
-            return Vec::new();
-        }
-        let values = self.stack[self.stack.len() - n..].to_vec();
-        self.stack.truncate(self.stack.len() - n);
-        values
-    }
-    fn name(&self, index: usize) -> String {
-        self.program.name(&self.proto, index).to_string()
-    }
-
-    fn error(&self, message: impl Into<String>, span: (usize, usize)) -> Outcome {
-        Outcome::Error(LangError::new(span.0, span.1, message))
-    }
-
-    fn header_error(&self, err: &Obj, span: (usize, usize)) -> Outcome {
-        match obj::payload(err) {
-            Payload::Error { header, message } => {
-                Outcome::Error(LangError::new(span.0, span.1, message).with_header(header))
-            }
-            _ => self.error(obj::display(err), span),
-        }
-    }
 }
-fn execute_proto(program: &Rc<Program>, ctx: &Context, proto_index: usize) -> function::Flow {
-    let mut vm = VM::new_proto(program.clone(), proto_index, ctx.clone());
+
+thread_local! {
+    static PLAN_CACHE: RefCell<HashMap<usize, (Rc<Program>, Rc<Plan>)>> = RefCell::new(HashMap::new());
+}
+
+fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
+    let key = Rc::as_ptr(program) as usize;
+    let found = PLAN_CACHE.with(|cache| cache.borrow().get(&key).cloned());
+    if let Some((cached_program, cached_plan)) = found {
+        if Rc::ptr_eq(&cached_program, program) {
+            return cached_plan;
+        }
+    }
+    let plan = Rc::new(transfer::compile(program).expect("validated program must translate"));
+    PLAN_CACHE
+        .with(|cache| cache.borrow_mut().insert(key, (program.clone(), plan.clone())));
+    plan
+}
+
+fn execute_proto(program: &Rc<Program>, ctx: &Context, proto_index: usize, plan: Rc<Plan>) -> function::Flow {
+    let mut vm = VM::new_proto(program.clone(), plan, proto_index, ctx.clone());
     match vm.run() {
         Outcome::Value(value) => function::Flow::Return(value),
         Outcome::Return(value, _, _) => function::Flow::Return(value),
@@ -1362,24 +1447,29 @@ fn execute_proto(program: &Rc<Program>, ctx: &Context, proto_index: usize) -> fu
         Outcome::Skip(start, length) => function::Flow::Skip(start, length),
     }
 }
-pub fn err_message(o: &Obj) -> String {    match obj::payload(o) {
+
+pub fn err_message(o: &Obj) -> String {
+    match obj::payload(o) {
         Payload::Error { message, .. } => message,
         Payload::Panic { name, message } => format!("{name}: {message}"),
         _ => obj::display(o),
     }
 }
+
 pub fn err_header(o: &Obj) -> String {
     match obj::payload(o) {
         Payload::Error { header, .. } => header,
         _ => "error".to_string(),
     }
 }
+
 pub fn panic_display(o: &Obj) -> String {
     match obj::payload(o) {
         Payload::Panic { name, message } => Panic::named(name, message).display(),
         _ => obj::display(o),
     }
 }
+
 fn is_obj(left: &Obj, right: &Obj) -> Obj {
     if matches!(obj::payload(left), Payload::TObj(..)) || matches!(obj::payload(right), Payload::TObj(..)) {
         obj::obj_is(right, left)
@@ -1387,6 +1477,7 @@ fn is_obj(left: &Obj, right: &Obj) -> Obj {
         obj::obj_is(left, right)
     }
 }
+
 fn materialize(c: &Constant) -> Obj {
     match c {
         Constant::Int(v) => world::int_cached(*v),
@@ -1397,5 +1488,4 @@ fn materialize(c: &Constant) -> Obj {
         Constant::Null => world::null_obj(),
     }
 }
-#[cfg(test)]
-pub(crate) mod tests;
+#[cfg(test)] pub(crate) mod tests;

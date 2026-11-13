@@ -706,7 +706,7 @@ Planned:
    with a `path|expected exit|expected substring` row in `test/negative/manifest.txt`.
 5. Open a pull request. Commits are made by the contributor; automated tooling does not push to git.
 
-Coding conventions: Rust 2021 edition. Modules carry a `//!` doc comment at the top, errors propagate with `?`, and pattern matching is used liberally. No external crate dependencies; the standard library is all that is used.
+Coding conventions: Rust 2021 edition. Modules carry a `//!` doc comment at the top, errors propagate with `?`, and pattern matching is used liberally. No external crate dependencies by default; the exception is the Cranelift JIT stack under `vendor/` (patched `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`, raw kernel32 FFI because the GNU toolchain lacks `dlltool.exe`), used for the i64-specialized JIT.
 
 ## License
 

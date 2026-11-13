@@ -3,6 +3,8 @@ pub mod bytecode;
 pub mod compiler;
 pub mod desugar;
 pub mod error;
+pub mod jit;
+pub mod jit_cache;
 pub mod lexer;
 pub mod module;
 pub mod native;
@@ -13,4 +15,6 @@ pub mod runtime;
 pub mod source;
 pub mod token;
 pub mod vm;
-pub mod vm2;
+
+pub mod jit_fn;
+

@@ -1,0 +1,74 @@
+[package]
+edition = "2024"
+rust-version = "1.97.0"
+name = "cranelift-jit"
+version = "0.137.1"
+description = "A JIT library backed by Cranelift (raw-FFI fork for x86_64-pc-windows-gnu)"
+license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/bytecodealliance/wasmtime"
+
+[features]
+default = []
+wasmtime-unwinder = ["dep:wasmtime-unwinder"]
+
+[lib]
+name = "cranelift_jit"
+path = "src/lib.rs"
+
+[dependencies.anyhow]
+version = "1.0.103"
+default-features = false
+
+[dependencies.cranelift-codegen]
+version = "0.137.1"
+features = [
+    "unwind",
+    "std",
+]
+default-features = false
+
+[dependencies.cranelift-control]
+version = "0.137.1"
+default-features = false
+
+[dependencies.cranelift-entity]
+version = "0.137.1"
+
+[dependencies.cranelift-module]
+version = "0.137.1"
+
+[dependencies.cranelift-native]
+version = "0.137.1"
+
+[dependencies.libc]
+version = "0.2.185"
+default-features = true
+
+[dependencies.log]
+version = "0.4.28"
+default-features = false
+
+[dependencies.memmap2]
+version = "0.9.11"
+
+[dependencies.region]
+version = "3.0.2"
+
+[dependencies.target-lexicon]
+version = "0.13.5"
+
+[dependencies.wasmtime-jit-icache-coherence]
+version = "=50.0.1"
+package = "wasmtime-internal-jit-icache-coherence"
+
+[dependencies.wasmtime-unwinder]
+version = "=50.0.1"
+features = ["cranelift"]
+optional = true
+package = "wasmtime-internal-unwinder"
+
+[dev-dependencies.cranelift-entity]
+version = "0.137.1"
+
+[dev-dependencies.cranelift-frontend]
+version = "0.137.1"

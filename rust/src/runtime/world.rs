@@ -226,8 +226,8 @@ pub fn bool_obj(value: bool) -> Obj {
     })
 }
 pub fn int_cached(value: i64) -> Obj {
-    const LOW: i64 = -5;
-    const HIGH: i64 = 256;
+    const LOW: i64 = -1024;
+    const HIGH: i64 = 100000;
     if value < LOW || value > HIGH {
         return crate::runtime::obj::int_obj(value, int_type(), obj_type());
     }

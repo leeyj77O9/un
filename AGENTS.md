@@ -6,9 +6,10 @@
 ## 프로젝트 개요
 
 - **Un**: 들여쓰기 기반 문법, 패턴 매칭, `go`/`wait` 비동기 실행을 제공하는 동적 타입 스크립팅 언어.
-- **구현**: Rust 바이트코드 컴파일러 + 스택 기반 VM (`unvm`, 라이브러리 이름 `unvm`).
-- **파이프라인**: `Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Stack VM`
-- **규모**: Rust 약 88개 파일 / 약 15,000줄, `test/` 아래 `.un` 스크립트 89개.
+- **구현**: Rust 바이트코드 컴파일러 + 레지스터 기반 VM (`unvm`, 라이브러리 이름 `unvm`).
+- **파이프라인**: `Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM`
+- **규모**: Rust 약 90개 파일 / 약 16,500줄, `test/` 아래 `.un` 스크립트 89개.
+- **JIT**: Cranelift 0.137.1 기반의 i64-특화 JIT가 정수 반복 함수를 native로 컴파일한다(선택적).
 - **이전 역사**: 원래 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었다. Rust 포트가
   differential 검증으로 C# 구현과 byte-identical임을 확인한 뒤 대체했고, C# 소스는
   `git` 이력에만 남아 있다.
@@ -26,7 +27,11 @@ C:\dev\un/
 │  │  ├─ main.rs             # CLI 진입점 (run/compile/tokens/ast/desugar/opt/dis/help)
 │  │  ├─ lib.rs
 │  │  ├─ bytecode/           # Op(explicit #[repr(u8)]), Instruction, Program, Proto, unbc
-│  │  ├─ lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm.rs / module.rs
+│  │  ├─ lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / module.rs
+│  │  ├─ vm/                 # 단일 실행 모듈: register VM (mod.rs) + stack→register 번역(transfer.rs)
+│  │  ├─ jit.rs              # Cranelift i64-핫루프 JIT 기반
+│  │  ├─ jit_cache.rs        # JIT 컴파일된 함수 전역 캐시/등록
+│  │  ├─ jit_fn.rs           # 순수 int 함수를 native fn(i64)->i64 로 컴파일
 │  │  ├─ runtime/            # obj, collections, iters, function, world, scope, date, ...
 │  │  ├─ native/             # io, fs, re, math, iter, ... (`native::init`에서 명시적 등록)
 │  │  └─ playground/         # WASM 진입점 (PlaygroundRunner.RunCode 대응)
@@ -37,7 +42,14 @@ C:\dev\un/
 - **`main.un`은 사용자의 스크래치 파일**이다. 테스트/제품 진입점이 아니며, 에이전트는
   이 파일을 수정하거나 스테이징하지 않는다.
 - **`Op` enum은 explicit `#[repr(u8)]`로 고정**되어 있다. opcode 값을 바꾸면 `.unbc`가 깨진다.
-- **외부 crate 의존성은 없다**(표준 라이브러리만 사용). 새 의존성은 정말 필요할 때만 추가한다.
+- **외부 crate 의존성**: 기본적으로는 표준 라이브러리이지만, `vendor/` 아래 패치된
+  `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`이
+  있다(Windows/GNU에서 `dlltool.exe` 부재로 `windows-sys 0.52.0`을 빌드할 수 없기 위해
+  raw kernel32 FFI로 교체). 새 외부 crate는 정말 필요할 때만 추가하고 `vendor/`에 패치할
+  수 있으면 raw FFI로 해결한다.
+- **JIT 동작**: `jit_fn.rs`는 i64 파라미터 1개 + i64 지역변수 + `iter.range(1, n+1)` 모양의
+  함수만 native로 컴파일한다. 나머지는 전부 인터프리터로 fallback. 환경 변수
+  `UV_JIT=0`으로 JIT를 비활성화한다(런타임 opt-out).
 
 ## 빠른 명령
 

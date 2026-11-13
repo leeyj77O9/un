@@ -1277,21 +1277,77 @@ impl UnOp {
         }
     }
 }
-pub fn binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
-    if let Some(v) = try_method(o, op.dunder(), &[other.clone()]) {
-        return v;
+fn can_have_dunder(o: &Obj) -> bool {
+    !matches!(
+        o.borrow().payload,
+        Payload::Int(_) | Payload::Bool(_) | Payload::Float(_)
+    )
+}
+
+/// Fast path for `Int OP Int`: same observable behavior as the old
+/// `binop` (which went through dunder probe + builtin dispatch), minus the
+/// per-call borrow/open. Div still produces a Float, matching the old
+/// `IDiv` vs `/` semantics.
+fn int_int_binop(a: i64, op: BinOp, b: i64) -> Obj {
+    use BinOp::{Add, Sub, Mul, Div, IDiv, Mod, Pow, BAnd, BOr, BXor, LShift, RShift, Eq, NEq, Lt, Gt, LtEq, GtEq, Range};
+    match op {
+        Add => int(a.wrapping_add(b)),
+        Sub => int(a.wrapping_sub(b)),
+        Mul => int(a.wrapping_mul(b)),
+        Div => {
+            if b == 0 {
+                div_zero("int")
+            } else {
+                float(a as f64 / b as f64)
+            }
+        }
+        IDiv => {
+            if b == 0 {
+                div_zero("int")
+            } else {
+                int(a.wrapping_div(b))
+            }
+        }
+        Mod => {
+            if b == 0 {
+                divide_by_zero()
+            } else {
+                int(a.wrapping_rem(b))
+            }
+        }
+        Pow | BAnd | BOr | BXor | LShift | RShift => builtin_binop(&int(a), op, &int(b)),
+        Eq => boolean(a == b),
+        NEq => boolean(a != b),
+        Lt => boolean(a < b),
+        Gt => boolean(a > b),
+        LtEq => boolean(a <= b),
+        GtEq => boolean(a >= b),
+        Range | BinOp::GetItem => builtin_binop(&int(a), op, &int(b)),
     }
-    if let Some(s) = valid_super(o) {
-        return binop(&s, op, other);
+}
+
+pub fn binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
+    if let (Payload::Int(a), Payload::Int(b)) = (payload(o), payload(other)) {
+        return int_int_binop(a, op, b);
+    }
+    if can_have_dunder(o) {
+        if let Some(v) = try_method(o, op.dunder(), &[other.clone()]) {
+            return v;
+        }
+        if let Some(s) = valid_super(o) {
+            return binop(&s, op, other);
+        }
     }
     builtin_binop(o, op, other)
 }
 pub fn unary(o: &Obj, op: UnOp) -> Obj {
-    if let Some(v) = try_method(o, op.dunder(), &[]) {
-        return v;
-    }
-    if let Some(s) = valid_super(o) {
-        return unary(&s, op);
+    if can_have_dunder(o) {
+        if let Some(v) = try_method(o, op.dunder(), &[]) {
+            return v;
+        }
+        if let Some(s) = valid_super(o) {
+            return unary(&s, op);
+        }
     }
     builtin_unop(o, op)
 }
@@ -1957,7 +2013,7 @@ mod tests {
     #[test]
     fn interning_is_observable() {
         assert!(Rc::ptr_eq(&int(100), &int(100)));
-        assert!(!Rc::ptr_eq(&int(1000), &int(1000)));
+        assert!(!Rc::ptr_eq(&int(100_000_000), &int(100_000_000)));
         assert!(Rc::ptr_eq(&int(1), &int(1)));
         assert!(Rc::ptr_eq(&boolean(true), &boolean(true)));
         assert!(Rc::ptr_eq(&none(), &none()));

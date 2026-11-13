@@ -699,7 +699,7 @@ class Heap
    `test/negative/manifest.txt`에 `path|expected exit|expected substring` 행으로 등록한다.
 5. 풀 리퀘스트를 연다. 커밋은 기여자가 직접 수행한다. 자동화 도구는 git에 푸시하지 않는다.
 
-코딩 컨벤션: Rust 2021 edition을 쓴다. 모듈은 `//!` 설명과 함께 파일 상단에 문서를 두고, `?` 연산자로 오류를 전파하며, 패턴 매칭을 적극적으로 쓴다. 외부 crate 의존성은 없고 표준 라이브러리만 쓴다.
+코딩 컨벤션: Rust 2021 edition을 쓴다. 모듈은 `//!` 설명과 함께 파일 상단에 문서를 두고, `?` 연산자로 오류를 전파하며, 패턴 매칭을 적극적으로 쓴다. 외부 crate 의존성은 기본적으로 없고 표준 라이브러리만 쓴다. 예외로 `vendor/` 아래 패치된 `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`이 정수 특화 Cranelift JIT에 쓰인다 — GNU toolchain에 `dlltool.exe`가 없어 `windows-sys 0.52.0`을 빌드할 수 없기 때문에 raw kernel32 FFI로 패치한 사본이다.
 
 ## 라이선스
 

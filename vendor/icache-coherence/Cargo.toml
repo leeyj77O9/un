@@ -1,0 +1,19 @@
+[package]
+edition = "2024"
+rust-version = "1.86.0"
+name = "wasmtime-internal-jit-icache-coherence"
+version = "50.0.1"
+description = "INTERNAL: utilities for JIT icache maintenance (raw-FFI fork for x86_64-pc-windows-gnu)"
+license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/bytecodealliance/wasmtime"
+
+[features]
+one-core = []
+
+[lib]
+name = "wasmtime_internal_jit_icache_coherence"
+path = "src/lib.rs"
+
+[dependencies.wasmtime-core]
+version = "=50.0.1"
+package = "wasmtime-internal-core"

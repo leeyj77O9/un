@@ -13,3 +13,15 @@ path = "src/main.rs"
 
 [workspace]
 members = [".", "playground"]
+
+[dependencies]
+cranelift-codegen = "0.137.1"
+cranelift-frontend = "0.137.1"
+cranelift-jit = "0.137.1"
+cranelift-module = "0.137.1"
+cranelift-native = "0.137.1"
+
+[patch.crates-io]
+region = { path = "../vendor/region" }
+cranelift-jit = { path = "../vendor/cranelift-jit" }
+wasmtime-internal-jit-icache-coherence = { path = "../vendor/icache-coherence" }

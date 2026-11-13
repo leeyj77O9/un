@@ -343,6 +343,33 @@ pub struct IterState {
     pub head: Stage,
 }
 pub type IterCell = Rc<RefCell<IterState>>;
+/// Read the current cursor value of an iter and advance it by one step.
+/// Assumes `st` kind is Range; returns `Some(current)` or None if out of bounds/end.
+pub fn range_next(st: &IterCell) -> Option<i64> {
+    let (stop, step, value) = {
+        let def_cell = st.borrow();
+        if def_cell.kind != Kind::Range {
+            return None;
+        }
+        let def = def_cell.head.borrow().def.clone();
+        let (stop, step) = match def.as_ref() {
+            StageDef::Range { stop, step, .. } => (*stop, *step),
+            _ => return None,
+        };
+        let value = def_cell.head.borrow().cursor;
+        (stop, step, value)
+    };
+    let value = cursor_val(value);
+    let in_bound = if step > 0 { value < stop } else { value > stop };
+    if !in_bound {
+        // mark as exhausted
+        st.borrow_mut().head.borrow_mut().cursor = Cursor::Val(stop);
+        return None;
+    }
+    st.borrow_mut().head.borrow_mut().cursor = Cursor::Val(value.wrapping_add(step as i64));
+    Some(value)
+}
+
 pub fn head(st: &IterCell) -> (Kind, Stage) {
     let s = st.borrow();
     (s.kind, s.head.clone())

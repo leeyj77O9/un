@@ -1,4 +1,4 @@
-﻿use std::process::exit;
+use std::process::exit;
 use std::rc::Rc;
 use unvm::ast::{Const, Node};
 use unvm::bytecode::stack_effect;
@@ -250,29 +250,29 @@ fn run(args: &[String]) {
         }
         Outcome::Error(e) => {
             world::flush_stdout();
-            report(&vm, e.display(&source));
+            report(&vm.ctx, e.display(&source));
         }
         Outcome::Propagate(err, start, length) => {
 
             world::flush_stdout();
             let e = LangError::new(start, length, err_message(&err)).with_header(err_header(&err));
-            report(&vm, e.display(&source));
+            report(&vm.ctx, e.display(&source));
         }
         Outcome::Return(_, start, length) => {
             world::flush_stdout();
-            report(&vm, LangError::new(start, length, "'->' outside function").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'->' outside function").display(&source));
         }
         Outcome::Break(start, length) => {
             world::flush_stdout();
-            report(&vm, LangError::new(start, length, "'break' outside loop").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'break' outside loop").display(&source));
         }
         Outcome::Skip(start, length) => {
             world::flush_stdout();
-            report(&vm, LangError::new(start, length, "'skip' outside loop").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'skip' outside loop").display(&source));
         }
         Outcome::Panic(o) => {
             world::flush_stdout();
-            report(&vm, panic_display(&o));
+            report(&vm.ctx, panic_display(&o));
         }
     }
 }
@@ -338,35 +338,35 @@ fn run_bytecode(path: &str) {
         }
         Outcome::Error(e) => {
             world::flush_stdout();
-            report(&vm, e.display(&source));
+            report(&vm.ctx, e.display(&source));
         }
         Outcome::Propagate(err, start, length) => {
             world::flush_stdout();
             let e = LangError::new(start, length, err_message(&err)).with_header(err_header(&err));
-            report(&vm, e.display(&source));
+            report(&vm.ctx, e.display(&source));
         }
         Outcome::Return(_, start, length) => {
             world::flush_stdout();
-            report(&vm, LangError::new(start, length, "'->' outside function").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'->' outside function").display(&source));
         }
         Outcome::Break(start, length) => {
             world::flush_stdout();
-            report(&vm, LangError::new(start, length, "'break' outside loop").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'break' outside loop").display(&source));
         }
         Outcome::Skip(start, length) => {
             world::flush_stdout();
-            report(&vm, LangError::new(start, length, "'skip' outside loop").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'skip' outside loop").display(&source));
         }
         Outcome::Panic(o) => {
             world::flush_stdout();
-            report(&vm, panic_display(&o));
+            report(&vm.ctx, panic_display(&o));
         }
     }
 }
-fn report(vm: &VM, text: String) {
+fn report(ctx: &context::Context, text: String) {
     world::flush_stdout();
     print!("{text}{}", nl());
-    let (lines, truncated) = context::trace_lines(&vm.ctx);
+    let (lines, truncated) = context::trace_lines(ctx);
     if lines.is_empty() {
         exit(1);
     }
