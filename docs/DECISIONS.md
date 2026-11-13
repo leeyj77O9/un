@@ -6,7 +6,7 @@
 ## D-001 | C# 코드는 수정하지 않는다 | Accepted
 
 Reference Implementation(`src/`, `test/`, `.csproj`)은 읽기 전용 기준선(oracle)이다.
-Rust 코드와 문서는 `rust/`, `docs/rust-migration/`에만 추가한다. 커밋/푸시는 사용자 승인 후.
+Rust 코드와 문서는 `rust/`, `docs/`에만 추가한다. 커밋/푸시는 사용자 승인 후.
 
 ## D-002 | 단일 crate `unvm` | Accepted
 
@@ -116,7 +116,7 @@ reference에 맞춤**(`start`, `length`, `typ`)해서 error/AST 매핑이 추적
 
 `unvm tokens`/`unvm ast`/`unvm desugar`/`unvm opt`/`unvm dis`는 Rust 전용 진단 명령이고
 `un run <file>`의 stdout/exit/stderr가 정합 대상이다. reference에 `ast` dump가 없으므로
-Phase 2 정합은 parse 성공/오류 문자열 일치 + 17개 probe로 확인했다(ANALYSIS.md §11).
+Phase 2 정합은 parse 성공/오류 문자열 일치 + 17개 probe로 확인했다(치환 전 분석 문서 기준).
 
 ## D-018 | `Obj`는 `Rc<RefCell<ObjData>>`, payload는 enum | Accepted
 
@@ -257,7 +257,7 @@ Rust는 정의 트리 `StageDef`(`Source`/`Reverse`/`Range`/`Counter`/`Repeat`/`
 Un의 `x.m(args)`는 C#의 `override`가 아니라 `[Native(Name=...)]`로 등록된 **멤버 테이블**
 lookup이다. 멤버에 없는 이름은 `error: '{Type}' object has no attribute '{name}'`(position
 block 포함, exit 1)로 abort한다. C#의 virtual method를 멤버로 착각하면 안 된다.
-실측된 멤버 집합은 `PROGRESS.md` Phase 7b에 verbatim으로 기록돼 있고, 요약하면
+실측된 멤버 집합은 치환 전 진행 기록(Phase 7b, 삭제됨)에 verbatim으로 기록돼 있었고, 요약하면
 `list` 19개(`add`..`resize`), `dict` 8개(`add`..`values`), `set` 8개(`clone` 포함),
 `Iters` 12개(`take`..`last`), builtin 15개(`len`..`ascii`)다. `next` builtin은 없고
 `list`/`str`/`tuple`/`dict`/`set`/`range`/`counter`에 `iter`/`next`/`copy`/`clone`가 없다.

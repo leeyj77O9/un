@@ -4,7 +4,7 @@
 jump offset, source mapping, stack effect, 검증 규칙, `.unbc` 파일 레이아웃을 정의한다.
 
 원칙:
-1. **의미론은 `ANALYSIS.md`의 Reference 동작을 1:1로 재현**한다. opcode는 그 동작을 표현하는 최소 단위다.
+1. **의미론은 Reference 동작을 1:1로 재현**한다. opcode는 그 동작을 표현하는 최소 단위다.
 2. **`.unbc` 직렬화를 염두에 두고 설계**한다. 재구축 없이 확장할 수 있도록 모든 테이블은
    length-prefixed, little-endian, version 헤더를 가진다.
 3. jump offset은 **relative(i32, next-ip 기준)**로 둔다. 패치가 단순하고, 함수 chunk가

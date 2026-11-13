@@ -107,7 +107,8 @@ The rules used here:
   The ratio is reported as `Un/Node`, which means Un is that many times slower.
   The ratio is an interpreter-vs-JIT comparison, not a language quality verdict.
 
-Rough observed ratios for 2026-11-06 (see `docs/BENCHMARK_LOG.md` for the table):
+Rough observed ratios for 2026-11-06 (re-measure with `scripts/bench.ps1`; the
+committed table was removed with the migration-era log):
 `1000x` for fib, `90-900x` for the loop/sort/string/math/class workloads,
 `35-390x` for the collection/iterator workloads.
 

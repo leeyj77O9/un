@@ -281,7 +281,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```
 
 Un과 Node.js를 같은 입력·알고리즘·측정 절차로 비교하는 규칙은
-`docs/BENCHMARK_GUIDE.md`에 있고, 실측 값과 그 한계는 `docs/BENCHMARK_LOG.md`에 있다.
+`docs/BENCHMARK_GUIDE.md`에 있다. 측정은 `scripts/bench.ps1`로 직접 수행한다.
 테스트 구조와 규칙은 `docs/TEST_GUIDE.md`에 있다.
 
 ## 언어 개요
@@ -598,7 +598,7 @@ Un/
 |   `-- assert.un        (assert 실행 검사)
 |-- scripts/             (test.ps1, bench.ps1)
 |-- bench/               (벤치마크 스크립트, bench/node/, bench/results/)
-`-- docs/                (프로덕션 문서; rust-migration/에 Rust 포트 역사 보존)
+`-- docs/                (프로덕션 문서)
 ```
 
 ## 예제

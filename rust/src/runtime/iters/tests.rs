@@ -1,6 +1,6 @@
 //! Phase 7a iterator tests. the ground truth is the reference implementation
 //! (`src/Core/Object/Iters/*.cs`) and the probe run recorded in
-//! `docs/rust-migration/DECISIONS.md`: range display/length/contains, negative step,
+//! `docs/DECISIONS.md`: range display/length/contains, negative step,
 //! the fresh-enumerator rule of `foreach`, the infinite `counter` / `repeat` messages,
 //! live list sources, `str` UTF-16 units and the named `dict` pairs. messages are
 //! copied verbatim, including the reference's `invaild` typo.

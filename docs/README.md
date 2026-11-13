@@ -283,9 +283,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```
 
 `docs/BENCHMARK_GUIDE.md` defines the comparison rules (equal input, algorithm,
-warmup, repeated runs, recorded environment) and `docs/BENCHMARK_LOG.md` records the
-measured values and their limits. `docs/TEST_GUIDE.md` describes the test layout and
-rules.
+warmup, repeated runs, recorded environment). Measured values are not checked in;
+re-measure on your machine with `scripts/bench.ps1`. `docs/TEST_GUIDE.md` describes
+the test layout and rules.
 
 ## Language Overview
 
@@ -605,7 +605,7 @@ Un/
 |   `-- assert.un        (assert module)
 |-- scripts/             (test.ps1, bench.ps1)
 |-- bench/               (benchmark scripts, bench/node/, bench/results/)
-`-- docs/                (production docs; rust-migration/ keeps the port history)
+`-- docs/                (production docs)
 ```
 
 ## Examples

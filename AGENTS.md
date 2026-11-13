@@ -11,12 +11,12 @@
 - **규모**: Rust 약 88개 파일 / 약 15,000줄, `test/` 아래 `.un` 스크립트 89개.
 - **이전 역사**: 원래 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었다. Rust 포트가
   differential 검증으로 C# 구현과 byte-identical임을 확인한 뒤 대체했고, C# 소스는
-  `git` 이력에만 남아 있다. 참고: `docs/rust-migration/`.
+  `git` 이력에만 남아 있다.
 
 ## Rust 포트 (`rust/`)
 
-원래 C#으로 작성됐다가 Rust로 대체된 경위와 설계 판단은 `docs/rust-migration/`에
-문서화되어 있다. 현재 디렉터리를 참고:
+원래 C#으로 작성됐다가 Rust로 대체된 경위와 설계 판단은 `docs/DECISIONS.md`와
+git 이력에 남아 있다. 현재 디렉터리를 참고:
 
 ```text
 C:\dev\un/
@@ -84,7 +84,7 @@ C:\dev\un
 │  └─ assert.un              # assert 모듈 (assert_eq / assert_true)
 ├─ scripts/                  (test.ps1, bench.ps1)
 ├─ bench/                    (측정 스크립트, bench/node/, bench/results/)
-└─ docs/                     (프로덕션 문서; rust-migration/에 Rust 포트 역사 보존)
+└─ docs/                     (프로덕션 문서)
 ```
 
 ## 아키텍처 메모
@@ -133,7 +133,7 @@ C:\dev\un
   `test/fixtures/rel_test/`, `test/fixtures/dirmod/`, `test/fixtures/dirall/`에 있다.
 - 벤치마크 스크립트는 `bench/`에 있고, Node.js 상대 스크립트는 `bench/node/`에 있다.
   측정은 웜업 + 반복 + 통계(최솟값·중위값·평균·최댓값·표준편차·연산 수)를 사용한다.
-  결과와 측정 한계는 `docs/BENCHMARK_GUIDE.md`, `docs/BENCHMARK_LOG.md`를 참고한다.
+  결과와 측정 한계는 `docs/BENCHMARK_GUIDE.md`를 참고한다.
 - 변경 후 최소한 다음을 수행한다.
   1. `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml`
      — 오류 0, 새 경고 0.
