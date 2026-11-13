@@ -268,7 +268,16 @@ pub fn is_bool(o: &Obj) -> bool {
     matches!(payload(o), Payload::Bool(_))
 }
 pub fn key_eq(a: &Obj, b: &Obj) -> bool {
-    matches!(payload(&binop(a, BinOp::Eq, b)), Payload::Bool(true))
+    let pa = payload(a);
+    let pb = payload(b);
+    match (&pa, &pb) {
+        (Payload::Int(x), Payload::Int(y)) => x == y,
+        (Payload::Float(x), Payload::Float(y)) => x == y,
+        (Payload::Str(x), Payload::Str(y)) => x == y,
+        (Payload::Bool(x), Payload::Bool(y)) => x == y,
+        (Payload::Enu(x), Payload::Enu(y)) => x == y,
+        _ => matches!(payload(&binop(a, BinOp::Eq, b)), Payload::Bool(true)),
+    }
 }
 pub fn hash_code(o: &Obj) -> u64 {
     match payload(o) {
@@ -371,7 +380,21 @@ pub fn base_chain(o: &Obj) -> Vec<Obj> {
     }
     queue
 }
+fn has_possible_method(o: &Obj) -> bool {
+    let d = o.borrow();
+    if !d.members.is_empty() {
+        return true;
+    }
+    match &d.super_ {
+        Some(s) => !is_none(s),
+        None => false,
+    }
+}
+
 fn try_method(o: &Obj, name: &str, args: &[Obj]) -> Option<Obj> {
+    if !has_possible_method(o) {
+        return None;
+    }
     let m = member(o, name)?;
     {
         let mut d = m.borrow_mut();
@@ -414,6 +437,9 @@ pub fn invoke_obj(f: &Obj, args: &function::Args) -> Obj {
     }
 }
 pub fn try_method_named(o: &Obj, name: &str, args: &function::Args) -> Option<Obj> {
+    if !has_possible_method(o) {
+        return None;
+    }
     let m = member(o, name)?;
     {
         let mut d = m.borrow_mut();
