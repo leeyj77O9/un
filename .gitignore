@@ -4,6 +4,9 @@
 # Build outputs of `unvm compile`
 *.unbc
 
+# Local benchmark measurement dumps (scripts/bench.ps1 - results.csv/md per run)
+/bench/results/
+
 # Node (bench/node)
 node_modules/
 
