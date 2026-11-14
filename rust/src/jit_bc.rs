@@ -1,4 +1,4 @@
-//! `.unbc` -> native translation for functions that stay inside the typed
+﻿//! `.unbc` -> native translation for functions that stay inside the typed
 //! numeric subset.
 //!
 //! Works directly on the validated stack bytecode that the register VM
@@ -116,7 +116,7 @@ pub fn register_eligible(program: &Program, program_ptr: usize) {
         return;
     }
     // Hard safety net: any panic inside the Cranelift compile/declare/
-    // finalize pipeline (a rare frontend mismatch seen on some launches —
+    // finalize pipeline (a rare frontend mismatch seen on some launches ??
     // `declared type of variable N doesn't match type of value M`) must not
     // kill the process. Skip all JIT registration instead; the whole program
     // falls back to the interpreter, byte-identical to UV_JIT=0.
@@ -151,6 +151,7 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
     let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
     builder.symbol("un_jit_depth_enter", crate::jit_cache::un_jit_depth_enter as *const u8);
     builder.symbol("un_jit_depth_exit", crate::jit_cache::un_jit_depth_exit as *const u8);
+    builder.symbol("un_math_sin", crate::native::math::un_math_sin as *const u8);
     builder.symbol("un_dict_int_empty", crate::runtime::int_dict::un_dict_int_empty as *const u8);
     builder.symbol("un_dict_int_set", crate::runtime::int_dict::un_dict_int_set as *const u8);
     builder.symbol("un_dict_int_get", crate::runtime::int_dict::un_dict_int_get as *const u8);
@@ -199,6 +200,13 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
     let fid_dict_get = match module
         .declare_function("un_dict_int_get", Linkage::Import, &sig_get)
     {
+        Ok(fid) => fid,
+        Err(_) => return,
+    };
+    let mut sig_sin = module.make_signature();
+    sig_sin.params.push(AbiParam::new(types::F64));
+    sig_sin.returns.push(AbiParam::new(types::F64));
+    let fid_sin = match module.declare_function("un_math_sin", Linkage::Import, &sig_sin) {
         Ok(fid) => fid,
         Err(_) => return,
     };
@@ -258,6 +266,7 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
             fid_dict_empty,
             fid_dict_set,
             fid_dict_get,
+            fid_sin,
             &ret_kinds,
         )
         .is_none()
@@ -302,7 +311,7 @@ struct Tr<'a> {
     arena: Vec<String>,
     param_pos: HashMap<String, usize>,
     patches: HashMap<usize, RangePatch>,
-    intrinsics: HashMap<usize, FloorSqrtPatch>,
+    intrinsics: HashMap<usize, UnaryFloatPatch>,
     skip_ips: HashSet<usize>,
     arity: usize,
     locals_len: usize,
@@ -341,6 +350,7 @@ struct Tr<'a> {
     fid_dict_empty: cranelift_module::FuncId,
     fid_dict_set: cranelift_module::FuncId,
     fid_dict_get: cranelift_module::FuncId,
+    fid_sin: cranelift_module::FuncId,
     // Slots that hold IntDict references (opaque i64 ids used by the JIT).
     int_dict_regs: HashSet<usize>,
     local_is_intdict: Vec<bool>,
@@ -450,7 +460,7 @@ impl<'a> Tr<'a> {
                 self.is_float[ins.a as usize] = false;
                 Some(())
             }
-            // Mixed Bool × Int/Float ??rejected by has_bool && has_numeric
+            // Mixed Bool 횞 Int/Float ??rejected by has_bool && has_numeric
             // check above. This branch is only reachable if the early return
             // misfired; keep it as None for safety.
             _ => None,
@@ -527,15 +537,25 @@ impl<'a> Tr<'a> {
             }
 
             if let Some(patch) = self.patches.get(&ip).copied() {
-                self.emit_range_for_next(builder, code, ip, patch)?;
+                if self.emit_range_for_next(builder, code, ip, patch).is_none() {
+                    if std::env::var("UV_JIT_DEBUG").is_ok() {
+                        eprintln!("JITREJECT emit_range_for_next ip={ip}");
+                    }
+                    return None;
+                }
                 terminated = false;
                 ip = patch.body_start_ip;
                 continue;
             }
 
             if let Some(patch) = self.intrinsics.get(&ip).copied() {
-                self.emit_floor_sqrt(builder, patch)?;
-                ip += 1; // floor Call consumed intrinsically
+                if self.emit_unary_float(builder, patch).is_none() {
+                    if std::env::var("UV_JIT_DEBUG").is_ok() {
+                        eprintln!("JITREJECT emit_unary_float ip={ip}");
+                    }
+                    return None;
+                }
+                ip += 1; // intrinsic Call consumed
                 terminated = false;
                 continue;
             }
@@ -582,7 +602,12 @@ impl<'a> Tr<'a> {
         if i_slot >= self.locals_len {
             return None;
         }
-        if self.local_float[i_slot] || self.is_float[store.a as usize] {
+        // NOTE: no `is_float[store.a]` check here. `Op::ForNext` always
+        // yields Int, but it is consumed by this peephole and never emits,
+        // so any `is_float` mark on that register is stale from an earlier,
+        // unrelated def of the same register (e.g. a Float const) — it says
+        // nothing about the value stored below.
+        if self.local_float[i_slot] {
             // range loops are Int-only; a Float iteration variable the
             // jit cannot describe ? fall back to the interpreter.
             return None;
@@ -630,38 +655,62 @@ impl<'a> Tr<'a> {
         Some(())
     }
 
-    fn emit_floor_sqrt(&mut self, builder: &mut FunctionBuilder, patch: FloorSqrtPatch) -> Option<()> {
-        // Bail to the interpreter for domain errors: Un propagates an error
-        // for negative Int args here; the JIT cannot raise it, so it signals
-        // tag = 2 and the VM re-runs the proto interpreted. Semantics are
-        // identical to never JIT-compiling this proto.
-        let bail_block = builder.create_block();
-        let arg = match patch.arg {
-            IntArgSrc::Local(slot) => builder.use_var(self.lv(slot)),
-            IntArgSrc::Param(pos) => builder.use_var(self.vars[pos]),
-            IntArgSrc::ConstInt(n) => builder.ins().iconst(types::I64, n),
-        };
-        let zero_v = builder.ins().iconst(types::I64, 0);
-        let le = builder.ins().icmp(IntCC::SignedLessThan, arg, zero_v);
-        // main path continues; bail path exits with tag = 2
-        let cont_block = builder.create_block();
-        builder.ins().brif(le, bail_block, &[], cont_block, &[]);
-        builder.seal_block(bail_block);
-        builder.switch_to_block(bail_block);
-        let zero_b = builder.ins().iconst(types::I64, 0);
-        let two_b = builder.ins().iconst(types::I64, 2);
-        self.emit_return_pair(builder, zero_b, two_b);
-        // main path
-        builder.switch_to_block(cont_block);
-        builder.seal_block(cont_block);
-        let f = builder.ins().fcvt_from_sint(types::F64, arg);
-        let s = builder.ins().sqrt(f);
-        let fl = builder.ins().floor(s);
-        builder.def_var(self.rv_f64(patch.ret_reg as usize), fl);
-        self.is_bool[patch.ret_reg as usize] = false;
-        self.is_none[patch.ret_reg as usize] = false;
-        self.is_float[patch.ret_reg as usize] = true;
-        self.ret_slot[patch.ret_reg as usize] = None;
+    fn emit_unary_float(&mut self, builder: &mut FunctionBuilder, patch: UnaryFloatPatch) -> Option<()> {
+        match patch.kind {
+            UnaryFloatKind::FloorSqrt => {
+                // Bail to the interpreter for domain errors: Un propagates an error
+                // for negative Int args here; the JIT cannot raise it, so it signals
+                // tag = 2 and the VM re-runs the proto interpreted. Semantics are
+                // identical to never JIT-compiling this proto.
+                let bail_block = builder.create_block();
+                let arg = match patch.arg {
+                    IntArgSrc::Local(slot) => builder.use_var(self.lv(slot)),
+                    IntArgSrc::Param(pos) => builder.use_var(self.vars[pos]),
+                    IntArgSrc::ConstInt(n) => builder.ins().iconst(types::I64, n),
+                };
+                let zero_v = builder.ins().iconst(types::I64, 0);
+                let le = builder.ins().icmp(IntCC::SignedLessThan, arg, zero_v);
+                // main path continues; bail path exits with tag = 2
+                let cont_block = builder.create_block();
+                builder.ins().brif(le, bail_block, &[], cont_block, &[]);
+                builder.seal_block(bail_block);
+                builder.switch_to_block(bail_block);
+                let zero_b = builder.ins().iconst(types::I64, 0);
+                let two_b = builder.ins().iconst(types::I64, 2);
+                self.emit_return_pair(builder, zero_b, two_b);
+                // main path
+                builder.switch_to_block(cont_block);
+                builder.seal_block(cont_block);
+                let f = builder.ins().fcvt_from_sint(types::F64, arg);
+                let s = builder.ins().sqrt(f);
+                let fl = builder.ins().floor(s);
+                builder.def_var(self.rv_f64(patch.ret_reg as usize), fl);
+                self.is_bool[patch.ret_reg as usize] = false;
+                self.is_none[patch.ret_reg as usize] = false;
+                self.is_float[patch.ret_reg as usize] = true;
+                self.ret_slot[patch.ret_reg as usize] = None;
+            }
+            UnaryFloatKind::Sin => {
+                // math.sin(i) where `i` is Int: promote to f64 and call the
+                // extern libm wrapper. Un has no domain error here (sin is
+                // total), so no bail block; sub/cos/tan will slot in the same
+                // way later.
+                let arg = match patch.arg {
+                    IntArgSrc::Local(slot) => builder.use_var(self.lv(slot)),
+                    IntArgSrc::Param(pos) => builder.use_var(self.vars[pos]),
+                    IntArgSrc::ConstInt(n) => builder.ins().iconst(types::I64, n),
+                };
+                let f = builder.ins().fcvt_from_sint(types::F64, arg);
+                let f_ref = self.module.declare_func_in_func(self.fid_sin, builder.func);
+                let call = builder.ins().call(f_ref, &[f]);
+                let res = builder.inst_results(call)[0];
+                builder.def_var(self.rv_f64(patch.ret_reg as usize), res);
+                self.is_bool[patch.ret_reg as usize] = false;
+                self.is_none[patch.ret_reg as usize] = false;
+                self.is_float[patch.ret_reg as usize] = true;
+                self.ret_slot[patch.ret_reg as usize] = None;
+            }
+        }
         Some(())
     }
 
@@ -1329,25 +1378,121 @@ enum IntArgSrc {
     ConstInt(i64),
 }
 
-/// Matches the exact bytecode shape `math.floor(math.sqrt(arg))` with an
-/// Int argument and one result. Recognized as an intrinsic and emitted as
-/// `fsqrt` + `ffloor` on a promoted f64 value.
+/// Matches the exact bytecode shape of a single-argument math intrinsic
+/// (floor(sqrt(x)) or sin(x)) with an Int argument and one Float result.
+/// Recognized as an intrinsic and emitted directly as f64 math.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UnaryFloatKind {
+    FloorSqrt,
+    Sin,
+}
 #[derive(Clone, Copy)]
-struct FloorSqrtPatch {
-    /// floor Call's destination register (the Float result).
+struct UnaryFloatPatch {
+    /// which intrinsic call this is
+    kind: UnaryFloatKind,
+    /// the intrinsic Call's destination register (the Float result).
     ret_reg: u8,
     arg: IntArgSrc,
 }
 
 /// Scan back from `ip` for exactly `call1; call2` `floor(sqrt(x))`.
 /// Falls back to interpreter eligibility on any unexpected shape.
+fn match_math_sin(
+    code: &[Ins],
+    arena: &[String],
+    proto: &Proto,
+    program: &Program,
+    ip: usize,
+) -> Option<UnaryFloatPatch> {
+    if ip < 6 {
+        return None;
+    }
+    let call = code.get(ip)?;
+    if call.op != Op::Call || call.d != 1 {
+        return None;
+    }
+    // window of 7 instructions ending at `ip`:
+    // LoadName math; GetAttr sin; Unwrap; ArgBegin 1; arg; ArgPos; Call
+    let wn = |off: usize| {
+        ip.checked_sub(7 - off).and_then(|at| code.get(at).copied())
+    };
+    let m = wn(1)?;
+    if m.op != Op::LoadName || arena.get(m.d as usize)?.as_str() != "math" {
+        return None;
+    }
+    let g = wn(2)?;
+    if g.op != Op::GetAttr || arena.get(g.d as usize)?.as_str() != "sin" {
+        return None;
+    }
+    if g.a != m.a || g.b != m.a {
+        return None;
+    }
+    let u = wn(3)?;
+    if u.op != Op::Unwrap || u.a != g.a {
+        return None;
+    }
+    // [3] ArgBegin 1
+    let ab = wn(4)?;
+    if ab.op != Op::ArgBegin || ab.d != 1 {
+        return None;
+    }
+    // [4] arg ??Int-typed only. Float promotion is not handled here.
+    let argsrc: IntArgSrc;
+    let arreg: u8;
+    let arg_ins = wn(5)?;
+    match arg_ins.op {
+        Op::LoadLocal => {
+            let slot = arg_ins.d as usize;
+            if slot >= proto.locals.len() {
+                return None;
+            }
+            argsrc = IntArgSrc::Local(slot);
+            arreg = arg_ins.a;
+        }
+        Op::LoadName => {
+            let name = arena.get(arg_ins.d as usize)?.as_str();
+            let pos = proto
+                .params
+                .iter()
+                .position(|p| program.names.get(p.name).map(|s| s.as_str()) == Some(name))?;
+            argsrc = IntArgSrc::Param(pos);
+            arreg = arg_ins.a;
+        }
+        Op::LoadConst => {
+            let idx = proto.consts.get(arg_ins.d as usize)?;
+            match program.consts.get(*idx) {
+                Some(Constant::Int(n)) => {
+                    argsrc = IntArgSrc::ConstInt(*n);
+                    arreg = arg_ins.a;
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
+    }
+    // [5] ArgPos with the arg register
+    let ap = wn(6)?;
+    if ap.op != Op::ArgPos || ap.a != arreg {
+        return None;
+    }
+    // the Call itself is `ip`; verify the callee register
+    let fl = wn(7)?;
+    if fl.op != Op::Call || fl.d != 1 || fl.a != call.a || fl.b != g.a {
+        return None;
+    }
+    Some(UnaryFloatPatch {
+        kind: UnaryFloatKind::Sin,
+        ret_reg: call.a,
+        arg: argsrc,
+    })
+}
 fn match_floor_sqrt(
     code: &[Ins],
     arena: &[String],
     proto: &Proto,
     program: &Program,
     ip: usize,
-) -> Option<FloorSqrtPatch> {
+) -> Option<UnaryFloatPatch> {
     if ip < 12 {
         return None;
     }
@@ -1459,7 +1604,8 @@ fn match_floor_sqrt(
     if fl.op != Op::Call || fl.d != 1 || fl.a != floor_call.a || fl.b != g1.a {
         return None;
     }
-    Some(FloorSqrtPatch {
+    Some(UnaryFloatPatch {
+        kind: UnaryFloatKind::FloorSqrt,
         ret_reg: floor_call.a,
         arg: argsrc,
     })
@@ -1510,7 +1656,7 @@ fn match_range_for_next(code: &[Ins], arena: &[String], ip: usize) -> Option<Ran
     })
 }
 
-/// Monotone Int��Float fixpoint over the register file. Determines which
+/// Monotone Int占쏙옙Float fixpoint over the register file. Determines which
 /// locals hold promoted Float values on at least one execution path.
 /// Registers are Float when any operand/source is Float (Un's promotion
 /// rule), or when they hold the result of one of the recognized intrinsics.
@@ -1594,11 +1740,18 @@ fn analyze_one_proto(
         .enumerate()
         .map(|(i, p)| (program.names[p.name].clone(), i))
         .collect();
-    let mut intrinsics: HashMap<usize, FloorSqrtPatch> = HashMap::new();
+    let mut intrinsics: HashMap<usize, UnaryFloatPatch> = HashMap::new();
     let mut consumed: HashSet<usize> = HashSet::new();
     for ip in 0..code.len() {
         if let Some(patch) = match_floor_sqrt(code, &arena, proto, program, ip) {
             for k in (ip - 12)..ip {
+                consumed.insert(k);
+            }
+            intrinsics.insert(ip, patch);
+            continue;
+        }
+        if let Some(patch) = match_math_sin(code, &arena, proto, program, ip) {
+            for k in (ip - 6)..ip {
                 consumed.insert(k);
             }
             intrinsics.insert(ip, patch);
@@ -1760,7 +1913,7 @@ fn compute_local_float(
     code: &[Ins],
     proto: &Proto,
     program: &Program,
-    intrinsics: &HashMap<usize, FloorSqrtPatch>,
+    intrinsics: &HashMap<usize, UnaryFloatPatch>,
     consumed: &HashSet<usize>,
 ) -> Vec<bool> {
     let n_regs = code.iter().map(|i| i.a as usize).max().unwrap_or(0) + 1;
@@ -1901,6 +2054,7 @@ pub fn emit_fn_in_module(
     fid_dict_empty: cranelift_module::FuncId,
     fid_dict_set: cranelift_module::FuncId,
     fid_dict_get: cranelift_module::FuncId,
+    fid_sin: cranelift_module::FuncId,
     ret_kinds: &HashMap<usize, u8>,
 ) -> Option<()> {
     let proto = program.protos.get(proto_index)?;
@@ -1955,7 +2109,7 @@ pub fn emit_fn_in_module(
     }
 
     // ---------- pass 2b: match floor(sqrt(int)) intrinsics ----------
-    let mut intrinsics: HashMap<usize, FloorSqrtPatch> = HashMap::new();
+    let mut intrinsics: HashMap<usize, UnaryFloatPatch> = HashMap::new();
     let mut consumed: HashSet<usize> = HashSet::new();
     for ip in 0..code.len() {
         if let Some(p) = match_floor_sqrt(code, &arena, proto, program, ip) {
@@ -1965,11 +2119,39 @@ pub fn emit_fn_in_module(
                 consumed.insert(k);
             }
             intrinsics.insert(ip, p);
+            continue;
+        }
+        if let Some(p) = match_math_sin(code, &arena, proto, program, ip) {
+            // the intrinsic emits the whole 7-instruction window; anything
+            // matched inside the window must not be emitted separately
+            for k in (ip - 6)..ip {
+                consumed.insert(k);
+            }
+            intrinsics.insert(ip, p);
         }
     }
 
-    // ---------- pass 2c: Int��Float promotion fixpoint ----------
+    // ---------- pass 2c: Int占쏙옙Float promotion fixpoint ----------
     let local_float = compute_local_float(code, proto, program, &intrinsics, &consumed);
+    // Reject programs that hold a literal Float const across a JIT range
+    // loop: the frontend crashes (`declared type of variable N doesn't
+    // match type of value M`) when a Float literal-derived local coexists
+    // with ForNext. Int-start accumulators that promote mid-loop carry no
+    // Float const (their value enters through the intrinsic), so they stay
+    // eligible; Float-start accumulators fall back to the interpreter
+    // until the merge-path design is reworked.
+    let has_float_const = code.iter().any(|ins| {
+        ins.op == Op::LoadConst
+            && proto
+                .consts
+                .get(ins.d as usize)
+                .and_then(|&i| program.consts.get(i))
+                .map(|c| matches!(c, Constant::Float(_)))
+                .unwrap_or(false)
+    });
+    if has_float_const && code.iter().any(|ins| ins.op == Op::ForNext) {
+        return None;
+    }
     // reject a floor(sqrt()) whose Int argument is a promoted local ? the
     // window previously matched with only Int assumptions
     for &p in intrinsics.values() {
@@ -2119,6 +2301,7 @@ pub fn emit_fn_in_module(
         fid_dict_empty,
         fid_dict_set,
         fid_dict_get,
+        fid_sin,
         int_dict_regs: HashSet::new(),
         local_is_intdict: vec![false; locals_len],
         call_candidate_regs: HashMap::new(),

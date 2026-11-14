@@ -527,3 +527,9 @@ fn e_impl(_scope: &Scope) -> Obj {
 fn tau_impl(_scope: &Scope) -> Obj {
     obj::float(std::f64::consts::TAU)
 }
+/// Extern entry point used by the JIT's `math.sin` intrinsic. Plain f64 in,
+/// plain f64 out — semantics match `sin_impl` exactly.
+#[no_mangle]
+pub extern "C" fn un_math_sin(x: f64) -> f64 {
+    x.sin()
+}
