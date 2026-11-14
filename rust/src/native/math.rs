@@ -23,6 +23,7 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ("trunc".to_owned(), native(closure, "trunc", one("value"), trunc_impl)),
         ("sign".to_owned(), native(closure, "sign", one("value"), sign_impl)),
         ("sqrt".to_owned(), native(closure, "sqrt", one("value"), sqrt_impl)),
+        ("isqrt".to_owned(), native(closure, "isqrt", one("value"), isqrt_impl)),
         ("cbrt".to_owned(), native(closure, "cbrt", one("value"), cbrt_impl)),
         (
             "pow".to_owned(),
@@ -257,6 +258,17 @@ fn sqrt_impl(scope: &Scope) -> Obj {
         return obj::err("cannot compute sqrt of a negative number");
     }
     obj::float(v.sqrt())
+}
+fn isqrt_impl(scope: &Scope) -> Obj {
+    let value = scope::get(scope, "value");
+    let v = match get_int(&value) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if v < 0 {
+        return obj::err("cannot compute isqrt of a negative number");
+    }
+    obj::int(v.isqrt() as i64)
 }
 fn cbrt_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
