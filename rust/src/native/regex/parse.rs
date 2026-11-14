@@ -1424,9 +1424,9 @@ impl Parser {
             return Ok(Some(cap_node(slot, self._options)));
         }
         self._pos += 1;
-        loop {
+        let result = 'block: {
             if self._pos == self.pattern.len() {
-                break;
+                break 'block Err(self.make_exception("Unrecognized grouping construct."));
             }
             let ch = self.pattern[self._pos];
             self._pos += 1;
@@ -1524,9 +1524,9 @@ impl Parser {
 
                 }
             }
-            return Ok(Some(Node::new(node_type, self._options)));
-        }
-        Err(self.make_exception("Unrecognized grouping construct."))
+            Ok(Some(Node::new(node_type, self._options)))
+        };
+        result
     }
 
     fn scan_group_open_named(&mut self, single_quote: Option<char>) -> Result<Option<Node>, RegexError> {

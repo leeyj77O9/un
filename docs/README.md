@@ -2,9 +2,9 @@
 
 A modern scripting language with concise syntax, explicit asynchronous execution, and pattern matching.
 
-Un is implemented as a bytecode compiler and stack-based VM written in Rust (`unvm`). The processing pipeline is:
+Un is implemented as a bytecode compiler and register-based VM written in Rust (`unvm`). Hot-path Int functions are compiled to native code by an embedded Cranelift JIT. The processing pipeline is:
 
-`Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Stack VM`
+`Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM (optionally JIT)`
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-1.99-DEA584?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
@@ -15,7 +15,7 @@ Un is implemented as a bytecode compiler and stack-based VM written in Rust (`un
 
 Un is a dynamically typed scripting language aimed at readable, compact programs. It combines Python-like indentation-based blocks with explicit concurrency primitives, structural pattern matching, and a small standard library.
 
-Un is written in Rust: source files are lexed and parsed, desugared, optimized (constant folding, up to 64 passes), compiled to bytecode, and executed by a stack-based VM. It was previously implemented as a C# tree-walking interpreter on .NET 8; the Rust port was verified byte-identical to it by differential testing before replacing it (the 4 documented divergent cases are listed in `test/KnownDivergent.txt`).
+Un is written in Rust: source files are lexed and parsed, desugared, optimized (constant folding, up to 64 passes), compiled to bytecode, and executed by a register-based VM. Hot-path Int functions are compiled to native code by an embedded Cranelift JIT. It was previously implemented as a C# tree-walking interpreter on .NET 8; the Rust port was verified byte-identical to it by differential testing before replacing it (the 4 documented divergent cases are listed in `test/KnownDivergent.txt`).
 
 Design goals:
 
@@ -557,7 +557,8 @@ Optimizer      constant folding, algebraic simplification, up to 64 passes
 Bytecode Compiler   Op / Proto / Instruction(flags, operand) encoding
   |
   v
-Stack VM        Context / Scope / Frame based execution, Future for go/wait
+Register VM (interpreter)  Context / Scope / Frame based execution, Future for go/wait
+                             + Hot-path Int functions are compiled to native code by Cranelift JIT
   |
   v
 Runtime         Obj / Ref / Enu / Stru / TObj / Property and the type system
@@ -674,7 +675,8 @@ More examples are available in `test/test_suite.un`, `test/integration/algorithm
 
 Implemented:
 
-- Bytecode compiler and stack-based VM (lexer, parser, desugarer, optimizer, compiler, vm)
+- Bytecode compiler and register-based VM (lexer, parser, desugarer, optimizer, compiler, vm)
+- Hot-path Int Cranelift JIT (disable with `UV_JIT=0`)
 - Runtime object model and type system
 - Standard library modules
 - Asynchronous execution and worker pools

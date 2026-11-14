@@ -293,6 +293,18 @@ impl Program {
                     }
                 }
             }
+            // Register-VM invariant: the loaded program must fit within the
+            // 8-bit register file (locals + stack max depth + 1 <= 256).
+            // Enforce it here so downstream code (`vm::transfer::compile`) does
+            // not need to panic on a too-complex function.
+            let scratch_base = proto.locals.len();
+            let max_depth = depths.iter().flatten().copied().max().unwrap_or(0).max(0) as usize;
+            let reg_count = scratch_base + max_depth + 1;
+            if reg_count > 256 {
+                return Err(format!(
+                    "{label}: function uses {reg_count} registers (locals {scratch_base} + max depth {max_depth} + 1), exceeds limit 256",
+                ));
+            }
         }
         Ok(())
     }
@@ -513,4 +525,38 @@ fn slice_bounds(flags: u16) -> i64 {
         n += 1;
     }
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_rejects_too_many_locals() {
+        // Construct a proto with 256 locals and a body with stack depth 1.
+        // 256 + 1 + 1 = 258 > 256 → must be rejected.
+        let mut proto = Proto::new(0, PROTO_FUNCTION);
+        proto.locals = (0..256).collect();
+        proto.arity = 0;
+        proto.names = vec![];
+        proto.consts = vec![0];
+        proto.code.push(Instr::new(Op::LoadConst, 0));
+        proto.code.push(Instr::new(Op::Return, 0));
+        proto.source_map = vec![(1, 0); 2];
+
+        let prog = Program {
+            source_path: "test".into(),
+            source: None,
+            names: vec!["f".into()],
+            consts: vec![Constant::Int(0)],
+            protos: vec![proto],
+            msgs: vec![],
+            root: 0,
+        };
+        let err = prog.validate().expect_err("must error");
+        assert!(
+            err.contains("registers") || err.contains("limit"),
+            "expected register count error, got: {err}"
+        );
+    }
 }

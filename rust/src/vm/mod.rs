@@ -1467,7 +1467,10 @@ fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
             return cached_plan;
         }
     }
-    let plan = Rc::new(transfer::compile(program).expect("validated program must translate"));
+    let plan = Rc::new(transfer::compile(program).expect(
+        "validated program must translate; Program::validate was strengthened
+        to enforce the 256-register limit for this reason",
+    ));
     // Pre-compile eligible Int-only protos into native code, keyed by this
     // program instance.
     crate::jit_bc::register_eligible(program, key);

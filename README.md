@@ -2,9 +2,9 @@
 
 간결한 문법, 명시적 비동기 실행, 패턴 매칭을 제공하는 현대적인 스크립팅 언어.
 
-Un은 Rust로 작성된 바이트코드 컴파일러와 스택 기반 VM(`unvm`)으로 구현되어 있다. 처리 파이프라인은 다음과 같다.
+Un은 Rust로 작성된 바이트코드 컴파일러와 레지스터 기반 VM(`unvm`)으로 구현되어 있다. 핫 패스 Int 함수는 Cranelift JIT으로 native로 컴파일된다. 처리 파이프라인은 다음과 같다.
 
-`Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Stack VM`
+`Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM (optionally JIT)`
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-1.99-DEA584?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
@@ -15,7 +15,7 @@ Un은 Rust로 작성된 바이트코드 컴파일러와 스택 기반 VM(`unvm`)
 
 Un은 읽기 쉽고 간결한 프로그램을 작성하기 위한 동적 타입 스크립팅 언어이다. Python 스타일의 들여쓰기 기반 블록, 명시적인 동시성 기본 요소, 구조적 패턴 매칭, 작은 표준 라이브러리를 결합한다.
 
-Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 AST로 역탈당(desugar), 최적화(상수 폴딩, 최대 64패스)하고, 바이트코드로 컴파일해 스택 기반 VM에서 실행한다. 이전에 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었으나 Rust 구현이 C# 구현의 의미론을 byte-identical로 재현함을 differential 검증으로 확인하고 대체했다(문서화된 차이 4개는 `test/KnownDivergent.txt` 참고).
+Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 AST로 역탈당(desugar), 최적화(상수 폴딩, 최대 64패스)하고, 바이트코드로 컴파일해 레지스터 기반 VM에서 실행한다. 이전에 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었으나 Rust 구현이 C# 구현의 의미론을 byte-identical로 재현함을 differential 검증으로 확인하고 대체했다(문서화된 차이 4개는 `test/KnownDivergent.txt` 참고).
 
 설계 목표:
 
@@ -529,7 +529,7 @@ work()    # start done
 
 ## 아키텍처
 
-바이트코드 컴파일러와 스택 기반 VM 위에서 동작한다.
+바이트코드 컴파일러와 레지스터 기반 VM 위에서 동작하며, 핫 패스 Int 함수는 Cranelift JIT으로 native로 컴파일된다.
 
 ```
 Source (.un)
@@ -550,8 +550,8 @@ Optimizer      상수 폴딩, 대수적 단순화, 최대 64패스
 Bytecode Compiler   Opcode/Proto/Program, Instruction(flags, operand) 인코딩
   |
   v
-Stack VM        Context / Scope / Frame 기반 실행, go/wait를 위한 Future
-  |
+Register VM (interpreter)  Context / Scope / Frame 기반 실행, go/wait를 위한 Future
+  |                           + 핫 패스 Int 함수는 Cranelift JIT으로 native 코드로 변환
   v
 Runtime         Obj / Val / Ref / Enu / Stru / TObj / Property와 타입 시스템
   |
@@ -667,7 +667,8 @@ class Heap
 
 구현 완료:
 
-- 바이트코드 컴파일러와 스택 기반 VM (lexer, parser, desugarer, optimizer, compiler, vm)
+- 바이트코드 컴파일러와 레지스터 기반 VM (lexer, parser, desugarer, optimizer, compiler, vm)
+- 핫 패스 Int 함수를 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화 가능)
 - 런타임 객체 모델과 타입 시스템
 - 표준 라이브러리 모듈
 - 비동기 실행과 워커 풀
