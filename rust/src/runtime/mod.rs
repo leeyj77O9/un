@@ -6,6 +6,7 @@ pub mod function;
 pub mod global;
 pub mod iters;
 pub mod obj;
+pub mod obj_v2;
 pub mod prims;
 pub mod scope;
 pub mod types;
