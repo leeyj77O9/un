@@ -115,6 +115,16 @@ pub fn register_eligible(program: &Program, program_ptr: usize) {
     if !crate::jit_cache::jit_enabled() {
         return;
     }
+    // Hard safety net: any panic inside the Cranelift compile/declare/
+    // finalize pipeline (a rare frontend mismatch seen on some launches —
+    // `declared type of variable N doesn't match type of value M`) must not
+    // kill the process. Skip all JIT registration instead; the whole program
+    // falls back to the interpreter, byte-identical to UV_JIT=0.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        register_eligible_inner(program, program_ptr)
+    }));
+}
+fn register_eligible_inner(program: &Program, program_ptr: usize) {
     if program_has_intrinsic_rebind(program) {
         return; // interpreter only ??hostile module binding
     }
@@ -830,8 +840,17 @@ impl<'a> Tr<'a> {
                 }
             }
             Op::Dup => {
+                // Read the source and pick the destination variable by the
+                // source's type, not the destination's stale flag. Copying
+                // is_float after def_var (as before) could pair an f64 value
+                // with the destination's i64 variable and panic the builder.
+                let src_float = self.is_float[ins.b as usize];
                 let v = builder.use_var(self.rv(ins.b as usize));
-                builder.def_var(self.rv(ins.a as usize), v);
+                if src_float {
+                    builder.def_var(self.rv_f64(ins.a as usize), v);
+                } else {
+                    builder.def_var(self.rv_i64(ins.a as usize), v);
+                }
                 self.is_bool[ins.a as usize] = self.is_bool[ins.b as usize];
                 self.is_none[ins.a as usize] = self.is_none[ins.b as usize];
                 self.is_float[ins.a as usize] = self.is_float[ins.b as usize];
