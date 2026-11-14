@@ -32,7 +32,8 @@ pub struct World {
     false_: Option<Obj>,
     original_classes: HashMap<String, Vec<(String, Obj)>>,
     original_base_types: HashMap<String, String>,
-    classes: Vec<(String, Obj)>,
+    classes: HashMap<String, Obj>,
+    classes_tobj: HashMap<String, Obj>,
 
     path: String,
 
@@ -79,7 +80,8 @@ impl World {
             false_: None,
             original_classes: HashMap::new(),
             original_base_types: HashMap::new(),
-            classes: Vec::new(),
+            classes: HashMap::new(),
+            classes_tobj: HashMap::new(),
             path: String::new(),
             global_scope: scope::new(None, false),
             natives: Vec::new(),
@@ -433,16 +435,24 @@ pub fn stdin_next_line() -> StdinLine {
 }
 pub fn set_class(name: &str, obj: Obj) {
     WORLD.with(|w| {
-        let mut w = w.borrow_mut();
-        for slot in &mut w.classes {
-            if slot.0 == name {
-                slot.1 = obj;
-                return;
-            }
-        }
-        w.classes.push((name.to_owned(), obj));
+        w.borrow_mut().classes.insert(name.to_owned(), obj);
     })
 }
 pub fn get_class(name: &str) -> Option<Obj> {
-    WORLD.with(|w| w.borrow().classes.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()))
+    WORLD.with(|w| w.borrow().classes.get(name).cloned())
+}
+/// Canonical `TObj(Types::Single(name))` for a registered class — allocated
+/// once per class per world reset instead of once per lookup.
+pub fn class_tobj(name: &str) -> Obj {
+    if let Some(o) = WORLD.with(|w| w.borrow().classes_tobj.get(name).cloned()) {
+        return o;
+    }
+    let t = crate::runtime::collections::tobj(crate::runtime::types::Types::single(name));
+    WORLD.with(|w| {
+        w.borrow_mut()
+            .classes_tobj
+            .entry(name.to_owned())
+            .or_insert_with(|| t.clone())
+            .clone()
+    })
 }

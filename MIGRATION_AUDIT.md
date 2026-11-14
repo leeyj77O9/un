@@ -165,5 +165,33 @@ Measured (AMD Ryzen 7 9800X3D, windows-gnu toolchain, release):
 - `bench/nested_sum_200`: unchanged.
 - `bench/math.un` / `bench/iter.un` / `bench/fib.un`: unchanged.
 
+## 8d. class1000 analysis → optimizations delivered (2026-11-15)
+
+`bench/class1000` runs a `Point` class allocated 1000× with `p.norm()` member-call dispatch vs Node ~0.006ms (harness).
+
+Why the JIT cannot help here:
+- `class_work`/`__init__`/`norm` are not Int-only: bodies reference `LoadName`/`GetAttr`/`MakeClass`-era shapes that are outside the Int-only subset, so both protos JITREJECT at the first rejected Op and register as tag=2 bail stubs.
+- Per-iteration cost is Obj allocation (Rc + RefCell + small Vec<members>) + method dispatch + member linear scans, none of which the Int-only Cranelift JIT models.
+
+Reverted approaches:
+- **precheck_fn arity==0 relaxation** (allowing 0-arg protos like `norm()`) — reverted. `jit_call` asserts `entry.arity != 0`; a 0-arg JIT entry would reach that assert and panic. The relaxation produced STUBs, never speedups.
+- **`obj::member` index-loop** (vs `.iter().find`) — no effect, reverted to baseline.
+- **`obj::clone_obj` manual ObjData construction** — no effect, reverted.
+- **`members: Vec::with_capacity(4)` in `ObjData::new`** — crashed rle1994 by allocating 96B member capacity for EVERY Obj creation; even Plain-only reserve showed no win on class1000 (`with_capacity(4)` on instances is only useful for class templates, which clone their members anyway).
+- **`get_attr_from` double-scan elimination** (`existing` reuse for the property check and final bind) improved class1000 but reproducibly shifted code layout and cost rle1994 ~8–9% (binary alignment lottery, confirmed via interleaved A/B binaries).
+- **Lazy `find_bound`/`str(name)` split in `get_attr_from`/`set_attr_from`** — same layout sensitivity; fixed by inlining the lazy form directly inside `get_attr_from` (no extra call layer), which kept the class win while rle1994 measured the same or better than baseline (10.4–10.6 vs 10.8–11.1).
+
+Delivered optimizations (interleaved A/B medians, same machine):
+- **`obj::bind_self` early-out** — shared class-method Fn re-bound to the same receiver skips `borrow_mut`/Rc clones via `Rc::ptr_eq(self_, receiver)` (+ super ptr_eq).
+- **Lazy handler dispatch in `get_attr_from`/`set_attr_from`** — `str(name)` / value clones are only materialized when an instance-own `__getattr__`/`__setattr__` handler exists.
+- **`world::class_tobj`** — canonical cached `TObj(Types::Single(name))` for registered classes; `LoadName`/`LoadLocal`/`DrawOrder` miss-paths no longer allocate TObj+Types per lookup.
+- **`world::classes` Vec → HashMap** — `RegisterClass`/`get_class` are O(1) (also hit by every global class reference).
+- Nested result: **class1000 5.25ms → 4.65ms (−12–16%)**, qsort500 −8–9%, fib24 −4%, iter10000/dict5000/math10000/nested_sum_200 unchanged, rle1994 unchanged (10.5–11.1 vs 10.8–11.2 baseline).
+
+Remaining levers (open sprint):
+- Int-only Int-returning `Op::GetAttr` intrinsic for class instance Int fields (needs instance field-offset layout).
+- Member-index cache keyed on (class Rc ptr, name id) to kill the per-call linear scan.
+- Pre-computed class layout at `MakeClass`/`RegisterClass` time so offsets are compile-time constants.
+
 ## 8c. Bool-return tag wiring (previous section)
 Bool-returning JIT functions compile. Folded in via `analyze_return_kinds`; `emit_user_call` propagates `is_bool=true` on definite-Bool callee calls. `assert.assert_eq(is_even(10), true)` passes with UV_JIT=1 and UV_JIT=0 alike. Mixed Bool×Int/Float callees still refuse JIT (conservative) — e.g. a function returning either `Int` or `Bool` on different branches keeps the interpreter.

@@ -405,7 +405,7 @@ fn has_possible_method(o: &Obj) -> bool {
     }
 }
 
-fn try_method(o: &Obj, name: &str, args: &[Obj]) -> Option<Obj> {
+fn find_bound(o: &Obj, name: &str) -> Option<Obj> {
     if !has_possible_method(o) {
         return None;
     }
@@ -415,6 +415,10 @@ fn try_method(o: &Obj, name: &str, args: &[Obj]) -> Option<Obj> {
         d.self_ = Some(o.clone());
         d.super_ = o.borrow().super_.clone();
     }
+    Some(m)
+}
+fn try_method(o: &Obj, name: &str, args: &[Obj]) -> Option<Obj> {
+    let m = find_bound(o, name)?;
     invoke(&m, args)
 }
 pub fn invoke(f: &Obj, args: &[Obj]) -> Option<Obj> {
@@ -591,8 +595,20 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
             return property_get(&m, receiver);
         }
     }
-    if let Some(v) = try_method(o, "__getattr__", &[str(name)]) {
-        return bind_self(v, receiver);
+    // Inline the `find_bound` form — keeps the lazy `str(name)` allocation
+    // while avoiding a second call layer on the lookup path.
+    if has_possible_method(o) {
+        if let Some(m) = member(o, "__getattr__") {
+            {
+                let mut d = m.borrow_mut();
+                d.self_ = Some(o.clone());
+                d.super_ = o.borrow().super_.clone();
+            }
+            let arg = str(name);
+            if let Some(v) = invoke(&m, &[arg]) {
+                return bind_self(v, receiver);
+            }
+        }
     }
     if let Some(v) = member(o, name) {
         return bind_self(v, receiver);
@@ -617,15 +633,31 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
     ))
 }
 fn bind_self(value: Obj, receiver: &Obj) -> Obj {
-    if is_bound_fn(&value) {
+    if function::is_func(&value) {
+        // Rebinding the same shared class-method Fn to the same receiver is a
+        // no-op — skip the borrow_mut and Rc clones on the hot path.
+        if already_bound_to(&value, receiver) {
+            return value;
+        }
         let mut d = value.borrow_mut();
         d.self_ = Some(receiver.clone());
         d.super_ = receiver.borrow().super_.clone();
     }
     value
 }
-fn is_bound_fn(o: &Obj) -> bool {
-    function::is_func(o)
+fn already_bound_to(value: &Obj, receiver: &Obj) -> bool {
+    let d = value.borrow();
+    let Some(existing) = &d.self_ else {
+        return false;
+    };
+    if !Rc::ptr_eq(existing, receiver) {
+        return false;
+    }
+    match (&d.super_, &receiver.borrow().super_) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
 }
 pub fn is_property(o: &Obj) -> bool {
     function::is_property(o)
@@ -645,8 +677,13 @@ pub fn set_attr_from(o: &Obj, name: &str, value: &Obj, receiver: &Obj) -> Obj {
             return property_set(&m, receiver, value);
         }
     }
-    if try_method(o, "__setattr__", &[str(name), value.clone()]).is_some() {
-        return value.clone();
+    // Same lazy form as `get_attr_from`: allocate the handler args only when
+    // an instance-own `__setattr__` handler exists.
+    if let Some(m) = find_bound(o, "__setattr__") {
+        let arg = str(name);
+        if invoke(&m, &[arg, value.clone()]).is_some() {
+            return value.clone();
+        }
     }
     if has_member(o, name) {
         member_set(o, name, value);

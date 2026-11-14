@@ -399,7 +399,7 @@ impl VM {
                 } else if let Some(v) = world::try_get_global(&name) {
                     self.regs[src(depth)] = v;
                 } else if world::get_class(&name).is_some() {
-                    self.regs[src(depth)] = collections::tobj(Types::single(&name));
+                    self.regs[src(depth)] = world::class_tobj(&name);
                 } else {
                     return Err(self.error(format!("undefined variable '{name}'"), span));
                 }
@@ -453,7 +453,7 @@ impl VM {
                     return Ok(true);
                 }
                 if world::get_class(&name).is_some() {
-                    self.regs[src(depth)] = collections::tobj(Types::single(&name));
+                    self.regs[src(depth)] = world::class_tobj(&name);
                     return Ok(true);
                 }
                 return Err(self.error(format!("undefined variable '{name}'"), span));
@@ -651,7 +651,7 @@ impl VM {
                     } else if let Some(v) = world::try_get_global(&name) {
                         v
                     } else if world::get_class(&name).is_some() {
-                        collections::tobj(Types::single(&name))
+                        world::class_tobj(&name)
                     } else {
                         world::none_obj()
                     }
