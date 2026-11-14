@@ -258,6 +258,14 @@ pub fn payload(o: &Obj) -> Payload {
 pub fn is_none(o: &Obj) -> bool {
     &*type_name(o) == "none"
 }
+
+/// Return a non-cloning `Ref<'_, Payload>` view of an object's payload.
+/// Useful on hot paths (key resolution, send `Copy`able scalars like Int,
+/// macro-dispatch into natives) since cloning `Payload` costs Rc bumps for
+/// every composite variant even when the caller only reads primitive fields.
+pub fn payload_ref(o: &Obj) -> std::cell::Ref<'_, Payload> {
+    std::cell::Ref::map(o.borrow(), |d| &d.payload)
+}
 pub fn is_err(o: &Obj) -> bool {
     matches!(payload(o), Payload::Error { .. })
 }
@@ -280,13 +288,21 @@ pub fn key_eq(a: &Obj, b: &Obj) -> bool {
     }
 }
 pub fn hash_code(o: &Obj) -> u64 {
+    // Fast scalar path — avoid cloning the payload just to inspect the tag.
+    // The hot path (int/bool int identity hash) is essentially one borrow.
+    let o_own_ref = std::cell::Ref::map(o.borrow(), |d| &d.payload);
+    match &*o_own_ref {
+        Payload::Int(i) => return *i as u64,
+        Payload::Bool(b) => return *b as u64,
+        Payload::Enu(n) => return *n as u64,
+        Payload::Date(t) => return *t as u64,
+        Payload::Float(v) => return v.to_bits(),
+        _ => {}
+    }
+    drop(o_own_ref);
     match payload(o) {
-        Payload::Int(i) => i as u64,
         Payload::Str(s) => prims::str_hash(&s) as u64,
-        Payload::Float(v) => v.to_bits(),
-        Payload::Bool(b) => b as u64,
         Payload::Enu(n) => n as u64,
-
         Payload::Date(t) => t as u64,
         Payload::List(v) => {
             let mut h = 0u64;
@@ -302,9 +318,7 @@ pub fn hash_code(o: &Obj) -> u64 {
             }
             h
         }
-
         Payload::Json(inner) => hash_code(&inner),
-
         _ => prims::str_hash(&type_name(o)) as u64,
     }
 }
@@ -982,6 +996,18 @@ pub fn to_str(o: &Obj) -> Obj {
     }
 }
 pub fn get_item(o: &Obj, key: &Obj) -> Obj {
+    {
+        let p = payload_ref(o);
+        match &*p {
+            Payload::List(v) => return collections::list_get_item(v, key),
+            Payload::Dict(km) => return collections::dict_get_item(km, key),
+            Payload::Set(s) => return collections::set_get_item(s, key),
+            Payload::Tup(vals, names) => {
+                return collections::tup_get_item(vals, names, o, key)
+            }
+            _ => {} // leave to fallback below
+        }
+    }
     if let Some(v) = try_method(o, "__getitem__", &[key.clone()]) {
         return v;
     }
@@ -1007,12 +1033,19 @@ pub fn get_item(o: &Obj, key: &Obj) -> Obj {
         Payload::List(v) => collections::list_get_item(&v, key),
         Payload::Dict(km) => collections::dict_get_item(&km, key),
         Payload::Set(s) => collections::set_get_item(&s, key),
-        Payload::Tup(vals, names) => collections::tup_get_item(&vals, &names, o, key),
         Payload::Json(inner) => get_item(&inner, key),
         _ => err(format!("unsupported operand type(s) for []: '{}'", type_name(o))),
     }
 }
 pub fn set_item(o: &Obj, key: &Obj, value: &Obj) -> Obj {
+    {
+        let p = payload_ref(o);
+        match &*p {
+            Payload::List(v) => return collections::list_set_item(v, key, value),
+            Payload::Dict(km) => return collections::dict_set_item(km, key, value),
+            _ => {} // leave to fallback below (Set and other payload kinds)
+        }
+    }
     if try_method(o, "__setitem__", &[key.clone(), value.clone()]).is_some() {
         return value.clone();
     }

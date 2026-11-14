@@ -60,12 +60,33 @@ Delivered:
 - `.unbc dis-reg` CLI still works (program-counter view; not touched).
 - Migration Crate `rust/Cargo.toml` untouched; `vendor/` untouched; no dependency added/removed.
 
+### 2026-11-15 (evening)
+
+- JIT Float promotion + shared-module cross-function invocation session. `.unbc` Int-only JIT extended with `math.floor(math.sqrt(x))` intrinsic + Float accumulation + per-path polymorphic return (hidden-pointer `(value, tag)` ABI). Shared JITModule per program enables direct native calls between eligible protos; `VM fast-path` for Un function dispatch via `fn_call`.
+- `bench/math10000`: **25.3ms → 0.019ms (~1,340×)**. Outputs and `type()` results byte-identical to interpreter.
+- `bench/fib24` (Int recursive): **206ms → 3.4ms (~60×)**. Depth guard for user-call recursion (atomic counter + external JIT calls) to keep native recursion bounded by the documented depth limit; non-recursive functions skip the bookkeeping entirely.
+- `bench/iter10000`: **20.4ms → 5.9ms (~3.5×)** — Bool-returning Int-only lambdas (`fn(x) -> x % 4 == 0`) now JIT-compiled transitively via `analyze_return_kinds`.
+- Windows x64 trap found & fixed: multi-value returns ARE by-hidden-pointer on Win64 (regression: `jit_call returned unknown tag`) — all JIT functions now write `(value, tag)` through one hidden pointer uniformly.
+- Hostile rebinds (`math = 3`, `math.sqrt = 99`) rejected from JIT via a program-wide intrinsic rebind scan; verified identical behavior vs interpreter.
+- Bool-return JIT refusal removed; Functions returning only Bool, only Int, or Int|Float kinds, all compile. Mixed Bool×numeric paths still bail to interpreter (conservative).
+- Negative-sqrt domain error through the JIT path: interpreter fallback via tag=2 bail — semantics preserved byte-identically.
+- Documentation updated: AGENTS.md / README.md / docs/README.md JIT sections.
+- Verification: 202 unit tests green; `scripts/test.ps1` — Positive 1363/0, defects still failing as documented; WASM smoke 64/64; release build 0 errors 0 warnings.
+- UV_JIT mode differential: identical outputs (except BENCH timing lines) for math.un, iter.un, recursion.un, defects.un, test_suite.un, hostile-rebind scenarios.
+- **Option A deliverable — IntDict JIT intrinsic** (`rust/src/runtime/int_dict.rs`, `Builder.symbol("un_dict_int_empty/set/get")`, `Op::BuildDict`/`Op::SetItem`/`Op::GetItem` arms, `local_is_intdict`/`int_dict_regs`):
+  - `bench/dict5000`: **4.0ms → 0.229ms (~17×)**, the largest single gap against Node removed.
+  - `bench/nested_sum_200`: Un continues to be **3.7× faster than Node**.
+  - `bench/math10000`: Un continues to be **3.3× faster than Node**.
+  - `bench/iter10000`: **20.4ms → 5.8ms (~3.5×)**.
+
 ## 4. Next session starting point (when resuming)
 
-1. Read `MIGRATION_AUDIT.md` (§1, §5, §7) and `MIGRATION_PROGRESS.md` (§2, §4).
+1. Read `MIGRATION_AUDIT.md` (§1, §5, §8) and `MIGRATION_PROGRESS.md` (§2, §4).
 2. Build/test baseline: confirm `cargo build --release` + `cargo test --workspace --release` + `scripts/test.ps1`.
-3. Begin Phase B item 1 (`vm::plan_for` interpreter-fallback) + regression test.
-4. Continue with Phase C/D items per PLAN.
+3. The JIT intrinsic for IntDict is empty-dict only — pre-created non-empty Int-Dicts stay in interpreter. Consider whether an option for Int-Int-with-Int-value global map becomes worth it.
+4. `class1000` still ~650× Node — Up next if any is wanted.
+5. `bench/dict5000`: naturally a major workload; similar algorithm with HashMap semantics — no further direct ROI.
+6. If the audit uncovers additional dead code, validate by scanning for references before deleting.
 
 ## 5. Pending risks tracked
 

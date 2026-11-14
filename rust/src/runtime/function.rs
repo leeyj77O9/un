@@ -268,30 +268,44 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) els
             obj::type_name(f)
         ));
     };
-    let closure = cell.borrow().closure.clone();
-    let native = matches!(cell.borrow().body, Body::Native(..));
-    if native {
-
+    // Borrow the cell once for the native branch: fetch the closure, the
+    // native body pointer (if any) and the depth bookkeeping context up front
+    // instead of re-borrowing at each step.
+    let (closure, host) = {
+        let cell = cell.borrow();
+        let closure = cell.closure.clone();
+        let host = match &cell.body {
+            Body::Native(g) => Some(g.clone()),
+            _ => None,
+        };
+        (closure, host)
+    };
+    if let Some(host) = host {
         let depth = context::call_depth(&closure);
         context::set_call_depth(&closure, depth + 1);
         if depth >= world::max_recursion_depth() {
             context::set_call_depth(&closure, depth);
             return obj::err("maximum recursion depth exceeded");
         }
-        let parent = { closure.borrow().scope.clone() };
+        let parent = context::scope(&closure);
         let scope = scope::new(Some(parent), true);
-        let error = bind(f, &scope, args);
+        let error = bind_with_cell(&cell, f, &scope, args);
         if !obj::is_none(&error) {
             context::set_call_depth(&closure, depth);
             return error;
         }
-        let host = match &cell.borrow().body {
-            Body::Native(g) => g.clone(),
-            Body::Nodes(_) | Body::Proto { .. } => unreachable!(),
-        };
         let value = host(&scope);
         context::set_call_depth(&closure, depth);
         return value;
+    }
+    // Fast path: a JIT-compiled Proto accepted by the `.unbc` translator
+    // (Int-only subset + Float promotions). Skips scope allocation and
+    // parameter binding entirely — the JIT executes the frame directly.
+    if let Some(result) = match &cell.borrow().body {
+        Body::Proto { index, program } => crate::jit_fast::try_call_jit(program, *index, args),
+        _ => None,
+    } {
+        return result;
     }
     let frame = match begin_call(f, args) {
         Ok(frame) => frame,
@@ -368,6 +382,9 @@ pub fn bind(f: &Obj, scope: &Scope, args: &Args) -> Obj {
     let Some(cell) = fn_cell(f) else {
         return obj::none();
     };
+    bind_with_cell(&cell, f, scope, args)
+}
+fn bind_with_cell(cell: &FnCell, f: &Obj, scope: &Scope, args: &Args) -> Obj {
     {
         let names = fn_local_names(&cell);
         if !names.is_empty() {
@@ -382,7 +399,7 @@ pub fn bind(f: &Obj, scope: &Scope, args: &Args) -> Obj {
     if let Some(prop) = property {
         scope::set_local(scope, "field", field_ref(&self_, &prop));
     }
-    if let Some(result) = try_bind_simple_positional(f, scope, args) {
+    if let Some(result) = try_bind_simple_positional_with_cell(cell, f, scope, args) {
         return result;
     }
     let arg_list = cell.borrow().args.clone();
@@ -458,16 +475,18 @@ pub fn bind(f: &Obj, scope: &Scope, args: &Args) -> Obj {
     }
     obj::none()
 }
-fn try_bind_simple_positional(f: &Obj, scope: &Scope, args: &Args) -> Option<Obj> {
+fn try_bind_simple_positional_with_cell(
+    cell: &FnCell,
+    _f: &Obj,
+    scope: &Scope,
+    args: &Args,
+) -> Option<Obj> {
     for i in 0..args.count() {
         if !args.names[i].is_empty() || matches!(obj::payload(&args.values[i]), Payload::Spread(..)) {
             return None;
         }
     }
-    let arg_list = match fn_cell(f) {
-        Some(c) => c.borrow().args.clone(),
-        None => return None,
-    };
+    let arg_list = cell.borrow().args.clone();
     let mut bindable = 0usize;
     {
         let list = arg_list.borrow();

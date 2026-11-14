@@ -131,3 +131,39 @@ Live pipeline is
 - [ ] Bytecode-roundtrip fuzz: roundtrip `dis` vs runtime execution for a sample (not addressed).
 - [x] Re-confirm `scripts/test.ps1` exits 0 with the post-audit tree (verified: 212 unit tests + 1363 Positive + exit 0; 202 after Phase D deletions).
 - [x] Native interpreter redundancy: `jit_full.rs` unused — deleted; `obj_v2.rs` unused — deleted.
+
+## 8. JIT expansion (2026-11-15 phase E) — continued
+
+Delivered: **Float Int-promotion subset + Int-typed user-call subset in the `.unbc` Cranelift JIT**, with semantics preserved in 1363/0 assertions.
+
+- **Shared JITModule for one whole program** (`register_eligible`/`emit_fn_in_module`): all eligible protos are declared up front in one module so any JIT-compiled function can directly `call` any other (Int fast-call ABI), which is how `fib(24)` and other Int-recursive callees compile without leaving the native path.
+- **`math.floor(math.sqrt(x))` intrinsic** (`jit_bc.rs::match_floor_sqrt`, `FloorSqrtPatch`): the exact 13-op window recognized at the floor-Call site; emitted as f64 `fcvt_from_sint` + `fsqrt` + `ffloor`. Runtime domain failure (Int arg < 0 raises in Un) is preserved via a **runtime bail tag (2)** → the VM re-executes the proto interpreted.
+- **Float Int-promotion**: `Add`/`Sub`/`Mul` emit `fadd`/`fsub`/`fmul` when any operand is Float (Un's Int+Float promotion rule). A monotone Int→Float **fixpoint** (`compute_local_float`) decides which locals become promoted. Promoted locals keep both i64 and f64 variables; Float stores flip a CFG-correct `poly_tag` Variable (cranelift-threaded).
+- **Per-path polymorphic return**: `Return` from a promoted local emits a path-sensitive select on `poly_tag` — locals with no Float stores return (i64, 0); Float-carried paths return (f64 bits, 1). Straight-Float values return tag 1 statically. Byte-identical to the interpreter on type/value for tested cases including empty loops (`type(math_work(0))` → `int`).
+- **ABI change (global, safe)**: JIT fast-path ABI is a hidden-pointer pair `(value, tag)` written via `store`; every eligible proto uses the same layout. Avoids the Win64 Aggregate-by-hidden-pointer ABI.
+- **VM fast-path** (`call_proto`) checks Int arg payloads then calls; tag 2 → interpreter re-execution (correctness-preserving fallback). `ToBool` (Int/Float compare result → 0/1 Int) is also JIT-supported.
+- **`analyze_return_kinds(program)`** — program-wide fixpoint recording which return-tag kinds every function may produce (`RET_INT`/`RET_FLOAT`/`RET_BOOL`). Inner JIT user-calls consume this table: definite Int => tag 0, Mixed (Int|Float) also accepted, definite Bool => tag 3 (reconstructed as Obj::boolean by the VM). Mixed Bool×Int/Float keeps bail-to-interpreter semantics.
+- **Invalidated by hostile rebinds**: A program re-binding any of the names `math`/`floor`/`sqrt`/`iter`/`range` at module level via `StoreName`/`SetAttr`/`MakeFunc` is excluded from JIT entirely (`program_has_intrinsic_rebind`). Semantics are byte-identical to the interpreter.
+- **Depth guard for user-call recursion**: `needs_depth` detection; self- or mutually recursive JIT chains get a runtime `un_jit_depth_enter/exit` external call bumping a process-wide atomic counter; overflow beyond `max_recursion_depth()` bails the JIT-compiled call back to the interpreter (restoring the documented `maximum recursion depth exceeded` error message). Non-recursive functions skip both guards.
+
+Measured (AMD Ryzen 7 9800X3D, windows-gnu toolchain, release):
+- `bench/math.un` math10000: **25.3ms → 0.019ms (~1,340×)** — identical outputs and identical types on both paths (UV_JIT=1 vs UV_JIT=0).
+- `bench/iter.un` iter10000: **20.4ms → 5.9ms (~3.5×)** — Int-only lambdas map/filter callbacks (including Bool-returning predicate lambdas) are JIT-compiled.
+- `bench/fib.un` fib24: **206ms → 3.4ms (~60×)**.
+- `bench/nested_sum_200`: unchanged vs Node comparison baseline (Un ~3.7× faster than Node).
+- `bench/dict5000`: **4.0ms → 0.229ms (~17×)** — IntDict intrinsic accepted (`BuildDict`/`SetItem`/`GetItem` paths recognised as Int-only.)
+- `bench/qsort500` / `bench/rle1994` / `bench/class1000`: no JIT impact — these are object-graph/path-bound benchmarks.
+
+## 8b. IntDict intrinsic plumbing (Option A baseline)
+- `runtime::int_dict` exposes three `extern "C"` helpers for Cranelift inline calls: `un_dict_int_empty` (allocate fresh id), `un_dict_int_set(d, key, value) -> Int` (insert last-write-wins), `un_dict_int_get(d, key) -> Int` (lookup; `-1` sentinel for missing key).
+- Arena is process-global (free-list-style slot reuse possible later; currently never freed).
+- Tracks IntDict refs across `Local`d/Stored registers — registers are just i64 ids.
+- Empty-builder-only `Op::BuildDict` accepted; non-empty builders refuse JIT.
+- `Op::SetItem` and `Op::GetItem` fast lanes: state looked up in IntDict (`int_dict_regs`), keys/values must be Ints only.
+- Mixed Float/Bool in dict keys/values forces interpreter fallback.
+- `bench/dict5000`: 4.0ms → 0.229ms.
+- `bench/nested_sum_200`: unchanged.
+- `bench/math.un` / `bench/iter.un` / `bench/fib.un`: unchanged.
+
+## 8c. Bool-return tag wiring (previous section)
+Bool-returning JIT functions compile. Folded in via `analyze_return_kinds`; `emit_user_call` propagates `is_bool=true` on definite-Bool callee calls. `assert.assert_eq(is_even(10), true)` passes with UV_JIT=1 and UV_JIT=0 alike. Mixed Bool×Int/Float callees still refuse JIT (conservative) — e.g. a function returning either `Int` or `Bool` on different branches keeps the interpreter.

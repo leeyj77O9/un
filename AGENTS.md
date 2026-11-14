@@ -1,4 +1,4 @@
-# AGENTS.md
+﻿# AGENTS.md
 
 이 문서는 이 저장소에서 작업하는 AI 코딩 에이전트를 위한 프로젝트 가이드다.
 사람이 읽는 문서는 `README.md`(한국어)와 `docs/README.md`(영어)를 참고한다.
@@ -9,7 +9,7 @@
 - **구현**: Rust 바이트코드 컴파일러 + 레지스터 기반 VM (`unvm`, 라이브러리 이름 `unvm`).
 - **파이프라인**: `Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM`
 - **규모**: Rust 약 90개 파일 / 약 16,500줄, `test/` 아래 `.un` 스크립트 89개.
-- **JIT**: Cranelift 0.137.1 기반의 i64-특화 JIT가 정수 반복 함수를 native로 컴파일한다(선택적).
+- **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을 읽을 때 Int 부분집합과 `math.floor(math.sqrt(x))` 인트리식(f64 두 개 명령으로 인라인)에 속하는 proto를 native로 컴파일하고 `jit_cache`에 등록한다. 결과는 hidden pointer로 (value, tag)를 기록하는데 tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2는 런타임 bail(엔진 오류가 아니라 의미론 보존을 위한 인터프리터 fallback)이다. 나머지는 전부 인터프리터로 fallback. `UV_JIT=0`으로 런타임에 opt-out.
 - **이전 역사**: 원래 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었다. Rust 포트가
   differential 검증으로 C# 구현과 byte-identical임을 확인한 뒤 대체했고, C# 소스는
   `git` 이력에만 남아 있다.
@@ -29,9 +29,9 @@ C:\dev\un/
 │  │  ├─ bytecode/           # Op(explicit #[repr(u8)]), Instruction, Program, Proto, unbc
 │  │  ├─ lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / module.rs
 │  │  ├─ vm/                 # 단일 실행 모듈: register VM (mod.rs) + stack→register 번역(transfer.rs)
-│  │  ├─ jit.rs              # Cranelift i64-핫루프 JIT 기반
+│  │  ├─ jit.rs             # Cranelift i64-핫루프 JIT 기반 (테스트 전용)
 │  │  ├─ jit_cache.rs        # JIT 컴파일된 함수 전역 캐시/등록
-│  │  ├─ jit_fn.rs           # 순수 int 함수를 native fn(i64)->i64 로 컴파일
+│  │  ├─ jit_bc.rs         # .unbc가 1:1 대응되는 Cranelift JIT (Int 부분집합 + floor(sqrt(n)) 내장 intrinsic, Float poly-tag 반환)
 │  │  ├─ runtime/            # obj, collections, iters, function, world, scope, date, ...
 │  │  ├─ native/             # io, fs, re, math, iter, ... (`native::init`에서 명시적 등록)
 │  │  └─ playground/         # WASM 진입점 (PlaygroundRunner.RunCode 대응)
@@ -47,13 +47,8 @@ C:\dev\un/
   있다(Windows/GNU에서 `dlltool.exe` 부재로 `windows-sys 0.52.0`을 빌드할 수 없기 위해
   raw kernel32 FFI로 교체). 새 외부 crate는 정말 필요할 때만 추가하고 `vendor/`에 패치할
   수 있으면 raw FFI로 해결한다.
-- **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을
-  읽을 때 Int 부분집합에 속하는 모든 proto를 native로 컴파일하고 `jit_cache`에 `(program_ptr,
-  proto_index)` 키로 등록한다. `vm::call_proto`가 이름 대신 이 키로 조회해 arg를 raw i64로
-  전달하고 결과를 raw i64로 받는다. 지원 범위: ESSENTIAL/OPTIONAL i64 파라미터(최대 8개),
-  i64 지역변수/레지스터, `iter.range(a, b)` 루프(Outer 안쪽 `range`만), 정수 산술(`//`, `%`는
-  제수 상수 정수), 비교 연산. 나머지는 인터프리터로 fallback. `UV_JIT=0`으로 런타임에 opt-out.
-  WASM 타깃에서는 `try_compile_int_fn`이 `None`을 반환해 비활성화된다.
+- **JIT 동작**: jit_bc.rs는 .unbc를 직접 번역하는 Cranelift JIT다. m::plan_for가 프로그램을 읽을 때 eligibility에 속하는 proto를 native로 컴파일하고 jit_cache에 (program_ptr, proto_index) 키로 등록한다. m::call_proto가 이름 대신 이 키로 조회하고, 결과는 hidden pointer로 (value, tag)가 기록된다: tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2 런타임 bail(엔진 오류가 아니라 의미론 보존용 인터프리터 fallback). 지원 범위: ESSENTIAL/OPTIONAL i64 파라미터(최대 8개), i64 지역변수, iter.range(a, b) 루프, 정수 산술(//, %는 제수 상수 정수), 비교 연산, FusedIntMulAdd 누산기, Int consts, math.floor(math.sqrt(x)) 인트리식(Int→Float 승격 f64 파이프 인라인). 나머지는 전부 인터프리터로 fallback. UV_JIT=0으로 런타임에 opt-out. WASM 타겟에서는 비활성화된다.
+
 
 ## 빠른 명령
 

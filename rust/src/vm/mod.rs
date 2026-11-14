@@ -170,6 +170,19 @@ impl VM {
         }
     }
 
+    fn set_item_slow(
+        &mut self,
+        ins: &Ins,
+        span: (usize, usize),
+    ) -> Result<bool, Outcome> {
+        let _ = span;
+        let index = self.regs[ins.c as usize].clone();
+        let target = self.regs[ins.b as usize].clone();
+        let value = self.regs[ins.a as usize].clone();
+        self.regs[ins.a as usize] = obj::set_item(&target, &index, &value);
+        Ok(true)
+    }
+
     fn cur_slot_scope(&mut self) -> scope::Scope {
         // owner of the local slot table (children inherit it)
         if let Some(s) = &self.slot_scope {
@@ -780,10 +793,49 @@ impl VM {
                 self.regs[ins.a as usize] = obj::get_item(&target, &key);
             }
             Op::SetItem => {
-                let index = self.regs[ins.c as usize].clone();
-                let target = self.regs[ins.b as usize].clone();
-                let value = self.regs[ins.a as usize].clone();
-                self.regs[ins.a as usize] = obj::set_item(&target, &index, &value);
+                // Fast lane: Dict + Int key + Int value — skip __setitem__
+                // dispatch and the intermediate payload clone by writing
+                // directly into the KeyMap. Outside the fast lane we keep
+                // the generic path.
+                let done = {
+                    let idx = &self.regs[ins.c as usize];
+                    let target = &self.regs[ins.b as usize];
+                    let val = &self.regs[ins.a as usize];
+                    let key_int_opt = match obj::payload(idx) {
+                        crate::runtime::obj::Payload::Int(n) => Some(n),
+                        _ => None,
+                    };
+                    let value_int_opt = match obj::payload(val) {
+                        crate::runtime::obj::Payload::Int(n) => Some(n),
+                        _ => None,
+                    };
+                    if let (Some(key_int), Some(value_int)) = (key_int_opt, value_int_opt) {
+                        if key_int >= -1024 && key_int <= 100000 && value_int >= -1024 && value_int <= 100000 {
+                            let key_obj = world::int_cached(key_int);
+                            let value_obj = world::int_cached(value_int);
+                            let done = {
+                                let target_b = target.borrow();
+                                match &target_b.payload {
+                                    crate::runtime::obj::Payload::Dict(km) => {
+                                        km.borrow_mut().set(&key_obj, &value_obj);
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            };
+                            done
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if done {
+                    self.regs[ins.a as usize] = self.regs[ins.a as usize].clone();
+                    return Ok(true);
+                }
+                return self.set_item_slow(ins, span);
             }
 
             Op::Slice => {
@@ -1270,23 +1322,10 @@ impl VM {
         args: &Args,
         span: (usize, usize),
     ) -> Result<Obj, Outcome> {
-    // JIT fast-path: pre-compiled native Int subset registered for this program (unbc translation)
-    let jit_key = crate::jit_cache::unbc_key(Rc::as_ptr(&program) as usize, proto_index);
-    if let Some(entry) = crate::jit_cache::get_jit_entry(&jit_key) {
-        if args.names.iter().all(|n| n.is_empty()) && args.values.len() == entry.arity as usize {
-            let ints: Option<Vec<i64>> = args
-                .values
-                .iter()
-                .map(|arg| match obj::payload(arg) {
-                    crate::runtime::obj::Payload::Int(v) => Some(v),
-                    _ => None,
-                })
-                .collect();
-            if let Some(ints) = ints {
-                let result = jit_call(entry, &ints);
-                return Ok(obj::int(result));
-            }
-        }
+    // JIT fast-path: route through the shared helper. tag=2 will fall through
+    // to the interpreter below, exactly as if JIT were off.
+    if let Some(result) = crate::jit_fast::try_call_jit(&program, proto_index, args) {
+        return Ok(result);
     }
     let frame = match function::begin_call(callable, args) {
             Ok(frame) => frame,
@@ -1429,30 +1468,53 @@ impl VM {
     }
 }
 
+/// Raw result of a JIT-compiled Un function: `value` is either an i64 Int
+/// bits or the raw IEEE-754 bits of a Float, distinguished by `tag`.
+/// The Cranelift side writes this through a hidden pointer, so this is only
+/// a plain Rust struct (not an FFI type).
+#[derive(Clone, Copy)]
+pub(crate) struct UnJitResult {
+    pub(crate) value: i64,
+    pub(crate) tag: i64,
+}
+
 /// Invoke a JIT-compiled Un function with positional Int arguments.
-/// The signature always matches the entry arity; callers must not exceed it.
-fn jit_call(entry: crate::jit_cache::JitEntry, ints: &[i64]) -> i64 {
-    type F1 = unsafe extern "C" fn(i64) -> i64;
-    type F2 = unsafe extern "C" fn(i64, i64) -> i64;
-    type F3 = unsafe extern "C" fn(i64, i64, i64) -> i64;
-    type F4 = unsafe extern "C" fn(i64, i64, i64, i64) -> i64;
-    type F5 = unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64;
-    type F6 = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64;
-    type F7 = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64;
-    type F8 = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+/// Returns the raw value and a tag: 0 = value is an i64 result; 1 = value is
+/// the raw bits of a Float result; 2 = the JIT declined at runtime (the
+/// caller must fall back to the interpreter exactly once).
+/// The JIT writes the (value, tag) pair through a hidden pointer so no
+/// aggregate-return ABI rules apply.
+pub(crate) fn jit_call(entry: crate::jit_cache::JitEntry, ints: &[i64]) -> UnJitResult {
+    assert!(ints.len() == entry.arity as usize);
+    assert!(entry.arity != 0);
+    type F1 = unsafe extern "C" fn(*mut i64, i64);
+    type F2 = unsafe extern "C" fn(*mut i64, i64, i64);
+    type F3 = unsafe extern "C" fn(*mut i64, i64, i64, i64);
+    type F4 = unsafe extern "C" fn(*mut i64, i64, i64, i64, i64);
+    type F5 = unsafe extern "C" fn(*mut i64, i64, i64, i64, i64, i64);
+    type F6 = unsafe extern "C" fn(*mut i64, i64, i64, i64, i64, i64, i64);
+    type F7 = unsafe extern "C" fn(*mut i64, i64, i64, i64, i64, i64, i64, i64);
+    type F8 = unsafe extern "C" fn(*mut i64, i64, i64, i64, i64, i64, i64, i64, i64);
+    let mut out = [0i64; 2];
+    let ptr = out.as_mut_ptr();
+    // SAFETY: the JIT-compiled entries registered behind the eligibility gate
+    // write exactly 16 bytes through the hidden pointer; the entry was
+    // generated by the JIT for this exact signature (hidden ptr first, then
+    // `arity` i64 Int args).
     unsafe {
         match ints.len() {
-            1 => std::mem::transmute::<*const u8, F1>(entry.ptr)(ints[0]),
-            2 => std::mem::transmute::<*const u8, F2>(entry.ptr)(ints[0], ints[1]),
-            3 => std::mem::transmute::<*const u8, F3>(entry.ptr)(ints[0], ints[1], ints[2]),
-            4 => std::mem::transmute::<*const u8, F4>(entry.ptr)(ints[0], ints[1], ints[2], ints[3]),
-            5 => std::mem::transmute::<*const u8, F5>(entry.ptr)(ints[0], ints[1], ints[2], ints[3], ints[4]),
-            6 => std::mem::transmute::<*const u8, F6>(entry.ptr)(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5]),
-            7 => std::mem::transmute::<*const u8, F7>(entry.ptr)(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6]),
-            8 => std::mem::transmute::<*const u8, F8>(entry.ptr)(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6], ints[7]),
+            1 => std::mem::transmute::<*const u8, F1>(entry.ptr)(ptr, ints[0]),
+            2 => std::mem::transmute::<*const u8, F2>(entry.ptr)(ptr, ints[0], ints[1]),
+            3 => std::mem::transmute::<*const u8, F3>(entry.ptr)(ptr, ints[0], ints[1], ints[2]),
+            4 => std::mem::transmute::<*const u8, F4>(entry.ptr)(ptr, ints[0], ints[1], ints[2], ints[3]),
+            5 => std::mem::transmute::<*const u8, F5>(entry.ptr)(ptr, ints[0], ints[1], ints[2], ints[3], ints[4]),
+            6 => std::mem::transmute::<*const u8, F6>(entry.ptr)(ptr, ints[0], ints[1], ints[2], ints[3], ints[4], ints[5]),
+            7 => std::mem::transmute::<*const u8, F7>(entry.ptr)(ptr, ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6]),
+            8 => std::mem::transmute::<*const u8, F8>(entry.ptr)(ptr, ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6], ints[7]),
             _ => unreachable!("jit_call with more than 8 args"),
         }
     }
+    UnJitResult { value: out[0], tag: out[1] }
 }
 
 thread_local! {

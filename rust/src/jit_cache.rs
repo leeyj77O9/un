@@ -11,15 +11,47 @@
 //! can dispatch with the right signature.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
 /// A JIT-compiled function. The `ptr` points to the Cranelift-emitted native
-/// function with `arity` `i64` parameters returning `i64`.
+/// function with `arity` `i64` parameters plus a hidden result pointer,
+/// returning via that hidden pointer: the first i64 cell carries the result
+/// value (sent as i64 bits for Float too), the second cell carries a tag:
+/// 0 = Int, 1 = Float, 2 = bail to the interpreter.
 #[derive(Clone, Copy)]
 pub struct JitEntry {
     pub ptr: *const u8,
     pub arity: u32,
+}
+
+/// Thread of execution here; JIT functions count call depth using this
+/// counter (both from VM dispatch — no, VM increments its own limit — and
+/// from JIT-internal call sites). Capped at world::max_recursion_depth().
+pub static JIT_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Cranelift-imported helper for entry/depth check.
+/// Returns 1 when the JIT function must bail (too deep), 0 otherwise.
+#[no_mangle]
+pub extern "C" fn un_jit_depth_enter() -> i64 {
+    let depth = JIT_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+    if depth >= crate::runtime::world::max_recursion_depth() {
+        // Revert the increment so the VM doesn't double-count on bail.
+        JIT_DEPTH.fetch_sub(1, Ordering::Relaxed);
+        1
+    } else {
+        0
+    }
+}
+
+/// Counter-side of depth accounting. Called at every normal exit path AND
+/// on the bail path so the VM's own depth tracking never leaks across
+/// nested calls.
+#[no_mangle]
+pub extern "C" fn un_jit_depth_exit() -> i64 {
+    JIT_DEPTH.fetch_sub(1, Ordering::Relaxed);
+    0
 }
 
 unsafe impl Send for JitEntry {}

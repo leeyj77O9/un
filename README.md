@@ -2,7 +2,7 @@
 
 간결한 문법, 명시적 비동기 실행, 패턴 매칭을 제공하는 현대적인 스크립팅 언어.
 
-Un은 Rust로 작성된 바이트코드 컴파일러와 레지스터 기반 VM(`unvm`)으로 구현되어 있다. 핫 패스 Int 함수는 Cranelift JIT으로 native로 컴파일된다. 처리 파이프라인은 다음과 같다.
+Un은 Rust로 작성된 바이트코드 컴파일러와 레지스터 기반 VM(`unvm`)으로 구현되어 있다. 핫 패스 Int 및 Float 승격 누산기 함수는 Cranelift JIT으로 native로 컴파일된다. 처리 파이프라인은 다음과 같다.
 
 `Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM (optionally JIT)`
 
@@ -529,7 +529,7 @@ work()    # start done
 
 ## 아키텍처
 
-바이트코드 컴파일러와 레지스터 기반 VM 위에서 동작하며, 핫 패스 Int 함수는 Cranelift JIT으로 native로 컴파일된다.
+바이트코드 컴파일러와 레지스터 기반 VM 위에서 동작하며, 핫 패스 Int 및 Float 승격 누산기 함수는 Cranelift JIT으로 native로 컴파일된다.
 
 ```
 Source (.un)
@@ -551,7 +551,7 @@ Bytecode Compiler   Opcode/Proto/Program, Instruction(flags, operand) 인코딩
   |
   v
 Register VM (interpreter)  Context / Scope / Frame 기반 실행, go/wait를 위한 Future
-  |                           + 핫 패스 Int 함수는 Cranelift JIT으로 native 코드로 변환
+  |                           + 핫 패스 Int 및 Float 승격 누산기 함수는 Cranelift JIT으로 native 코드로 변환
   v
 Runtime         Obj / Val / Ref / Enu / Stru / TObj / Property와 타입 시스템
   |
@@ -668,7 +668,7 @@ class Heap
 구현 완료:
 
 - 바이트코드 컴파일러와 레지스터 기반 VM (lexer, parser, desugarer, optimizer, compiler, vm)
-- 핫 패스 Int 함수를 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화 가능)
+- 핫 패스 Int 및 `math.floor(math.sqrt(n))` 인트리식을 갖는 Float 승격 누산기 함수를 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화 가능). Int-Int 전용 `d[k] = v` / `d[k]` IntDict intrinsic도 포함.
 - 런타임 객체 모델과 타입 시스템
 - 표준 라이브러리 모듈
 - 비동기 실행과 워커 풀
@@ -700,7 +700,7 @@ class Heap
    `test/negative/manifest.txt`에 `path|expected exit|expected substring` 행으로 등록한다.
 5. 풀 리퀘스트를 연다. 커밋은 기여자가 직접 수행한다. 자동화 도구는 git에 푸시하지 않는다.
 
-코딩 컨벤션: Rust 2021 edition을 쓴다. 모듈은 `//!` 설명과 함께 파일 상단에 문서를 두고, `?` 연산자로 오류를 전파하며, 패턴 매칭을 적극적으로 쓴다. 외부 crate 의존성은 기본적으로 없고 표준 라이브러리만 쓴다. 예외로 `vendor/` 아래 패치된 `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`이 정수 특화 Cranelift JIT에 쓰인다 — GNU toolchain에 `dlltool.exe`가 없어 `windows-sys 0.52.0`을 빌드할 수 없기 때문에 raw kernel32 FFI로 패치한 사본이다.
+코딩 컨벤션: Rust 2021 edition을 쓴다. 모듈은 `//!` 설명과 함께 파일 상단에 문서를 두고, `?` 연산자로 오류를 전파하며, 패턴 매칭을 적극적으로 쓴다. 외부 crate 의존성은 기본적으로 없고 표준 라이브러리만 쓴다. 예외로 `vendor/` 아래 패치된 `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`이 Cranelift JIT에 쓰인다 — GNU toolchain에 `dlltool.exe`가 없어 `windows-sys 0.52.0`을 빌드할 수 없기 때문에 raw kernel32 FFI로 패치한 사본이다.
 
 ## 라이선스
 

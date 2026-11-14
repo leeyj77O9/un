@@ -2,7 +2,7 @@
 
 A modern scripting language with concise syntax, explicit asynchronous execution, and pattern matching.
 
-Un is implemented as a bytecode compiler and register-based VM written in Rust (`unvm`). Hot-path Int functions are compiled to native code by an embedded Cranelift JIT. The processing pipeline is:
+Un is implemented as a bytecode compiler and register-based VM written in Rust (`unvm`). Hot-path Int and Float-promoted accumulator functions are compiled to native code by an embedded Cranelift JIT. The processing pipeline is:
 
 `Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM (optionally JIT)`
 
@@ -15,7 +15,7 @@ Un is implemented as a bytecode compiler and register-based VM written in Rust (
 
 Un is a dynamically typed scripting language aimed at readable, compact programs. It combines Python-like indentation-based blocks with explicit concurrency primitives, structural pattern matching, and a small standard library.
 
-Un is written in Rust: source files are lexed and parsed, desugared, optimized (constant folding, up to 64 passes), compiled to bytecode, and executed by a register-based VM. Hot-path Int functions are compiled to native code by an embedded Cranelift JIT. It was previously implemented as a C# tree-walking interpreter on .NET 8; the Rust port was verified byte-identical to it by differential testing before replacing it (the 4 documented divergent cases are listed in `test/KnownDivergent.txt`).
+Un is written in Rust: source files are lexed and parsed, desugared, optimized (constant folding, up to 64 passes), compiled to bytecode, and executed by a register-based VM. Hot-path Int and Float-promoted accumulator functions are compiled to native code by an embedded Cranelift JIT. It was previously implemented as a C# tree-walking interpreter on .NET 8; the Rust port was verified byte-identical to it by differential testing before replacing it (the 4 documented divergent cases are listed in `test/KnownDivergent.txt`).
 
 Design goals:
 
@@ -558,7 +558,7 @@ Bytecode Compiler   Op / Proto / Instruction(flags, operand) encoding
   |
   v
 Register VM (interpreter)  Context / Scope / Frame based execution, Future for go/wait
-                             + Hot-path Int functions are compiled to native code by Cranelift JIT
+                             + Hot-path Int and Float-promoted accumulator functions are compiled to native code by Cranelift JIT
   |
   v
 Runtime         Obj / Ref / Enu / Stru / TObj / Property and the type system
@@ -676,7 +676,7 @@ More examples are available in `test/test_suite.un`, `test/integration/algorithm
 Implemented:
 
 - Bytecode compiler and register-based VM (lexer, parser, desugarer, optimizer, compiler, vm)
-- Hot-path Int Cranelift JIT (disable with `UV_JIT=0`)
+- Hot-path Int Cranelift JIT with the `math.floor(math.sqrt(n))` Float-arithmetic intrinsic (disable with `UV_JIT=0`). Includes Int-only IntDict intrinsics for `d[k] = v` / `d[k]` patterns.
 - Runtime object model and type system
 - Standard library modules
 - Asynchronous execution and worker pools
@@ -708,7 +708,7 @@ Planned:
    with a `path|expected exit|expected substring` row in `test/negative/manifest.txt`.
 5. Open a pull request. Commits are made by the contributor; automated tooling does not push to git.
 
-Coding conventions: Rust 2021 edition. Modules carry a `//!` doc comment at the top, errors propagate with `?`, and pattern matching is used liberally. No external crate dependencies by default; the exception is the Cranelift JIT stack under `vendor/` (patched `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`, raw kernel32 FFI because the GNU toolchain lacks `dlltool.exe`), used for the i64-specialized JIT.
+Coding conventions: Rust 2021 edition. Modules carry a `//!` doc comment at the top, errors propagate with `?`, and pattern matching is used liberally. No external crate dependencies by default; the exception is the Cranelift JIT stack under `vendor/` (patched `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`, raw kernel32 FFI because the GNU toolchain lacks `dlltool.exe`), used for the numeric-subset Cranelift JIT.
 
 ## License
 

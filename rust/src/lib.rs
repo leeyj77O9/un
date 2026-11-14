@@ -6,6 +6,7 @@ pub mod error;
 pub mod jit;
 pub mod jit_bc;
 pub mod jit_cache;
+pub mod jit_fast;
 pub mod lexer;
 pub mod module;
 pub mod native;
