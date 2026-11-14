@@ -1270,7 +1270,7 @@ impl VM {
         args: &Args,
         span: (usize, usize),
     ) -> Result<Obj, Outcome> {
-    // JIT fast-path 1: pre-compiled native Int subset registered for this program (unbc translation)
+    // JIT fast-path: pre-compiled native Int subset registered for this program (unbc translation)
     let jit_key = crate::jit_cache::unbc_key(Rc::as_ptr(&program) as usize, proto_index);
     if let Some(entry) = crate::jit_cache::get_jit_entry(&jit_key) {
         if args.names.iter().all(|n| n.is_empty()) && args.values.len() == entry.arity as usize {
@@ -1285,16 +1285,6 @@ impl VM {
             if let Some(ints) = ints {
                 let result = jit_call(entry, &ints);
                 return Ok(obj::int(result));
-            }
-        }
-    }
-    // JIT fast-path 2: name-registered single-parameter AST translation (fallback)
-    let jit_key = format!("fn:{}", program.names[program.protos[proto_index].name]);
-    if let Some(entry) = crate::jit_cache::get_jit_entry(&jit_key) {
-        if args.names.iter().all(|n| n.is_empty()) && args.values.len() == 1 && entry.arity == 1 {
-            if let crate::runtime::obj::Payload::Int(v) = obj::payload(&args.values[0]) {
-                let f1 = unsafe { std::mem::transmute::<*const u8, unsafe extern "C" fn(i64) -> i64>(entry.ptr) };
-                return Ok(obj::int(unsafe { f1(v) }));
             }
         }
     }

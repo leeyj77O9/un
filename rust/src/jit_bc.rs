@@ -31,7 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cranelift_codegen::ir::{AbiParam, InstBuilder, UserFuncName, Value, types};
+use cranelift_codegen::ir::{AbiParam, BlockArg, InstBuilder, UserFuncName, Value, types};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::ir::Block;
@@ -51,8 +51,9 @@ pub const MAX_ARITY: usize = 8;
 /// Translate the eligible protos of `program` into the JIT cache keyed by
 /// `program_ptr`. Called once per program when the VM first plans it.
 pub fn register_eligible(program: &Program, program_ptr: usize) {
-    // unbc JIT is work in progress; enable with UV_JIT_BC=1
-    if !crate::jit_cache::jit_enabled() || std::env::var_os("UV_JIT_BC").is_none() { return; }
+    if !crate::jit_cache::jit_enabled() {
+        return;
+    }
     for proto_index in 0..program.protos.len() {
         if let Some((code_ptr, arity)) = try_compile_fn(program, proto_index) {
             let key = crate::jit_cache::unbc_key(program_ptr, proto_index);
@@ -81,7 +82,7 @@ struct Tr<'a> {
     local_is_bool: Vec<bool>,
     local_is_none: Vec<bool>,
     blocks: HashMap<usize, Block>,
-    loop_inc: HashMap<usize, Block>,
+    loop_inc: HashMap<usize, (Block, usize)>,
 }
 
 impl<'a> Tr<'a> {
@@ -143,32 +144,58 @@ impl<'a> Tr<'a> {
         let (min_v, _end_min) = self.emit_bound_expr(builder, code, patch.min_start)?;
         let (stop_v, _end_max) = self.emit_bound_expr(builder, code, patch.argpos1 + 1)?;
 
-        let inc_blk = self.loop_inc.get(&patch.fornext_ip).copied()?;
+        // The loop index lives in local slot `i_slot`. It is the only value the
+        // range loop must thread through the control-flow merge. We make the
+        // loop-carried value an explicit block parameter (BlockArg) rather than
+        // relying on the variable-based SSA pick-up.
+        let store = code.get(patch.fornext_ip + 1)?;
+        if store.op != Op::StoreLocal || store.a != patch.yield_reg {
+            return None;
+        }
+        let i_slot = store.d as usize;
+        if i_slot >= self.locals_len {
+            return None;
+        }
+        let i_var = self.lv(i_slot);
+
+        let (inc_blk, _inc_i_var) = self.loop_inc.get(&patch.fornext_ip).copied()?;
         let header_blk = self.blocks.get(&patch.fornext_ip).copied()?;
         let body_blk = self.blocks.get(&patch.body_start_ip).copied()?;
         let exit_blk = self.blocks.get(&patch.exit_ip).copied()?;
 
-        // yield register is the loop index (SSA by variable)
-        let yield_var = self.rv(patch.yield_reg as usize);
-        builder.def_var(yield_var, min_v);
-        builder.ins().jump(header_blk, &[]);
+        // blocks were pre-allocated without params; declare the param now
+        let _param0 = builder.append_block_param(header_blk, types::I64);
+        let _param1 = builder.append_block_param(body_blk, types::I64);
+        let _param2 = builder.append_block_param(inc_blk, types::I64);
+
+        // i = min initially; jump into header passing i
+        builder.def_var(i_var, min_v);
+        let i0 = builder.use_var(i_var);
+        builder.ins().jump(header_blk, &[BlockArg::Value(i0)]);
 
         // header: i < stop ? body : exit
         builder.switch_to_block(header_blk);
-        let i_v = builder.use_var(yield_var);
+        let i_v = builder.block_params(header_blk)[0];
+        builder.def_var(i_var, i_v);
         let cmp = builder.ins().icmp(IntCC::SignedLessThan, i_v, stop_v);
-        builder.ins().brif(cmp, body_blk, &[], exit_blk, &[]);
+        builder.ins().brif(cmp, body_blk, &[BlockArg::Value(i_v)], exit_blk, &[]);
 
         // increment block: i = i + 1; jumps back to header
         builder.switch_to_block(inc_blk);
-        let i_v = builder.use_var(yield_var);
+        let i_v = builder.block_params(inc_blk)[0];
+        builder.def_var(i_var, i_v);
         let one = builder.ins().iconst(types::I64, 1);
         let inc = builder.ins().iadd(i_v, one);
-        builder.def_var(yield_var, inc);
-        builder.ins().jump(header_blk, &[]);
+        builder.ins().jump(header_blk, &[BlockArg::Value(inc)]);
 
         // continue emission in the body block
         builder.switch_to_block(body_blk);
+        let i_v = builder.block_params(body_blk)[0];
+        builder.def_var(i_var, i_v);
+        // yield register is read later by StoreLocal — define it as well
+        let yield_var = self.rv(patch.yield_reg as usize);
+        builder.def_var(yield_var, i_v);
+
         Some(())
     }
 
@@ -404,12 +431,14 @@ impl<'a> Tr<'a> {
             Op::Jmp => {
                 let target = jump_target(ip, ins.d);
                 // loop back-edges route through the increment block
-                let blk = match self.loop_inc.get(&target).copied() {
-                    Some(inc) => inc,
-                    None => match self.blocks.get(&target).copied() {
-                        Some(b) => b,
-                        None => return None,
-                    },
+                if let Some(&(inc_blk, i_slot)) = self.loop_inc.get(&target) {
+                    let i_v = builder.use_var(self.lv(i_slot));
+                    builder.ins().jump(inc_blk, &[BlockArg::Value(i_v)]);
+                    return Some(());
+                }
+                let blk = match self.blocks.get(&target).copied() {
+                    Some(b) => b,
+                    None => return None,
                 };
                 builder.ins().jump(blk, &[]);
                 Some(())
@@ -671,9 +700,13 @@ pub fn try_compile_fn(program: &Program, proto_index: usize) -> Option<(usize, u
             blocks.insert(ip, builder.create_block());
         }
     }
-    let mut loop_inc: HashMap<usize, Block> = HashMap::new();
+    let mut loop_inc: HashMap<usize, (Block, usize)> = HashMap::new();
     for patch in patches.values() {
-        loop_inc.insert(patch.fornext_ip, builder.create_block());
+        if let Some(s) = code.get(patch.fornext_ip + 1) {
+            if s.op == Op::StoreLocal && s.a == patch.yield_reg {
+                loop_inc.insert(patch.fornext_ip, (builder.create_block(), s.d as usize));
+            }
+        }
     }
 
     let mut tri = Tr {
@@ -707,6 +740,9 @@ pub fn try_compile_fn(program: &Program, proto_index: usize) -> Option<(usize, u
     let code_ptr = module.get_finalized_function(func_id) as *const u8 as usize;
     Some((code_ptr, arity))
 }
+
+
+
 
 
 

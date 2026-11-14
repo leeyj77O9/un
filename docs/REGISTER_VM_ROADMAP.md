@@ -65,29 +65,23 @@ loop:
   `cargo test --workspace` 203 통과, WASM playground 빌드 OK, 전 테스트출력 100% 일치.
 - 성능: nested_sum_5000 ≈ 12s (vm1과 동일 수준; 벤치 측정 스크립트 동일하게 동작). 정확한 핫루프 처리량은 Python 수준에는 못 미침(약 0.7M ops/s).
 
-### Phase 4 (완료, Int-특화 Cranelift JIT — 제약 있음)
+### Phase 4 (완료, Int-특화 Cranelift JIT — `.unbc` 직접 번역)
 
 - 인터프리터 미세 최적화: `obj::int` 캐싱 범위 확대([-1024, 100_000]), primitive operand에 dunder/프로브 생략,
   `ForNext` on `Kind::Range`에서 `UnOp::Next` 우회, `CurSlotScope` 슬롯 소유자 캐시, `FusedIntMulAdd` 정수 fast path.
-- **Cranelift 0.137.1 기반 JIT** (`rust/src/jit.rs`, `jit_cache.rs`, `jit_fn.rs`):
+- **Cranelift 0.137.1 기반 JIT** (`rust/src/jit.rs`, `jit_cache.rs`, `jit_bc.rs`):
   - `vendor/` 아래 패치된 `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`를 `[patch.crates-io]`로 사용
     (Windows/GNU에서 `dlltool.exe`가 없어 `windows-sys 0.52.0`을 빌드할 수 없기 때문에 raw kernel32 FFI로 교체).
-  - `runner::compile_source`가 JIT-eligible 함수를 미리 컴파일해 `jit_cache`(`fn:<name>`)에 등록하고, `vm::call_proto`가 이름으로 조회한다.
-  - 지원 범위: i64 파라미터 1개 + i64 지역변수 + `iter.range(a, b)` 루프 + 정수 산술/비교.
-    나머지(문자열/객체/Bool/Float/예외/비트연산/`*`-연속 인자 등)는 전부 인터프리터 fallback.
-  - `UV_JIT=0` 환경 변수로 런타임에 opt-out. WASM 타깃에서는 JIT를 완전히 비활성화한다(기존 playground ABI 유지).
-  - 측정 (개발 머신): `nested_sum_200` 13.4ms → **0.015ms** (~900×), `dict5000` ~8.5 → ~3.9ms,
-    `iter10000` ~31 → ~18ms. qsort/rle/math/fib 등 객체-디스패치 경로는 변화 없음.
-- **`.unbc` 직접 번역기(`rust/src/jit_bc.rs`) — 진행 중, 기본 비활성**:
-  - `vm/transfer.rs`를 그대로 재사용해 Ins 스트림을 Cranelift IR로 옮기는 기계적 번역기. 등록(`plan_for`에서
-    `jit_bc::register_eligible`)·이름 아닌 `(program_ptr, proto_index)` 키(`unbc_key`)·N-인자까지 확장된
-    `jit_call`·`UV_JIT_BC=1` opt-in까지 end-to-end 인프라는 갖춰져 있다.
-  - **현재 결함**: 다중 반복 중첩 루프에서 Cranelift frontend SSA 버그가 의심되는 잘못된 결과를 낸다
-    (예: 단순 합계 루프 `f(n) -> total over iter.range(1, n+1)`에서 f(3)=3, f(4..=7)=7, f(8..=15)=15
-    같은 마스크 패턴). 단일 반복/첫 반복은 정확하다. 재현·디버깅용 하네스는 제거하고 `UV_JIT_BC=1`일 때만
-    번역을 시도하며, 기본값은 인터프리터 fallback이다.
-  - 목표: x86-64에서 Cranelift `FunctionBuilder` SSA/Variable 프레임 경계 동작을 정확히 이해(Go에서 `llm`/`brif`
-    에서 Variable이 block 파라미터로 승격되는 부분)하고, 그 후 multi-param/if/while까지 확장.
+  - `vm::plan_for`가 프로그램을 처음 읽을 때 `jit_bc::register_eligible`가 Int-부분집합에 속하는 모든 proto를
+    native로 컴파일해 `jit_cache`(`unbc_key` = `unbc:<program_ptr>:<proto_index>`)에 등록한다. `vm::call_proto`가
+`unbc_key`로 조회해 Int positional arg들을 raw i64로 넘기고 결과를 raw i64로 받는다.
+  - 지원 범위: ESSENTIAL/OPTIONAL i64 파라미터(최대 8개), i64 지역변수/레지스터, `iter.range(a, b)` 루프,
+    정수 산술(`+` `-` `*`, `//`와 `%`는 상수 제수만), 비교 연산, `return expr`. 나머지(문자열/객체/Bool 슬롯/
+    Float/예외/비트연산/비트/`//`, `%` 변수 제수/`and`·`or` 비비교 JmpIf)는 전부 인터프리터 fallback.
+  - `UV_JIT=0` 환경 변수로 런타임에 opt-out. WASM 타깃에서는 비활성화(기존 playground ABI 유지).
+  - 측정 (개발 머신): `nested_sum_200` 13.4ms → **0.014ms** (~950×).
+- 이전(가설): AST-패스 전용(`jit_fn.rs`)은 2026-11 중순 실험 단계(i64 단일 파라미터 + `iter.range` subset)를
+  거쳐 본 구현(`jit_bc.rs`)으로 통합·대체되었다.
 
 **제약**: 전체 `.unbc` JIT(모든 opcode native 번역)는 아직 완성되지 않았다. 현재 프로덕션 경로는
 "i64 부분집합 + 인자 1개"만 native로 옮긴 것으로, 목표(C안)의 첫 번째 단계 성격의 결과물이다.
@@ -97,8 +91,10 @@ loop:
 ## 남은 과제
 
 - vm2의 객체 할당 최소화(빈번한 `Obj` 할당으로 핫루프가 여전히 Python에 미달)
-- Int-특화 fused op 적용 범위를 정수 리터럴 전파까지 확장 (현재는 Int local 누적만)
-- 해석 카운터 보강: vm1이 삭제됐으므로 dispatch 오버헤드 비교는 과거 기준으로만 가능
+- JIT 지원 범위 확장: `if`/`while` 형 `JmpIf` 변환, `and`/`or`, 비트 연산, `/` 결과 Float,
+  Bool/Float i64 태그드 표현, 문자열 시퀀스 투영 등
+- x86-64에서 Cranelift `FunctionBuilder`의 Variable → block-param 승격 규칙 문서화
+  (Go SSA에서 대응하는 `phi`와 다른 Cranelift 독자적 처리 방식 조사)
 - `.un` 테스트 스위트에 `assert_eq`에 더해 RefCell 카운팅류 디버그 하네스 유지
 
 ## 제약
