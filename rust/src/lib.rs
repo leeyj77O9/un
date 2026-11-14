@@ -4,6 +4,7 @@ pub mod compiler;
 pub mod desugar;
 pub mod error;
 pub mod jit;
+pub mod jit_bc;
 pub mod jit_cache;
 pub mod lexer;
 pub mod module;

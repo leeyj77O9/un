@@ -21,6 +21,8 @@
 
 pub(crate) mod transfer;
 
+pub use self::transfer::dump_register_plan;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -1268,11 +1270,31 @@ impl VM {
         args: &Args,
         span: (usize, usize),
     ) -> Result<Obj, Outcome> {
-    // JIT fast-path: pure-Int Un function with exactly one Int parameter
-    if let Some(jit_fn) = crate::jit_cache::get_jit_fn(&program.names[program.protos[proto_index].name]) {
-        if args.names.iter().all(|n| n.is_empty()) && args.values.len() == 1 {
+    // JIT fast-path 1: pre-compiled native Int subset registered for this program (unbc translation)
+    let jit_key = crate::jit_cache::unbc_key(Rc::as_ptr(&program) as usize, proto_index);
+    if let Some(entry) = crate::jit_cache::get_jit_entry(&jit_key) {
+        if args.names.iter().all(|n| n.is_empty()) && args.values.len() == entry.arity as usize {
+            let ints: Option<Vec<i64>> = args
+                .values
+                .iter()
+                .map(|arg| match obj::payload(arg) {
+                    crate::runtime::obj::Payload::Int(v) => Some(v),
+                    _ => None,
+                })
+                .collect();
+            if let Some(ints) = ints {
+                let result = jit_call(entry, &ints);
+                return Ok(obj::int(result));
+            }
+        }
+    }
+    // JIT fast-path 2: name-registered single-parameter AST translation (fallback)
+    let jit_key = format!("fn:{}", program.names[program.protos[proto_index].name]);
+    if let Some(entry) = crate::jit_cache::get_jit_entry(&jit_key) {
+        if args.names.iter().all(|n| n.is_empty()) && args.values.len() == 1 && entry.arity == 1 {
             if let crate::runtime::obj::Payload::Int(v) = obj::payload(&args.values[0]) {
-                return Ok(obj::int(unsafe { jit_fn(v) }));
+                let f1 = unsafe { std::mem::transmute::<*const u8, unsafe extern "C" fn(i64) -> i64>(entry.ptr) };
+                return Ok(obj::int(unsafe { f1(v) }));
             }
         }
     }
@@ -1417,6 +1439,32 @@ impl VM {
     }
 }
 
+/// Invoke a JIT-compiled Un function with positional Int arguments.
+/// The signature always matches the entry arity; callers must not exceed it.
+fn jit_call(entry: crate::jit_cache::JitEntry, ints: &[i64]) -> i64 {
+    type F1 = unsafe extern "C" fn(i64) -> i64;
+    type F2 = unsafe extern "C" fn(i64, i64) -> i64;
+    type F3 = unsafe extern "C" fn(i64, i64, i64) -> i64;
+    type F4 = unsafe extern "C" fn(i64, i64, i64, i64) -> i64;
+    type F5 = unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64;
+    type F6 = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64;
+    type F7 = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64;
+    type F8 = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+    unsafe {
+        match ints.len() {
+            1 => std::mem::transmute::<*const u8, F1>(entry.ptr)(ints[0]),
+            2 => std::mem::transmute::<*const u8, F2>(entry.ptr)(ints[0], ints[1]),
+            3 => std::mem::transmute::<*const u8, F3>(entry.ptr)(ints[0], ints[1], ints[2]),
+            4 => std::mem::transmute::<*const u8, F4>(entry.ptr)(ints[0], ints[1], ints[2], ints[3]),
+            5 => std::mem::transmute::<*const u8, F5>(entry.ptr)(ints[0], ints[1], ints[2], ints[3], ints[4]),
+            6 => std::mem::transmute::<*const u8, F6>(entry.ptr)(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5]),
+            7 => std::mem::transmute::<*const u8, F7>(entry.ptr)(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6]),
+            8 => std::mem::transmute::<*const u8, F8>(entry.ptr)(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6], ints[7]),
+            _ => unreachable!("jit_call with more than 8 args"),
+        }
+    }
+}
+
 thread_local! {
     static PLAN_CACHE: RefCell<HashMap<usize, (Rc<Program>, Rc<Plan>)>> = RefCell::new(HashMap::new());
 }
@@ -1430,6 +1478,9 @@ fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
         }
     }
     let plan = Rc::new(transfer::compile(program).expect("validated program must translate"));
+    // Pre-compile eligible Int-only protos into native code, keyed by this
+    // program instance.
+    crate::jit_bc::register_eligible(program, key);
     PLAN_CACHE
         .with(|cache| cache.borrow_mut().insert(key, (program.clone(), plan.clone())));
     plan

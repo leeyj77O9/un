@@ -33,6 +33,7 @@ fn dispatch() {
         Some("desugar") => desugar_cmd(&args[1..]),
         Some("opt") => opt_cmd(&args[1..]),
         Some("dis") => dis(&args[1..]),
+        Some("dis-reg") => dis_reg(&args[1..]),
         Some("run") => run(&args[1..]),
         Some("compile") => compile(&args[1..]),
         Some("help") => print_help(),
@@ -136,6 +137,33 @@ fn opt_cmd(args: &[String]) {
         }
     }
 }
+fn dis_reg(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("usage: unvm dis-reg <file>");
+        exit(2);
+    }
+    let (source, node) = parse_file(&args[0]);
+    let desugared = desugar(&node);
+    let root = match optimize(&desugared) {
+        Ok(result) => result.root,
+        Err(panic) => {
+            eprintln!("{}", panic.display());
+            exit(1);
+        }
+    };
+    let program = match compiler::compile(&source, &root) {
+        Ok(program) => program,
+        Err(panic) => {
+            eprintln!("{}", panic.display());
+            exit(1);
+        }
+    };
+    match unvm::vm::dump_register_plan(&program) {
+        Ok(text) => print!("{text}"),
+        Err(err) => eprintln!("{err}"),
+    }
+}
+
 fn dis(args: &[String]) {
     if args.is_empty() {
         eprintln!("usage: unvm dis <file>");

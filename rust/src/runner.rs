@@ -30,10 +30,10 @@ pub fn compile_source(source: &Source) -> Result<Program, RunError> {
     compiler::compile(&source, &root).map_err(RunError::Panic)
 }
 
-/// Translate every Un function whose body is a pure integer computation
-/// into native code and register it under its Un name. This makes the
-/// interpreter call path for those functions take a constant-time native
-/// dispatch.
+/// Translate every Un function whose body fits the AST i64-subset translator
+/// (single Int parameter, Int locals, `iter.range` loops, integer ops) into
+/// native code and register it under its Un name. The interpreter falls back
+/// for everything else.
 fn register_eligible_jit_fns(source: &Source, root: &crate::ast::Node) {
     if !crate::jit_cache::jit_enabled() {
         return;
@@ -41,7 +41,6 @@ fn register_eligible_jit_fns(source: &Source, root: &crate::ast::Node) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind == crate::ast::NodeKind::Function {
-            // name (first Identifier child of Function)
             let name = match node.children.first() {
                 Some(n) if n.kind == crate::ast::NodeKind::Identifier => {
                     source.span(n.start, n.length)
@@ -49,7 +48,11 @@ fn register_eligible_jit_fns(source: &Source, root: &crate::ast::Node) {
                 _ => continue,
             };
             if let Some(f) = crate::jit_fn::try_compile_int_fn(source, node) {
-                crate::jit_cache::register_jit_fn(&name, f);
+                let key = format!("fn:{name}");
+                crate::jit_cache::register_jit_entry(
+                    &key,
+                    crate::jit_cache::JitEntry { ptr: f as *const u8, arity: 1 },
+                );
             }
         }
         for child in &node.children {

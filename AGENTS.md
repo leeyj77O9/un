@@ -47,9 +47,12 @@ C:\dev\un/
   있다(Windows/GNU에서 `dlltool.exe` 부재로 `windows-sys 0.52.0`을 빌드할 수 없기 위해
   raw kernel32 FFI로 교체). 새 외부 crate는 정말 필요할 때만 추가하고 `vendor/`에 패치할
   수 있으면 raw FFI로 해결한다.
-- **JIT 동작**: `jit_fn.rs`는 i64 파라미터 1개 + i64 지역변수 + `iter.range(1, n+1)` 모양의
-  함수만 native로 컴파일한다. 나머지는 전부 인터프리터로 fallback. 환경 변수
-  `UV_JIT=0`으로 JIT를 비활성화한다(런타임 opt-out).
+- **JIT 동작**: `jit_fn.rs`(AST translator)는 i64 파라미터 1개 + i64 지역변수 + `iter.range` 모양의
+  함수만 native로 컴파일한다. `runner::compile_source`가 JIT-eligible 함수를 미리 컴파일해
+  `jit_cache`(`fn:<name>`)에 등록하고, `vm::call_proto`가 이름으로 조회한다. `UV_JIT=0`으로
+  비활성화한다. `jit_bc.rs`는 `.unbc`를 직접 번역하는 전체 경로로 end-to-end 인프라(등록/캐시/
+  `UV_JIT_BC=1` opt-in)는 갖춰졌지만, 다중 반복 중첩 루프에서 잘못된 결과를 내는 Cranelift
+  SSA 버그가 있어 기본 비활성화 상태다(2026-11-14 기준). 나머지는 전부 인터프리터 fallback.
 
 ## 빠른 명령
 

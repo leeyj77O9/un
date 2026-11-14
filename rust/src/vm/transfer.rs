@@ -314,6 +314,46 @@ fn slice_bounds(flags: u16) -> i64 {
     n
 }
 
+pub fn dump_register_plan(program: &Program) -> Result<String, String> {
+    let mut out = String::new();
+    let plan = compile(program)?;
+    for (pi, p) in plan.protos.iter().enumerate() {
+        let proto = &program.protos[pi];
+        let params: Vec<String> = proto
+            .params
+            .iter()
+            .map(|p| program.names.get(p.name).cloned().unwrap_or_else(|| "?".into()))
+            .collect();
+        let locals: Vec<String> = proto
+            .locals
+            .iter()
+            .map(|&n| program.names.get(n).cloned().unwrap_or_else(|| "?".into()))
+            .collect();
+        out.push_str(&format!(
+            "proto {pi} name {:?} scratch_base {} reg_count {} code {}\n  params: {:?}\n  locals raw: {:?} names arena: {:?}\n",
+            program.names[program.protos[pi].name],
+            p.scratch_base,
+            p.reg_count,
+            p.code.len(),
+            params,
+            proto.locals.clone(),
+            proto
+                .names
+                .iter()
+                .map(|&n| program.names.get(n).cloned().unwrap_or_else(|| "?".into()))
+                .collect::<Vec<_>>(),
+        ));
+        let _ = locals;
+        for (ip, ins) in p.code.iter().enumerate() {
+            out.push_str(&format!(
+                "{ip:4} {:?} a {} b {} c {} d {} flags {:06x}\n",
+                ins.op, ins.a, ins.b, ins.c, ins.d, ins.flags
+            ));
+        }
+    }
+    Ok(out)
+}
+
 fn proto_name(program: &Program, proto: &Proto) -> String {
     program
         .names
