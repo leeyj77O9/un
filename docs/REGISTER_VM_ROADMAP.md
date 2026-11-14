@@ -90,6 +90,9 @@ loop:
 
 ## 남은 과제
 
+- ObjV2(tagged-Int) JIT 통합: `math.sqrt(Int)`/`math.floor(Int)` intrinsic inlining
+  (math10000 25ms → 1ms 목표치)
+- math.sqrt/floor를 Cranelift f64.sqrt로 옮기는 최소한의 조치로 numeric benchmark 대폭 단축
 - vm2의 객체 할당 최소화(빈번한 `Obj` 할당으로 핫루프가 여전히 Python에 미달)
 - JIT 지원 범위 확장: `if`/`while` 형 `JmpIf` 변환, `and`/`or`, 비트 연산, `/` 결과 Float,
   Bool/Float i64 태그드 표현, 문자열 시퀀스 투영 등

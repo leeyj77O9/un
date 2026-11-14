@@ -1,16 +1,14 @@
-//! Obj* ABI for the full Cranelift JIT.
+﻿//! Obj* ABI for the full Cranelift JIT.
 //!
 //! `un2_abi_*` names are public symbols linked from the JIT module. Each
 //! stage registers these via `JITBuilder::symbol(name, fn_ptr)`. Cranelift-
 //! generated code calls them through the normal `call` instruction with
-//! `IconstInterface` — the JIT just has to pass `Linkage::Import` and the
+//! `IconstInterface` ??the JIT just has to pass `Linkage::Import` and the
 //! symbol table point.
 //!
-//! Stage 1: minimal ABI — enough to compile Int-only protos (sum loop).
+//! Stage 1: minimal ABI ??enough to compile Int-only protos (sum loop).
 
 use std::rc::Rc;
-
-use crate::bytecode::Program;
 use crate::runtime::obj::Obj;
 
 /// Opaque pointer-sized word passed across the FFI boundary.
@@ -26,7 +24,7 @@ pub const FLOW_PANIC: i64 = 3;
 
 /// Helpers exported to the JIT. Each minimal example returns a fresh Rc,
 /// which the JIT's generated code can pass to `obj::int`. Once enough
-/// helpers are in place, the .unbc → JIT pipeline becomes feasible.
+/// helpers are in place, the .unbc ??JIT pipeline becomes feasible.
 
 /// Construct an Int Obj.
 ///
@@ -44,3 +42,4 @@ pub extern "C" fn un2_const_bool(v: i64) -> Word {
     let o: Obj = crate::runtime::obj::boolean(v != 0);
     Rc::into_raw(o) as Word
 }
+
