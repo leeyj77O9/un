@@ -346,6 +346,11 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) els
     };
     end_call(&frame, result)
 }
+// Shared canonical empty names list for native bodies (avoids one Vec alloc
+// + one RefCell borrow per native call).
+thread_local! {
+    static EMPTY_NAMES: Rc<Vec<String>> = Rc::new(Vec::new());
+}
 pub fn fn_local_names(cell: &FnCell) -> Rc<Vec<String>> {
     {
         let c = cell.borrow();
@@ -371,11 +376,14 @@ pub fn fn_local_names(cell: &FnCell) -> Rc<Vec<String>> {
                     Rc::new(names)
                 }
             }
-            _ => Rc::new(Vec::new()),
+            _ => c_empty_names(),
         }
     };
     *cell.borrow_mut().local_names_cache.borrow_mut() = Some(computed.clone());
     computed
+}
+fn c_empty_names() -> Rc<Vec<String>> {
+    EMPTY_NAMES.with(|e| e.clone())
 }
 
 pub fn bind(f: &Obj, scope: &Scope, args: &Args) -> Obj {
@@ -392,8 +400,13 @@ fn bind_with_cell(cell: &FnCell, f: &Obj, scope: &Scope, args: &Args) -> Obj {
         }
     }
     let property = cell.borrow().property.clone();
-    let self_ = f.borrow().self_.clone().unwrap_or_else(obj::none);
-    let super_ = f.borrow().super_.clone().unwrap_or_else(obj::none);
+    let (self_, super_) = {
+        let fb = f.borrow();
+        (
+            fb.self_.clone().unwrap_or_else(obj::none),
+            fb.super_.clone().unwrap_or_else(obj::none),
+        )
+    };
     scope::set_local(scope, "self", self_.clone());
     scope::set_local(scope, "super", super_.clone());
     if let Some(prop) = property {

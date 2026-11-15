@@ -21,7 +21,7 @@ pub fn new(parent: Option<Scope>, is_function_scope: bool) -> Scope {
     Rc::new(RefCell::new(ScopeData {
         is_function_scope,
         parent,
-        symbols: HashMap::new(),
+        symbols: HashMap::with_capacity(8),
         order: Vec::new(),
         slots: Vec::new(),
         slot_names: Vec::new(),
