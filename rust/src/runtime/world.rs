@@ -32,6 +32,11 @@ pub struct World {
     false_: Option<Obj>,
     original_classes: HashMap<String, Vec<(String, Obj)>>,
     original_base_types: HashMap<String, String>,
+    // Template member name order at registration time — populated by
+    // `set_class` from the class object's members Vec. Not authoritative
+    // for runtime field ordering (instances grow in `__init__`), but a
+    // stable anchor for record extents and layout-related work later.
+    class_layouts: HashMap<String, Vec<String>>,
     classes: HashMap<String, Obj>,
     classes_tobj: HashMap<String, Obj>,
 
@@ -80,6 +85,7 @@ impl World {
             false_: None,
             original_classes: HashMap::new(),
             original_base_types: HashMap::new(),
+            class_layouts: HashMap::new(),
             classes: HashMap::new(),
             classes_tobj: HashMap::new(),
             path: String::new(),
@@ -435,11 +441,28 @@ pub fn stdin_next_line() -> StdinLine {
 }
 pub fn set_class(name: &str, obj: Obj) {
     WORLD.with(|w| {
-        w.borrow_mut().classes.insert(name.to_owned(), obj);
+        let mut w = w.borrow_mut();
+        // Snapshot member order at registration so layout computations can
+        // rely on it later (the template accumulates `__init__`/methods in
+        // the order the class body was compiled — instances inherit this order).
+        let layout: Vec<String> = obj
+            .borrow()
+            .members
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        w.class_layouts.insert(name.to_owned(), layout);
+        w.classes.insert(name.to_owned(), obj);
     })
 }
 pub fn get_class(name: &str) -> Option<Obj> {
     WORLD.with(|w| w.borrow().classes.get(name).cloned())
+}
+/// Template member name order at class registration time (pre-init).
+/// Intended for layout-related work; not a complete field layout.
+#[allow(dead_code)]
+pub fn class_layout(name: &str) -> Option<Vec<String>> {
+    WORLD.with(|w| w.borrow().class_layouts.get(name).cloned())
 }
 /// Canonical `TObj(Types::Single(name))` for a registered class — allocated
 /// once per class per world reset instead of once per lookup.

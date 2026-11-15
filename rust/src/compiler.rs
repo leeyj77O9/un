@@ -1224,7 +1224,7 @@ impl<'a> Compiler<'a> {
 
                     let saved_raises = self.raises;
                     let saved_groups = std::mem::take(&mut self.groups);
-                    self.begin_proto(&member_name, None);
+                    self.begin_proto(&member_name, Some(&class_name));
                     self.compile_params(&member.children[1])?;
                     self.code_function_body(&member.children[2])?;
                     let proto_slot = self.end_proto();
@@ -1268,7 +1268,7 @@ impl<'a> Compiler<'a> {
                         let body = &accessor_node.children[1];
                         let saved_raises = self.raises;
                         let saved_groups = std::mem::take(&mut self.groups);
-                        self.begin_proto(name, None);
+                        self.begin_proto(name, Some(&class_name));
 
                         if accessor_node.value.as_ref()
                             == Some(&Const::Str("set".to_owned()))
