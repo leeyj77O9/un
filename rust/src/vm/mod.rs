@@ -1626,12 +1626,9 @@ fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
         "validated program must translate; Program::validate was strengthened
         to enforce the 256-register limit for this reason",
     ));
-    // Seed class layouts before JIT registration runs — so class methods are
-    // specialised against a static layout extracted from the source.
+    // Seed class layouts so class methods can be specialised against a
+    // static layout extracted from the source.
     seed_class_layouts(&plan, program);
-    // Pre-compile eligible Int-only protos into native code, keyed by this
-    // program instance.
-    crate::jit_bc::register_eligible(program, key);
     PLAN_CACHE
         .with(|cache| cache.borrow_mut().insert(key, (program.clone(), plan.clone())));
     plan

@@ -164,13 +164,16 @@ Each item needs a before/after benchmark number in `REFACTOR_LOG.md`.
       write is performed); a mismatch bails to the interpreter (tag = 2).
       `__init__` still bails (it returns `none`), as does
       `class_work` in `bench/class.un` (it builds a list).
-- [ ] Add a hotness counter and compile lazily instead of eagerly at load.
-- [x] JIT module lifetime is now accounted for: the emitter's JITModule is
-      stashed in `jit_cache::JIT_MODULES`, `jit_cache::clear()` frees the
-      native code (callers must never enter JIT code afterwards), replacing
-      the silent `mem::forget` leak; the leak is a leak by design otherwise.
-- [ ] Add eviction/invalidation for `jit_cache` and `PLAN_CACHE`.
+- [x] Compile is lazy: eligible protos are compiled on first call through
+      `try_call_jit`, not eagerly at program load; `plan_for` no longer
+      pre-compiles the whole program (or its bail stubs) at load time.
+- [x] JIT module lifetime is accounted for: the emitter's JITModule is held
+      in `jit_cache::JIT_MODULES`, `jit_cache::clear()` frees the native code
+      (callers must never enter JIT code afterwards), replacing blind
+      `mem::forget` (still how ordinary execution behaves).
 - [x] Float compares (`Lt/Le/Gt/Ge/Eq/Ne`) are native in the JIT; mixed
       Int/Float operands promote with `fcvt_from_sint`.
-- [ ] `math.sin`, IntDict with entries, string ops (already present, unchanged),
-      class methods with non-Int fields.
+- [x] `BuildDict` accepts a non-zero entry count: a fresh IntDict id is
+      allocated inline and each `[key, value]` pair is inserted via
+      `un_dict_int_set` at translation time; any Float/Bool/None entry bails.
+- [ ] Add eviction/invalidation for `jit_cache` and `PLAN_CACHE`.

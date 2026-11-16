@@ -440,3 +440,37 @@ lists/dicts/iters still bail to the interpreter (by design — the value model
 is Int/Float-only); non-Int field values read/write bail; `layout` must
 inclure `__init__`'s assignment order, which is checked name-wise at call
 time rather than trusted compile-time.
+
+---
+
+## 2026-11-16 — Pass 6: Phase 8 — lazy compile, IntDict with entries
+
+### Lazy compilation
+
+`plan_for` no longer eagerly compiles eligible protos at program load. The
+compile happens on the first `try_call_jit` invocation per program (marked in
+`jit_cache::JIT_LAZY_ATTEMPTED`). Every eligible proto (including bail stubs
+for ineligible ones) is compiled at first use, spread across execution
+instead of blocking startup. Startup time for programs with many eligible
+protos (`test_suite.un`) is roughly equivalent at this scale (within
+run-to-run noise; ~60–70 ms against a 59–70 ms JIT=0 baseline); the win is
+that smaller scripts pay nothing at all.
+
+### `BuildDict` with entries
+
+The Int-Int `BuildDict` intrinsic previously only supported `d = {}` (zero
+entries). Non-zero entry counts now inline one `un_dict_int_empty` + one
+`un_dict_int_set` per `[key, value]` pair at translation time. Eligibility
+requires Int-only keys and Int-only values (Bool/Float/None entries bail to
+the interpreter). Verified on a `dict_work` probe (asserts `JITDBG OK` for
+inline-built literal dicts).
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** |
+| `cargo test --release` | **202 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **40 files / 1395 passed / 0 failed / 0 crashed**; Negative **39 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/differential.ps1` | **79 files, 0 differences** |
+| `test_suite.un` (7 runs) | avg ~70 ms (identical to JIT=0 within noise) |

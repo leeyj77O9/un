@@ -1422,21 +1422,44 @@ impl<'a> Tr<'a> {
                 Some(())
             }
             Op::BuildDict => {
-                // Inline a fresh Int-Int dictionary. We only accept the
-                // empty-builder form ??if any entries were pre-pushed on the
-                // stack, give up so the interpreter handles it.
-                if ins.d != 0 { return None; }
+                // Int-Int dictionary kernel: inline `un_dict_int_empty()` and,
+                // for a literal dict being built right here, one
+                // `un_dict_int_set` per [key, value] pair. String/Float keys
+                // decline into the interpreter (a pure IntDict can't key them).
+                let n = ins.d as usize;
+                // An out-of-range entry count signals a corrupt plan; bail.
+                if n > 256 {
+                    return None;
+                }
+                let a = ins.a as usize;
+                // All key AND Int-only value operands must be Int-typed with no
+                // Bool/Float/None markers in the register-kind map.
+                for i in 0..2 * n {
+                    let r = a + i;
+                    if self.is_float[r] || self.is_bool[r] || self.is_none[r] {
+                        return None;
+                    }
+                }
                 // Call un_dict_int_empty() -> i64 (id)
-                let fid = self.fid_dict_empty;
-                let f_ref = self.module.declare_func_in_func(fid, builder.func);
-                let call = builder.ins().call(f_ref, &[]);
-                let res = builder.inst_results(call)[0];
-                builder.def_var(self.rv_i64(ins.a as usize), res);
-                self.int_dict_regs.insert(ins.a as usize);
-                self.is_bool[ins.a as usize] = false;
-                self.is_none[ins.a as usize] = false;
-                self.is_float[ins.a as usize] = false;
-                self.ret_slot[ins.a as usize] = None;
+                let fid_empty = self.fid_dict_empty;
+                let f_empty = self.module.declare_func_in_func(fid_empty, builder.func);
+                let empty_call = builder.ins().call(f_empty, &[]);
+                let id = builder.inst_results(empty_call)[0];
+                if n > 0 {
+                    let fid_set = self.fid_dict_set;
+                    let f_set = self.module.declare_func_in_func(fid_set, builder.func);
+                    for i in 0..n {
+                        let k = builder.use_var(self.rv_i64(a + 2 * i));
+                        let v = builder.use_var(self.rv_i64(a + 2 * i + 1));
+                        builder.ins().call(f_set, &[id, k, v]);
+                    }
+                }
+                builder.def_var(self.rv_i64(a), id);
+                self.int_dict_regs.insert(a);
+                self.is_bool[a] = false;
+                self.is_none[a] = false;
+                self.is_float[a] = false;
+                self.ret_slot[a] = None;
                 Some(())
             }
             Op::SetItem => {

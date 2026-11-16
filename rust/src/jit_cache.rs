@@ -107,6 +107,22 @@ pub fn jit_debug() -> bool {
     *JIT_DEBUG
 }
 
+/// Programs already attempted a lazy compile. On a lookup miss we attempt
+/// compilation once per program instead of on every call (ineligible
+/// programs stay ineligible; the check is just a hash-set probe).
+static JIT_LAZY_ATTEMPTED: LazyLock<Mutex<std::collections::HashSet<usize>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Record that this program instance had a lazy compile attempt.
+pub fn mark_jit_lazy_attempted(ptr: usize) {
+    JIT_LAZY_ATTEMPTED.lock().expect("jit_cache").insert(ptr);
+}
+
+/// Whether a lazy compile attempt already ran (or was decided) for `ptr`.
+pub fn jit_lazy_attempted(ptr: usize) -> bool {
+    JIT_LAZY_ATTEMPTED.lock().map(|s| s.contains(&ptr)).unwrap_or(true)
+}
+
 /// Register a JIT-compiled entry under `key`.
 pub fn register_jit_entry(key: &str, entry: JitEntry) {
     if !jit_enabled() {

@@ -828,6 +828,15 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   `__getitem__`, `__setitem__` 클래스의 native 경로를 통과한다.
   `scripts/differential.ps1` **79 files / 0 differences**, `cargo test` 202 passed,
   clean build 0 warnings.
+- **BuildDict 팩토리 형태 지원**: `d = {1: 10, 2: 20}`의 inline literal도
+  IntDict로 native로 구축된다(기존에는 빈 `{ }` 형식만 지원). 각 entry를
+  `un_dict_int_empty` → `un_dict_int_set(id, key, value)` 시퀀스로 translates.
+  Float/Bool/None entry는 bail → 인터프리터로 fallback.
+- **lazy compile**: `plan_for`가 프로그램 로드 시 무조건 native 코드를
+  생성하던 경로를 제거하고, 첫 `try_call_jit` 호출 시에만 컴파일한다.
+  ineligible 프로토의 STUB 등록도 같은 지연을 따른다. 로드-time 비용은
+  eligible 프로토가 있는 프로그램에서만 지불된다(bench_class처럼 Int-heavy
+  프로그램에서만 측정 가능한 차이).
 
 ## D-070 | 네이티브 레이어는 공유 closure + world stdout buffer를 쓴다 | Accepted
 
