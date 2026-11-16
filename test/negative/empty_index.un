@@ -1,0 +1,3 @@
+use io
+a = [1, 2]
+io.write("v", a[])

@@ -731,3 +731,50 @@ declines at translation: `Return`, user-call arguments, `SetAttr` values,
 | `scripts/test.ps1` | Positive **40 files / 1401 passed / 0 failed / 0 crashed**; exit **0** |
 | `scripts/differential.ps1` | **79 files, 0 differences** |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | 40/40, 33/33 identical |
+
+---
+
+## 2026-11-17 — Pass 13: bug sweep — parser crash (`a[]`) fixed; probed areas clean
+
+### Found and fixed
+
+`a[]` (empty index expression) reached `parser.rs:1002` and panicked on
+`Option::unwrap()` — a raw Rust panic instead of a parse error. Now it
+produces a proper `LangError` ("expected an index expression inside '['")
+with the caret at the token. New negative fixture
+`test/negative/empty_index.un` (exit 1, substring check); the negative
+manifest is now **40 checks**. Docs counters updated (AGENTS.md, README
+twins, TEST_GUIDE.md, REFACTOR_SUMMARY.md).
+
+### Probed (no defects found)
+
+- strings/UTF-8 slicing, `find`/`contains`/`starts_with`/`split`/`trim`/
+  `replace`/`to_upper` on multibyte text — all consistent (UTF-16 code-unit
+  semantics).
+- `dict.remove`/`set.remove`/`list.remove` — consistent Bool-returning
+  try-remove pattern (no silent data loss; not an error category).
+- mixed-type `sort` — no crash; stable for mixed keys.
+- 400-level nested list build and print — OK.
+- JSON parser — unreachable from scripts (no native module exposes it).
+- regex engine (`(?i)`, backrefs, nested groups, lazy quantifiers,
+  replacements) — all correct.
+- unsafe surface: all three `unreachable!` sites are dispatcher-guarded;
+  the `unsafe extern "C"` intrinsics are name-checked or are one-word
+  scalar loads behind the layout contract, wrapped in `catch_unwind`.
+- int cache (`int_cached` window) and string interner (cap with clear) —
+  no unbounded state.
+- stdout sandboxing, `stdin_next_line` EOF handling — clean.
+- error paths: `str.parse::<i64>` on literals, string→int conversion,
+  native sink errors, fs copy self-to-self — all handled.
+- Int-heavy arithmetic (`wrapping_div(i64::MIN, -1)`, div-by-zero) —
+  explicit errors, no panics.
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** |
+| `cargo test --release` | **205 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **40 files / 1401 passed / 0 crashed**; Negative **40 matched / 0 divergences**; exit **0** |
+| `scripts/differential.ps1` | **79 files, 0 differences** |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | 40/40, 33/33 identical |

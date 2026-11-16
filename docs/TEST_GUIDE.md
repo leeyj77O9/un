@@ -77,7 +77,7 @@ Counts at the time of writing:
 | suite | 1 | 109 |
 | unit + integration + regression | 39 | (1401 - 109) |
 | **Positive total** | **40** | **1401** |
-| negative (exit-code checks) | 39 checks | 39 matched + 0 documented divergences |
+| negative (exit-code checks) | 40 checks | 40 matched + 0 documented divergences |
 | known (documented defects) | 0 | none registered |
 | fixtures (not run directly) | 8 | n/a |
 
@@ -141,7 +141,7 @@ moved into meaningful tests (2026-11-16), and `scripts/test.ps1` passes with
 
 ```
 Positive: 40 files, 1401 passed, 0 failed, 0 crashed
-Negative: 39 matched, 0 mismatched, 0 documented divergences
+Negative: 40 matched, 0 mismatched, 0 documented divergences
 Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```

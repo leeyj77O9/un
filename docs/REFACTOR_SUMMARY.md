@@ -64,7 +64,7 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
 | `cargo test --release` | **205 passed / 0 failed** |
-| `scripts/test.ps1` | Positive **40 files / 1401 passed**; Negative **39 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/test.ps1` | Positive **40 files / 1401 passed**; Negative **40 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **79 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40**; Negative compilable **33/33** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |

@@ -999,7 +999,13 @@ impl Parser {
             Ok(Node::with_children(lbrack.start, length, NodeKind::Slice, None, children))
         } else {
             let rbrack = self.expect(TokenType::RBrack, "expected ']' after index")?;
-            let start = start.unwrap();
+            let start = start.ok_or_else(|| {
+                LangError::new(
+                    lbrack.start,
+                    1,
+                    "expected an index expression inside '['",
+                )
+            })?;
             let children = vec![expr, start];
             let length = len(t(&lbrack), t(&rbrack));
             Ok(Node::with_children(lbrack.start, length, NodeKind::Index, None, children))
