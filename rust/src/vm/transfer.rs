@@ -42,8 +42,8 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
         let (op, flags, operand) = proto
             .instruction(ip)
             .ok_or_else(|| format!("{}: opcode {:#06x} at {ip} is not defined", proto_name(program, proto), proto.code[ip].op))?;
-        let depth = depths[ip].unwrap_or(0) as usize;
-        let s = |k: usize| if k > 255 { scratch_base } else { scratch_base + k };
+        let depth = depths[ip].unwrap_or(0);
+        let s = |k: i64| if !(0..=255).contains(&k) { scratch_base } else { scratch_base + k as usize };
         let emit = |op, a, b, c, d, flags| Ins { op, a, b, c, d, flags };
         let ins = match op {
             Op::LoadNone
@@ -63,11 +63,11 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             Op::Swap => emit(op, s(depth - 2) as u8, s(depth - 1) as u8, 0, 0, flags),
             Op::Unpack => emit(op, s(depth - 1) as u8, 0, 0, operand, flags),
             Op::BuildList | Op::BuildSet | Op::BuildTuple | Op::BuildTupleNamed | Op::FString => {
-                let n = operand as usize;
+                let n = operand as i64;
                 emit(op, s(depth - n) as u8, 0, 0, operand, flags)
             }
             Op::BuildDict => {
-                let n = operand as usize;
+                let n = operand as i64;
                 emit(op, s(depth - 2 * n) as u8, 0, 0, operand, flags)
             }
 
@@ -132,7 +132,7 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
                 // [value][target][bounds...]: value is re-pushed at depth+effect-1
                 let eff = crate::bytecode::stack_effect(op, flags, operand) as i64;
                 let dst = (scratch_base as i64 + depth as i64 + eff - 1) as u8;
-                let bb = slice_bounds(flags) as usize - 1;
+                let bb = slice_bounds(flags) - 1;
                 emit(op, dst, s(depth - 1 - bb) as u8, 0, operand, flags)
             }
 
@@ -141,7 +141,7 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
                 emit(op, s(depth - 1) as u8, 0, 0, operand, flags)
             }
             Op::Call => {
-                let argc = operand as usize;
+                let argc = operand as i64;
                 let dst = s(depth - 1 - argc);
                 debug_assert!(dst <= s(depth - 1));
                 emit(op, dst as u8, dst as u8, 0, operand, flags)
@@ -154,7 +154,7 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             Op::Return => emit(op, s(depth - 1) as u8, 0, 0, operand, flags),
 
             Op::MakeFunc => {
-                let defaults = (flags >> 8) as usize;
+                let defaults = (flags >> 8) as i64;
                 // result replaces the consumed default values
                 emit(op, s(depth - defaults) as u8, 0, 0, operand, flags)
             }
@@ -162,7 +162,7 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             Op::RegisterClass => emit(op, s(depth - 1) as u8, 0, 0, operand, flags),
             Op::LoadBaseClass => emit(op, s(depth) as u8, 0, 0, operand, flags),
             Op::SetBases => {
-                let count = operand as usize;
+                let count = operand as i64;
                 // [created][base0..baseN] ? bases consumed in reverse; class obj stays
                 emit(op, s(depth - 1 - count) as u8, 0, 0, operand, flags)
             }

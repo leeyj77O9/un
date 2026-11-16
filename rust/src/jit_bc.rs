@@ -2569,8 +2569,12 @@ pub fn emit_fn_in_module(
     builder.append_block_params_for_function_params(entry); // hidden result ptr, args...
     let incoming = builder.block_params(entry).to_vec();
     let hidden_ptr = incoming[0];
-    builder.switch_to_block(entry);
-    builder.seal_block(entry);
+    // The prologue writes into its own block and jumps into `entry`, so the
+    // body block starts pristine. Cranelift's debug verifier requires the
+    // current block to be empty/terminated/unreachable before a
+    // switch_to_block; a partial prologue block would fail that check.
+    let prologue = builder.create_block();
+    builder.switch_to_block(prologue);
     // keep the hidden pointer in a dedicated variable so returns can store
     let hp_var = builder.declare_var(types::I64);
     builder.def_var(hp_var, hidden_ptr);
@@ -2622,6 +2626,7 @@ pub fn emit_fn_in_module(
         entry_blk = cont_entry_blk;
     } else {
         // no depth guard inserted ??the IR starts at the original entry block
+        builder.ins().jump(entry, &[]);
         entry_blk = entry;
     }
 
