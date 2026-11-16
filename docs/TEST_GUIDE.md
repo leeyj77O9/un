@@ -75,8 +75,8 @@ Counts at the time of writing:
 | Group | Files | Assertions |
 |---|---|---|
 | suite | 1 | 109 |
-| unit + integration + regression | 39 | (1391 - 109) |
-| **Positive total** | **40** | **1391** |
+| unit + integration + regression | 39 | (1395 - 109) |
+| **Positive total** | **40** | **1395** |
 | negative (exit-code checks) | 39 checks | 39 matched + 0 documented divergences |
 | known (documented defects) | 0 | none registered |
 | fixtures (not run directly) | 8 | n/a |
@@ -98,10 +98,10 @@ with `-Group known`, reports them as `KNOWN FAIL`, and excludes them from the
 positive totals. If one of them starts passing, the runner reports
 `KNOWN FIXED` and exits non-zero, so the manifest must be cleaned up.
 
-`test/KnownDivergent.txt` — one path per line. Checks that fail on the current
-implementation for documented reasons (`order_crash`'s .NET-internal consistency
-detection, native stack overflow, the racy `go` scheduling). The runner reports
-them as `NEG KNOWN` and excludes them from the negative totals.
+`test/KnownDivergent.txt` — one path per line. Reserved for checks that fail
+for documented reasons. Currently empty; the earlier entries were repaired or
+moved into meaningful tests (2026-11-16), and `scripts/test.ps1` passes with
+0 documented divergences.
 
 ## Test file conventions
 
@@ -140,11 +140,18 @@ them as `NEG KNOWN` and excludes them from the negative totals.
 ## Current status
 
 ```
-Positive: 40 files, 1391 passed, 0 failed, 0 crashed
+Positive: 40 files, 1395 passed, 0 failed, 0 crashed
 Negative: 39 matched, 0 mismatched, 0 documented divergences
 Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```
+
+`cargo test --release` covers the Rust side (204 tests). Two additional
+runners compare execution shapes: `scripts/differential.ps1` runs every
+manifest file with `UV_JIT=0` and default JIT and diffs stdout + exit code
+(79 files, 0 differences), and `scripts/unbc-roundtrip.ps1 -IncludeNegative`
+byte-compares `unvm run` against `unvm compile` + `unvm run <file>.unbc`
+(Positive 40/40, compilable Negative 33/33).
 
 All previously known failures are fixed: negative-step slicing, `upper_bound`,
 `lower_bound` past-the-end, set equality, dict equality, `2 in [1, 2, 3]`,

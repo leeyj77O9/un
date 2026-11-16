@@ -204,16 +204,18 @@ NameTable: Vec<String>        // 식별자/타입 이름/property backing key
 
 - instruction별 `(start, length)`는 오류 위치(`Error(start,length,source)`)와 trace(`GetLineText`)에 쓰인다.
 - call frame의 이름은 call node의 원문 span으로 복원한다.
-- `.unbc`는 source **원문**을 넣지 않고 `(source path, mapping table)`만 넣는다.
-  mapping이 없으면 trace가 degraded되므로, `.unbc` validation은 mapping과 code 길이가
-  같은 것을 요구한다.
+- `.unbc`는 source **원문**을 선택적으로 포함할 수 있다(flags bit 0). `unvm compile`은
+  원문을 항상 심는다. 포함하지 않으면 trace는 degraded되고, `.unbc` validation은
+  mapping과 code 길이가 같은 것을 요구한다. `source path`는 **컴파일 시 전달받은
+  전체 경로**를 그대로 저장한다(D-072) — `.unbc` 재실행 시 모듈 해석("임포터의
+  디렉토리, 그다음 cwd")이 direct run과 동일하게 동작해야 하기 때문이다.
 
 ## 13. `.unbc` 파일 레이아웃
 
 ```text
 magic   "UNB1"          (4 bytes)
 version u16             (minor/major)
-flags   u16             (source embed 여부, sandbox hints)
+flags   u16             (bit 0: source embed 여부)
 source path: length-prefixed UTF-8
 name table: count u32 + length-prefixed UTF-8 strings
 constant pool: count u32 + entries

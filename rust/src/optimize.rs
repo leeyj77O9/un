@@ -16,10 +16,10 @@ pub fn optimize(root: &Node) -> Result<OptimizationResult, Panic> {
     })
 }
 /// Node-local desugaring applied to a node whose children are already
-/// desugared and optimized. Mirrors the rewrites the desugarer performs:
-/// compound assignment wraps the value in a `Binary(op)`, and `Branch`/`ElIf`
-/// arms of an `If` become `IfCase` arms. The rewritten node is returned to
-/// `optimize_pass`, which folds it in the same step.
+/// desugared and optimized. Rewrites applied here: compound assignment
+/// wraps the value in a `Binary(op)`, and `Branch`/`ElIf` arms of an `If`
+/// become `IfCase` arms. The rewritten node is returned to `optimize_pass`,
+/// which folds it in the same step.
 fn desugar_local(node: &Node) -> Option<Node> {
     match node.kind {
         NodeKind::Assign => desugar_assign(node),

@@ -7,10 +7,10 @@
 
 - **Un**: 들여쓰기 기반 문법, 패턴 매칭, `go`/`wait` 비동기 실행을 제공하는 동적 타입 스크립팅 언어.
 - **구현**: Rust 바이트코드 컴파일러 + 레지스터 기반 VM (`unvm`, 라이브러리 이름 `unvm`).
-- **파이프라인**: `Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM`
+- **파이프라인**: `Source -> Lexer -> Parser -> Optimizer (desugar+fold) -> Bytecode Compiler -> Register VM`
 - **규모**: Rust 81개 파일 / 33,633줄(wc 기준), `test/` 아래 `.un` 스크립트 86개.
 - **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을 읽을 때 Int 부분집합(i64 파라미터·지역변수, `iter.range` 루프, 정수 산술, `FusedIntMulAdd`)과 `math.floor(math.sqrt(x))`·`math.sin(x)` 인트리식, IntDict intrinsic에 속하는 proto를 native로 컴파일하고 `jit_cache`에 등록한다. 결과는 hidden pointer로 (value, tag)를 기록하는데 tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2는 런타임 bail(엔진 오류가 아니라 의미론 보존을 위한 인터프리터 fallback)이다. 나머지는 전부 인터프리터로 fallback. **클래스 메서드는 JIT 대상이다**: receiver는 hidden pointer 형태의 raw `Rc<ObjData>` 포인터로 전달되고, 클래스 메서드는 receiver를 local slot 0에 바인딩한다. `self.<Int필드>`의 직접 read/write는 layout 인덱스와 `[이름 == 필드이름, payload == Int]`를 **호출 시점에 name-checked**하는 intrinsic으로 수행하고, 검증 실패 시 bail → 인터프리터로 fallback한다. `UV_JIT=0`으로 런타임에 opt-out.
-- **감사 문서**: `docs/PROJECT_AUDIT.md`(감사 결과), `docs/REFACTOR_PLAN.md`(단계 계획), `docs/REFACTOR_LOG.md`(변경 이력), `docs/ARCHITECTURE.md`(구조), `docs/TECHNICAL_DEBT.md`(부채 목록)가 현재 상태의 기준 문서다. `docs/archive/MIGRATION_AUDIT.md`/`docs/archive/MIGRATION_PROGRESS.md`는 Rust VM/JIT 마이그레이션의 역사 기록(2026-11-15 이전 시점의 기준)으로 남긴다.
+- **기준 문서**: `docs/REFACTOR_SUMMARY.md`(전체 요약), `docs/PROJECT_AUDIT.md`(감사 결과), `docs/REFACTOR_LOG.md`(변경 이력), `docs/ARCHITECTURE.md`(구조), `docs/TECHNICAL_DEBT.md`(부채 목록)가 현재 상태의 기준 문서다.
 - **이전 역사**: 원래 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었다. Rust 포트가
   differential 검증으로 C# 구현과 byte-identical임을 확인한 뒤 대체했고, C# 소스는
   `git` 이력에만 남아 있다.
@@ -28,7 +28,7 @@ C:\dev\un/
 │  │  ├─ main.rs             # CLI 진입점 (run/compile/tokens/ast/desugar/opt/dis/dis-reg/plan/help)
 │  │  ├─ lib.rs
 │  │  ├─ bytecode/           # Op(explicit #[repr(u8)]), Instruction, Program, Proto, unbc
-│  │  ├─ lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / module.rs
+│  │  ├─ lexer.rs / parser.rs / optimize.rs / compiler.rs / module.rs
 │  │  ├─ vm/                 # 단일 실행 모듈: register VM (mod.rs) + stack→register 번역(transfer.rs)
 │  │  ├─ jit_cache.rs        # JIT 컴파일된 함수 전역 캐시/등록
 │  │  ├─ jit_bc.rs         # .unbc가 1:1 대응되는 Cranelift JIT (Int 부분집합 + floor(sqrt(n))/sin intrinsic, Float poly-tag 반환)
@@ -106,16 +106,14 @@ C:\dev\un
 ├─ docs/                     # 문서 전체
 │  ├─ README.md              # 영어 user doc (docs/README.md ↔ README.md 쌍)
 │  ├─ ARCHITECTURE.md        # 구조                  ┐
-│  ├─ PROJECT_AUDIT.md       # 감사 결과              │
-│  ├─ REFACTOR_PLAN.md       # 단계 계획              │ 현재 상태의 기준 문서
+│  ├─ PROJECT_AUDIT.md       # 감사 결과              │ 현재 상태의 기준 문서
 │  ├─ REFACTOR_LOG.md        # 변경 이력              │
 │  ├─ TECHNICAL_DEBT.md      # 부채 목록              ┘
-│  ├─ REFACTOR_SUMMARY.md    # 전체 작업 요약 (감사 → pass 9)
+│  ├─ REFACTOR_SUMMARY.md    # 전체 작업 요약 (감사 → pass 10)
 │  ├─ DECISIONS.md           # D-001…D-072
 │  ├─ TEST_GUIDE.md          # 테스트 가이드
 │  ├─ BYTECODE.md            # .unbc 포맷
-│  ├─ BENCHMARK_GUIDE.md     # 벤치마크
-│  └─ archive/               # MIGRATION_AUDIT.md / MIGRATION_PROGRESS.md / REGISTER_VM_ROADMAP.md (역사 기록)
+│  └─ BENCHMARK_GUIDE.md     # 벤치마크
 ```
 
 ## 아키텍처 메모
@@ -157,7 +155,7 @@ C:\dev\un
   exit code를 바이트 비교한다. `-IncludeNegative`를 쓰면 negative manifest도 포함한다.
 - `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 40 files /
-  1391 passed / 0 failed / 0 crashed**, Negative 39 checks 매칭 + 0 documented divergences,
+  1395 passed / 0 failed / 0 crashed**, Negative 39 checks 매칭 + 0 documented divergences,
   Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).

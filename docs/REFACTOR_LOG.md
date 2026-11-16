@@ -279,8 +279,9 @@ Callers unchanged — everything is re-exported through `world::`.
   and with the default JIT and diffs stdout + exit code; **79 files,
   0 differences**.
 - `docs/archive/` — `MIGRATION_AUDIT.md`, `MIGRATION_PROGRESS.md`,
-  `REGISTER_VM_ROADMAP.md` moved there (git mv) with superseded banners;
-  current-state references updated in `AGENTS.md`, `docs/PROJECT_AUDIT.md`.
+  `REGISTER_VM_ROADMAP.md` had been moved there with superseded banners
+  (git mv). They were deleted entirely in the 2026-11-16 docs cleanup;
+  the content survives in `git` history.
 - `vendor/THIRD_PARTY.md` added; `vendor/README.md` attribution corrected
   (the two wasmtime crates ship without the upstream `LICENSE` files —
   recorded as debt TD-31).
@@ -531,7 +532,8 @@ New `scripts/unbc-roundtrip.ps1`: for every Positive manifest file (and, with
 byte-compare stdout, stderr and the exit code. Parse-rejected Negative files
 cannot produce a `.unbc` and are counted as skipped. The harness is wired
 into CI (`.github/workflows/build.yml`, after `cargo test`) and documented in
-AGENTS.md / docs/REFACTOR_PLAN.md (Phase 5 item checked off).
+AGENTS.md (the phase was tracked in `docs/REFACTOR_PLAN.md`, later deleted
+in pass 10).
 
 ### Defect found and fixed (D-072)
 
@@ -567,12 +569,14 @@ ABI untouched. Documented as decision **D-072** in `docs/DECISIONS.md`.
 ### Layout
 
 All engineering docs now live under `docs/`: `ARCHITECTURE.md`,
-`PROJECT_AUDIT.md`, `REFACTOR_PLAN.md`, `REFACTOR_LOG.md`,
-`TECHNICAL_DEBT.md` moved from the repository root (`git mv`, history
-preserved); historical migration records stay in `docs/archive/`. Every
-bare mention of the five files across the tracked tree was rewritten to
-`docs/<name>.md`; AGENTS.md tree section, audit-docs line and quick
-commands updated accordingly; AGENTS.md scale counters refreshed
+`PROJECT_AUDIT.md`, `REFACTOR_LOG.md`, `TECHNICAL_DEBT.md` moved from
+the repository root (`git mv`, history preserved); `REFACTOR_PLAN.md` was
+deleted (its open items are tracked in `docs/TECHNICAL_DEBT.md`).
+`docs/archive/` (the C#→Rust migration records) was removed entirely;
+the content survives in `git` history. Every bare mention of the moved
+files across the tracked tree was rewritten to `docs/<name>.md`;
+AGENTS.md tree section, audit-docs line and quick commands were updated
+accordingly; AGENTS.md scale counters refreshed
 (81 files / 33,633 lines / 86 `.un` scripts).
 
 New `docs/REFACTOR_SUMMARY.md`: one-page index of the whole audit →
@@ -585,3 +589,40 @@ Stable cross-references (`docs/DECISIONS.md` etc.) are unchanged.
 ### Verification
 
 No code changes; documentation moves only. Gates assumed green from pass 8.
+
+---
+
+## 2026-11-16 — Pass 10: docs cleanup (legacy removal)
+
+### Deleted
+
+- `docs/REFACTOR_PLAN.md` — the phased plan was fully worked through;
+  every checkbox was closed or is tracked in `docs/TECHNICAL_DEBT.md`.
+- `docs/archive/` (`MIGRATION_AUDIT.md`, `MIGRATION_PROGRESS.md`,
+  `REGISTER_VM_ROADMAP.md`) — the C#→Rust migration records,
+  superseded since the 2026-11-16 audit; content survives in `git` history.
+
+### Pruned and corrected
+
+- `docs/TECHNICAL_DEBT.md` — resolved rows removed (they are enumerated in
+  the new "Resolved in 2026-11" summary); stale Notes sections dropped;
+  open items sorted by severity. TD-05 stays **high** (unbounded native-code
+  growth outside teardown).
+- `docs/ARCHITECTURE.md` — pipeline reflects `parse → optimize
+  (desugar+fold) → compile`; `PLAN_CACHE`/`program.id` keying; lazy-compile
+  eligibility; `clear_program`; stale `jit.rs` rows removed; `cargo test`
+  count 204; new runner rows (differential.ps1, unbc-roundtrip.ps1).
+- `docs/PROJECT_AUDIT.md`, `docs/REFACTOR_SUMMARY.md` — dead references to
+  the deleted files removed; audit-time baseline table kept (dated evidence).
+- `docs/TEST_GUIDE.md` — counts updated (1395), `KnownDivergent.txt` now
+  described as empty, harness list includes differential/round-trip runners.
+- `README.md` / `docs/README.md` — baseline 1391 → 1395.
+- `docs/BYTECODE.md` — flags bit 0 (source embed) documented; `source path`
+  is stored as the full compile-time path (D-072).
+- AGENTS.md — pipeline diagram (no more Desugarer stage), audit-docs line,
+  tree section (archive removed, summary listed), scale counters already
+  current.
+
+### Verification
+
+No code changes; documentation only. Gates assumed green from pass 8.

@@ -1,13 +1,13 @@
 # docs/ARCHITECTURE.md
 
 How the Rust implementation of Un is put together. This document describes
-the code as it is today; `docs/PROJECT_AUDIT.md` lists what is wrong with it and
-`docs/REFACTOR_PLAN.md` lists what will change.
+the code as it is today; `docs/PROJECT_AUDIT.md` records the audit findings
+and `docs/REFACTOR_LOG.md` records what landed.
 
 ## 1. Overview
 
 ```
-   .un source ──► Lexer ──► Parser ──► Desugarer ──► Optimizer ──► Bytecode compiler
+   .un source ──► Lexer ──► Parser ──► Optimizer (desugar+fold) ──► Bytecode compiler
                                                                           │
                             .unbc container ◄────────────────────────────┘
                                     │                                        │
@@ -30,8 +30,7 @@ all execute on the calling thread (see `docs/DECISIONS.md` D-012, D-054).
 | --- | --- | --- |
 | lex | `rust/src/lexer.rs` | indentation-based tokens; `Source` is mutated to record ignored new lines |
 | parse | `rust/src/parser.rs` | recursive descent with a precedence table (`parser.rs:1505-1534`); `Rc<Source>` is the only shared state |
-| desugar | `rust/src/desugar.rs` | two rewrites (compound assignment → binary, `Branch`/`ElIf` → `IfCase`) |
-| optimize | `rust/src/optimize.rs` | AST-level constant folding + dead-branch elimination, fixed-point loop (max 64 passes) |
+| optimize | `rust/src/optimize.rs` | constant folding + dead-branch elimination + desugaring (`desugar_local`) in a single bottom-up pass |
 | compile | `rust/src/compiler.rs` | stack machine → `Proto` per function; slot table for locals; peephole fuses `a*b+c` into `FusedIntMulAdd` |
 | translate | `rust/src/vm/transfer.rs` | stack → register translation; register count is `locals + max_stack_depth + 1`, capped at 256 |
 | validate | `rust/src/bytecode/mod.rs` | opcode contract, register limit, source-map length invariant |
@@ -63,9 +62,8 @@ pub struct ObjData {
 - `Payload` carries the value: `Int`, `Float`, `Str`, `Bool`, `Date`, `List`,
   `Dict`, `Set`, `Tup`, `Stru`, `Enu`, `Json`, `Func`, `Property`, `FieldRef`,
   `Iter`, `Future`, `Pool`, `Lock`, `AtomicInt`, `AtomicBool`, `Stream`,
-  `Random`, `HttpClient`, `WebSocket`, `TObj`, `Spread`, `Stru`, `Enu`,
-  `Func`, `Property`, `FieldRef`, `Json`, `Iter`, `Future`, `Pool`, `Lock`,
-  `AtomicInt`, `Stopwatch`. `none` and `null` have no payload variant of
+  `Random`, `HttpClient`, `WebSocket`, `TObj`, `Spread`, `Stopwatch`.
+  `none` and `null` have no payload variant of
   their own — they are `Plain` objects distinguished by their `type_name`.
 - Attribute lookup: `get_attr_from` → instance members → bound method →
   super chain → parents; missing members raise
@@ -90,8 +88,10 @@ bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
 - Exception handling uses a `TryEntry` stack. The recorded handler depth
   (`TryEntry.depth`) is currently written but never read — the register file
   is not truncated on handler entry (TD-12).
-- `PLAN_CACHE` (thread-local) maps `Rc::as_ptr(program)` → `(Rc<Program>,
-  Rc<Plan>)`; it is never evicted.
+- `PLAN_CACHE` (thread-local) maps `program.id` → `(Rc<Program>, Rc<Plan>)`.
+  Entries hold the owning `Rc<Program>` and live for the process
+  (TD-03 — growth is unchanged, but a pointer collision can no longer serve
+  a stale plan).
 
 ## 5. JIT
 
@@ -107,9 +107,10 @@ bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
   hidden pointer to a `(value, tag)` pair.
 - Float compares (`Lt/Le/Gt/Ge/Eq/Ne`) are native; mixed Int/Float operands
   promote with `fcvt_from_sint`; NaN semantics match Rust.
-- Eligibility is decided by `precheck_fn`; every eligible proto is compiled
-  **eagerly at program load** (`plan_for` → `register_eligible`). Protos that
-  cannot be compiled are registered as *bail stubs* that write tag=2.
+- Eligibility is decided by `precheck_fn`. Compilation is **lazy**: eligible
+  protos are compiled on the first call through `try_call_jit` (one attempt
+  per program). Protos that cannot be compiled are not registered at all;
+  the caller falls back to the interpreter.
 - Class methods are eligible: the hidden `self` pointer arrives as a raw
   `Rc<ObjData>` at ABI position 1 (after the hidden result pointer) and is
   pinned to local slot 0 in the entry block. `self.<Int>` get/set is a
@@ -117,12 +118,16 @@ bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
   payload == Int]` at call time; a mismatch bails to the interpreter
   (tag = 2). Constructors and non-Int-field methods still bail (by design),
   as do anything that cannot lift into the Int/Float value model.
-- JIT modules are stashed in `jit_cache::JIT_MODULES`; `jit_cache::clear()`
-  frees the native code (caller must never enter JIT code afterwards).
+- All per-program JIT state (`JIT_FNS`, `JIT_MODULES`, `JIT_LAZY_ATTEMPTED`,
+  and the `PLAN_CACHE` key) is keyed by the opaque monotone `Program.id`,
+  never by pointer identity — a program dropped and re-allocated at the same
+  address cannot be served stale entries.
+- JIT modules are stashed in `jit_cache::JIT_MODULES` per program;
+  `jit_cache::clear_program(id)` frees exactly one program's native code,
+  `jit_cache::clear()` frees everything (callers must never enter JIT code
+  afterwards).
 - `UV_JIT=0` disables the JIT at runtime; `UV_JIT_DEBUG=1` prints the
   compile decisions.
-- `rust/src/jit.rs` is a separate, test-only Cranelift probe; it has no
-  production caller.
 
 ## 6. Native modules
 
@@ -141,9 +146,11 @@ them.
 | `scripts/test.ps1` | runs `test/MANIFEST.txt` groups (`suite`, `unit`, `integration`, `regression`, `known`, `negative`), aggregates `N passed, M failed`, exit 1 on any `[FAIL]` |
 | `test/negative/manifest.txt` | `path|expected exit|expected substring` — exit code and stderr matching for error cases |
 | `test/KnownFailures.txt` | scripts that are expected to fail (currently empty) |
-| `test/KnownDivergent.txt` | documented divergences from the reference behaviour |
+| `test/KnownDivergent.txt` | documented divergences (currently none registered) |
+| `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (79 files) |
+| `scripts/unbc-roundtrip.ps1` | `.unbc` round-trip byte comparison for Positive and compilable Negative files |
 | `scripts/bench.ps1` | warm-up + repetitions + statistics (min/median/mean/max/stddev/ops) |
-| `cargo test --release` | 202 Rust unit tests (lexer, parser, compiler, runtime, VM, native) |
+| `cargo test --release` | 204 Rust unit tests (lexer, parser, compiler, runtime, VM, native) |
 
 The build is release-only and requires the GNU toolchain:
 
@@ -174,4 +181,3 @@ here, so a test or the WASM playground must restore what it changes.
 | `rust/src/jit_cache.rs:57` | `unsafe impl Send for JitEntry` | sound only because the vendored Cranelift backend leaks its allocations |
 | `rust/src/vm/mod.rs` (`F1..F8`) | call into JIT-generated code | hidden result pointer contract, arity asserted |
 | `rust/src/runtime/clock.rs` | WASM host imports | WASM-only |
-| `rust/src/jit.rs` | test-only transmutes of code pointers | test-only |

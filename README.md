@@ -4,7 +4,7 @@
 
 Un은 Rust로 작성된 바이트코드 컴파일러와 레지스터 기반 VM(`unvm`)으로 구현되어 있다. 핫 패스 Int 및 Float 승격 누산기 함수는 Cranelift JIT으로 native로 컴파일된다. 처리 파이프라인은 다음과 같다.
 
-`Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM (optionally JIT)`
+`Source -> Lexer -> Parser -> Optimizer (desugar+fold, single pass) -> Bytecode Compiler -> Register VM (optionally JIT)`
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-1.99-DEA584?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
@@ -15,7 +15,7 @@ Un은 Rust로 작성된 바이트코드 컴파일러와 레지스터 기반 VM(`
 
 Un은 읽기 쉽고 간결한 프로그램을 작성하기 위한 동적 타입 스크립팅 언어이다. Python 스타일의 들여쓰기 기반 블록, 명시적인 동시성 기본 요소, 구조적 패턴 매칭, 작은 표준 라이브러리를 결합한다.
 
-Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 AST로 역탈당(desugar), 최적화(상수 폴딩, 최대 64패스)하고, 바이트코드로 컴파일해 레지스터 기반 VM에서 실행한다. 이전에 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었으나 Rust 구현이 C# 구현의 의미론을 byte-identical로 재현함을 differential 검증으로 확인하고 대체했다(문서화된 차이 4개는 `test/KnownDivergent.txt` 참고).
+Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(상수 폴딩, 단일 bottom-up 패스에서 desugar 포함)하고, 바이트코드로 컴파일해 레지스터 기반 VM에서 실행한다. 이전에 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었으나 Rust 구현이 C# 구현의 의미론을 byte-identical로 재현함을 differential 검증으로 확인하고 대체했다.
 
 설계 목표:
 
@@ -278,7 +278,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
 Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
-포함하지 않는다. 현재 기준은 Positive 40 파일 / 1391 passed / 0 failed / 0 crashed,
+포함하지 않는다. 현재 기준은 Positive 40 파일 / 1395 passed / 0 failed / 0 crashed,
 Negative 39 checks 매칭 + 0 documented divergences, Known 0 파일이다.
 
 벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
@@ -572,10 +572,8 @@ Lexer          들여쓰기를 인식하는 토크나이저
 Parser         AST 구성 (Node / NodeKind)
   |
   v
-Desugarer      복합 대입 확장, if/elif 정규화
-  |
-  v
-Optimizer      상수 폴딩, 대수적 단순화, 최대 64패스
+Optimizer      desugar(복합 대입, if/elif) + 상수 폴딩, 대수적 단순화, 단일
+               bottom-up 패스
   |
   v
 Bytecode Compiler   Opcode/Proto/Program, Instruction(flags, operand) 인코딩
@@ -595,7 +593,7 @@ Stdlib          NativeModule / NativeType 리플렉션 바인딩
 - `rust/src/compiler.rs`는 역탈당·최적화된 AST를 바이트코드 Proto로 컴파일한다.
 - `rust/src/vm/`은 `Proto`를 레지스터 기계로 실행한다(스택 기계 바이트코드를 `transfer.rs`가 레지스터 계획으로 번역한다). `Op` enum은 explicit `#[repr(u8)]`로 고정되어 있고, `Proto`는 `code`/`consts`/`names`/`protos`/`source_map`을 owns한다.
 - `rust/src/runtime/scope.rs`는 부모 체인을 갖는 슬롯 기반 심볼 테이블을 제공한다. `Scope`의 slot table에서 `Set`은 declaring scope에 write하고(`for` body의 `sum += v` 축적), `SetLocal`/`SetLocalOrDeclare`는 local 전용, `Declare`는 덮지 않는다.
-- `rust/src/runtime/world.rs`는 전역 상태(`path`, `global_scope`, `natives`, `stdout`, `allowed`)를 owns하고 모듈 캐시를 관리한다.
+- `rust/src/runtime/world/`는 전역 상태(`path`, `global_scope`, `natives`, `stdout`, `allowed`)를 owns하고 모듈 캐시를 관리한다(책임별로 `world/` 하위 모듈로 분할됨).
 - `rust/src/native/`는 표준 라이브러리 모듈(`io`, `fs`, `re`, `math`, `iter`, ...)이다. 네이티브 모듈은 `Global`과 같은 방식으로 어셈블리 없이 리플렉션으로 자동 발견되지 않고, `native::init`이 명시적으로 등록한다.
 - `rust/playground/`는 `unvm`을 웹 플레이그라운드용으로 감싼 WASM 진입점(`PlaygroundRunner.RunCode`의 Rust 대응)이다.
 
@@ -611,7 +609,7 @@ Un/
 |   |   |-- main.rs          (CLI 진입점: run/compile/tokens/ast/desugar/opt/dis/dis-reg/plan/help)
 |   |   |-- lib.rs
 |   |   |-- bytecode/        (opcodes, instruction, Program, Proto, unbc container)
-|   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm/ / module.rs
+|   |   |-- lexer.rs / parser.rs / optimize.rs / compiler.rs / vm/ / module.rs
 |   |   |-- runtime/         (obj, collections, iters, function, world, scope, date, ...)
 |   |   |-- native/          (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
 |   |-- playground/          (WASM 진입점, un-playground 재빌드 대상)

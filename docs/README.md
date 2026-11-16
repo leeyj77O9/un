@@ -4,7 +4,7 @@ A modern scripting language with concise syntax, explicit asynchronous execution
 
 Un is implemented as a bytecode compiler and register-based VM written in Rust (`unvm`). Hot-path Int and Float-promoted accumulator functions are compiled to native code by an embedded Cranelift JIT. The processing pipeline is:
 
-`Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM (optionally JIT)`
+`Source -> Lexer -> Parser -> Optimizer (desugar+fold, single pass) -> Bytecode Compiler -> Register VM (optionally JIT)`
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-1.99-DEA584?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
@@ -15,7 +15,7 @@ Un is implemented as a bytecode compiler and register-based VM written in Rust (
 
 Un is a dynamically typed scripting language aimed at readable, compact programs. It combines Python-like indentation-based blocks with explicit concurrency primitives, structural pattern matching, and a small standard library.
 
-Un is written in Rust: source files are lexed and parsed, desugared, optimized (constant folding, up to 64 passes), compiled to bytecode, and executed by a register-based VM. Hot-path Int and Float-promoted accumulator functions are compiled to native code by an embedded Cranelift JIT. It was previously implemented as a C# tree-walking interpreter on .NET 8; the Rust port was verified byte-identical to it by differential testing before replacing it (the 4 documented divergent cases are listed in `test/KnownDivergent.txt`).
+Un is written in Rust: source files are lexed and parsed, optimized in a single bottom-up pass (constant folding with desugaring folded in), compiled to bytecode, and executed by a register-based VM. Hot-path Int and Float-promoted accumulator functions are compiled to native code by an embedded Cranelift JIT. It was previously implemented as a C# tree-walking interpreter on .NET 8; the Rust port was verified byte-identical to it by differential testing before replacing it.
 
 Design goals:
 
@@ -280,7 +280,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
-The current baseline is Positive 40 files / 1391 passed / 0 failed / 0 crashed,
+The current baseline is Positive 40 files / 1395 passed / 0 failed / 0 crashed,
 Negative 39 checks matched + 0 documented divergences, and Known 0 files.
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
@@ -584,10 +584,8 @@ Lexer          indentation-aware tokenizer
 Parser         AST construction (Node / NodeKind)
   |
   v
-Desugarer      compound assignment expansion, if/elif normalization
-  |
-  v
-Optimizer      constant folding, algebraic simplification, up to 64 passes
+Optimizer      desugar (compound assignment, if/elif) + constant folding,
+               algebraic simplification, single bottom-up pass
   |
   v
 Bytecode Compiler   Op / Proto / Instruction(flags, operand) encoding
@@ -608,7 +606,7 @@ Key components:
 - `rust/src/compiler.rs` compiles desugared, optimized AST to bytecode Protos.
 - `rust/src/vm/` runs Protos on a register machine (stack bytecode is translated to a register plan by `transfer.rs`); `Op` is an explicit `#[repr(u8)]` enum, `Proto` owns `code`/`consts`/`names`/`protos`/`source_map`.
 - `rust/src/runtime/scope.rs` provides slot-based symbol tables with parent chains.
-- `rust/src/runtime/world.rs` owns global state (`path`, `global_scope`, `natives`, `stdout`, `allowed`) and the module cache.
+- `rust/src/runtime/world/` owns global state (`path`, `global_scope`, `natives`, `stdout`, `allowed`) and the module cache, split by responsibility into submodules.
 - `rust/src/native/` holds the standard library modules. They are registered explicitly in `native::init`, without assembly reflection.
 - `rust/playground/` wraps `unvm` as an entry point for the web playground (the Rust equivalent of `PlaygroundRunner.RunCode`).
 
@@ -624,7 +622,7 @@ Un/
 |   |   |-- main.rs          (CLI entry: run/compile/tokens/ast/desugar/opt/dis/dis-reg/plan/help)
 |   |   |-- lib.rs
 |   |   |-- bytecode/        (opcodes, instruction, Program, Proto, unbc container)
-|   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm/ / module.rs
+|   |   |-- lexer.rs / parser.rs / optimize.rs / compiler.rs / vm/ / module.rs
 |   |   |-- runtime/         (obj, collections, iters, function, world, scope, date, ...)
 |   |   |-- native/          (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
 |   |-- playground/          (WASM entry point, target of un-playground)

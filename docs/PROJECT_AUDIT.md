@@ -3,19 +3,18 @@
 Audit of the Rust `unvm` implementation (branch `main`, base commit `958f9e2`).
 
 This document is the **canonical audit record** for the current Rust port. The
-historical C#→Rust migration record stays in `docs/archive/MIGRATION_AUDIT.md` and
-`docs/archive/MIGRATION_PROGRESS.md` and the VM/JIT migration audit of
-2026-11-15; those documents describe *how the port got here* (including the
-measured C# differential results), while this one describes *the state of the
-code as it stands now* and what still needs to change.
+C#→Rust migration record (including the measured C# differential results) lived
+in `docs/archive/` until 2026-11-16; those files were removed in the docs
+cleanup and remain in `git` history. This document describes *the state of the
+code as it stands now* and what was found.
 
 Related documents:
 
-- `docs/REFACTOR_PLAN.md` — the phased plan that follows from this audit.
+- `docs/REFACTOR_SUMMARY.md` — the one-page index (commit timeline, baseline).
 - `docs/REFACTOR_LOG.md` — dated log of the changes that were actually applied.
 - `docs/ARCHITECTURE.md` — how the implementation is put together.
 - `docs/TECHNICAL_DEBT.md` — the debt register (items deliberately left in place).
-- `docs/DECISIONS.md` — language/runtime decisions (D-001 … D-067).
+- `docs/DECISIONS.md` — language/runtime decisions (D-001 … D-072).
 
 ## 1. Scope and method
 
@@ -183,10 +182,10 @@ symbol with exactly one occurrence in its own definition file is reported as
 - All six documented defects in `test/regression/defects.un` are fixed; the
   file moved from the `known` group to the `regression` group and now guards
   the fixed behaviour.
-- Phase 4 (dead code removal) and Phase 5 (the `runtime/world.rs` split) are
-  done; Phase 7 tooling (CI workflow, toolchain pin, differential runner,
-  archive move) is done. The remaining phases are listed in
-  `docs/REFACTOR_PLAN.md`.
+- Dead code removal and the `runtime/world.rs` split are done; tooling
+  (CI workflow, toolchain pin, differential runner, archive move) is done.
+  Nothing in the audit remains open; the residual design limitations are in
+  `docs/TECHNICAL_DEBT.md` and the phases are in `docs/REFACTOR_LOG.md`.
 - This document also records the follow-up depth audits of the **native/stdlib**
   layer and the **build/docs/workspace** layer (see S1-9…S1-21, S2-build):
   13 native-layer defects were fixed, the native-layer remaining issues are

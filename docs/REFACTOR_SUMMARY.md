@@ -28,12 +28,12 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | `a9849b9` | 7 | Lazy compile (first `try_call_jit` call compiles); IntDict `BuildDict` accepts inline Int-entry literals. |
 | `5bc0b80` | 7 | JIT cache redesign: opaque monotone `Program.id` replaces all pointer-identity keys (PLAN_CACHE, JIT_FNS/MODULES/LAZY_ATTEMPTED); per-program `clear_program()`; stale-entry/ABA hazard eliminated. |
 | `d580a8b` | 8 | `.unbc` round-trip harness (`scripts/unbc-roundtrip.ps1`, byte-compared, wired into CI); caught and fixed `Program.source_path` storing only the file stem — `.unbc` re-runs resolved modules cwd-relative instead of source-dir-relative (D-072). |
+| `b8f1088` | 9 | Docs consolidation under `docs/` (git mv), `docs/REFACTOR_SUMMARY.md` index added. |
+| (pass 10) | 10 | Legacy removal: `REFACTOR_PLAN.md` and `docs/archive/` deleted; `TECHNICAL_DEBT.md` pruned to open items; stale counters/diagrams refreshed (README twins, ARCHITECTURE, TEST_GUIDE, BYTECODE). |
 
-Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; per-phase checkboxes in
-`docs/REFACTOR_PLAN.md`; the audit findings with fix mapping in
-`docs/PROJECT_AUDIT.md`; the register of remaining debt in
-`docs/TECHNICAL_DEBT.md` (all "high" items resolved or judged; what remains
-is explicitly listed there).
+Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; the audit findings with
+fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
+`docs/TECHNICAL_DEBT.md`.
 
 ## What changed structurally
 
@@ -54,7 +54,7 @@ is explicitly listed there).
 - **Runtime**: `world.rs` split into `runtime/world/` modules; `runtime/global.rs`
   renamed to `runtime/modules.rs`; per-scope slot-name snapshots removed.
 - **Docs**: all engineering docs consolidated under `docs/` (this folder);
-  historical migration records under `docs/archive/`.
+  `REFACTOR_PLAN.md` and the migration records under `docs/archive/` removed.
 
 ## Current baseline (all verified 2026-11-16)
 
@@ -80,8 +80,8 @@ is explicitly listed there).
   un-tracked later).
 - CI (`.github/workflows/build.yml`) is defined but has never executed on
   GitHub; the local runner sequence above is the source of truth.
-- `test/KnownDivergent.txt` documents the residual, deliberate
-  implementation differences; `test/KnownFailures.txt` is empty.
+- `test/KnownDivergent.txt` documents deliberate implementation differences
+  (currently none registered); `test/KnownFailures.txt` is empty.
 
 ## Document map
 
@@ -90,12 +90,10 @@ is explicitly listed there).
 | `docs/README.md` ↔ `README.md` | User docs (English / Korean), kept in sync |
 | `docs/ARCHITECTURE.md` | Current architecture: pipeline, VM, JIT, module layout |
 | `docs/PROJECT_AUDIT.md` | Audit findings (S1/S2/S3) with fix mapping |
-| `docs/REFACTOR_PLAN.md` | Phase plan with checkbox tracking |
 | `docs/REFACTOR_LOG.md` | Per-pass verification records |
-| `docs/TECHNICAL_DEBT.md` | Debt register (open/resolved/judged) |
+| `docs/TECHNICAL_DEBT.md` | Debt register (open items + closed summary) |
 | `docs/DECISIONS.md` | D-001 … D-072, append-only |
 | `docs/BYTECODE.md` | `.unbc` format specification |
 | `docs/TEST_GUIDE.md` | Test authoring and runner guide |
 | `docs/BENCHMARK_GUIDE.md` | Benchmark methodology and caveats |
 | `docs/REFACTOR_SUMMARY.md` | This file |
-| `docs/archive/` | Historical: C#→Rust migration records (superseded) |
