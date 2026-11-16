@@ -105,12 +105,20 @@ bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
 - Values are tagged: `0` = Int, `1` = Float (IEEE-754 bits), `2` = runtime
   bail (the interpreter takes over), `3` = Bool. The tag is written through a
   hidden pointer to a `(value, tag)` pair.
+- Float compares (`Lt/Le/Gt/Ge/Eq/Ne`) are native; mixed Int/Float operands
+  promote with `fcvt_from_sint`; NaN semantics match Rust.
 - Eligibility is decided by `precheck_fn`; every eligible proto is compiled
   **eagerly at program load** (`plan_for` → `register_eligible`). Protos that
   cannot be compiled are registered as *bail stubs* that write tag=2.
-- Class methods are currently **not** eligible: the JIT value model carries
-  only Int/Float and cannot represent an object receiver (see
-  `docs/DECISIONS.md` D-067 and `TECHNICAL_DEBT.md` TD-06).
+- Class methods are eligible: the hidden `self` pointer arrives as a raw
+  `Rc<ObjData>` at ABI position 1 (after the hidden result pointer) and is
+  pinned to local slot 0 in the entry block. `self.<Int>` get/set is a
+  **name-checked** intrinsic that verifies `[member name == field name ∧
+  payload == Int]` at call time; a mismatch bails to the interpreter
+  (tag = 2). Constructors and non-Int-field methods still bail (by design),
+  as do anything that cannot lift into the Int/Float value model.
+- JIT modules are stashed in `jit_cache::JIT_MODULES`; `jit_cache::clear()`
+  frees the native code (caller must never enter JIT code afterwards).
 - `UV_JIT=0` disables the JIT at runtime; `UV_JIT_DEBUG=1` prints the
   compile decisions.
 - `rust/src/jit.rs` is a separate, test-only Cranelift probe; it has no
@@ -161,7 +169,7 @@ here, so a test or the WASM playground must restore what it changes.
 
 | Location | Purpose | Guard |
 | --- | --- | --- |
-| `rust/src/runtime/obj.rs` (`un_instance_int_get` / `un_instance_int_ok` / `un_instance_int_set`) | direct member access for the JIT | documented `# Safety` contract, `catch_unwind`, status return |
+| `rust/src/runtime/obj.rs` (`un_instance_int_get` / `un_instance_int_ok` / `un_instance_int_ok_name` / `un_instance_int_set`) | direct member access for the JIT | documented `# Safety` contract, `catch_unwind`, name-checked for the class-layout intrinsic, bails to the interpreter on any mismatch |
 | `rust/src/runtime/int_dict.rs` | integer-keyed dictionaries for JIT-emitted code | `Mutex` arena, never freed (TD-07) |
 | `rust/src/jit_cache.rs:57` | `unsafe impl Send for JitEntry` | sound only because the vendored Cranelift backend leaks its allocations |
 | `rust/src/vm/mod.rs` (`F1..F8`) | call into JIT-generated code | hidden result pointer contract, arity asserted |

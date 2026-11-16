@@ -213,9 +213,20 @@ class Point
     fn __init__(x, y)
         self.x = x
         self.y = y
+    fn norm()
+        -> self.x * self.x + self.y * self.y
 assert.assert_err(fn() -> str(Point(10, 20)), "unsupported operand type(s) for str(): 'Point'")
 assert.assert_eq(repr(Point(10, 20)), "Point", "repr of an instance is the class name")
 assert.assert_eq(str(type(Point(10, 20))), "<type: Point>", "type of an instance names the class")
 assert.assert_true(Point(1, 2) is Point, "instance is its own class")
+p = Point(3, 4)
+assert.assert_eq(p.norm(), 25, "method returns the Int result")
+assert.assert_eq(Point(0, 0).norm(), 0, "method on a fresh instance returns zero")
+assert.assert_eq(Point(-7, -9).norm(), 130, "method on negative fields tolerates the sign at call time")
+# many class-method calls exercise the JIT class-intrinsic path when enabled
+total = 0
+for i in [1, 2, 3, 4, 5]
+    total += Point(i, i + 1).norm()
+assert.assert_eq(total, 145, "five consecutive class-method calls sum correctly")
 
 assert.summary()

@@ -795,6 +795,40 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 `chr`의 range check(`0..1114111`)는 `Err("chr: code point out of range (0..1114111)")`로
 먼저 잡히고, surrogate는 그 뒤의 host throw다.
 
+## D-071 | 클래스 메서드 JIT: receiver는 hidden pointer, field 읽기/쓰기는 name-checked intrinsic | Accepted
+
+- 2026-11-16 Phase 8의 출발점. 클래스 메서드 프로토는 이제 `precheck_fn`을
+  통과하고 native로 컴파일된다. 이전에는 `precheck_fn`이 모든 클래스 메서드를
+  거부해 class1000은 인터프리터로만 실행됐다.
+- **receiver 표현**: 클래스 메서드의 첫 hidden ABI 인자는 `Rc<ObjData>`의 raw
+  포인터(`Rc::as_ptr`)이며, 컴파일러의 `slot_alloc("self")`로 local slot 0이
+  `self`다. entry 블록에서 `incoming[1]`(receiver)을 `vars[arity]`(local slot 0)에
+  고정한다.
+- **local slot 0에 로드하는 레지스터**: 레지스터 번호는 컴파일러가 임의로
+  배정하므로 `ins.b == 0` 추측은 폐기했다. `LoadLocal(0)`이 쓰는 것과 똑같이
+  `self_regs` 비트맵에 기록되고, 다른 레지스터 instruction이 그 번호에 쓰면
+  소거한다(보수적; bail → interpreter로, 어느 쪽도 정답을 잃지 않는다).
+- **field intrinsic**: `self.<Int필드>`의 read/write는
+  `un_instance_int_ok_name(self, field_index, name_ptr, name_len)`가
+  `[index == layout ix ∧ bytes(name) == 필드이름 ∧ payload == Int]`를 call
+  시점에 비교해 검증하고 mismatch면 bail(tag=2)한다. layout(컴파일 타임 상수)과
+  실측 member table이 어긋나면 interpreter가 실행한다 — 문서화된 layout 순서와
+  무관하게 name check가 보장한다. Float/Bool/None 필드, `none`을 반환하는
+  생성자, 리스트를 만드는 메서드는 여전히 인터프리터로 fallback한다.
+- **Float compare 지원**: `Lt/Le/Gt/Ge/Eq/Ne`는 Int와 Float 피연산자를 모두
+  지원한다(Int는 `fcvt_from_sint`로 Float로 승격 후 `fcmp`). NaN 의미론은
+  Rust와 동일하다. 반환은 Bool(tag 3)이다.
+- **JIT 모듈 수명**: emit된 JITModule은 `jit_cache::JIT_MODULES`에 별도 보관된다.
+  일반 실행에서는 이전처럼 leak(프로세스 수명과 동일)하지만, `clear()`가
+  native code를 실제로 해제하므로 caller는 그 뒤에 어떤 JIT 함수도 진입해선
+  안 된다(벤치/테스트 teardown 전용). 이전에는 존재만 하고 native code는
+  항상 leak됐다.
+- 검증: `scripts/test.ps1` Positive **40 files / 1395 passed** (classes.un +4),
+  `tests/unit/runtime/classes.un`의 새 어설션 4개는 `inc`, `__len__`,
+  `__getitem__`, `__setitem__` 클래스의 native 경로를 통과한다.
+  `scripts/differential.ps1` **79 files / 0 differences**, `cargo test` 202 passed,
+  clean build 0 warnings.
+
 ## D-070 | 네이티브 레이어는 공유 closure + world stdout buffer를 쓴다 | Accepted
 
 > 이름 중복으로 2026-11-16에 D-034(두 번째 사용분)에서 재번호된 항목. 본문은 그대로다.

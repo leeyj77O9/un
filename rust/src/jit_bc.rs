@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use cranelift_codegen::ir::{AbiParam, BlockArg, InstBuilder, Value, types};
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::ir::Block;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -156,6 +156,8 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
     builder.symbol("un_dict_int_set", crate::runtime::int_dict::un_dict_int_set as *const u8);
     builder.symbol("un_dict_int_get", crate::runtime::int_dict::un_dict_int_get as *const u8);
     builder.symbol("un_instance_int_get", crate::runtime::obj::un_instance_int_get as *const u8);
+    builder.symbol("un_instance_int_ok", crate::runtime::obj::un_instance_int_ok as *const u8);
+    builder.symbol("un_instance_int_ok_name", crate::runtime::obj::un_instance_int_ok_name as *const u8);
     builder.symbol("un_instance_int_set", crate::runtime::obj::un_instance_int_set as *const u8);
     let mut module = JITModule::new(builder);
 
@@ -221,7 +223,16 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
         Ok(fid) => fid,
         Err(_) => return,
     };
-    let fid_int_ok = match module.declare_function("un_instance_int_ok", Linkage::Import, &sig_ig) {
+    // Name-checked variant: verifies the member at the given field index is
+    // an Int and has exactly the expected name. Used by the class-method
+    // intrinsic; a miss bails to the interpreter (tag=2).
+    let mut sig_ionn = module.make_signature();
+    sig_ionn.params.push(AbiParam::new(types::I64));
+    sig_ionn.params.push(AbiParam::new(types::I64));
+    sig_ionn.params.push(AbiParam::new(types::I64));
+    sig_ionn.params.push(AbiParam::new(types::I64));
+    sig_ionn.returns.push(AbiParam::new(types::I64));
+    let fid_int_ok_name = match module.declare_function("un_instance_int_ok_name", Linkage::Import, &sig_ionn) {
         Ok(fid) => fid,
         Err(_) => return,
     };
@@ -291,7 +302,7 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
             fid_dict_get,
             fid_sin,
             fid_int_get,
-            fid_int_ok,
+            fid_int_ok_name,
             fid_int_set,
             &ret_kinds,
         )
@@ -327,6 +338,11 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
             crate::jit_cache::JitEntry { ptr: code_ptr as *const u8, arity: arity as u32 },
         );
     }
+    // Keep the module in the process-wide registry so `jit_cache::clear()`
+    // can free the native code on demand. The vendored backend leaks the
+    // allocations otherwise (by design); stashing preserves hook visibility
+    // instead of losing it to a `mem::forget` inside the destructor.
+    crate::jit_cache::stash_module(module);
 }
 
 /// Translator state. All per-function data is gathered under one borrow.
@@ -379,9 +395,16 @@ struct Tr<'a> {
     fid_dict_get: cranelift_module::FuncId,
     fid_sin: cranelift_module::FuncId,
     fid_int_get: cranelift_module::FuncId,
-    fid_int_ok: cranelift_module::FuncId,
+    fid_int_ok_name: cranelift_module::FuncId,
     fid_int_set: cranelift_module::FuncId,
     class_layouts: HashMap<usize, Vec<String>>,
+    // True when the proto is a class method (its first hidden argument is the
+    // receiver, a raw `Rc<RefCell<ObjData>>` pointer). Local slot 0 is `self`.
+    is_class_method: bool,
+    // Registers that provably hold the receiver pointer (currently loaded
+    // straight from `LoadLocal(0)` without being overwritten). Only those
+    // may serve as the `self` operand of the direct attr-field intrinsic.
+    self_regs: HashSet<usize>,
     // Slots that hold IntDict references (opaque i64 ids used by the JIT).
     int_dict_regs: HashSet<usize>,
     local_is_intdict: Vec<bool>,
@@ -816,6 +839,25 @@ impl<'a> Tr<'a> {
         ip: usize,
         ins: Ins,
     ) -> Option<()> {
+        // `ins.a` is the destination register for most emitters; marking it
+        // fresh keeps stale receiver identities out of the attr intrinsic.
+        // `LoadLocal(slot 0)` re-declares its destination as the receiver
+        // inside the arm, so it must not be dropped here.
+        let is_load_local = ins.op == Op::LoadLocal;
+        let r = self.emit_ins_body(builder, code, ip, ins);
+        if !is_load_local {
+            self.self_regs.remove(&(ins.a as usize));
+        }
+        r
+    }
+
+    fn emit_ins_body(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        code: &[Ins],
+        ip: usize,
+        ins: Ins,
+    ) -> Option<()> {
         match ins.op {
             Op::LoadConst => {
                 let cv = self
@@ -982,25 +1024,20 @@ impl<'a> Tr<'a> {
                 Some(())
             }
             Op::GetAttr => {
-                // Class-layout-backed direct field access. For class-method
-                // protos with a known layout, the self local is slot 0 and
-                // we emit a direct `un_instance_int_get` call instead of an
-                // interpreter round-trip.
-                //
-                // The path is disabled for now: `precheck_fn` rejects class
-                // methods, so the layout lookup below can only miss. It stays
-                // in place (and keeps the layout seeding in the VM) so that
-                // Phase 8 can re-enable it once the JIT value model carries
-                // object receivers and the layout index is proven to match
-                // the instance member order.
-                let layout = match self.class_layouts.get(&self.proto_index) {
-                    Some(l) => l.clone(),
-                    None => return None,
-                };
-                let self_slot = 0usize;
-                if (ins.b as usize) != self_slot {
+                // Class-layout-backed direct field access — only for class
+                // methods with a name-checked receiver (see `self_regs`). The
+                // receiver is verified to be the live instance of this proto's
+                // class before the layout index is used; anything else means
+                // the safest correct behaviour is to bail to the interpreter.
+                let Some(layout) = self.class_layouts.get(&self.proto_index) else {
                     if crate::jit_cache::jit_debug() {
-                        eprintln!("JITREJECT getattr ins.b={} pix={}", ins.b, self.proto_index);
+                        eprintln!("JITREJECT getattr proto={} no_layout", self.proto_index);
+                    }
+                    return None;
+                };
+                if !self.self_regs.contains(&(ins.b as usize)) {
+                    if crate::jit_cache::jit_debug() {
+                        eprintln!("JITREJECT getattr ins.b={} not_self_regs proto={}", ins.b, self.proto_index);
                     }
                     return None;
                 }
@@ -1011,23 +1048,22 @@ impl<'a> Tr<'a> {
                     }
                     return None;
                 };
-                let field_ix = match layout.iter().position(|f| f == field_ref) {
-                    Some(i) => i,
-                    None => {
-                        if crate::jit_cache::jit_debug() {
-                            eprintln!("JITREJECT getattr not_in_layout ref={} layout={:?}", field_ref, layout);
-                        }
-                        return None;
+                let Some(field_ix) = layout.iter().position(|f| f == field_ref) else {
+                    if crate::jit_cache::jit_debug() {
+                        eprintln!("JITREJECT getattr not_in_layout ref={}", field_ref);
                     }
+                    return None;
                 };
-                // The receiver pointer is read from the `self` local slot and
-                // the field is probed with `un_instance_int_ok` first: a miss
-                // (the member is gone or holds a non-Int) must send the call
-                // back to the interpreter instead of yielding 0.
-                let f_ok = self.module.declare_func_in_func(self.fid_int_ok, builder.func);
-                let self_ptr = builder.use_var(self.lv_i64(self_slot));
+                // The receiver pointer comes from the register that loaded
+                // `self`; the member table is name-checked AT THE GIVEN INDEX
+                // before any read happens. A mismatch means the layout and
+                // the live member order disagree — bail instead of reading.
+                let f_ok = self.module.declare_func_in_func(self.fid_int_ok_name, builder.func);
+                let self_ptr = builder.use_var(self.rv_i64(ins.b as usize));
                 let e_idx = builder.ins().iconst(types::I64, field_ix as i64);
-                let ok_call = builder.ins().call(f_ok, &[self_ptr, e_idx]);
+                let name_ptr = builder.ins().iconst(types::I64, field_ref.as_ptr() as i64);
+                let name_len = builder.ins().iconst(types::I64, field_ref.len() as i64);
+                let ok_call = builder.ins().call(f_ok, &[self_ptr, e_idx, name_ptr, name_len]);
                 let ok = builder.inst_results(ok_call)[0];
                 let zero_i = builder.ins().iconst(types::I64, 0);
                 let is_miss = builder.ins().icmp(IntCC::Equal, ok, zero_i);
@@ -1067,8 +1103,7 @@ impl<'a> Tr<'a> {
                         return None;
                     }
                 };
-                let self_slot = 0usize;
-                if (ins.b as usize) != self_slot {
+                if !self.self_regs.contains(&(ins.b as usize)) {
                     if crate::jit_cache::jit_debug() {
                         eprintln!("JITREJECT setattronatslot ins.b={} pix={}", ins.b, self.proto_index);
                     }
@@ -1077,24 +1112,25 @@ impl<'a> Tr<'a> {
                 let Some(field_ref) = self.arena.get(ins.d as usize) else {
                     return None;
                 };
-                let field_ix = match layout.iter().position(|f| f == field_ref) {
-                    Some(i) => i,
-                    None => return None,
+                let Some(field_ix) = layout.iter().position(|f| f == field_ref) else {
+                    return None;
                 };
                 // Value must be Int (Float/Bool/etc are not expected here for this bench).
                 if self.is_float[ins.c as usize] || self.is_bool[ins.c as usize] || self.is_none[ins.c as usize] {
                     return None;
                 }
-                // A write that cannot land (the slot is gone) must bail to the
-                // interpreter instead of silently dropping the store.
-                let f_ref = self.module.declare_func_in_func(self.fid_int_set, builder.func);
-                let self_ptr = builder.use_var(self.lv_i64(self_slot));
+                // The write verifies the member name at the field index and
+                // its Int-ness; any mismatch bails to the interpreter instead
+                // of silently overwriting a wrong field.
+                let f_ok = self.module.declare_func_in_func(self.fid_int_ok_name, builder.func);
+                let self_ptr = builder.use_var(self.rv_i64(ins.b as usize));
+                let name_ptr = builder.ins().iconst(types::I64, field_ref.as_ptr() as i64);
+                let name_len = builder.ins().iconst(types::I64, field_ref.len() as i64);
                 let e_idx = builder.ins().iconst(types::I64, field_ix as i64);
-                let val = builder.use_var(self.rv_i64(ins.c as usize));
-                let set_call = builder.ins().call(f_ref, &[self_ptr, e_idx, val]);
-                let status = builder.inst_results(set_call)[0];
+                let ok_call = builder.ins().call(f_ok, &[self_ptr, e_idx, name_ptr, name_len]);
+                let ok = builder.inst_results(ok_call)[0];
                 let zero_i = builder.ins().iconst(types::I64, 0);
-                let is_miss = builder.ins().icmp(IntCC::Equal, status, zero_i);
+                let is_miss = builder.ins().icmp(IntCC::Equal, ok, zero_i);
                 let bail_attr = builder.create_block();
                 let cont_attr = builder.create_block();
                 builder.ins().brif(is_miss, bail_attr, &[], cont_attr, &[]);
@@ -1108,6 +1144,11 @@ impl<'a> Tr<'a> {
                 builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two_e, hp, 8);
                 builder.ins().return_(&[]);
                 builder.switch_to_block(cont_attr);
+                let f_ref = self.module.declare_func_in_func(self.fid_int_set, builder.func);
+                let val = builder.use_var(self.rv_i64(ins.c as usize));
+                let e_idx2 = builder.ins().iconst(types::I64, field_ix as i64);
+                let set_call = builder.ins().call(f_ref, &[self_ptr, e_idx2, val]);
+                let _ = set_call;
                 builder.def_var(self.rv_i64(ins.a as usize), val);
                 self.is_bool[ins.a as usize] = false;
                 self.is_none[ins.a as usize] = false;
@@ -1137,6 +1178,11 @@ impl<'a> Tr<'a> {
                     self.is_float[ins.a as usize] = false;
                     if self.local_is_intdict[slot] {
                         self.int_dict_regs.insert(ins.a as usize);
+                    }
+                    if self.is_class_method && slot == 0 {
+                        // Local slot 0 is `self`; a register loaded straight
+                        // from it holds the receiver pointer.
+                        self.self_regs.insert(ins.a as usize);
                     }
                     self.ret_slot[ins.a as usize] = Some(slot);
                 }
@@ -1258,8 +1304,42 @@ impl<'a> Tr<'a> {
                 Some(())
             }
             Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq | Op::Ne => {
-                if self.is_float[ins.b as usize] || self.is_float[ins.c as usize] {
-                    return None; // Int-only compare; Float compares not supported
+                let b_float = self.is_float[ins.b as usize];
+                let c_float = self.is_float[ins.c as usize];
+                if b_float || c_float {
+                    // Float compare: Int-only operand is promoted with fcvt;
+                    // NaN semantics match Rust (ordered predicates, false for <, <=).
+                    let lhs = if b_float {
+                        builder.use_var(self.rv_f64(ins.b as usize))
+                    } else {
+                        let i = builder.use_var(self.rv_i64(ins.b as usize));
+                        builder.ins().fcvt_from_sint(types::F64, i)
+                    };
+                    let rhs = if c_float {
+                        builder.use_var(self.rv_f64(ins.c as usize))
+                    } else {
+                        let i = builder.use_var(self.rv_i64(ins.c as usize));
+                        builder.ins().fcvt_from_sint(types::F64, i)
+                    };
+                    let cc = match ins.op {
+                        Op::Lt => FloatCC::LessThan,
+                        Op::Le => FloatCC::LessThanOrEqual,
+                        Op::Gt => FloatCC::GreaterThan,
+                        Op::Ge => FloatCC::GreaterThanOrEqual,
+                        Op::Eq => FloatCC::Equal,
+                        Op::Ne => FloatCC::NotEqual,
+                        _ => return None,
+                    };
+                    let cmp = builder.ins().fcmp(cc, lhs, rhs);
+                    let one = builder.ins().iconst(types::I64, 1);
+                    let zero_v = builder.ins().iconst(types::I64, 0);
+                    let v = builder.ins().select(cmp, one, zero_v);
+                    builder.def_var(self.rv_i64(ins.a as usize), v);
+                    self.is_bool[ins.a as usize] = true;
+                    self.is_none[ins.a as usize] = false;
+                    self.is_float[ins.a as usize] = false;
+                    self.ret_slot[ins.a as usize] = None;
+                    return Some(());
                 }
                 let lhs = builder.use_var(self.rv_i64(ins.b as usize));
                 let rhs = builder.use_var(self.rv_i64(ins.c as usize));
@@ -2164,16 +2244,16 @@ pub fn precheck_fn(program: &Program, proto_index: usize) -> Option<usize> {
         return None;
     }
     if proto.ext_type.is_some() {
-        // Class methods need an object receiver, but the JIT value model only
-        // carries Int/Float values. The receiver arrives as a raw pointer
-        // (see `jit_fast::try_call_jit`) and the class-layout fast path
-        // cannot prove that the pointer it would dereference is the live
-        // receiver, so class methods stay in the interpreter.
-        // Phase 8 rework: teach the JIT about object receivers, then re-enable
-        // the class-layout `GetAttr`/`SetAttr` fast paths.
-        return None;
+        // Class methods carry the receiver as an extra hidden first argument
+        // (arity = params.len() + 1) and bind local slot 0 to it; `self` reads
+        // are `LoadLocal(0)`. The attr-field intrinsic verifies the member
+        // name at the given field index against the expected name at call
+        // time; a miss bails to the interpreter (tag = 2) instead of reading
+        // or writing a wrong field. Non-Int field values are not admitted by
+        // the JIT either, so Int `self.f` reads observe the interpreter's own
+        // member order.
     }
-    let arity = proto.params.len();
+    let arity = proto.params.len() + usize::from(proto.ext_type.is_some());
     if arity == 0 || arity > MAX_ARITY {
         return None;
     }
@@ -2234,7 +2314,7 @@ pub fn emit_fn_in_module(
     fid_dict_get: cranelift_module::FuncId,
     fid_sin: cranelift_module::FuncId,
     fid_int_get: cranelift_module::FuncId,
-    fid_int_ok: cranelift_module::FuncId,
+    fid_int_ok_name: cranelift_module::FuncId,
     fid_int_set: cranelift_module::FuncId,
     ret_kinds: &HashMap<usize, u8>,
 ) -> Option<()> {
@@ -2242,7 +2322,8 @@ pub fn emit_fn_in_module(
     if proto.flags & PROTO_FUNCTION == 0 {
         return None;
     }
-    let arity = proto.params.len();
+    let is_class = proto.ext_type.is_some();
+    let arity = proto.params.len() + usize::from(is_class);
 
     let plan = crate::vm::transfer::compile(program).ok()?;
     let plan = &plan.protos[proto_index];
@@ -2257,7 +2338,7 @@ pub fn emit_fn_in_module(
         .params
         .iter()
         .enumerate()
-        .map(|(i, p)| (program.names[p.name].clone(), i))
+        .map(|(i, p)| (program.names[p.name].clone(), i + usize::from(is_class)))
         .collect();
 
     // ---------- pass 1: collect jump targets ----------
@@ -2382,6 +2463,11 @@ pub fn emit_fn_in_module(
     }
     let zero = builder.ins().iconst(types::I64, 0);
     for i in arity..vars.len() {
+        // Class-method local slot 0 is `self`; pin it to the receiver.
+        if is_class && i == arity {
+            builder.def_var(vars[i], incoming[1]);
+            continue;
+        }
         builder.def_var(vars[i], zero);
     }
     // all Float pairs start undefined; they are only read through `use_var`
@@ -2485,9 +2571,8 @@ pub fn emit_fn_in_module(
         fid_dict_get,
         fid_sin,
         fid_int_get,
-        fid_int_ok,
+        fid_int_ok_name,
         fid_int_set,
-        // Wire in the class layout (keyed on proto index) for class methods.
         class_layouts: {
             let mut m: HashMap<usize, Vec<String>> = HashMap::new();
             for (i, p) in program.protos.iter().enumerate() {
@@ -2503,6 +2588,8 @@ pub fn emit_fn_in_module(
         local_is_intdict: vec![false; locals_len],
         call_candidate_regs: HashMap::new(),
         module,
+        is_class_method: is_class,
+        self_regs: HashSet::new(),
     };
     if tri.emit_stream(&mut builder).is_none() {
         return None;

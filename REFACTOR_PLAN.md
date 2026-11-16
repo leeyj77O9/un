@@ -154,12 +154,23 @@ Each item needs a before/after benchmark number in `REFACTOR_LOG.md`.
 - [ ] Add a `.unbc` round-trip test (compile → write → read → run → compare).
 - [ ] Decide whether `bench/results/` stays committed.
 
-## Phase 8 — JIT rework (deferred, tracked in `TECHNICAL_DEBT.md`)
+## Phase 8 — JIT rework (in progress, tracked in `TECHNICAL_DEBT.md`)
 
-- [ ] Teach the JIT value model about object receivers so class methods can
-      be compiled again.
+- [x] Class methods can be compiled again: the hidden receiver arrives as a
+      raw `Rc<ObjData>` pointer at position 0, class-method local slot 0 is
+      bound to it in the entry block, and `self.<Int>` field reads/writes go
+      through name-checked intrinsics (`un_instance_int_ok_name` verifies the
+      member name at the layout index AND the Int payload before the read or
+      write is performed); a mismatch bails to the interpreter (tag = 2).
+      `__init__` still bails (it returns `none`), as does
+      `class_work` in `bench/class.un` (it builds a list).
 - [ ] Add a hotness counter and compile lazily instead of eagerly at load.
+- [x] JIT module lifetime is now accounted for: the emitter's JITModule is
+      stashed in `jit_cache::JIT_MODULES`, `jit_cache::clear()` frees the
+      native code (callers must never enter JIT code afterwards), replacing
+      the silent `mem::forget` leak; the leak is a leak by design otherwise.
 - [ ] Add eviction/invalidation for `jit_cache` and `PLAN_CACHE`.
-- [ ] Free native code when a program is unloaded (or document the leak).
-- [ ] Extend the intrinsic coverage (Float compare, `math.sin`, IntDict with
-      entries, string ops).
+- [x] Float compares (`Lt/Le/Gt/Ge/Eq/Ne`) are native in the JIT; mixed
+      Int/Float operands promote with `fcvt_from_sint`.
+- [ ] `math.sin`, IntDict with entries, string ops (already present, unchanged),
+      class methods with non-Int fields.

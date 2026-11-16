@@ -399,6 +399,52 @@ pub unsafe extern "C" fn un_instance_int_ok(self_ptr: i64, field_index: i64) -> 
     }
 }
 
+/// Name-checked member probe for the Cranelift JIT. Returns 1 when
+/// `self_ptr` names a `RefCell<ObjData>` whose member table places a member
+/// at `field_index` with exactly the expected name AND an Int payload.
+/// Nothing is read here — the caller then reads (or writes) the slot under
+/// the exact same layout identity it just verified.
+///
+/// This is what lets the class-method intrinsic fall back gracefully when the
+/// member table does not match the compile-time-visible layout: a wrong
+/// field, a non-Int field, or a stale slot number all bail to the interpreter
+/// (tag = 2) rather than silently produce garbage.
+#[no_mangle]
+pub unsafe extern "C" fn un_instance_int_ok_name(
+    self_ptr: i64,
+    field_index: i64,
+    name_ptr: i64,
+    name_len: i64,
+) -> i64 {
+    fn check(self_ptr: i64, field_index: i64, name_ptr: i64, name_len: i64) -> bool {
+        if self_ptr == 0 || field_index < 0 || name_ptr == 0 || name_len < 0 {
+            return false;
+        }
+        let cell = unsafe { &*(self_ptr as *const RefCell<ObjData>) };
+        let data = cell.borrow();
+        match data.members.get(field_index as usize) {
+            Some((name, value)) => {
+                if name.len() as i64 != name_len {
+                    return false;
+                }
+                // SAFETY: the caller guarantees `name_ptr..name_ptr+name_len`
+                // names a live `&String` / `&str` buffer; we only read the
+                // bytes during the call.
+                let bytes = unsafe { std::slice::from_raw_parts(name_ptr as *const u8, name_len as usize) };
+                if name.as_bytes() != bytes {
+                    return false;
+                }
+                matches!(value.borrow().payload, Payload::Int(_))
+            }
+            None => false,
+        }
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(self_ptr, field_index, name_ptr, name_len))) {
+        Ok(true) => 1,
+        _ => 0,
+    }
+}
+
 /// Direct Int member read for the Cranelift JIT.
 ///
 /// # Safety

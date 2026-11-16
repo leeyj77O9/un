@@ -395,3 +395,48 @@ as part of the pass-3 deletions.
 
 Startup cost of `test_suite.un` (5-run sample): ~59 ms (`UV_JIT=0`) vs ~64 ms
 (default JIT) — within run-to-run noise; no claim made from this sample.
+
+---
+
+## 2026-11-16 — Pass 5: Phase 8 — JIT class methods, module lifetime, Float compare
+
+### What changed
+
+- `precheck_fn` now admits class methods (Int-region local `self` slot 0).
+  Class method local slot 0 is `self`; the entry block pins `incoming[1]`
+  (receiver pointer) to `vars[arity]`.
+- `emit_fn_in_module` changed the class-method arity to `params.len() + 1`,
+  matching `precheck_fn`; params are addressed at shifted positions.
+- The previous WIP `GetAttr`/`SetAttr` arms (which checked `ins.b == 0`) never
+  fired: the compiler assigns arbitrary register numbers per program. Register
+  identity is now tracked (`self_regs` is a bitmap set by `LoadLocal(0)` and
+  cleared by any later write to the same register — conservative bail, not a
+  silent wrong read).
+- The field load/store intrinsic is name-checked (`un_instance_int_ok_name`
+  verifies member name at the given index equals the expected field name AND
+  the payload is Int before any read or write happens). A mismatch bails to
+  the interpreter with tag = 2 — wrong field, non-Int field, layout drift are
+  all impossible to miscompile silently.
+- JIT modules are stashed in `jit_cache::JIT_MODULES`; `jit_cache::clear()`
+  now releases the native code with `free_memory` after JIT_FNS is cleared.
+  Normal execution still leaks by design; the leak is now documented and can
+  be reclaimed in tests/benchmarks.
+- Float comparisons (`Lt/Le/Gt/Ge/Eq/Ne`) are now native in the JIT; mixed
+  Int/Float operands promote with `fcvt_from_sint`; NaN semantics match Rust.
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** (clean build from `cargo clean`) |
+| `cargo test --release` | **202 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **40 files / 1395 passed / 0 failed / 0 crashed**; Negative **39 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/differential.ps1` | **79 files, 0 differences** (UV_JIT=0 vs default) |
+| `test/unit/runtime/classes.un` | 60 passed (was 56; +4 assertions on natively-compiled class-method paths) |
+| `UV_JIT_DEBUG=1` on `classes.un` | `inc`, `__len__`, `__getitem__`, `__setitem__` etc. compile as `OK`; 4-arg `norm` point probe ran natively |
+
+Constraints that remain: constructors (`none`-returning) and methods building
+lists/dicts/iters still bail to the interpreter (by design — the value model
+is Int/Float-only); non-Int field values read/write bail; `layout` must
+inclure `__init__`'s assignment order, which is checked name-wise at call
+time rather than trusted compile-time.

@@ -8,6 +8,7 @@
 //! Each entry records the native function pointer and its arity so the caller
 //! can dispatch with the right signature.
 
+use cranelift_jit::JITModule;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
@@ -64,6 +65,19 @@ pub extern "C" fn un_jit_depth_exit() -> i64 {
 
 unsafe impl Send for JitEntry {}
 
+/// JIT modules that have been emitted for this process. The vendored
+/// Cranelift backend leaks their native allocations by design (so
+/// `unsafe impl Send for JitEntry` sound); we keep the modules here so
+/// `clear()` can reclaim that memory on demand. Native code is never freed
+/// unless the caller invokes `clear()` after all execution has stopped.
+static JIT_MODULES: LazyLock<Mutex<Vec<JITModule>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Stash a finished JIT module. Called by the emitter after all of its
+/// function pointers have been extracted.
+pub(crate) fn stash_module(module: JITModule) {
+    JIT_MODULES.lock().expect("jit_cache").push(module);
+}
+
 static JIT_FNS: LazyLock<Mutex<HashMap<String, JitEntry>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// JIT is enabled unless `UV_JIT` is set to `0` (or `false`) in the environment.
@@ -112,4 +126,26 @@ pub fn get_jit_entry(key: &str) -> Option<JitEntry> {
         return None;
     }
     JIT_FNS.lock().ok()?.get(key).copied()
+}
+
+/// Free every native module the JIT emitted for this process and wipe the
+/// registry.
+///
+/// # Safety
+/// Calling this invalidates all previously returned `JitEntry.ptr` values:
+/// every native code pointer from every compiled module is freed. The caller
+/// must ensure no JIT-compiled code is executing anymore nor will be entered
+/// afterwards. Intended for whole-process shutdown (e.g. benchmarks /
+/// playground teardown), never for in-flight re-entry. Tests or other code
+/// that keep running Un programs after a `clear()` would crash or corrupt.
+pub fn clear() {
+    let modules = std::mem::take(&mut *JIT_MODULES.lock().expect("jit_cache"));
+    JIT_FNS.lock().expect("jit_cache").clear();
+    for module in modules {
+        // SAFETY: free_memory invalidates all pointers into the module; the
+        // caller must not enter any of them afterwards. All entries from
+        // those modules have been removed from JIT_FNS, so no lookup can
+        // return a dangling pointer.
+        unsafe { module.free_memory() };
+    }
 }
