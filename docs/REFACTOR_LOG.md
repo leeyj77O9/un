@@ -623,6 +623,36 @@ No code changes; documentation moves only. Gates assumed green from pass 8.
   tree section (archive removed, summary listed), scale counters already
   current.
 
+---
+
+## 2026-11-17 — Pass 11: class-JIT actually engages (benchmark-driven fix)
+
+### Problem
+
+While benchmarking, `UV_JIT_DEBUG=1` on `bench/class.un` showed
+`Point.norm()` was **not** JIT-compiling: `JITREJECT getattr not_in_layout
+ref=x`. Root cause: `seed_class_layouts` (at plan time) computes the field
+layout (`[\"x\", \"y\"]`) into `world::set_class_layout`, but at runtime
+`Op::RegisterClass` → `world::set_class` **overwrote** that entry with the
+template member order (methods only, e.g. `[\"__init__\", \"norm\"]`). The
+JIT precheck then found "x" missing from the layout and bailed on every
+class-layout read — the class-method JIT silently never engaged for this
+program (all class methods STUB-bailed at load time on the first call).
+
+### Fix
+
+`world::set_class` no longer clobbers an existing `class_layouts` entry —
+the seeded field order wins; the member-order snapshot is installed only
+as a fallback for classes that bypassed the seeder.
+
+### Result
+
+`norm()` now compiles natively (`JITDBG OK proto[2] norm`); `class_work`
+and `__init__` still bail by design (unsupported surface). `class1000`
+median: **5.59 → 4.73 ms** (audit baseline 7.272 ms). Gates unchanged:
+cargo test 204, test.ps1 1395/exit 0, differential 79/0, round-trip green.
+`bench/class.un` untouched (user WIP).
+
 ### Verification
 
 No code changes; documentation only. Gates assumed green from pass 8.

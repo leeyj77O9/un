@@ -82,11 +82,15 @@ pub fn set_class_layout(name: &str, fields: Vec<String>) {
 pub fn set_class(name: &str, obj: Obj) {
     WORLD.with(|w| {
         let mut w = w.borrow_mut();
-        // Snapshot member order at registration so layout computations can
-        // rely on it later (the template accumulates `__init__`/methods in
-        // the order the class body was compiled — instances inherit this order).
-        let layout: Vec<String> = obj.borrow().members.iter().map(|(n, _)| n.clone()).collect();
-        w.class_layouts.insert(name.to_owned(), layout);
+        // The JIT consumes `class_layouts` for field indices; the seeded
+        // field order (computed from `__init__`'s `SetAttr` instructions at
+        // program load) must survive runtime registration. The template
+        // member order (methods and fields, in class-body definition order)
+        // is only a fallback for classes that bypassed the seeder.
+        if !w.class_layouts.contains_key(name) {
+            let layout: Vec<String> = obj.borrow().members.iter().map(|(n, _)| n.clone()).collect();
+            w.class_layouts.insert(name.to_owned(), layout);
+        }
         w.classes.insert(name.to_owned(), obj);
     })
 }
