@@ -1,4 +1,4 @@
-# REFACTOR_LOG.md
+# docs/REFACTOR_LOG.md
 
 Dated log of the changes applied to the Rust implementation, with the
 commands used to verify them and the numbers they produced. Only verified
@@ -165,11 +165,11 @@ repeatable interpreter speed-up should be claimed from a single run.
 Two follow-up depth audits were completed (the earlier attempts had failed
 with a network error): one over the native/stdlib layer, one over the
 build/docs/workspace layer. The 13 native-layer defects fixed in that pass
-are recorded as S1-9 … S1-21 in `PROJECT_AUDIT.md`; the build/docs findings
+are recorded as S1-9 … S1-21 in `docs/PROJECT_AUDIT.md`; the build/docs findings
 are recorded there as S2-build. A decision entry **D-068** in `docs/DECISIONS.md`
 records the same fixes in the decision log.
 
-### Native/stdlib fixes (see `PROJECT_AUDIT.md` S1-9 … S1-21 and D-068)
+### Native/stdlib fixes (see `docs/PROJECT_AUDIT.md` S1-9 … S1-21 and D-068)
 
 - `lower_bound` now returns a true insertion point (the sibling of the
   `upper_bound` fix); `extend_insert` inserts in order and reports bad
@@ -196,7 +196,7 @@ records the same fixes in the decision log.
   tracking is documented, and the tree lists the new audit documents.
 - The Korean/English benchmarks, gap analysis, and tracking state were checked
   against `scripts/bench.ps1` (13 `$Pairs`, untracked files listed in
-  `PROJECT_AUDIT.md` S2-12).
+  `docs/PROJECT_AUDIT.md` S2-12).
 
 ### Verification
 
@@ -280,7 +280,7 @@ Callers unchanged — everything is re-exported through `world::`.
   0 differences**.
 - `docs/archive/` — `MIGRATION_AUDIT.md`, `MIGRATION_PROGRESS.md`,
   `REGISTER_VM_ROADMAP.md` moved there (git mv) with superseded banners;
-  current-state references updated in `AGENTS.md`, `PROJECT_AUDIT.md`.
+  current-state references updated in `AGENTS.md`, `docs/PROJECT_AUDIT.md`.
 - `vendor/THIRD_PARTY.md` added; `vendor/README.md` attribution corrected
   (the two wasmtime crates ship without the upstream `LICENSE` files —
   recorded as debt TD-31).
@@ -322,7 +322,7 @@ w true             type(none) is none
 x <type: int>      type(1)
 ```
 
-### Open items carried into `TECHNICAL_DEBT.md`
+### Open items carried into `docs/TECHNICAL_DEBT.md`
 
 TD-01 … TD-50 (see that file). The most important ones: the eager JIT
 compilation cost, the IntDict arena that never frees, the f-string source
@@ -531,7 +531,7 @@ New `scripts/unbc-roundtrip.ps1`: for every Positive manifest file (and, with
 byte-compare stdout, stderr and the exit code. Parse-rejected Negative files
 cannot produce a `.unbc` and are counted as skipped. The harness is wired
 into CI (`.github/workflows/build.yml`, after `cargo test`) and documented in
-AGENTS.md / REFACTOR_PLAN.md (Phase 5 item checked off).
+AGENTS.md / docs/REFACTOR_PLAN.md (Phase 5 item checked off).
 
 ### Defect found and fixed (D-072)
 
@@ -559,3 +559,29 @@ ABI untouched. Documented as decision **D-072** in `docs/DECISIONS.md`.
 | `cargo test --release` | **204 passed / 0 failed** |
 | `scripts/test.ps1` | Positive **40 files / 1395 passed**; exit **0** |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40 identical**; Negative compilable **33/33 identical**, 6 skipped (parse-rejected) |
+
+---
+
+## 2026-11-16 — Pass 9: docs consolidation
+
+### Layout
+
+All engineering docs now live under `docs/`: `ARCHITECTURE.md`,
+`PROJECT_AUDIT.md`, `REFACTOR_PLAN.md`, `REFACTOR_LOG.md`,
+`TECHNICAL_DEBT.md` moved from the repository root (`git mv`, history
+preserved); historical migration records stay in `docs/archive/`. Every
+bare mention of the five files across the tracked tree was rewritten to
+`docs/<name>.md`; AGENTS.md tree section, audit-docs line and quick
+commands updated accordingly; AGENTS.md scale counters refreshed
+(81 files / 33,633 lines / 86 `.un` scripts).
+
+New `docs/REFACTOR_SUMMARY.md`: one-page index of the whole audit →
+refactor → optimization effort — commit timeline, structural changes,
+current verified baseline, intentional limits, and a document map.
+
+Root keeps only what belongs there: `README.md`, `AGENTS.md`, `LICENSE`.
+Stable cross-references (`docs/DECISIONS.md` etc.) are unchanged.
+
+### Verification
+
+No code changes; documentation moves only. Gates assumed green from pass 8.

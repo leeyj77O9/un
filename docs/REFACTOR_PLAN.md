@@ -1,9 +1,9 @@
-﻿# REFACTOR_PLAN.md
+# docs/REFACTOR_PLAN.md
 
-The phased plan that follows from `PROJECT_AUDIT.md`. Every phase has an
+The phased plan that follows from `docs/PROJECT_AUDIT.md`. Every phase has an
 entry condition, a concrete change list and an exit condition that must be
 verified with real commands — a phase is only closed when the exit condition
-holds, and the numbers go into `REFACTOR_LOG.md`.
+holds, and the numbers go into `docs/REFACTOR_LOG.md`.
 
 Ground rules for every phase:
 
@@ -20,7 +20,7 @@ Ground rules for every phase:
 
 - [x] Baseline measurements (build, tests, benchmarks) recorded.
 - [x] Six independent depth audits (frontend, runtime, VM/bytecode, JIT,
-      native, build/docs/workspace) consolidated into `PROJECT_AUDIT.md`.
+      native, build/docs/workspace) consolidated into `docs/PROJECT_AUDIT.md`.
 - [x] `docs/DECISIONS.md` duplicate IDs `D-033`/`D-034` — see Phase 7.
 
 Exit: baseline numbers recorded, audit document written. **Done.**
@@ -60,7 +60,7 @@ Exit: 40 files / 1391 passed / 0 failed, 202 Rust tests green. **Done.**
 - [ ] Unified JIT tag contract documented in one place (TD-04).
 
 Exit: no JIT path can produce a silently wrong value; every fallback is
-explicit. **Partially done — remaining items are in `TECHNICAL_DEBT.md`.**
+explicit. **Partially done — remaining items are in `docs/TECHNICAL_DEBT.md`.**
 
 ## Phase 3 — Performance: hot paths (partially done)
 
@@ -71,7 +71,7 @@ explicit. **Partially done — remaining items are in `TECHNICAL_DEBT.md`.**
 - [ ] `set_attr_from`: drop the redundant value clones.
 - [ ] `Source` line/column lookup: index the source once instead of scanning.
 
-Each item needs a before/after benchmark number in `REFACTOR_LOG.md`.
+Each item needs a before/after benchmark number in `docs/REFACTOR_LOG.md`.
 
 ## Phase 4 — Dead code removal and naming
 
@@ -82,7 +82,7 @@ Each item needs a before/after benchmark number in `REFACTOR_LOG.md`.
       enum's shape.
 - [x] Delete `TokenType::text()` (116 dead arms) and `Token::error`; drop
       `Token.message`.
-- [x] Delete the dead `pub` items listed in `PROJECT_AUDIT.md` S4-5
+- [x] Delete the dead `pub` items listed in `docs/PROJECT_AUDIT.md` S4-5
       (`Source::full_name`, `Source::len`, `Node::end`, `LangError::relocated`,
       `unbc::opcode_of`, `jit_cache::clear`, `world::current_program` +
       `set_current_program`, `scope::remove`, `collections::is_single`,
@@ -160,7 +160,7 @@ Each item needs a before/after benchmark number in `REFACTOR_LOG.md`.
       source-dir-relative module resolution on `.unbc` re-run (see D-072).
 - [ ] Decide whether `bench/results/` stays committed.
 
-## Phase 8 — JIT rework (in progress, tracked in `TECHNICAL_DEBT.md`)
+## Phase 8 — JIT rework (in progress, tracked in `docs/TECHNICAL_DEBT.md`)
 
 - [x] Class methods can be compiled again: the hidden receiver arrives as a
       raw `Rc<ObjData>` pointer at position 0, class-method local slot 0 is

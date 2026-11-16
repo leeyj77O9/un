@@ -1,4 +1,4 @@
-﻿# DECISIONS.md — 결정 로그
+# DECISIONS.md — 결정 로그
 
 형식: `D-NNN | 제목 | 상태 | 결정 | 영향`
 - 상태: **Accepted** = 채택되어 코드에 반영, **Proposed** = 채택되었으나 코드 반영 전, **Pending** = 검증 필요
@@ -780,7 +780,7 @@ compiler는 file module path를 항상 compile하고 `Op::Use`가 run time에
 - 검증: `scripts/test.ps1` Positive **40 files / 1391 passed / 0 failed / 0
   crashed**, Negative 39 matched / 0 documented divergences, Known 0, exit 0.
   (이후 negative 셋 수리로 현재 기준도 같다 — see D-067의 주석과
-  REFACTOR_LOG.md.)
+  docs/REFACTOR_LOG.md.)
 
 ## D-069 | `chr`의 surrogate range는 inner .NET 문자열만 재현한다 | Accepted
 
@@ -886,7 +886,7 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   만들 수 없으므로 skip으로 집계한다. 수정 후 Positive **40/40 identical**,
   negative compilable **33/33 identical**(수정 전 0/40→2건 불일치: 위 두 건이
   잡혔다). CI(`.github/workflows/build.yml`)에도 같은 step을 추가했다.
-  `test.ps1`/`cargo test` 기준은 그대로 green(아래 REFACTOR_LOG 참고).
+  `test.ps1`/`cargo test` 기준은 그대로 green(아래 docs/REFACTOR_LOG.md 참고).
 - **교훈**: 음성(negative) 픽스처 셋은 "모듈 해석의 명세"였는데, 지금까지는
   source 경로만 통해서만 실행됐다. `.unbc` 경로도 동일 명세로 검증해야
   컴파일 아티팩트가 1급 실행 경로로 유지된다.

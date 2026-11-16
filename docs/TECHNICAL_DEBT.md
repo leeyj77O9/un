@@ -1,9 +1,9 @@
-﻿# TECHNICAL_DEBT.md
+# docs/TECHNICAL_DEBT.md
 
 Register of the problems that are **known, accepted and not yet fixed**. Every
 entry states the evidence, the risk it carries and what closing it would
 cost. Items that were fixed during the 2026-11-16 audit pass are listed in
-`REFACTOR_LOG.md`, not here.
+`docs/REFACTOR_LOG.md`, not here.
 
 Severity:
 

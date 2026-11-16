@@ -1,7 +1,7 @@
 # Register VM 설계 문서
 
-> **HISTORICAL — superseded by the 2026-11-16 audit** (`PROJECT_AUDIT.md`,
-> `ARCHITECTURE.md`). This is the original register-VM design document; it
+> **HISTORICAL — superseded by the 2026-11-16 audit** (`docs/PROJECT_AUDIT.md`,
+> `docs/ARCHITECTURE.md`). This is the original register-VM design document; it
 > refers to `vm.rs` (now `rust/src/vm/`), to a `--vm2` flag that no longer
 > exists, and to pre-audit numbers. Kept for history; see
 > `docs/DECISIONS.md` for the current state.

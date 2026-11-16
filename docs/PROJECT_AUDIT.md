@@ -1,4 +1,4 @@
-﻿# PROJECT_AUDIT.md
+# docs/PROJECT_AUDIT.md
 
 Audit of the Rust `unvm` implementation (branch `main`, base commit `958f9e2`).
 
@@ -11,10 +11,10 @@ code as it stands now* and what still needs to change.
 
 Related documents:
 
-- `REFACTOR_PLAN.md` — the phased plan that follows from this audit.
-- `REFACTOR_LOG.md` — dated log of the changes that were actually applied.
-- `ARCHITECTURE.md` — how the implementation is put together.
-- `TECHNICAL_DEBT.md` — the debt register (items deliberately left in place).
+- `docs/REFACTOR_PLAN.md` — the phased plan that follows from this audit.
+- `docs/REFACTOR_LOG.md` — dated log of the changes that were actually applied.
+- `docs/ARCHITECTURE.md` — how the implementation is put together.
+- `docs/TECHNICAL_DEBT.md` — the debt register (items deliberately left in place).
 - `docs/DECISIONS.md` — language/runtime decisions (D-001 … D-067).
 
 ## 1. Scope and method
@@ -81,7 +81,7 @@ uncommitted work in the tree):
 | S2-1 | The JIT runtime helpers had no failure channel: a missing member, a non-Int member or a `RefCell` borrow conflict all produced `0`, and a write to a missing slot was dropped | `rust/src/runtime/obj.rs:367-403` (pre-fix) | fixed — helpers now report a status and the JIT bails (tag=2) |
 | S2-2 | Class methods were compiled with an inconsistent arity: `precheck_fn` counted the hidden receiver argument, `emit_fn_in_module` did not, so the first real parameter was never bound | `rust/src/jit_bc.rs` (pre-fix) | resolved in Phase 8 — arity is consistent (params + receiver), and the receiver is bound to local slot 0; the name-checked intrinsic verifies the layout at call time |
 | S2-3 | `unsafe extern "C"` bodies could unwind into native code (a `RefCell` panic crossing the Cranelift frame is undefined behaviour) | `rust/src/runtime/obj.rs:376/398`, `rust/src/runtime/int_dict.rs:73-95` | partially fixed — the instance helpers are wrapped in `catch_unwind`; the IntDict arena still needs it |
-| S2-4 | The JIT tag contract was documented in three different places with three different legal tag sets (`0` Int, `1` Float, `2` bail, `3` Bool); `jit_fast.rs` panicked on any tag it did not know | `rust/src/jit_cache.rs:22`, `rust/src/vm/mod.rs:1532-1537`, `rust/src/jit_fast.rs:58-62` | open — see `TECHNICAL_DEBT.md` TD-04 |
+| S2-4 | The JIT tag contract was documented in three different places with three different legal tag sets (`0` Int, `1` Float, `2` bail, `3` Bool); `jit_fast.rs` panicked on any tag it did not know | `rust/src/jit_cache.rs:22`, `rust/src/vm/mod.rs:1532-1537`, `rust/src/jit_fast.rs:58-62` | open — see `docs/TECHNICAL_DEBT.md` TD-04 |
 | S2-5 | `jit_cache` keys entries by `Rc::as_ptr(program)`. The cache is never cleared, so the program is kept alive for the process lifetime and the pointer key can never be reused; but `jit_cache::clear()` exists and is never called, and the module-level header still documents a removed AST-based `"fn:<name>"` key format | `rust/src/jit_cache.rs:1-7, 100` | open — TD-02 |
 | S2-6 | `PLAN_CACHE` (thread-local) stores `(Rc<Program>, Rc<Plan>)` keyed by the same pointer and never evicts, so every loaded program is retained for the process lifetime | `rust/src/vm/mod.rs:1571-1573` | open — TD-03 |
 | S2-7 | `unsafe impl Send for JitEntry` — sound only because the vendored Cranelift backend `mem::forget`s every allocation, so native code is never freed | `rust/src/jit_cache.rs:57`, `vendor/cranelift-jit/src/memory/system.rs:146-151` | open — TD-05 |
@@ -139,7 +139,7 @@ uncommitted work in the tree):
 - **`docs/DECISIONS.md` history.** Decisions are marked superseded, never
   deleted.
 - **The user's uncommitted class-layout work.** It was kept, hardened and
-  documented rather than deleted (see `REFACTOR_LOG.md`).
+  documented rather than deleted (see `docs/REFACTOR_LOG.md`).
 
 ## 4. Verification method used for the dead-code census
 
@@ -186,9 +186,9 @@ symbol with exactly one occurrence in its own definition file is reported as
 - Phase 4 (dead code removal) and Phase 5 (the `runtime/world.rs` split) are
   done; Phase 7 tooling (CI workflow, toolchain pin, differential runner,
   archive move) is done. The remaining phases are listed in
-  `REFACTOR_PLAN.md`.
+  `docs/REFACTOR_PLAN.md`.
 - This document also records the follow-up depth audits of the **native/stdlib**
   layer and the **build/docs/workspace** layer (see S1-9…S1-21, S2-build):
   13 native-layer defects were fixed, the native-layer remaining issues are
-  recorded in `TECHNICAL_DEBT.md`, and the build/docs tree findings are
+  recorded in `docs/TECHNICAL_DEBT.md`, and the build/docs tree findings are
   recorded as S2-build and in the decision log (D-067 through D-070).
