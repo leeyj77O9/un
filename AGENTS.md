@@ -76,7 +76,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```
 
 - Windows에서 `unvm.exe`는 `rust\target\release\`에 빌드된다. PATH에 추가해서 쓸 수 있다.
-- `.github/workflows/build.yml`이 GNU toolchain 빌드 + `scripts/test.ps1` + `cargo test --release` + `scripts/unbc-roundtrip.ps1 -IncludeNegative`를 실행한다(`rust-toolchain.toml`이 툴체인을 고정한다).
+- `.github/workflows/build.yml`이 GNU toolchain 빌드 + `scripts/test.ps1` + `cargo test --release` + `scripts/unbc-roundtrip.ps1 -IncludeNegative`를 실행한다(`rust-toolchain.toml`이 툴체인을 고정한다). 2026-11-17에 두 번 실행되어 모두 green이다 (`build #1` 4m 0s, `build #2` 3m 28s).
 - `stable-x86_64-pc-windows-gnu` toolchain을 쓴다(MSVC linker가 없는 개발 머신).
 - `wasm32-unknown-unknown` 타겟도 같은 toolchain으로 빌드된다(link가 필요 없다).
 - 현재 `cargo build --release`는 오류 0개, 경고 0개로 끝난다. **새 경고를 추가하지 말 것.**

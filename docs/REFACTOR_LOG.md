@@ -824,3 +824,13 @@ before); negative manifest is now **41 checks**.
 | `scripts/test.ps1` | Positive **40 files / 1401 passed / 0 crashed**; Negative **41 matched / 0 divergences**; exit **0** |
 | `scripts/differential.ps1` | **81 files, 0 differences** (2 new negative fixtures included) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive 40/40; Negative 34/34 (+7 parse-rejected skips) |
+
+### CI
+
+The `main` push of `dff50d1` triggered `.github/workflows/build.yml`:
+**run #43977741595 (`build #2`) completed successfully in 3m 28s**
+(job `build-test` 3m 25s). The earlier pass-10 push (`4048761`) ran
+**run #43890043060 (`build #1`) successfully in 4m 0s**. One warning:
+`actions/checkout@v4` targets Node.js 20, which GitHub is deprecating in
+favour of Node.js 24 (forced there; a future `actions/checkout@v5` bump
+will silence it).

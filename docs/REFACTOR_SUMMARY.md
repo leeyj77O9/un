@@ -82,8 +82,9 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
   external crates remain off-limits.
 - `bench/results/` is gitignored (history shows it was committed early,
   un-tracked later).
-- CI (`.github/workflows/build.yml`) is defined but has never executed on
-  GitHub; the local runner sequence above is the source of truth.
+- CI (`.github/workflows/build.yml`) runs on every push to `main`; executed
+  twice so far (2026-11-17), both green (`build #1` 4m 0s, `build #2` 3m 28s).
+  The local runner sequence above remains the fast feedback loop.
 - `test/KnownDivergent.txt` documents deliberate implementation differences
   (currently none registered); `test/KnownFailures.txt` is empty.
 
