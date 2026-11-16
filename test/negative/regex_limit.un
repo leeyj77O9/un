@@ -1,0 +1,3 @@
+use io
+use re
+io.write("v", re.search("(a+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"))

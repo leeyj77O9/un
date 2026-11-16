@@ -183,7 +183,9 @@ fn set_header_impl(scope: &Scope) -> Obj {
     };
 
     let mut headers = state.borrow_mut();
-    headers.headers.retain(|(name, _)| name != &key);
+    headers
+        .headers
+        .retain(|(name, _)| !name.eq_ignore_ascii_case(&key));
     headers.headers.push((key, value));
     obj::none()
 }

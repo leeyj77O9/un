@@ -79,6 +79,13 @@ fn compile(pattern: &str) -> Result<Regex, Obj> {
         Err(message) => Err(obj::err(format!("invalid regex pattern: {message}"))),
     }
 }
+
+/// The regex engine exhausted its backtracking step budget. Surfaced as an
+/// Un error (never a silent "no match"), because an exhausted attempt cannot
+/// distinguish "doesn't match" from "would match eventually".
+fn limit_error() -> Obj {
+    obj::err("regex backtracking limit exceeded")
+}
 fn test_impl(scope: &Scope) -> Obj {
     let (pattern, text) = match pattern_and_text(scope) {
         Ok(v) => v,
@@ -89,7 +96,10 @@ fn test_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     let chars: Vec<char> = text.chars().collect();
-    obj::boolean(regex.find_at(&chars, 0).is_some())
+    match regex.find_at(&chars, 0) {
+        Ok(found) => obj::boolean(found.is_some()),
+        Err(_) => limit_error(),
+    }
 }
 fn match_impl(scope: &Scope) -> Obj {
     let (pattern, text) = match pattern_and_text(scope) {
@@ -102,10 +112,11 @@ fn match_impl(scope: &Scope) -> Obj {
     };
     let chars: Vec<char> = text.chars().collect();
     match regex.find_at(&chars, 0) {
-        Some(found) if found.start == 0 => {
+        Ok(Some(found)) if found.start == 0 => {
             obj::str(&chars[found.start..found.end].iter().collect::<String>())
         }
-        _ => obj::none(),
+        Ok(_) => obj::none(),
+        Err(_) => limit_error(),
     }
 }
 fn search_impl(scope: &Scope) -> Obj {
@@ -119,8 +130,11 @@ fn search_impl(scope: &Scope) -> Obj {
     };
     let chars: Vec<char> = text.chars().collect();
     match regex.find_at(&chars, 0) {
-        Some(found) => obj::str(&chars[found.start..found.end].iter().collect::<String>()),
-        None => obj::none(),
+        Ok(Some(found)) => {
+            obj::str(&chars[found.start..found.end].iter().collect::<String>())
+        }
+        Ok(None) => obj::none(),
+        Err(_) => limit_error(),
     }
 }
 fn find_all_impl(scope: &Scope) -> Obj {
@@ -133,11 +147,13 @@ fn find_all_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     let chars: Vec<char> = text.chars().collect();
-    let matches: Vec<Obj> = regex
-        .find_all(&chars)
-        .into_iter()
-        .map(|found| obj::str(&chars[found.start..found.end].iter().collect::<String>()))
-        .collect();
+    let matches: Vec<Obj> = match regex.find_all(&chars) {
+        Ok(matches) => matches,
+        Err(_) => return limit_error(),
+    }
+    .into_iter()
+    .map(|found| obj::str(&chars[found.start..found.end].iter().collect::<String>()))
+    .collect();
     collections::list(matches)
 }
 fn groups_impl(scope: &Scope) -> Obj {
@@ -150,7 +166,11 @@ fn groups_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     let chars: Vec<char> = text.chars().collect();
-    let Some(found) = regex.find_at(&chars, 0) else {
+    let found = match regex.find_at(&chars, 0) {
+        Ok(found) => found,
+        Err(_) => return limit_error(),
+    };
+    let Some(found) = found else {
         return obj::none();
     };
     let capsize = found.captures.len();
@@ -300,7 +320,11 @@ fn replace_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     let chars: Vec<char> = text.chars().collect();
-    let Some(found) = regex.find_at(&chars, 0) else {
+    let found = match regex.find_at(&chars, 0) {
+        Ok(found) => found,
+        Err(_) => return limit_error(),
+    };
+    let Some(found) = found else {
         return obj::str(&text);
     };
     let mut out: String = chars[..found.start].iter().collect();
@@ -324,7 +348,11 @@ fn replace_all_impl(scope: &Scope) -> Obj {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut pos = 0usize;
-    for found in regex.find_all(&chars) {
+    let matches = match regex.find_all(&chars) {
+        Ok(matches) => matches,
+        Err(_) => return limit_error(),
+    };
+    for found in matches {
         out.push_str(&chars[pos..found.start].iter().collect::<String>());
         out.push_str(&expand(&replacement, &chars, &found, &regex));
         pos = found.end;
@@ -344,7 +372,11 @@ fn split_impl(scope: &Scope) -> Obj {
     let chars: Vec<char> = text.chars().collect();
     let mut parts: Vec<Obj> = Vec::new();
     let mut pos = 0usize;
-    for found in regex.find_all(&chars) {
+    let matches = match regex.find_all(&chars) {
+        Ok(matches) => matches,
+        Err(_) => return limit_error(),
+    };
+    for found in matches {
         parts.push(obj::str(&chars[pos..found.start].iter().collect::<String>()));
         pos = found.end;
 

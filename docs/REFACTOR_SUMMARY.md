@@ -32,6 +32,8 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | `4048761` | 10 | Legacy removal: `REFACTOR_PLAN.md` and `docs/archive/` deleted; `TECHNICAL_DEBT.md` pruned to open items; stale counters/diagrams refreshed. |
 | `dcb3ef9` | 11 | Benchmark-driven fix: `RegisterClass` no longer clobbers the seeded class field layout — class-method JIT actually engages (`norm()` compiles; `class1000` 5.59 → 4.73 ms). |
 | (pass 12) | 12 | Debt closures: TD-46 (`iter.range` swap), TD-12 (dead `TryEntry.depth`), TD-42 (`rw` read_line UTF-8/EOF), TD-07 (IntDict arena: free-on-exit, poison-tolerant lock) + IntDict id escape fix. |
+| `c2cc664` | 13 | Bug sweep: `a[]` no longer panics the process (clean `LangError`); probed string/UTF-8, try-remove semantics, unsafe surface, interner bounds — all clean. |
+| (pass 14) | 14 | TD-36 (regex 10M-step budget; error instead of infinite hang, negative fixture) and TD-37 (HTTP/WS 10 s connect + 30 s IO timeouts, 64 MiB response cap with exact `Content-Length` validation, consistent scheme-guard messages, case-insensitive `set_header`). |
 
 Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; the audit findings with
 fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
@@ -64,9 +66,9 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
 | `cargo test --release` | **205 passed / 0 failed** |
-| `scripts/test.ps1` | Positive **40 files / 1401 passed**; Negative **40 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
-| `scripts/differential.ps1` | **79 files, 0 differences** (JIT on vs off, byte-identical) |
-| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40**; Negative compilable **33/33** identical |
+| `scripts/test.ps1` | Positive **40 files / 1401 passed**; Negative **41 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/differential.ps1` | **81 files, 0 differences** (JIT on vs off, byte-identical) |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40**; Negative compilable **34/34** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |
 
 ## Intentionally not done / known limits

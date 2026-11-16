@@ -63,7 +63,7 @@ impl Regex {
         })
     }
 
-    pub fn find_at(&self, text: &[char], from: usize) -> Option<Match> {
+    pub fn find_at(&self, text: &[char], from: usize) -> Result<Option<Match>, String> {
         let len = text.len();
         let mut start = from.min(len);
         loop {
@@ -84,27 +84,30 @@ impl Regex {
                     captures.push(slot);
                 }
                 let interval = captures[0].last().copied().unwrap_or((start, start));
-                return Some(Match {
+                return Ok(Some(Match {
                     start: interval.0,
                     end: interval.1,
                     captures,
                     capcount: data.capcount,
                     matched,
-                });
+                }));
+            }
+            if engine.limited() {
+                return Err("regex backtracking limit exceeded".to_string());
             }
             if start == len {
-                return None;
+                return Ok(None);
             }
             start += 1;
         }
     }
 
-    pub fn find_all(&self, text: &[char]) -> Vec<Match> {
+    pub fn find_all(&self, text: &[char]) -> Result<Vec<Match>, String> {
         let len = text.len();
         let mut out = Vec::new();
         let mut pos = 0usize;
         while pos <= len {
-            match self.find_at(text, pos) {
+            match self.find_at(text, pos)? {
                 Some(found) => {
                     let empty = found.start == found.end;
                     let end = found.end;
@@ -121,7 +124,7 @@ impl Regex {
                 None => break,
             }
         }
-        out
+        Ok(out)
     }
 
     pub fn capsize(&self) -> usize {
@@ -233,7 +236,7 @@ mod tests {
             for (i, input) in inputs.iter().enumerate() {
                 let chars: Vec<char> = input.chars().collect();
                 assert_eq!(
-                    m.find_at(&chars, 0).is_some(),
+                    m.find_at(&chars, 0).expect("engine limit").is_some(),
                     expected[i],
                     "pattern {pattern} input {input:?}"
                 );
@@ -241,6 +244,6 @@ mod tests {
         }
 
         let m = super::Regex::new("\\p{L}").unwrap();
-        assert!(m.find_at(&[], 0).is_none());
+        assert!(m.find_at(&[], 0).expect("engine limit").is_none());
     }
 }

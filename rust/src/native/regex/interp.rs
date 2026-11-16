@@ -1,6 +1,8 @@
 use crate::native::regex::opts::*;
 use crate::native::regex::unicode;
 use super::writer::Code;
+const STEP_LIMIT: u64 = 10_000_000;
+
 #[derive(Debug, Clone)]
 pub struct MatchData {
     pub capsize: usize,
@@ -24,6 +26,7 @@ pub struct Engine<'a> {
     operator: i32,
     codepos: usize,
     caps: usize,
+    steps: u64,
 }
 impl<'a> Engine<'a> {
     pub fn new(code: &'a Code, input: &'a [char], caps: usize) -> Self {
@@ -45,6 +48,7 @@ impl<'a> Engine<'a> {
             operator: 0,
             codepos: 0,
             caps,
+            steps: 0,
         }
     }
     fn ensure_storage(&mut self) {
@@ -453,6 +457,13 @@ impl<'a> Engine<'a> {
             capcount: self.matchcount,
         }
     }
+    /// True when the dispatch loop exhausted `STEP_LIMIT` — the last `run()`
+    /// returned no-match *because* the budget ran out, not because the
+    /// pattern failed. Callers must surface this as an error, never as a
+    /// negative match.
+    pub fn limited(&self) -> bool {
+        self.steps > STEP_LIMIT
+    }
     pub fn run(&mut self, startpos: i64) -> bool {
         self.pos = startpos;
         if self.code.codes.is_empty() {
@@ -462,6 +473,10 @@ impl<'a> Engine<'a> {
         self.codepos = 0;
         let mut advance: i32 = -1;
         loop {
+            self.steps += 1;
+            if self.steps > STEP_LIMIT {
+                return false; // engine hit the step budget; caller checks `limited()`
+            }
             if advance >= 0 {
                 self.advance(advance as usize);
                 advance = -1;

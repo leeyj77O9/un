@@ -46,3 +46,4 @@ test/negative/property_field.un|1|undefined variable 'field'
 test/negative/range_float.un|1|unsupported operand type(s) for ..: 'float' and 'int'
 test/negative/range_str.un|1|unsupported operand type(s) for ..: 'str' and 'int'
 test/negative/empty_index.un|1|expected an index expression
+test/negative/regex_limit.un|1|regex backtracking limit exceeded

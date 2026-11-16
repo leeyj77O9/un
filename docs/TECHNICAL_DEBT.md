@@ -11,7 +11,6 @@ Severity:
 
 | ID | Severity | Summary | Where |
 | --- | --- | --- | --- |
-| TD-36 | high | The regex engine has no backtracking step/time budget: catastrophic patterns (`(a+)+$` on long runs) hang the process forever. Deliberate .NET parity (D-064) but unmitigated; every other input-driven native path is now capped | `rust/src/native/re/interp.rs` |
 | TD-03 | medium | `PLAN_CACHE` (thread-local) keeps every loaded `Rc<Program>` and `Rc<Plan>` alive for the process lifetime. Keyed by the opaque `Program.id`, so a pointer collision cannot serve a stale plan — but the growth is unchanged; full spill/reload is a separate design problem | `rust/src/vm/mod.rs` |
 | TD-05 | high | Native code is never freed in normal runs (the vendored Cranelift backend `mem::forget`s allocations on drop). `clear_program(program_id)` / `clear()` now free it soundly and are exercised by tests — but a whole-process boundary is required | `rust/src/jit_cache.rs`, `rust/src/vm/tests.rs` |
 | TD-08 | medium | `obj::invoke`/`obj::call` rebuild the argument vector with `args.to_vec()` on every call | `rust/src/runtime/obj.rs:515, 520` |
@@ -20,7 +19,6 @@ Severity:
 | TD-11 | medium | `Source::get_line`/`get_column`/`get_line_start` scan the whole source from offset 0 | `rust/src/source.rs:38-62` |
 | TD-16 | medium | `plan_for` uses `.expect()`; it is safe only because every caller validates first, and the invariant is not enforced inside the function | `rust/src/vm/mod.rs:1670-1673` |
 | TD-17 | medium | `transfer.rs` hard-codes opcode indices `744..=796` in the debug dump, which goes stale silently when the opcode table changes | `rust/src/vm/transfer.rs:240-244` |
-| TD-37 | medium | HTTP/WS have no connect or read timeout and no response-size cap; a hung or huge peer blocks the process or OOMs it; `https`/`wss` are accepted by the URI parser and then rejected with inconsistent messages; `post`/`put`/`patch`/`delete` never check the status code, and `set_header` compares names case-sensitively | `rust/src/native/net.rs:250-265`, `rust/src/native/http.rs`, `rust/src/native/ws.rs` |
 | TD-39 | medium | `atomic.*`/`pool.*`/`lock.*` are single-thread cooperative shims: `Rc<RefCell>` cells, a flag-not-a-mutex lock, a pool whose `worker_count` is stored but never used and whose `map` runs eagerly on the caller thread; atomic overflow wraps silently (D-012/D-054/D-061) | `rust/src/native/atomic.rs`, `rust/src/native/flow.rs`, `rust/src/runtime/int_dict.rs` |
 | TD-40 | medium | A Rust panic inside a native call is not caught by the VM and kills the worker thread with a raw Rust panic instead of an Un error. Largely capped now (allocation limits), but any remaining overflow site still escapes | `rust/src/main.rs`, `rust/src/vm/mod.rs` |
 | TD-18 | low | Five parallel representations of "type" (`Types`, `ObjData.{type_name,declared,types}`, `Payload::TObj`, three string vocabularies, the JIT's own layout keying) | `rust/src/runtime/types.rs`, `rust/src/runtime/obj.rs:153-163`, `rust/src/runtime/world/classes.rs` |
@@ -46,4 +44,12 @@ Severity:
 Closed during the audit/refactor passes (see `docs/REFACTOR_LOG.md` for the
 evidence and `docs/DECISIONS.md` for the semantics decisions):
 TD-01, TD-02, TD-04, TD-06, TD-07, TD-12, TD-13, TD-14, TD-15, TD-19, TD-23,
-TD-25, TD-28, TD-29, TD-30, TD-32, TD-33, TD-34, TD-35, TD-42, TD-46.
+TD-25, TD-28, TD-29, TD-30, TD-32, TD-33, TD-34, TD-35, TD-36, TD-37, TD-42, TD-46.
+
+Closed-out notes: TD-37 kept the deliberate API shape (4xx/5xx responses
+return the body, matching the .NET reference — the Un http client does not
+throw on unsuccessful status); the connect/read/write timeouts, the
+64 MiB response cap with Content-Length validation, the `http` scheme-guard
+message, and case-insensitive `set_header` names were the defects and are
+fixed. TD-36's budget is per engine attempt (10M dispatch steps) and never
+reports a negative match.

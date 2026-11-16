@@ -778,3 +778,49 @@ twins, TEST_GUIDE.md, REFACTOR_SUMMARY.md).
 | `scripts/test.ps1` | Positive **40 files / 1401 passed / 0 crashed**; Negative **40 matched / 0 divergences**; exit **0** |
 | `scripts/differential.ps1` | **79 files, 0 differences** |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | 40/40, 33/33 identical |
+
+---
+
+## 2026-11-17 — Pass 14: TD-36 (regex backtracking budget) and TD-37 (HTTP/WS hardening)
+
+### TD-36 — regex backtracking could hang the process forever
+
+`(a+)+$` on a long input never finishes. Fix: the `Engine` now counts
+dispatch steps per engine attempt; at 10,000,000 steps the attempt returns
+no-match *and is marked* (`Engine::limited()`); `Regex::find_at`/`find_all`
+return `Result<_, String>` and surface it as `error: regex backtracking
+limit exceeded` to the caller instead of a silent non-match (and instead of
+hanging). All `re.*` native ops propagate the error verbatim; the internal
+unit test module updated accordingly. New negative fixture
+`test/negative/regex_limit.un` (matches in ~0.6 s vs never terminating
+before); negative manifest is now **41 checks**.
+
+### TD-37 — HTTP/WS had no timeout, no response cap, uneven scheme errors
+
+- `connect_tcp`: DNS resolve + `TcpStream::connect_timeout` (10 s) +
+  read/write timeouts (30 s) — both HTTP and WS paths use it.
+- HTTP responses are read bounded (`take(64 MiB + 1)`); a declared
+  `Content-Length` is validated against the body length exactly (a shorter
+  read is `unexpected end of http response`, never a silent success);
+  chunked bodies already error on truncation.
+- Scheme guards now consistent .NET-style messages:
+  `http://`-only for HTTP (`SCHEME_HTTP`), `ws://`-only for WS (`SCHEME_WS`).
+- `http.set_header` now replaces case-insensitively (RFC 7230);
+  `wss`/`https` remain rejected up front with the scheme message.
+- Verified against a Node loopback server (not committed): normal GET
+  returns the body; 70 MiB response → `http response too large`;
+  server-lying Content-Length → `unexpected end of http response`;
+  destroyed socket mid-stream → `Unable to connect to the remote server`
+  (no hang); `https://…` → scheme message. 4xx/5xx still return the body
+  by design (.NET parity; Un's http client does not throw on unsuccessful
+  status — unchanged, documented in `docs/TECHNICAL_DEBT.md`).
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** |
+| `cargo test --release` | **205 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **40 files / 1401 passed / 0 crashed**; Negative **41 matched / 0 divergences**; exit **0** |
+| `scripts/differential.ps1` | **81 files, 0 differences** (2 new negative fixtures included) |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive 40/40; Negative 34/34 (+7 parse-rejected skips) |

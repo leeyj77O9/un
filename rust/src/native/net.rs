@@ -1,19 +1,49 @@
 use std::io::Read;
 use std::io::Write;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
 use super::random::Rng;
 const EMPTY: &str = "Invalid URI: The URI is empty.";
 const FORMAT: &str = "Invalid URI: The format of the URI could not be determined.";
 const AUTHORITY: &str = "Invalid URI: The Authority/Host could not be parsed.";
 const HOST: &str = "Invalid URI: The hostname could not be parsed.";
 const PORT: &str = "Invalid URI: Invalid port specified.";
+const SCHEME_HTTP: &str = "Only Uris starting with 'http://' are supported. (Parameter 'uri')";
+const SCHEME_WS: &str = "Only Uris starting with 'ws://' are supported. (Parameter 'uri')";
 /// Maximum accepted WebSocket frame payload (1 MiB). A hostile or broken peer
 /// could claim a huge length and exhaust the process before a single byte
 /// arrives.
 const MAX_FRAME_PAYLOAD: u64 = 1_048_576;
+/// Maximum accepted HTTP response (64 MiB). `read_to_end` without a cap lets a
+/// hostile peer stream an unbounded body into memory.
+const MAX_HTTP_RESPONSE: u64 = 64 * 1024 * 1024;
+/// Timeouts so a hung or never-answering peer aborts instead of freezing the
+/// process. Connect gets a shorter budget than the read/write phase.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub const CONNECT: &str = "Unable to connect to the remote server";
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+/// Resolve `host:port` and connect with a timeout; the returned stream has
+/// read/write timeouts set. DNS resolution itself is blocking (std does not
+/// expose a timeout there).
+fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, String> {
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| CONNECT.to_owned())?;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Ok(stream) => {
+                let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+                let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+                return Ok(stream);
+            }
+            Err(_) => continue,
+        }
+    }
+    Err(CONNECT.to_owned())
+}
 pub struct Uri {
     pub scheme: String,
     pub host: String,
@@ -233,7 +263,19 @@ fn parse_response(data: &[u8]) -> Result<Response, String> {
     let body = if chunked {
         decode_chunked(&data[split + 4..])?
     } else {
-        String::from_utf8_lossy(&data[split + 4..]).to_string()
+        // If the peer declared a Content-Length, the body must be exactly that
+        // long — a shorter read means a truncated response, never a success.
+        let declared = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("Content-Length"))
+            .and_then(|(_, value)| value.trim().parse::<u64>().ok());
+        let body_bytes = &data[split + 4..];
+        if let Some(expected) = declared {
+            if body_bytes.len() as u64 != expected {
+                return Err("unexpected end of http response".to_string());
+            }
+        }
+        String::from_utf8_lossy(body_bytes).to_string()
     };
     Ok(Response {
         code,
@@ -253,18 +295,20 @@ pub fn request_body(
 ) -> Result<Response, String> {
 
     if uri.scheme != "http" {
-        return Err(CONNECT.to_owned());
+        return Err(SCHEME_HTTP.to_owned());
     }
-    let mut stream = match TcpStream::connect((uri.host.as_str(), uri.port)) {
-        Ok(stream) => stream,
-        Err(_) => return Err(CONNECT.to_owned()),
-    };
+    let mut stream = connect_tcp(&uri.host, uri.port)?;
     if write!(stream, "{}", build_request(state, method, uri, body)).is_err() {
         return Err(CONNECT.to_owned());
     }
+    // Bounded read: a hostile peer cannot stream an unbounded body into memory.
+    let mut limited = stream.take(MAX_HTTP_RESPONSE + 1);
     let mut data = Vec::new();
-    if stream.read_to_end(&mut data).is_err() {
+    if limited.read_to_end(&mut data).is_err() {
         return Err(CONNECT.to_owned());
+    }
+    if data.len() as u64 > MAX_HTTP_RESPONSE {
+        return Err("http response too large".to_string());
     }
     parse_response(&data)
 }
@@ -388,12 +432,9 @@ fn read_head(stream: &mut TcpStream) -> Result<String, String> {
 pub fn ws_connect(uri: &Uri) -> Result<WsState, String> {
 
     if uri.scheme != "ws" {
-        return Err(CONNECT.to_owned());
+        return Err(SCHEME_WS.to_owned());
     }
-    let mut stream = match TcpStream::connect((uri.host.as_str(), uri.port)) {
-        Ok(stream) => stream,
-        Err(_) => return Err(CONNECT.to_owned()),
-    };
+    let mut stream = connect_tcp(&uri.host, uri.port)?;
     let key = base64(&random_bytes(16));
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
