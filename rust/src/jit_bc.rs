@@ -111,7 +111,7 @@ fn program_has_intrinsic_rebind(program: &Program) -> bool {
     false
 }
 
-pub fn register_eligible(program: &Program, program_ptr: usize) {
+pub fn register_eligible(program: &Program, program_id: u64) {
     if !crate::jit_cache::jit_enabled() {
         return;
     }
@@ -121,10 +121,10 @@ pub fn register_eligible(program: &Program, program_ptr: usize) {
     // kill the process. Skip all JIT registration instead; the whole program
     // falls back to the interpreter, byte-identical to UV_JIT=0.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        register_eligible_inner(program, program_ptr)
+        register_eligible_inner(program, program_id)
     }));
 }
-fn register_eligible_inner(program: &Program, program_ptr: usize) {
+fn register_eligible_inner(program: &Program, program_id: u64) {
     if program_has_intrinsic_rebind(program) {
         return; // interpreter only ??hostile module binding
     }
@@ -332,17 +332,18 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
             Some(a) => a,
             None => continue,
         };
-        let key = crate::jit_cache::unbc_key(program_ptr, idx);
         crate::jit_cache::register_jit_entry(
-            &key,
+            program_id,
+            idx as u32,
             crate::jit_cache::JitEntry { ptr: code_ptr as *const u8, arity: arity as u32 },
         );
     }
-    // Keep the module in the process-wide registry so `jit_cache::clear()`
-    // can free the native code on demand. The vendored backend leaks the
-    // allocations otherwise (by design); stashing preserves hook visibility
-    // instead of losing it to a `mem::forget` inside the destructor.
-    crate::jit_cache::stash_module(module);
+    // Keep the module in the per-program registry so `jit_cache::clear()` /
+    // `clear_program()` can free the native code on demand. The vendored
+    // backend leaks the allocations otherwise (by design); stashing
+    // preserves hook visibility instead of losing them to a `mem::forget`
+    // inside the destructor.
+    crate::jit_cache::stash_module(program_id, module);
 }
 
 /// Translator state. All per-function data is gathered under one borrow.

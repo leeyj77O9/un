@@ -233,6 +233,7 @@ pub fn read(bytes: &[u8]) -> Result<Program, String> {
         protos,
         msgs,
         root: 0,
+        id: crate::bytecode::next_program_id(),
     };
     program.validate()?;
     Ok(program)
@@ -441,6 +442,7 @@ mod tests {
                 Constant::None,
                 Constant::Null,
             ],
+            id: crate::bytecode::next_program_id(),
             protos: Vec::new(),
             msgs: vec!["unsupported node kind Match".to_string()],
             root: 0,

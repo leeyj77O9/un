@@ -176,4 +176,10 @@ Each item needs a before/after benchmark number in `REFACTOR_LOG.md`.
 - [x] `BuildDict` accepts a non-zero entry count: a fresh IntDict id is
       allocated inline and each `[key, value]` pair is inserted via
       `un_dict_int_set` at translation time; any Float/Bool/None entry bails.
-- [ ] Add eviction/invalidation for `jit_cache` and `PLAN_CACHE`.
+- [x] Add eviction/invalidation for `jit_cache`/`PLAN_CACHE` (Phase 8.2):
+      all per-program JIT state (entries, native modules, lazy-compile marker,
+      plan cache key) is now keyed by an opaque `Program.id`, never by pointer
+      identity. `jit_cache::clear_program(program_id)` removes exactly one
+      program's entries and native modules (`free_memory`), and `clear()`
+      removes all (tests / playground teardown). No stale entry can ever be
+      served to a program allocated at the same address.

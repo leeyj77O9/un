@@ -32,10 +32,7 @@ pub(crate) fn try_call_jit(
         .get(proto_index)
         .and_then(|p| p.ext_type)
         .is_some();
-    let entry = match crate::jit_cache::get_jit_entry(&crate::jit_cache::unbc_key(
-        Rc::as_ptr(program) as usize,
-        proto_index,
-    )) {
+    let entry = match crate::jit_cache::get_jit_entry(program.id, proto_index as u32) {
         Some(entry) => Some(entry),
         None => {
             // Compile lazily on first call: the eager pre-pass at
@@ -43,15 +40,12 @@ pub(crate) fn try_call_jit(
             // run. Bailing to the interpreter is free because the entry
             // table simply doesn't have the function yet — but we want it to
             // have it, so try the compile once per program.
-            if crate::jit_cache::jit_lazy_attempted(Rc::as_ptr(program) as usize) {
+            if crate::jit_cache::jit_lazy_attempted(program.id) {
                 None
             } else {
-                crate::jit_cache::mark_jit_lazy_attempted(Rc::as_ptr(program) as usize);
-                crate::jit_bc::register_eligible(program, Rc::as_ptr(program) as usize);
-                crate::jit_cache::get_jit_entry(&crate::jit_cache::unbc_key(
-                    Rc::as_ptr(program) as usize,
-                    proto_index,
-                ))
+                crate::jit_cache::mark_jit_lazy_attempted(program.id);
+                crate::jit_bc::register_eligible(program, program.id);
+                crate::jit_cache::get_jit_entry(program.id, proto_index as u32)
             }
         }
     };

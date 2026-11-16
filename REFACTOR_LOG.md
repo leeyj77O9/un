@@ -474,3 +474,47 @@ inline-built literal dicts).
 | `scripts/test.ps1` | Positive **40 files / 1395 passed / 0 failed / 0 crashed**; Negative **39 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **79 files, 0 differences** |
 | `test_suite.un` (7 runs) | avg ~70 ms (identical to JIT=0 within noise) |
+
+---
+
+## 2026-11-16 — Pass 7: JIT cache redesign (per-program eviction)
+
+### Motivation
+
+The registry was keyed by `Rc::as_ptr(program) as usize` (the
+"unbc:<ptr>:<proto_index>" key) together with `PLAN_CACHE` keyed the same
+way. Besides being unable to evict individual programs, that scheme *allows*
+a stale-entry serve: a program is dropped, a new program lands at the same
+address, and a lookup returns the previous program's native code pointer
+(associativity hazard, not observable in a running VM thanks to PLAN_CACHE
+pinning — but nothing would detect it either).
+
+The redesign replaces pointer-identity with an opaque monotone `program.id`
+(u64, assigned at compile/`.unbc`-read time, `.unbc` never persists it).
+Every per-program JIT structure is now keyed by `program_id`:
+
+- `PLAN_CACHE` (vm/mod.rs): `program_id → (Rc<Program>, Rc<Plan>)`; plan lookup
+  skips `Rc::ptr_eq` by construction.
+- `jit_cache::JIT_FNS` (two-level): `program_id → proto_index → JitEntry`.
+- `jit_cache::JIT_MODULES`: `program_id → Vec<JITModule>`.
+- `jit_cache::JIT_LAZY_ATTEMPTED`: `program_id → …`.
+
+`jit_cache::clear_program(program_id)` removes exactly one program's
+entries + native modules + marker; `jit_cache::clear()` removes everything
+(playground/test teardown). No `Rc::as_ptr` for JIT state remains anywhere.
+
+### Tests
+
+`vm::tests::a_cleared_jit_program_runs_identically` — run, clear_program,
+re-run the identical source and assert byte-identical stdout (plus
+`assert!(freed >= 1)`); `a_full_clear_lets_jit_run_again` — clear() then
+re-run; both verify the lazy path recompiles after invalidation.
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** |
+| `cargo test --release` | **204 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **40 files / 1395 passed / 0 failed / 0 crashed**; Negative **39 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/differential.ps1` | **79 files, 0 differences** |

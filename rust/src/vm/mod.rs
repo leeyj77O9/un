@@ -1524,7 +1524,10 @@ pub(crate) fn jit_call(entry: crate::jit_cache::JitEntry, ints: &[i64]) -> UnJit
 }
 
 thread_local! {
-    static PLAN_CACHE: RefCell<HashMap<usize, (Rc<Program>, Rc<Plan>)>> = RefCell::new(HashMap::new());
+    // Keyed by Program.id — never by pointer identity. Plan holders keep
+    // Rc<Program>, so the id is stable exactly as long as any clone of this
+    // program exists; no ABA can alias two distinct programs.
+    static PLAN_CACHE: RefCell<HashMap<u64, (Rc<Program>, Rc<Plan>)>> = RefCell::new(HashMap::new());
 }
 
 /// Statically scan the loaded program for class declarations and push a
@@ -1615,12 +1618,13 @@ fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
 }
 
 fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
-    let key = Rc::as_ptr(program) as usize;
+    // Keyed by the per-program opaque id, never by pointer identity.
+    let key = program.id;
     let found = PLAN_CACHE.with(|cache| cache.borrow().get(&key).cloned());
-    if let Some((cached_program, cached_plan)) = found {
-        if Rc::ptr_eq(&cached_program, program) {
-            return cached_plan;
-        }
+    if let Some((_, cached_plan)) = found {
+        // Plan cache holds the only Rc<Program> that matters; id collision
+        // is impossible (`next_program_id` is monotonic).
+        return cached_plan;
     }
     let plan = Rc::new(transfer::compile(program).expect(
         "validated program must translate; Program::validate was strengthened

@@ -1,15 +1,19 @@
 //! Global registry of JIT-compiled Un functions.
 //!
-//! Entries are keyed `"unbc:<ptr>:<proto_index>"` -> the `.unbc` translation of
-//! a specific proto of a specific compiled program. `<ptr>` is the
-//! `Rc::as_ptr` of the `Rc<Program>` used by the VM, which makes entries
-//! precise per program.
+//! Entries are keyed by `(program_id, proto_index)` — `program_id` is the
+//! per-`Rc<Program>` opaque id assigned at compile/read time (see
+//! `Program::id`). Entries are scoped per program: the registry is a
+//! two-level map, so every per-program state can be enumerated and freed
+//! independently of every other program's, without pointer-identity tricks.
 //!
 //! Each entry records the native function pointer and its arity so the caller
-//! can dispatch with the right signature.
+//! can dispatch with the right signature. Per-program `clear_program(id)`
+//! removes the entries and frees that program's JIT modules; `clear()`
+//! removes everything for every program at once.
 
 use cranelift_jit::JITModule;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -65,20 +69,26 @@ pub extern "C" fn un_jit_depth_exit() -> i64 {
 
 unsafe impl Send for JitEntry {}
 
-/// JIT modules that have been emitted for this process. The vendored
-/// Cranelift backend leaks their native allocations by design (so
-/// `unsafe impl Send for JitEntry` sound); we keep the modules here so
-/// `clear()` can reclaim that memory on demand. Native code is never freed
-/// unless the caller invokes `clear()` after all execution has stopped.
-static JIT_MODULES: LazyLock<Mutex<Vec<JITModule>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+/// Native modules emitted per program, keyed by the same per-program id.
+/// Kept around so `clear_program` can free exactly one program's native
+/// code without touching the others'.
+static JIT_MODULES: LazyLock<Mutex<HashMap<u64, Vec<JITModule>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Stash a finished JIT module. Called by the emitter after all of its
-/// function pointers have been extracted.
-pub(crate) fn stash_module(module: JITModule) {
-    JIT_MODULES.lock().expect("jit_cache").push(module);
+/// Stash a finished JIT module for `program_id`. Called by the emitter after
+/// all of its function pointers have been extracted.
+pub(crate) fn stash_module(program_id: u64, module: JITModule) {
+    JIT_MODULES
+        .lock()
+        .expect("jit_cache")
+        .entry(program_id)
+        .or_default()
+        .push(module);
 }
 
-static JIT_FNS: LazyLock<Mutex<HashMap<String, JitEntry>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Two-level registry: program_id -> proto_index -> entry.
+static JIT_FNS: LazyLock<Mutex<HashMap<u64, HashMap<u32, JitEntry>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// JIT is enabled unless `UV_JIT` is set to `0` (or `false`) in the environment.
 /// Read once per process.
@@ -110,38 +120,68 @@ pub fn jit_debug() -> bool {
 /// Programs already attempted a lazy compile. On a lookup miss we attempt
 /// compilation once per program instead of on every call (ineligible
 /// programs stay ineligible; the check is just a hash-set probe).
-static JIT_LAZY_ATTEMPTED: LazyLock<Mutex<std::collections::HashSet<usize>>> =
-    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+static JIT_LAZY_ATTEMPTED: LazyLock<Mutex<HashSet<u64>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// Record that this program instance had a lazy compile attempt.
-pub fn mark_jit_lazy_attempted(ptr: usize) {
-    JIT_LAZY_ATTEMPTED.lock().expect("jit_cache").insert(ptr);
+pub fn mark_jit_lazy_attempted(program_id: u64) {
+    JIT_LAZY_ATTEMPTED.lock().expect("jit_cache").insert(program_id);
 }
 
-/// Whether a lazy compile attempt already ran (or was decided) for `ptr`.
-pub fn jit_lazy_attempted(ptr: usize) -> bool {
-    JIT_LAZY_ATTEMPTED.lock().map(|s| s.contains(&ptr)).unwrap_or(true)
+/// Whether a lazy compile attempt already ran (or was decided) for `program_id`.
+pub fn jit_lazy_attempted(program_id: u64) -> bool {
+    JIT_LAZY_ATTEMPTED
+        .lock()
+        .map(|s| s.contains(&program_id))
+        .unwrap_or(true)
 }
 
-/// Register a JIT-compiled entry under `key`.
-pub fn register_jit_entry(key: &str, entry: JitEntry) {
+/// Register a JIT-compiled entry for a proto of `program_id`.
+pub fn register_jit_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
     if !jit_enabled() {
         return;
     }
-    JIT_FNS.lock().expect("jit_cache").insert(key.to_owned(), entry);
+    JIT_FNS
+        .lock()
+        .expect("jit_cache")
+        .entry(program_id)
+        .or_default()
+        .insert(proto_index, entry);
 }
 
-/// Convenience key for a compiled `.unbc` proto of `program`.
-pub fn unbc_key(program_ptr: usize, proto_index: usize) -> String {
-    format!("unbc:{program_ptr:x}:{proto_index}")
-}
-
-/// Look up a previously registered JIT entry.
-pub fn get_jit_entry(key: &str) -> Option<JitEntry> {
+/// Look up a previously registered JIT entry for `program_id`.
+pub fn get_jit_entry(program_id: u64, proto_index: u32) -> Option<JitEntry> {
     if !jit_enabled() {
         return None;
     }
-    JIT_FNS.lock().ok()?.get(key).copied()
+    JIT_FNS.lock().ok()?.get(&program_id)?.get(&proto_index).copied()
+}
+
+/// Free exactly one program's JIT state: remove its entries, drop its
+/// native modules (`free_memory`), and forget its lazy-compile marker so the
+/// next attempt compiles fresh. Use `clear()` only for whole-process
+/// teardown; `clear_program()` is safe point-in-time per program.
+///
+/// Returns the number of native functions freed.
+pub fn clear_program(program_id: u64) -> usize {
+    let (entries, modules) = {
+        let mut fns = JIT_FNS.lock().expect("jit_cache");
+        let mut modules = JIT_MODULES.lock().expect("jit_cache");
+        let entries = fns.remove(&program_id).map(|m| m.len()).unwrap_or(0);
+        let modules = modules.remove(&program_id).unwrap_or_default();
+        (entries, modules)
+    };
+    JIT_LAZY_ATTEMPTED
+        .lock()
+        .expect("jit_cache")
+        .remove(&program_id);
+    for module in modules {
+        // SAFETY: free_memory invalidates pointers into the module; no code
+        // in the module may be entered afterwards and all related entries
+        // were removed from JIT_FNS above.
+        unsafe { module.free_memory() };
+    }
+    entries
 }
 
 /// Free every native module the JIT emitted for this process and wipe the
@@ -156,12 +196,15 @@ pub fn get_jit_entry(key: &str) -> Option<JitEntry> {
 /// that keep running Un programs after a `clear()` would crash or corrupt.
 pub fn clear() {
     let modules = std::mem::take(&mut *JIT_MODULES.lock().expect("jit_cache"));
+    JIT_LAZY_ATTEMPTED.lock().expect("jit_cache").clear();
     JIT_FNS.lock().expect("jit_cache").clear();
-    for module in modules {
-        // SAFETY: free_memory invalidates all pointers into the module; the
-        // caller must not enter any of them afterwards. All entries from
-        // those modules have been removed from JIT_FNS, so no lookup can
-        // return a dangling pointer.
-        unsafe { module.free_memory() };
+    for (_id, modules) in modules.into_iter() {
+        for module in modules {
+            // SAFETY: free_memory invalidates all pointers into the module; the
+            // caller must not enter any of them afterwards. All entries from
+            // those modules have been removed from JIT_FNS, so no lookup can
+            // return a dangling pointer.
+            unsafe { module.free_memory() };
+        }
     }
 }

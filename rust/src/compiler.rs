@@ -53,6 +53,7 @@ impl<'a> Compiler<'a> {
             protos: Vec::new(),
             msgs: Vec::new(),
             root: 0,
+            id: crate::bytecode::next_program_id(),
         };
         let name = push_name(&mut program, "<module>");
         program.protos.push(Proto::new(name, 0));

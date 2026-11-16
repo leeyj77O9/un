@@ -370,3 +370,39 @@ fn an_unbc_round_trip_preserves_error_behavior() {
     );
     assert_eq!(message(&unbc_outcome), message(&direct_outcome));
 }
+#[test]
+fn a_cleared_jit_program_runs_identically() {
+    // Clear this program's JIT state, then run the same source again: the
+    // output must be byte-identical. This fails loudly if the per-program
+    // clear frees entries that the re-run would otherwise read incorrectly.
+    native::init(".");
+    let text = "use io\nfn add(a, b)\n    -> a + b\nio.write(\"answer\", add(40, 2))\n";
+    let (program, source) = compile_text(text);
+    let program_id = program.id;
+    native::init(".");
+    let mut vm = VM::new(program, source).expect("vm");
+    let outcome = vm.run();
+    assert!(matches!(outcome, Outcome::Value(_)));
+    let out1 = world::log_text();
+    world::log_clear();
+    let freed = crate::jit_cache::clear_program(program_id);
+    assert!(freed >= 1, "the JIT should have compiled at least one proto");
+    let (program2, source2) = compile_text(text);
+    let mut vm = VM::new(program2, source2).expect("vm");
+    let outcome = vm.run();
+    assert!(matches!(outcome, Outcome::Value(_)));
+    let out2 = world::log_text();
+    world::log_clear();
+    assert_eq!(out1, out2);
+}
+#[test]
+fn a_full_clear_lets_jit_run_again() {
+    // A whole-process clear is the strongest invalidation; the very next run
+    // must re-JIT correctly (lazy re-compile on the first call).
+    native::init(".");
+    let text = "use io\nio.write(\"value\", 3 * 5)\n";
+    let (_outcome, out1) = run(text);
+    crate::jit_cache::clear();
+    let (_outcome, out2) = run(text);
+    assert_eq!(out1, out2);
+}

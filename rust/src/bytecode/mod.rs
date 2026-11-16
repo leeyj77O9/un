@@ -131,6 +131,20 @@ pub struct Program {
 
     pub msgs: Vec<String>,
     pub root: usize,
+
+    /// Unique per-program id (assigned at compile/read time). Per-program JIT
+    /// state is keyed by this id instead of by pointer identity, which
+    /// eliminates the stale-entry hazard when a program is dropped and a new
+    /// program lands at the same address.
+    pub id: u64,
+}
+
+static PROGRAM_ID_SEQ: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// Draw the next program id. Called at every fresh `Program` creation.
+pub fn next_program_id() -> u64 {
+    PROGRAM_ID_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 impl Program {
     pub fn name(&self, proto: &Proto, index: usize) -> &str {
@@ -552,6 +566,7 @@ mod tests {
             protos: vec![proto],
             msgs: vec![],
             root: 0,
+            id: next_program_id(),
         };
         let err = prog.validate().expect_err("must error");
         assert!(
