@@ -140,25 +140,32 @@ pub fn read_line(state: &Rc<RefCell<StreamState>>) -> Result<Option<String>, Obj
             Ok(if read == 0 { None } else { Some(trim_line_end(&line)) })
         }
         Some(StreamHandle::ReadWrite(file)) => {
-            let mut line = String::new();
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut saw_newline = false;
+            let mut consumed_any = false;
             let mut byte = [0u8; 1];
             loop {
                 match file.read(&mut byte) {
                     Ok(0) => break,
                     Ok(_) => {
+                        consumed_any = true;
                         if byte[0] == b'\n' {
+                            saw_newline = true;
                             break;
                         }
-                        line.push(byte[0] as char);
+                        bytes.push(byte[0]);
                     }
                     Err(e) => return Err(obj::err(&e.to_string())),
                 }
             }
-            if line.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(line))
+            // EOF with nothing read at all → no more lines. An empty line
+            // ending with '\n' is Some(""), not None.
+            if !saw_newline && !consumed_any {
+                return Ok(None);
             }
+            let line = String::from_utf8(bytes)
+                .map_err(|_| obj::err("stream read error: invalid UTF-8"))?;
+            Ok(Some(trim_line_end(&line)))
         }
         Some(StreamHandle::Write(_)) => Err(obj::err("stream is not readable")),
         None => Err(obj::err("stream is closed")),

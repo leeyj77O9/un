@@ -29,7 +29,9 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | `5bc0b80` | 7 | JIT cache redesign: opaque monotone `Program.id` replaces all pointer-identity keys (PLAN_CACHE, JIT_FNS/MODULES/LAZY_ATTEMPTED); per-program `clear_program()`; stale-entry/ABA hazard eliminated. |
 | `d580a8b` | 8 | `.unbc` round-trip harness (`scripts/unbc-roundtrip.ps1`, byte-compared, wired into CI); caught and fixed `Program.source_path` storing only the file stem — `.unbc` re-runs resolved modules cwd-relative instead of source-dir-relative (D-072). |
 | `b8f1088` | 9 | Docs consolidation under `docs/` (git mv), `docs/REFACTOR_SUMMARY.md` index added. |
-| (pass 10) | 10 | Legacy removal: `REFACTOR_PLAN.md` and `docs/archive/` deleted; `TECHNICAL_DEBT.md` pruned to open items; stale counters/diagrams refreshed (README twins, ARCHITECTURE, TEST_GUIDE, BYTECODE). |
+| `4048761` | 10 | Legacy removal: `REFACTOR_PLAN.md` and `docs/archive/` deleted; `TECHNICAL_DEBT.md` pruned to open items; stale counters/diagrams refreshed. |
+| `dcb3ef9` | 11 | Benchmark-driven fix: `RegisterClass` no longer clobbers the seeded class field layout — class-method JIT actually engages (`norm()` compiles; `class1000` 5.59 → 4.73 ms). |
+| (pass 12) | 12 | Debt closures: TD-46 (`iter.range` swap), TD-12 (dead `TryEntry.depth`), TD-42 (`rw` read_line UTF-8/EOF), TD-07 (IntDict arena: free-on-exit, poison-tolerant lock) + IntDict id escape fix. |
 
 Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; the audit findings with
 fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
@@ -56,13 +58,13 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 - **Docs**: all engineering docs consolidated under `docs/` (this folder);
   `REFACTOR_PLAN.md` and the migration records under `docs/archive/` removed.
 
-## Current baseline (all verified 2026-11-16)
+## Current baseline (all verified 2026-11-17)
 
 | Gate | Result |
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
-| `cargo test --release` | **204 passed / 0 failed** |
-| `scripts/test.ps1` | Positive **40 files / 1395 passed**; Negative **39 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
+| `cargo test --release` | **205 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **40 files / 1401 passed**; Negative **39 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **79 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40**; Negative compilable **33/33** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |

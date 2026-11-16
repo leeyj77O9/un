@@ -13,8 +13,12 @@
 //! - Calls are staged through a per-frame value/name buffer (used uniformly
 //!   for positional/keyword/spread arguments), which is what makes
 //!   dynamically-sized spreads work in a statically allocated frame.
-//! - Exceptions use the same `ExcEntry` tables as the stack VM, with the
-//!   frame's scratch slot boundary recorded in `TryEntry::depth`.
+//! - Exceptions use the same `ExcEntry` tables as the stack VM. Handler
+//!   entry truncates the argument stack (`TryEntry::acc_depth`) only; the
+//!   scratch register file is not truncated. Scratch slots are expression
+//!   temporaries whose every read is dominated by a write in the register
+//!   plan, so handler paths never observe stale values; locals live in the
+//!   scope slot table regardless.
 //!
 //! The public surface mirrors the stack VM: `VM::new(program, source)`,
 //! `run() -> Outcome`, and the same outcome vocabulary.
@@ -87,8 +91,6 @@ pub struct TryEntry {
     pub start: usize,
     pub end: usize,
     pub handler: usize,
-    /// register index boundary for truncation on catch/finally
-    pub depth: usize,
     pub acc_depth: usize,
     pub var_slot: Option<usize>,
 }
@@ -717,7 +719,6 @@ impl VM {
                     start: entry.start,
                     end: entry.end,
                     handler: entry.handler,
-                    depth: self.s(depth),
                     acc_depth: self.args.len(),
                     var_slot: entry.var_slot,
                 });

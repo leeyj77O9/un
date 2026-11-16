@@ -177,7 +177,7 @@ here, so a test or the WASM playground must restore what it changes.
 | Location | Purpose | Guard |
 | --- | --- | --- |
 | `rust/src/runtime/obj.rs` (`un_instance_int_get` / `un_instance_int_ok` / `un_instance_int_ok_name` / `un_instance_int_set`) | direct member access for the JIT | documented `# Safety` contract, `catch_unwind`, name-checked for the class-layout intrinsic, bails to the interpreter on any mismatch |
-| `rust/src/runtime/int_dict.rs` | integer-keyed dictionaries for JIT-emitted code | `Mutex` arena, never freed (TD-07) |
+| `rust/src/runtime/int_dict.rs` | integer-keyed dictionaries for JIT-emitted code | `Mutex` arena (poison-tolerant lock); tables are freed at JIT exits via `un_dict_int_free`; the arena itself is process-lifetime, wiped by `jit_cache::clear()` |
 | `rust/src/jit_cache.rs:57` | `unsafe impl Send for JitEntry` | sound only because the vendored Cranelift backend leaks its allocations |
 | `rust/src/vm/mod.rs` (`F1..F8`) | call into JIT-generated code | hidden result pointer contract, arity asserted |
 | `rust/src/runtime/clock.rs` | WASM host imports | WASM-only |

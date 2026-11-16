@@ -12,6 +12,8 @@ assert.assert_eq(list(iter.range(0, 10, 2)), [0, 2, 4, 6, 8], "range with step")
 assert.assert_eq(list(iter.range(3)), [0, 1, 2], "range stop only")
 assert.assert_eq(list(iter.range(-2, 2)), [-2, -1, 0, 1], "range negative start")
 assert.assert_eq(list(iter.range(3, 3)), [], "range empty")
+assert.assert_eq(list(iter.range(5, 0)), [], "range descending with positive step is empty")
+assert.assert_eq(list(iter.range(0, 5, -1)), [], "range ascending with negative step is empty")
 assert.assert_eq(list(iter.range(3, 0, -1)), [3, 2, 1], "range reverse step")
 
 # ---------- 집계 ----------

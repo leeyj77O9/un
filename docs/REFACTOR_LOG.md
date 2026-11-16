@@ -623,6 +623,10 @@ No code changes; documentation moves only. Gates assumed green from pass 8.
   tree section (archive removed, summary listed), scale counters already
   current.
 
+### Verification
+
+No code changes; documentation only. Gates assumed green from pass 8.
+
 ---
 
 ## 2026-11-17 — Pass 11: class-JIT actually engages (benchmark-driven fix)
@@ -649,10 +653,81 @@ as a fallback for classes that bypassed the seeder.
 
 `norm()` now compiles natively (`JITDBG OK proto[2] norm`); `class_work`
 and `__init__` still bail by design (unsupported surface). `class1000`
-median: **5.59 → 4.73 ms** (audit baseline 7.272 ms). Gates unchanged:
-cargo test 204, test.ps1 1395/exit 0, differential 79/0, round-trip green.
-`bench/class.un` untouched (user WIP).
+median: **5.59 → 4.73 ms** (audit baseline 7.272 ms). `bench/class.un`
+untouched (user WIP); `bench/results/` remains gitignored.
 
 ### Verification
 
-No code changes; documentation only. Gates assumed green from pass 8.
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** |
+| `cargo test --release` | **204 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **40 files / 1395 passed**; exit **0** |
+| `scripts/differential.ps1` | **79 files, 0 differences** |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | 40/40, 33/33 identical |
+
+---
+
+## 2026-11-17 — Pass 12: four debt closures (TD-46, TD-12, TD-42, TD-07) + IntDict escape fix
+
+### TD-46 — `iter.range(5, 0)` was silently swapped to `range(0, 5)`
+
+`range(n)` (single argument) shares the `start` parameter with
+`range(start, stop)`; the single-argument form was served by an
+unconditional bounds swap, which also rewrote descending two-argument
+ranges. Fix: `end` omitted → `(0, start)`; otherwise `(start, end)`; the
+stage machine applies Python-style semantics everywhere (positive step →
+empty when start ≥ stop). `iter.range(5, 0)` is now empty, `iter.range(3)`
+is `[0, 1, 2]`, `iter.range(0, 5, -1)` is empty, `iter.range(5, 0, -1)` is
+`[5..1]`. +2 assertions in `test/unit/native/iter.un`.
+
+### TD-12 — `TryEntry.depth` was written, never read
+
+The "registers are truncated on handler entry" invariant was never
+implemented (and locals live in the scope slot table regardless).
+Removed the dead field; the module header documents the actual invariant
+(handler entry truncates only the argument stack via `acc_depth`; scratch
+registers are dominated by writes in the register plan, so stale slots are
+never observed).
+
+### TD-42 — stream `"rw"` `read_line` mangled UTF-8 and conflated EOF/empty-line
+
+`read_line` byte-cast to `char` (Latin-1), discarded `\r\n` handling, and
+returned `None` for both EOF and a blank line. Fix: collect bytes,
+`String::from_utf8` with a hard error on invalid input (matching the
+`"r"`/`BufReader` path), distinguish EOF-at-nothing (`None`) from an empty
+line (`Some("")`), and trim `\r\n` like the `"r"` branch. +4 assertions in
+`test/unit/native/io.un` (UTF-8 Korean text, embedded empty line, EOF
+after content, line past the empty line).
+
+### TD-07 — IntDict arena leaked and its Mutex could be poisoned
+
+- `INT_DICT_ARENA` locks poison-tolerantly (`into_inner`); a panic in an
+  intrinsic can no longer cascade into permanently-failing dict ops.
+- New `un_dict_int_free(id)` — tombstone frees, idempotent; the arena
+  drops the table behind the id.
+- The JIT emitter frees its function's IntDicts on **all four exit
+  paths** (normal `Return`, GetAttr bail, SetAttr bail, user-call bail)
+  with a shared `emit_int_dict_cleanup`; ids cannot escape a compilable
+  function, so tables are dead at any exit.
+- `jit_cache::clear()` additionally wipes the arena (test/teardown path).
+
+### IntDict id escape (found while closing TD-07; same intrinsic family)
+
+An IntDict id could previously escape a JIT function as a `tag=0` Int
+(`Return` and `Op::Call` arguments only checked the Float/Bool/None
+markers). Every way an id could flow into interpreter-observable state now
+declines at translation: `Return`, user-call arguments, `SetAttr` values,
+`SetItem` key/value, `BuildDict` pairs, `Add/Sub/Mul/IDiv/Mod`, comparisons,
+`FusedIntMulAdd`, `ToBool`. New regression test
+`vm::tests::an_int_dict_id_cannot_escape_as_a_tag0_int`.
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** |
+| `cargo test --release` | **205 passed / 0 failed** (new test included) |
+| `scripts/test.ps1` | Positive **40 files / 1401 passed / 0 failed / 0 crashed**; exit **0** |
+| `scripts/differential.ps1` | **79 files, 0 differences** |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | 40/40, 33/33 identical |

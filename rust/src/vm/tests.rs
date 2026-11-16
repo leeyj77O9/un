@@ -406,3 +406,15 @@ fn a_full_clear_lets_jit_run_again() {
     let (_outcome, out2) = run(text);
     assert_eq!(out1, out2);
 }
+
+/// An Int-keyed dict literal lowers to the IntDict intrinsic at translation
+/// time. The raw arena id must never escape a JIT function as a tag=0 Int:
+/// `Return` with an id register declines JIT, the interpreter runs the
+/// function, and the caller gets a real `dict` back.
+#[test]
+fn an_int_dict_id_cannot_escape_as_a_tag0_int() {
+    assert_out(
+        "use io\nfn mk()\n    -> {1: 10, 2: 20}\nd = mk()\nio.write(\"v\", d[1])\nio.write(\"w\", d[2])\n",
+        "v 10\nw 20\n",
+    );
+}

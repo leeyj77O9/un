@@ -185,7 +185,11 @@ pub fn clear_program(program_id: u64) -> usize {
 }
 
 /// Free every native module the JIT emitted for this process and wipe the
-/// registry.
+/// registry. Also drops every IntDict created by JIT code (the arena is
+/// process-lifetime otherwise, and repeated `clear()` cycles in tests would
+/// keep every table allocated). Any code entered afterwards must re-JIT
+/// against a fresh registry; the IntDict ids vanish with the native code,
+/// so no stale id is ever observable.
 ///
 /// # Safety
 /// Calling this invalidates all previously returned `JitEntry.ptr` values:
@@ -196,6 +200,7 @@ pub fn clear_program(program_id: u64) -> usize {
 /// that keep running Un programs after a `clear()` would crash or corrupt.
 pub fn clear() {
     let modules = std::mem::take(&mut *JIT_MODULES.lock().expect("jit_cache"));
+    crate::runtime::int_dict::clear();
     JIT_LAZY_ATTEMPTED.lock().expect("jit_cache").clear();
     JIT_FNS.lock().expect("jit_cache").clear();
     for (_id, modules) in modules.into_iter() {

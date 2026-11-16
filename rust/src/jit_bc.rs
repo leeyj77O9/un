@@ -155,6 +155,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     builder.symbol("un_dict_int_empty", crate::runtime::int_dict::un_dict_int_empty as *const u8);
     builder.symbol("un_dict_int_set", crate::runtime::int_dict::un_dict_int_set as *const u8);
     builder.symbol("un_dict_int_get", crate::runtime::int_dict::un_dict_int_get as *const u8);
+    builder.symbol("un_dict_int_free", crate::runtime::int_dict::un_dict_int_free as *const u8);
     builder.symbol("un_instance_int_get", crate::runtime::obj::un_instance_int_get as *const u8);
     builder.symbol("un_instance_int_ok", crate::runtime::obj::un_instance_int_ok as *const u8);
     builder.symbol("un_instance_int_ok_name", crate::runtime::obj::un_instance_int_ok_name as *const u8);
@@ -203,6 +204,14 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     sig_get.returns.push(AbiParam::new(types::I64));
     let fid_dict_get = match module
         .declare_function("un_dict_int_get", Linkage::Import, &sig_get)
+    {
+        Ok(fid) => fid,
+        Err(_) => return,
+    };
+    let mut sig_free = module.make_signature();
+    sig_free.params.push(AbiParam::new(types::I64));
+    let fid_dict_free = match module
+        .declare_function("un_dict_int_free", Linkage::Import, &sig_free)
     {
         Ok(fid) => fid,
         Err(_) => return,
@@ -300,6 +309,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
             fid_dict_empty,
             fid_dict_set,
             fid_dict_get,
+            fid_dict_free,
             fid_sin,
             fid_int_get,
             fid_int_ok_name,
@@ -394,6 +404,7 @@ struct Tr<'a> {
     fid_dict_empty: cranelift_module::FuncId,
     fid_dict_set: cranelift_module::FuncId,
     fid_dict_get: cranelift_module::FuncId,
+    fid_dict_free: cranelift_module::FuncId,
     fid_sin: cranelift_module::FuncId,
     fid_int_get: cranelift_module::FuncId,
     fid_int_ok_name: cranelift_module::FuncId,
@@ -418,6 +429,14 @@ struct Tr<'a> {
 }
 
 impl<'a> Tr<'a> {
+    /// True if any register refers to an IntDict id rather than an ordinary
+    /// Int. IntDict ids must never flow into values the interpreter can
+    /// observe (an id returned as a tag=0 Int would masquerade as a number,
+    /// and stored/passed ids would corrupt scope or callee arguments).
+    fn int_dict_seen(&self, regs: &[usize]) -> bool {
+        regs.iter().any(|&r| self.int_dict_regs.contains(&r))
+    }
+
     fn emit_user_call(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -432,9 +451,15 @@ impl<'a> Tr<'a> {
         if self.is_none[callee_reg] || self.is_float[callee_reg] || self.is_bool[callee_reg] {
             return None;
         }
+        if self.int_dict_seen(&[callee_reg]) {
+            return None;
+        }
         for k in 0..argc {
             let r = callee_reg + 1 + k;
             if self.is_none[r] || self.is_float[r] || self.is_bool[r] {
+                return None;
+            }
+            if self.int_dict_seen(&[r]) {
                 return None;
             }
         }
@@ -522,6 +547,36 @@ impl<'a> Tr<'a> {
         }
     }
 
+    /// Free every IntDict this function created (locals and live int-dict
+    /// registers). IntDict ids cannot escape a compilable function — Return
+    /// with an id register declines at translation, so the interpreter never
+    /// sees one — making the tables dead at any exit. `un_dict_int_free`
+    /// tombstones slots, so an id reachable through both a local and a
+    /// register (e.g. created, stored, loaded again) is freed exactly once
+    /// at runtime.
+    fn emit_int_dict_cleanup(&mut self, builder: &mut FunctionBuilder<'_>) {
+        let slots: Vec<usize> = self
+            .local_is_intdict
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &live)| live.then_some(i))
+            .collect();
+        let regs: Vec<usize> = self.int_dict_regs.iter().copied().collect();
+        if slots.is_empty() && regs.is_empty() {
+            return;
+        }
+        let fid = self.fid_dict_free;
+        let f_free = self.module.declare_func_in_func(fid, builder.func);
+        for slot in slots {
+            let id = builder.use_var(self.lv_i64(slot));
+            builder.ins().call(f_free, &[id]);
+        }
+        for reg in regs {
+            let id = builder.use_var(self.rv_i64(reg));
+            builder.ins().call(f_free, &[id]);
+        }
+    }
+
     fn emit_return_pair(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -535,6 +590,7 @@ impl<'a> Tr<'a> {
             );
             builder.ins().call(exit_ref, &[]);
         }
+        self.emit_int_dict_cleanup(builder);
         let hp = builder.use_var(self.hp_var);
         builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), bits, hp, 0);
         builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tag, hp, 8);
@@ -1074,6 +1130,7 @@ impl<'a> Tr<'a> {
                 builder.seal_block(bail_attr);
                 builder.seal_block(cont_attr);
                 builder.switch_to_block(bail_attr);
+                self.emit_int_dict_cleanup(builder);
                 let hp = builder.use_var(self.hp_var);
                 let zero_e = builder.ins().iconst(types::I64, 0);
                 let two_e = builder.ins().iconst(types::I64, 2);
@@ -1120,6 +1177,11 @@ impl<'a> Tr<'a> {
                 if self.is_float[ins.c as usize] || self.is_bool[ins.c as usize] || self.is_none[ins.c as usize] {
                     return None;
                 }
+                // An IntDict id stored into a field would be silently stored
+                // as a raw int — reject.
+                if self.int_dict_seen(&[ins.c as usize]) {
+                    return None;
+                }
                 // The write verifies the member name at the field index and
                 // its Int-ness; any mismatch bails to the interpreter instead
                 // of silently overwriting a wrong field.
@@ -1138,6 +1200,7 @@ impl<'a> Tr<'a> {
                 builder.seal_block(bail_attr);
                 builder.seal_block(cont_attr);
                 builder.switch_to_block(bail_attr);
+                self.emit_int_dict_cleanup(builder);
                 let hp = builder.use_var(self.hp_var);
                 let zero_e = builder.ins().iconst(types::I64, 0);
                 let two_e = builder.ins().iconst(types::I64, 2);
@@ -1190,6 +1253,9 @@ impl<'a> Tr<'a> {
                 Some(())
             }
             Op::Add | Op::Sub | Op::Mul => {
+                if self.int_dict_seen(&[ins.b as usize, ins.c as usize]) {
+                    return None;
+                }
                 let a_float = self.is_float[ins.b as usize];
                 let b_float = self.is_float[ins.c as usize];
                 if a_float || b_float {
@@ -1245,6 +1311,9 @@ impl<'a> Tr<'a> {
                 None
             }
             Op::ToBool => {
+                if self.int_dict_seen(&[ins.b as usize]) {
+                    return None;
+                }
                 if self.is_float[ins.b as usize] {
                     // Float args: fall through ??not supported by our Int ABI
                     let v = builder.use_var(self.rv_f64(ins.b as usize));
@@ -1283,6 +1352,9 @@ impl<'a> Tr<'a> {
                 Some(())
             }
             Op::Idiv | Op::Mod => {
+                if self.int_dict_seen(&[ins.b as usize]) {
+                    return None;
+                }
                 let divisor = match const_load_int_at(code, ip, ins.c as usize, self.proto, self.program) {
                     Some(n) if n != 0 => n,
                     _ => return None,
@@ -1305,6 +1377,9 @@ impl<'a> Tr<'a> {
                 Some(())
             }
             Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq | Op::Ne => {
+                if self.int_dict_seen(&[ins.b as usize, ins.c as usize]) {
+                    return None;
+                }
                 let b_float = self.is_float[ins.b as usize];
                 let c_float = self.is_float[ins.c as usize];
                 if b_float || c_float {
@@ -1369,6 +1444,9 @@ impl<'a> Tr<'a> {
                 let x = ((ins.d >> 10) & 0x3FF) as usize;
                 let y = (ins.d & 0x3FF) as usize;
                 if dst >= self.locals_len || x >= self.locals_len || y >= self.locals_len {
+                    return None;
+                }
+                if self.local_is_intdict[dst] || self.local_is_intdict[x] || self.local_is_intdict[y] {
                     return None;
                 }
                 if self.local_float[dst] || self.local_float[x] || self.local_float[y] {
@@ -1440,6 +1518,9 @@ impl<'a> Tr<'a> {
                     if self.is_float[r] || self.is_bool[r] || self.is_none[r] {
                         return None;
                     }
+                    if self.int_dict_regs.contains(&r) {
+                        return None;
+                    }
                 }
                 // Call un_dict_int_empty() -> i64 (id)
                 let fid_empty = self.fid_dict_empty;
@@ -1482,6 +1563,11 @@ impl<'a> Tr<'a> {
                 {
                     return None;
                 }
+                // An IntDict id as value or key would be stored as a raw int —
+                // reject; the id must not leak into the table.
+                if self.int_dict_seen(&[value, key]) {
+                    return None;
+                }
                 let fid = self.fid_dict_set;
                 let f_ref = self.module.declare_func_in_func(fid, builder.func);
                 let d_i = builder.use_var(self.rv_i64(target));
@@ -1522,6 +1608,11 @@ impl<'a> Tr<'a> {
                 // pointer: tag 0 ??value is an Int result; tag 1 ??Float bits;
                 // tag 2 ??runtime bail; tag 3 ??Bool (0/1).
                 if self.is_none[ins.a as usize] {
+                    return None;
+                }
+                // An IntDict id returned as tag=0 Int would masquerade as a
+                // number for the caller — decline.
+                if self.int_dict_seen(&[ins.a as usize]) {
                     return None;
                 }
                  // Tag can now legitimately be 0 (Int), 1 (Float bits) or 3 (Bool).
@@ -2336,6 +2427,7 @@ pub fn emit_fn_in_module(
     fid_dict_empty: cranelift_module::FuncId,
     fid_dict_set: cranelift_module::FuncId,
     fid_dict_get: cranelift_module::FuncId,
+    fid_dict_free: cranelift_module::FuncId,
     fid_sin: cranelift_module::FuncId,
     fid_int_get: cranelift_module::FuncId,
     fid_int_ok_name: cranelift_module::FuncId,
@@ -2593,6 +2685,7 @@ pub fn emit_fn_in_module(
         fid_dict_empty,
         fid_dict_set,
         fid_dict_get,
+        fid_dict_free,
         fid_sin,
         fid_int_get,
         fid_int_ok_name,

@@ -322,15 +322,18 @@ fn range_impl(scope: &Scope) -> Obj {
     let start = scope::get(scope, "start");
     let end = scope::get(scope, "end");
     let step = scope::get(scope, "step");
+    // `end` is optional; when omitted, `start` acts as the stop:
+    // iter.range(n) ≡ iter.range(0, n). Python-style semantics otherwise:
+    // range(5, 0) with a positive step is empty (no bounds swapping).
     let start = match to_int(&start) {
         Ok(v) => v,
         Err(e) => return e,
     };
-    let end = if obj::is_none(&end) {
-        0
+    let (start, end) = if obj::is_none(&end) {
+        (0, start)
     } else {
         match to_int(&end) {
-            Ok(v) => v,
+            Ok(v) => (start, v),
             Err(e) => return e,
         }
     };
@@ -345,11 +348,8 @@ fn range_impl(scope: &Scope) -> Obj {
     if step == 0 {
         return obj::err("step argument must not be zero");
     }
-    let (start, end) = if start > end && step > 0 {
-        (end, start)
-    } else {
-        (start, end)
-    };
+    // The stage machine already implements the standard semantics
+    // (`step > 0` → `v < stop`, else `v > stop`).
     iters::range_new(start, end, step)
 }
 fn counter_impl(scope: &Scope) -> Obj {
