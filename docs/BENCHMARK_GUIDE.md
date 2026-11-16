@@ -42,6 +42,11 @@ algorithm on the same input, with the same expected values:
 | `iter10000` | range + map + filter + sum on 10000 values | 30000 operations |
 | `math10000` | floor(sqrt(i)) sum, i = 1..10000 | 10000 evaluations |
 | `class1000` | 1000 instances + 1000 method calls | 1000 instances |
+| `sieve30000` | sieve of Eratosthenes, primes below 30000 | 30000 slots |
+| `matrix48` | 48x48 integer matrix multiply + checksum | 110592 mul/add |
+| `sin20000` | `math.sin(i)` sum for i = 1..20000 | 20000 evaluations |
+| `call200000` | `mix()` LCG chain of 200000 calls (call overhead) | 200000 calls |
+| `regex6000` | `re.find_all("[0-9]+")` on a 53813-char text (6000 tokens) | 6000 matches |
 
 Input generation is identical in both languages: the LCG
 `s = (s * 1103515245 + 12345) % 100000` produces the same sequence in Un int64

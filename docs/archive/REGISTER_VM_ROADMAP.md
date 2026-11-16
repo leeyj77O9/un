@@ -1,5 +1,11 @@
 # Register VM 설계 문서
 
+> **HISTORICAL — superseded by the 2026-11-16 audit** (`PROJECT_AUDIT.md`,
+> `ARCHITECTURE.md`). This is the original register-VM design document; it
+> refers to `vm.rs` (now `rust/src/vm/`), to a `--vm2` flag that no longer
+> exists, and to pre-audit numbers. Kept for history; see
+> `docs/DECISIONS.md` for the current state.
+
 ## 목표
 
 현재 스택 기반 인터프리터(`vm.rs`)를 **레지스터 기반**으로 재구현하여, 다음 병목을 제거합니다:

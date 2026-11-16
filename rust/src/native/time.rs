@@ -54,13 +54,24 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
 }
 fn sleep_impl(scope: &Scope) -> Obj {
     let milliseconds = scope::get(scope, "milliseconds");
+    // A negative duration sleeps for zero; a huge value is clamped instead of
+    // wrapping through `i32` (int=ms, float=seconds — the latter is contract).
     let ms = match obj::payload(&milliseconds) {
-        Payload::Int(v) => v as i32,
-        Payload::Float(v) => (v * 1000.0) as i32,
+        Payload::Int(v) => v.clamp(0, i64::MAX) as u64,
+        Payload::Float(v) => {
+            if !v.is_finite() {
+                return obj::err("expected 'time' to be a finite number");
+            }
+            if v <= 0.0 {
+                0
+            } else {
+                (v * 1000.0).min(u64::MAX as f64) as u64
+            }
+        }
         _ => {
             let converted = obj::unary(&milliseconds, obj::UnOp::ToInt);
             match obj::payload(&converted) {
-                Payload::Int(v) => v as i32,
+                Payload::Int(v) => v.clamp(0, i64::MAX) as u64,
                 _ => {
                     return obj::err(
                         "expected 'time' argument to be of type 'int' or 'float' or convertible to int",
@@ -69,7 +80,7 @@ fn sleep_impl(scope: &Scope) -> Obj {
             }
         }
     };
-    clock::sleep_ms(ms.max(0) as u64);
+    clock::sleep_ms(ms);
     obj::none()
 }
 fn now_impl(_scope: &Scope) -> Obj {

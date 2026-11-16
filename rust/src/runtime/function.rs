@@ -302,7 +302,10 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) els
     // (Int-only subset + Float promotions). Skips scope allocation and
     // parameter binding entirely — the JIT executes the frame directly.
     if let Some(result) = match &cell.borrow().body {
-        Body::Proto { index, program } => crate::jit_fast::try_call_jit(program, *index, args),
+        Body::Proto { index, program } => {
+            let bound = f.borrow().self_.clone();
+            crate::jit_fast::try_call_jit(program, *index, args, bound)
+        }
         _ => None,
     } {
         return result;

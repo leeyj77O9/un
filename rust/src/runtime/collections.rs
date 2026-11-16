@@ -376,6 +376,117 @@ pub fn list_remove_at(v: &Rc<RefCell<Vec<Obj>>>, index: &Obj) -> Result<(), Obj>
     data.pop();
     Ok(())
 }
+/// Resolve slice bounds into a concrete `(start, end, step)` triple.
+///
+/// The result follows the usual sequence-slicing rules: a negative bound is
+/// relative to the end of the sequence, an omitted bound depends on the sign of
+/// the step, and `end` is always exclusive. `end == -1` with a negative step
+/// means "walk down to and including index 0".
+pub fn slice_indices(
+    len: i64,
+    start: &Option<Obj>,
+    end: &Option<Obj>,
+    step: &Option<Obj>,
+) -> Result<(i64, i64, i64), Obj> {
+    let st = match step {
+        Some(s) => match obj::payload(s) {
+            Payload::Int(i) => i,
+            _ => return Err(obj::err("slice step must be int")),
+        },
+        None => 1,
+    };
+    if st == 0 {
+        return Err(obj::err("slice step cannot be zero"));
+    }
+
+    let bound = |value: &Obj, label: &str| -> Result<i64, Obj> {
+        let i = match obj::payload(value) {
+            Payload::Int(i) => i,
+            _ => return Err(obj::err(format!("slice {label} must be int"))),
+        };
+        let mut i = i;
+        if i < 0 {
+            i += len;
+        }
+        Ok(i)
+    };
+
+    let mut a = match start {
+        Some(s) => bound(s, "start")?,
+        None => {
+            if st < 0 {
+                len - 1
+            } else {
+                0
+            }
+        }
+    };
+    let mut b = match end {
+        Some(e) => bound(e, "end")?,
+        None => {
+            if st < 0 {
+                -1
+            } else {
+                len
+            }
+        }
+    };
+
+    if st < 0 {
+        if a > len - 1 {
+            a = len - 1;
+        }
+        if a < -1 {
+            a = -1;
+        }
+        if b > len - 1 {
+            b = len - 1;
+        }
+        if b < -1 {
+            b = -1;
+        }
+    } else {
+        if a > len {
+            a = len;
+        }
+        if a < 0 {
+            a = 0;
+        }
+        if b > len {
+            b = len;
+        }
+        if b < 0 {
+            b = 0;
+        }
+    }
+    Ok((a, b, st))
+}
+
+/// Collect the indices selected by `slice_indices` for a sequence of `len`
+/// elements.
+pub fn slice_positions(len: i64, start: i64, end: i64, step: i64) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut i = start as i128;
+    let limit = end as i128;
+    let st = step as i128;
+    if st > 0 {
+        while i < limit {
+            if i >= 0 && i < len as i128 {
+                out.push(i as usize);
+            }
+            i += st;
+        }
+    } else {
+        while i > limit {
+            if i >= 0 && i < len as i128 {
+                out.push(i as usize);
+            }
+            i += st;
+        }
+    }
+    out
+}
+
 pub fn list_slice(
     v: &Rc<RefCell<Vec<Obj>>>,
     start: &Option<Obj>,
@@ -384,66 +495,12 @@ pub fn list_slice(
 ) -> Obj {
     let mine = v.borrow().clone();
     let len = mine.len() as i64;
-    let (mut a, mut b, mut st) = (0usize, mine.len(), 1i64);
-    if let Some(start) = start {
-        let i = match obj::payload(start) {
-            Payload::Int(i) => i,
-            _ => return obj::err("slice start must be int"),
-        };
-        let mut i = i as i32 as i64;
-        if i < 0 {
-            i += len;
-        }
-        a = i.clamp(0, len) as usize;
-    }
-    if let Some(end) = end {
-        let i = match obj::payload(end) {
-            Payload::Int(i) => i,
-            _ => return obj::err("slice end must be int"),
-        };
-        let mut i = i as i32 as i64;
-        if i < 0 {
-            i += len;
-        }
-        b = i.clamp(0, len) as usize;
-    }
-    if let Some(step) = step {
-        let i = match obj::payload(step) {
-            Payload::Int(i) => i,
-            _ => return obj::err("slice step must be int"),
-        };
-        st = i as i32 as i64;
-        if st == 0 {
-            return obj::err("slice step cannot be zero");
-        }
-    }
-    if st == 1 {
-        let count = b as i64 - a as i64;
-        if count <= 0 {
-            return list(Vec::new());
-        }
-        return list(mine[a..a + count as usize].to_vec());
-    }
-
-    if st > 0 {
-        let mut i = a as i64;
-        while i < b as i64 {
-            if i >= len {
-                return index_out_of_range();
-            }
-            i += st;
-        }
-    } else {
-        let mut i = a as i64;
-        while i > b as i64 {
-
-            if i >= len {
-                return index_out_of_range();
-            }
-            i += st;
-        }
-    }
-    list(Vec::new())
+    let (a, b, st) = match slice_indices(len, start, end, step) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let out = slice_positions(len, a, b, st);
+    list(out.into_iter().map(|i| mine[i].clone()).collect())
 }
 pub fn list_in(o: &Obj, other: &Obj) -> Obj {
     let ot = obj::type_name(other);
@@ -451,10 +508,23 @@ pub fn list_in(o: &Obj, other: &Obj) -> Obj {
     match obj::payload(other) {
         Payload::List(v2) => obj::boolean(overlap(&v2.borrow().clone(), &mine)),
         Payload::Tup(vals, _) => obj::boolean(overlap(&vals, &mine)),
-        _ => obj::err(format!(
-            "cannot check if '{ot}' is in '{}'",
-            obj::type_name(o)
-        )),
+        _ => {
+            for item in mine.iter() {
+                let eq = obj::binop(item, BinOp::Eq, other);
+                match obj::payload(&eq) {
+                    Payload::Bool(true) => return obj::boolean(true),
+                    Payload::Bool(false) => {}
+                    Payload::Error { .. } => return eq,
+                    _ => {
+                        return obj::err(format!(
+                            "cannot check if '{ot}' is in '{}'",
+                            obj::type_name(o)
+                        ))
+                    }
+                }
+            }
+            obj::boolean(false)
+        }
     }
 }
 pub fn list_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
@@ -638,6 +708,17 @@ pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> 
         _ => unreachable!("set_binop receiver is a set"),
     };
     match op {
+        BinOp::Eq | BinOp::NEq => {
+            let theirs = match obj::payload(other) {
+                Payload::Set(s2) => Some(s2.clone()),
+                _ => None,
+            };
+            let eq = match theirs {
+                Some(s2) => set_equals(&mine.borrow(), &s2.borrow()),
+                None => false,
+            };
+            obj::boolean(if op == BinOp::Eq { eq } else { !eq })
+        }
         BinOp::Add => match obj::payload(other) {
             Payload::Set(s2) => set(union(&mine.borrow(), &s2.borrow())),
             _ => obj::err(format!(
@@ -658,6 +739,46 @@ pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> 
         },
         _ => obj::base_binop(o, op, other, t, ot),
     }
+}
+
+/// Two sets are equal when they hold the same elements, regardless of order.
+fn set_equals(mine: &KeyMap, other: &KeyMap) -> bool {
+    if mine.len() != other.len() {
+        return false;
+    }
+    mine.iter_pairs().all(|(k, _)| other.contains_key(k))
+}
+
+/// Two dicts are equal when they hold the same entries.
+fn dict_equals(mine: &KeyMap, other: &KeyMap) -> bool {
+    if mine.len() != other.len() {
+        return false;
+    }
+    mine.iter_pairs().all(|(k, v)| match other.get(k) {
+        Some(v2) => matches!(obj::payload(&obj::binop(v, BinOp::Eq, &v2)), Payload::Bool(true)),
+        None => false,
+    })
+}
+
+/// Binary operations on dictionaries. Only equality is defined; every other
+/// operator reports the usual "unsupported operand type(s)" error.
+pub fn dict_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
+    if matches!(op, BinOp::Eq | BinOp::NEq) {
+        let mine = match obj::payload(o) {
+            Payload::Dict(km) => km.clone(),
+            _ => unreachable!("dict_binop receiver is a dict"),
+        };
+        let theirs = match obj::payload(other) {
+            Payload::Dict(km) => Some(km.clone()),
+            _ => None,
+        };
+        let eq = match theirs {
+            Some(t2) => dict_equals(&mine.borrow(), &t2.borrow()),
+            None => false,
+        };
+        return obj::boolean(if op == BinOp::Eq { eq } else { !eq });
+    }
+    obj::base_binop(o, op, other, t, ot)
 }
 fn union(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
     let mut map = KeyMap::new(Vec::new());
@@ -725,69 +846,14 @@ pub fn tup_slice(
     step: &Option<Obj>,
 ) -> Obj {
     let len = vals.len() as i64;
-    let (mut a, mut b, mut st) = (0usize, vals.len(), 1i64);
-    if let Some(start) = start {
-        let i = match obj::payload(start) {
-            Payload::Int(i) => i,
-            _ => return obj::err("slice start must be int"),
-        };
-        let mut i = i as i32 as i64;
-        if i < 0 {
-            i += len;
-        }
-        a = i.clamp(0, len) as usize;
-    }
-    if let Some(end) = end {
-        let i = match obj::payload(end) {
-            Payload::Int(i) => i,
-            _ => return obj::err("slice end must be int"),
-        };
-        let mut i = i as i32 as i64;
-        if i < 0 {
-            i += len;
-        }
-        b = i.clamp(0, len) as usize;
-    }
-    if let Some(step) = step {
-        let i = match obj::payload(step) {
-            Payload::Int(i) => i,
-            _ => return obj::err("slice step must be int"),
-        };
-        st = i as i32 as i64;
-        if st == 0 {
-            return obj::err("slice step cannot be zero");
-        }
-    }
-    let mut new_values: Vec<Obj> = Vec::new();
-    let mut new_names: Vec<String> = Vec::new();
-    if st > 0 {
-        let mut i = a as i64;
-        while i < b as i64 {
-            if i >= len {
-                return index_out_of_range();
-            }
-            new_values.push(vals[i as usize].clone());
-            new_names.push(names[i as usize].clone());
-            i += st;
-        }
-    } else {
-        let mut i = a as i64;
-        while i > b as i64 {
-            if i >= len {
-                return index_out_of_range();
-            }
-            new_values.push(vals[i as usize].clone());
-            new_names.push(names[i as usize].clone());
-            i += st;
-        }
-    }
+    let (a, b, st) = match slice_indices(len, start, end, step) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let out = slice_positions(len, a, b, st);
+    let new_values: Vec<Obj> = out.iter().map(|i| vals[*i].clone()).collect();
+    let new_names: Vec<String> = out.iter().map(|i| names[*i].clone()).collect();
     tup(new_values, new_names)
-}
-fn index_out_of_range() -> Obj {
-    obj::panic(
-        "System.IndexOutOfRangeException",
-        "Index was outside the bounds of the array.",
-    )
 }
 pub fn tup_in(vals: &Rc<Vec<Obj>>, other: &Obj) -> Obj {
     for value in vals.iter() {
@@ -852,9 +918,6 @@ pub fn tup_clone(vals: &Rc<Vec<Obj>>, names: &Rc<Vec<String>>) -> Obj {
         vals.iter().map(|e| obj::clone_obj(e)).collect(),
         names.to_vec(),
     )
-}
-pub fn is_single(vals: &Rc<Vec<Obj>>, names: &Rc<Vec<String>>) -> bool {
-    vals.len() == 1 && (names.is_empty() || names[0].is_empty())
 }
 pub fn spread_unop(o: &Obj, op: UnOp, t: &Rc<str>) -> Obj {
 

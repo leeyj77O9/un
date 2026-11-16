@@ -9,10 +9,16 @@ On a fully provisioned toolchain (MSVC Build Tools, or GNU binutils with `dlltoo
 would be able to delete this directory and use `region`/`cranelift-jit` from crates.io
 unchanged.
 
-| crate | version | reason |
-|---|---|---|
-| `region` | 3.0.2 | VirtualAlloc/VirtualProtect on Windows and the `linux`/`macos`/bsd mmap paths on Unix. Removed the `windows-sys` dependency. |
-| `cranelift-jit` | 0.137.1 | JIT runtime support. Replaced just the `windows_sys::GetModuleHandleA` / `GetProcAddress` usage with raw FFI. |
-| `icache-coherence` (package `wasmtime-internal-jit-icache-coherence`) | 50.0.1 | `FlushInstructionCache` on Windows. Raw FFI. |
+| crate | version | license | upstream |
+|---|---|---|---|
+| `region` | 3.0.2 | MIT | `rustc-dev-guide` / region-rs — upstream sha `fc89b0c76d51bd13a591dca5fc9b9c8a0224aa18` (recorded in `region/.cargo_vcs_info.json`) |
+| `cranelift-jit` | 0.137.1 | Apache-2.0 WITH LLVM-exception | Bytecode Alliance Cranelift (`bytecodealliance/wasmtime`, `cranelift-jit` crate) |
+| `icache-coherence` (package `wasmtime-internal-jit-icache-coherence`) | 50.0.1 | Apache-2.0 WITH LLVM-exception | Bytecode Alliance wasmtime (`wasmtime-jit-icache-coherence`) |
 
-Licenses of the upstream crates remain in their directories.
+Attribution summary: `region`'s upstream copyright and licence text are in
+`region/LICENSE` (and `region/Cargo.toml.orig`). The two wasmtime crates
+ship in this directory **without their upstream `LICENSE` files**; the
+upstream texts are Apache-2.0 WITH LLVM-exception, available from the
+Bytecode Alliance repositories and from every version published on
+crates.io, and no license grant is removed by the raw-FFI patches.
+`THIRD_PARTY.md` in this directory summarises the notices.

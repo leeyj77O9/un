@@ -83,6 +83,16 @@ fn receive_impl(scope: &Scope) -> Obj {
             state.stream = None;
             return obj::none();
         }
+        if opcode == 9 {
+            // 9 = ping. The protocol requires a pong (opcode 10) with the
+            // same payload; without it conformant peers drop the connection.
+            let mut state = cell.borrow_mut();
+            if let Some(stream) = state.stream.as_mut() {
+                let _ = net::write_frame(stream, 10, &payload);
+            }
+            drop(state);
+            continue;
+        }
         message.extend_from_slice(&payload);
         if fin {
             break;

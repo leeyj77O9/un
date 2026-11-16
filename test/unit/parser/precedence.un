@@ -17,9 +17,9 @@ assert.assert_eq(2 * 3 // 2, 3, "multiplication before floor division")
 assert.assert_eq(1 + 8 / 4, 3, "division before addition")
 
 # ---------- 거듭제곱 ----------
-assert.assert_eq(2 ** 3 ** 2, 64, "power is right associative")
-assert.assert_eq((2 ** 3) ** 2, 64, "left grouping of power gives the same value here")
-assert.assert_eq(-2 ** 2, 4, "unary minus binds looser than power")
+assert.assert_eq(2 ** 3 ** 2, 64, "power is left associative")
+assert.assert_eq((2 ** 3) ** 2, 64, "parentheses make the left grouping explicit")
+assert.assert_eq(-2 ** 2, 4, "unary minus binds tighter than power")
 
 # ---------- 비트 ----------
 assert.assert_eq(1 | 2 & 3, 3, "bit and binds tighter than bit or")

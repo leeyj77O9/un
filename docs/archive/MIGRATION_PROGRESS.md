@@ -1,5 +1,11 @@
 # MIGRATION_PROGRESS.md — Un VM/JIT Migration Progress
 
+> **HISTORICAL — superseded by the 2026-11-16 audit** (`PROJECT_AUDIT.md`).
+> This document records the state of the project on 2026-11-15 and should be
+> read with `MIGRATION_AUDIT.md`. The numbers below describe that date and no
+> longer match the current tree. See `docs/DECISIONS.md` and `REFACTOR_LOG.md`
+> for the current state.
+
 Date: 2026-11-15. Read `MIGRATION_AUDIT.md` for the full audit.
 
 ## 1. Current phase: Phase A — Audit (completed preliminary pass; ongoing review)

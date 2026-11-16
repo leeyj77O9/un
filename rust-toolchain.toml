@@ -1,0 +1,6 @@
+# The project builds only with the GNU toolchain on this Windows development
+# machine (the MSVC linker is not available). rustup uses this file to select
+# it automatically; Linux/macOS builds are not supported by this toolchain.
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"
+targets = ["wasm32-unknown-unknown"]

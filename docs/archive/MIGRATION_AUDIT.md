@@ -1,5 +1,11 @@
 # MIGRATION_AUDIT.md — Un VM/JIT Migration Audit
 
+> **HISTORICAL — superseded by the 2026-11-16 audit** (`PROJECT_AUDIT.md`).
+> This document records the state of the project on 2026-11-15. The numbers
+> below (test counts, file counts, `main.un` tracking) describe that date and
+> no longer match the current tree. Kept for history; see `docs/DECISIONS.md`
+> and `REFACTOR_LOG.md` for the current state.
+
 Date: 2026-11-15. Scope: full project audit of `C:\dev\un` (Rust Un runtime after C#→Rust port and VM/JIT migration).
 
 ## 1. Baseline (pre-audit, recorded 2026-11-15)

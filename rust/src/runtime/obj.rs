@@ -296,7 +296,15 @@ pub fn hash_code(o: &Obj) -> u64 {
         Payload::Bool(b) => return *b as u64,
         Payload::Enu(n) => return *n as u64,
         Payload::Date(t) => return *t as u64,
-        Payload::Float(v) => return v.to_bits(),
+        Payload::Float(v) => {
+            // `key_eq` compares floats with `==`, so `-0.0` and `0.0` are the
+            // same key and must hash equal; `to_bits` does not. NaN never
+            // compares equal, so it needs no special case.
+            if *v == 0.0 {
+                return 0;
+            }
+            return v.to_bits();
+        }
         _ => {}
     }
     drop(o_own_ref);
@@ -363,6 +371,95 @@ pub fn member_set(o: &Obj, name: &str, value: &Obj) {
         }
     }
     d.members.push((name.to_owned(), value.clone()));
+}
+/// Reports whether the member at `field_index` exists and holds an `Int`.
+///
+/// # Safety
+///
+/// `self_ptr` must be a live `*const RefCell<ObjData>` — the value obtained by
+/// `Rc::as_ptr(&obj)` — and the `Rc` backing it must stay alive for the whole
+/// call. The function never unwinds: a `RefCell` borrow conflict or any other
+/// panic is caught and reported as a miss.
+#[no_mangle]
+pub unsafe extern "C" fn un_instance_int_ok(self_ptr: i64, field_index: i64) -> i64 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if self_ptr == 0 || field_index < 0 {
+            return false;
+        }
+        let cell = unsafe { &*(self_ptr as *const RefCell<ObjData>) };
+        let data = cell.borrow();
+        match data.members.get(field_index as usize) {
+            Some((_, value)) => matches!(value.borrow().payload, Payload::Int(_)),
+            None => false,
+        }
+    }));
+    match result {
+        Ok(true) => 1,
+        _ => 0,
+    }
+}
+
+/// Direct Int member read for the Cranelift JIT.
+///
+/// # Safety
+///
+/// Same contract as [`un_instance_int_ok`]. Returns the member's `Int` value,
+/// or 0 when the member is missing or does not hold an `Int`; callers must
+/// check [`un_instance_int_ok`] first so a miss is never read as a value.
+#[no_mangle]
+pub unsafe extern "C" fn un_instance_int_get(self_ptr: i64, field_index: i64) -> i64 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if self_ptr == 0 || field_index < 0 {
+            return None;
+        }
+        let cell = unsafe { &*(self_ptr as *const RefCell<ObjData>) };
+        let data = cell.borrow();
+        match data.members.get(field_index as usize) {
+            Some((_, value)) => match value.borrow().payload {
+                Payload::Int(v) => Some(v),
+                _ => None,
+            },
+            None => None,
+        }
+    }));
+    match result {
+        Ok(Some(value)) => value,
+        _ => 0,
+    }
+}
+
+/// Direct Int member write for the Cranelift JIT. Replaces the member
+/// (matched by index) with a fresh Int Obj.
+///
+/// # Safety
+///
+/// Same contract as [`un_instance_int_get`]: `self_ptr` must be a live
+/// `*const RefCell<ObjData>` whose `Rc` outlives the call. Returns 1 when the
+/// member was written and 0 when the slot does not exist or the call panicked.
+#[no_mangle]
+pub unsafe extern "C" fn un_instance_int_set(
+    self_ptr: i64,
+    field_index: i64,
+    value: i64,
+) -> i64 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if self_ptr == 0 || field_index < 0 {
+            return false;
+        }
+        let cell = unsafe { &*(self_ptr as *const RefCell<ObjData>) };
+        let mut data = cell.borrow_mut();
+        match data.members.get_mut(field_index as usize) {
+            Some((_, slot)) => {
+                *slot = int(value);
+                true
+            }
+            None => false,
+        }
+    }));
+    match result {
+        Ok(true) => 1,
+        _ => 0,
+    }
 }
 pub fn parents(o: &Obj) -> Vec<Obj> {
     o.borrow().parents.clone()
@@ -1116,60 +1213,13 @@ pub fn slice(o: &Obj, start: Option<Obj>, end: Option<Obj>, step: Option<Obj>) -
         Payload::Str(s) => {
             let units: Vec<u16> = s.encode_utf16().collect();
             let len = units.len() as i64;
-            let (mut a, mut b, mut st) = (0usize, units.len(), 1i64);
-            if let Some(start) = start {
-                let i = match payload(&start) {
-                    Payload::Int(i) => i,
-                    _ => return err("slice start must be int"),
-                };
-                let mut i = i as i32 as i64;
-                if i < 0 {
-                    i += len;
-                }
-                a = i.clamp(0, len) as usize;
-            }
-            if let Some(end) = end {
-                let i = match payload(&end) {
-                    Payload::Int(i) => i,
-                    _ => return err("slice end must be int"),
-                };
-                let mut i = i as i32 as i64;
-                if i < 0 {
-                    i += len;
-                }
-                b = i.clamp(0, len) as usize;
-            }
-            if let Some(step) = step {
-                let i = match payload(&step) {
-                    Payload::Int(i) => i,
-                    _ => return err("slice step must be int"),
-                };
-                st = i as i32 as i64;
-                if st == 0 {
-                    return err("slice step cannot be zero");
-                }
-            }
-            if st == 1 {
-                if b < a {
-                    b = a;
-                }
-                return str(&date::utf16_join(&units[a..b]));
-            }
-            let mut out: Vec<u16> = Vec::new();
-            if st > 0 {
-                let mut i = a as i64;
-                while i < b as i64 {
-                    out.push(units[i as usize]);
-                    i += st;
-                }
-            } else {
-                let mut i = a as i64;
-                while i > b as i64 {
-                    out.push(units[i as usize]);
-                    i += st;
-                }
-            }
-            str(&date::utf16_join(&out))
+            let (a, b, st) = match collections::slice_indices(len, &start, &end, &step) {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
+            let out = collections::slice_positions(len, a, b, st);
+            let picked: Vec<u16> = out.into_iter().map(|i| units[i]).collect();
+            str(&date::utf16_join(&picked))
         }
         Payload::List(v) => collections::list_slice(&v, &start, &end, &step),
         Payload::Tup(vals, names) => collections::tup_slice(&vals, &names, &start, &end, &step),
@@ -1439,7 +1489,8 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         Payload::Iter(st) => iters::iter_binop(o, &st, op, other, &t, &ot),
 
         Payload::Json(inner) => binop(&inner, op, other),
-        Payload::Dict(..) | Payload::Spread(..) => base_binop(o, op, other, &t, &ot),
+        Payload::Dict(..) => collections::dict_binop(o, op, other, &t, &ot),
+        Payload::Spread(..) => base_binop(o, op, other, &t, &ot),
         Payload::Error { .. } | Payload::Panic { .. } | Payload::Plain => base_binop(o, op, other, &t, &ot),
 
         Payload::Func(_)

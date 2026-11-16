@@ -1,30 +1,100 @@
 use crate::ast::{Const, Node, NodeKind};
 use crate::error::Panic;
 use crate::token::TokenType;
-pub const MAX_PASSES: usize = 64;
+/// A single bottom-up pass reaches the fixpoint: children are optimized
+/// before their parents, so every fold/elimination is applied to an
+/// already-final subtree. The counter only exists for diagnostics.
 pub struct OptimizationResult {
     pub root: Node,
     pub pass_count: usize,
 }
 pub fn optimize(root: &Node) -> Result<OptimizationResult, Panic> {
-    let mut root = root.clone();
-    for pass in 1..=MAX_PASSES {
-        let (next, changed) = optimize_pass(&root)?;
-        root = next;
-
-        if !changed {
-            return Ok(OptimizationResult {
-                root,
-                pass_count: pass,
-            });
+    let (root, _changed) = optimize_pass(root)?;
+    Ok(OptimizationResult {
+        root,
+        pass_count: 1,
+    })
+}
+/// Node-local desugaring applied to a node whose children are already
+/// desugared and optimized. Mirrors the rewrites the desugarer performs:
+/// compound assignment wraps the value in a `Binary(op)`, and `Branch`/`ElIf`
+/// arms of an `If` become `IfCase` arms. The rewritten node is returned to
+/// `optimize_pass`, which folds it in the same step.
+fn desugar_local(node: &Node) -> Option<Node> {
+    match node.kind {
+        NodeKind::Assign => desugar_assign(node),
+        NodeKind::If => Some(desugar_if(node)),
+        _ => None,
+    }
+}
+fn desugar_assign(node: &Node) -> Option<Node> {
+    let op = node.op?;
+    let op2 = match op {
+        TokenType::PlusAssign => Some(TokenType::Plus),
+        TokenType::MinusAssign => Some(TokenType::Minus),
+        TokenType::AsteriskAssign => Some(TokenType::Asterisk),
+        TokenType::SlashAssign => Some(TokenType::Slash),
+        TokenType::PercentAssign => Some(TokenType::Percent),
+        TokenType::DoubleAsteriskAssign => Some(TokenType::DoubleAsterisk),
+        TokenType::DoubleSlashAssign => Some(TokenType::DoubleSlash),
+        TokenType::BAndAssign => Some(TokenType::BAnd),
+        TokenType::BOrAssign => Some(TokenType::BOr),
+        TokenType::BXorAssign => Some(TokenType::BXor),
+        TokenType::LeftShiftAssign => Some(TokenType::LeftShift),
+        TokenType::RightShiftAssign => Some(TokenType::RightShift),
+        TokenType::DoubleQuestionAssign => Some(TokenType::DoubleQuestion),
+        _ => None,
+    }?;
+    if node.children.len() != 2 {
+        return None;
+    }
+    let lhs = node.children[0].clone();
+    let rhs = node.children[1].clone();
+    let binary = Node::with_op(node.start, node.length, NodeKind::Binary, op2, vec![lhs.clone(), rhs]);
+    Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![lhs, binary]))
+}
+/// Rewrite `Branch`/`ElIf` arms into `IfCase` inside an `If` node. The
+/// `Else` arm is preserved; non-matching arms (absent here) follow through.
+/// The `Else` arm is kept last so codegen can identify it as the else-branch.
+fn desugar_if(node: &Node) -> Node {
+    let mut cases: Vec<Node> = Vec::new();
+    let mut else_node: Option<Node> = None;
+    for child in &node.children {
+        match child.kind {
+            NodeKind::Branch | NodeKind::ElIf => {
+                cases.push(Node::with_children(
+                    child.start,
+                    child.length,
+                    NodeKind::IfCase,
+                    None,
+                    child.children.clone(),
+                ));
+            }
+            NodeKind::Else => {
+                else_node = Some(child.clone());
+            }
+            _ => {}
         }
     }
-    Err(Panic::new(format!(
-        "optimizer did not reach a fixed point within {MAX_PASSES} passes"
-    )))
+    let mut children = cases;
+    if let Some(else_node) = else_node {
+        children.push(else_node);
+    }
+    Node::with_children(node.start, node.length, NodeKind::If, None, children)
 }
+
 fn optimize_pass(node: &Node) -> Result<(Node, bool), Panic> {
-    let (node, changed) = optimize_children(node)?;
+    let (node, mut changed) = optimize_children(node)?;
+    // `desugar_local` may substitute the node tree (it always builds fresh
+    // nodes), which changes the subtree's identity for every parent above;
+    // the parents must be rebuilt so the new shape is not silently dropped.
+    let node = match desugar_local(&node) {
+        Some(desugared) => {
+            changed = true;
+            desugared
+        }
+        None => node,
+    };
     match node.kind {
         NodeKind::Binary => {
             let (node, local) = optimize_binary(&node)?;

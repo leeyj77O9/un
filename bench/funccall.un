@@ -1,0 +1,31 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 함수 호출 - mix()를 200000번 호출하는 LCG 체인
+# Node.js 벤치마크: bench/node/funccall.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/funccall.un  (C:\dev\un 에서)
+# ============================================================
+
+fn mix(x)
+    -> (x * 1103515245 + 12345) % 100000
+
+fn call_work(n)
+    x = 42
+    for i in iter.range(0, n)
+        x = mix(x)
+    -> x
+
+# ---------- 검증 ----------
+# 1103515245는 i64/f64 모두 정밀하게 표현 가능한 범위라 양쪽 결과가 같다.
+assert.assert_eq(mix(42), 52635, "mix(42)")
+assert.assert_eq(call_work(100), 14870, "call_work(100)")
+assert.assert_eq(call_work(200000), 27370, "call_work(200000)")
+
+# ---------- 측정 ----------
+# 한 번의 call_work = mix() 200000회 호출 + 정수 곱셈/덧셈/나머지
+bench.measure("call200000", fn(n) -> call_work(200000), 200000, 7, 2)
+
+assert.summary()

@@ -57,10 +57,13 @@ integration|test/integration/concurrency.un
 integration|test/integration/recursion.un
 integration|test/integration/algorithms.un
 
+# ---------- regression ----------
+# 이전에 문서(표준 semantics)와 구현이 달랐던 항목들. 수정 후 회귀 검증용.
+regression|test/regression/defects.un
+
 # ---------- known ----------
 # KnownFailures.txt에 등록되어 있고, 러너는 이 스크립트를 Positive 집계에
 # 넣지 않는다. -Group known로 실행한다.
-known|test/regression/defects.un
 
 # ---------- negative ----------
 # test/negative/manifest.txt가 목록을 직접 읽는다.

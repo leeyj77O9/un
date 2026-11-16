@@ -2,17 +2,11 @@
 # on the current implementation for documented reasons. They are recorded but
 # not counted as failures (run with -Group negative to see them listed).
 #
-# - order_crash.un      .NET's Array.Sort comparer-consistency detection throws
-#                        System.ArgumentException ('inconsistent results'); the
-#                        Rust VM's sort is consistent and does not throw.
-# - depth_limit_crash.un The process dies with a native stack overflow
-#                        (exit -1073741571); the Rust VM runs on a 64 MB worker
-#                        thread and reports 'maximum recursion depth exceeded' (exit 1).
-# - property_recursion.un Same class as depth_limit_crash (stack overflow vs call
-#                        limit), message matches, exit code differs.
-# - go_loop_var.un       Racy scheduling; the reference's behavior varies between
-#                        runs and cannot be matched deterministically.
-test/negative/order_crash.un
-test/negative/depth_limit_crash.un
-test/negative/property_recursion.un
-test/negative/go_loop_var.un
+# 2026-11-16: Registered checks were repaired to meaningful tests (the
+# previous entries were vacuous). No scripts are registered as divergent.
+# - property_recursion.un now matches the current implementation: the
+#   recursion limit raises 'maximum recursion depth exceeded' with exit 1
+#   (the reference crashed with a native stack overflow, exit -1073741571).
+# - go_loop_var.un / order_crash.un / depth_limit_crash.un were removed;
+#   their coverage moved to test/unit/runtime/async.un,
+#   test/unit/native/list.un, and test/integration/recursion.un.

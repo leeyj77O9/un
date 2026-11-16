@@ -3,76 +3,51 @@ use iter
 use test.assert as assert
 
 # ============================================================
-# KnownFailures - 문서에 있는 동작과 실제 구현이 다른 항목
-# 실행: Un.exe run test/regression/defects.un  (C:\dev\un 에서)
-# 이 파일은 test/KnownFailures.txt에 등록되어 있고, 현재 실패한다.
-# 제품 코드를 고쳐야 없애는 테스트다. 기대값은 문서/표준 semantics다.
+# regression - 이전에 "문서에 있는 동작"과 구현이 달랐던 항목들.
+# 이 항목들은 표준 semantics에 맞춰 수정되었으며, 회귀를 막기 위해 계속 검증한다.
+# 실행: unvm run test/regression/defects.un  (C:\dev\un 에서)
 # ============================================================
 
 # ---------- list reverse slice ----------
 # [1,2,3,4][2:0:-1]는 [3,2]여야 한다.
 sl = [1, 2, 3, 4]
 assert.assert_eq(sl[2:0:-1], [3, 2], "list slice with a negative step walks backwards")
+assert.assert_eq(sl[::-1], [4, 3, 2, 1], "a slice without bounds reverses the list")
+assert.assert_eq(sl[::2], [1, 3], "a slice with a positive step keeps every other element")
+assert.assert_eq(sl[1:3], [2, 3], "a slice with bounds keeps the half open range")
+assert.assert_eq((1, 2, 3, 4)[::-1], (4, 3, 2, 1), "a tuple reverses too")
+assert.assert_eq("abcd"[::-1], "dcba", "a string reverses too")
 
 # ---------- upper_bound는 일 후 위치를 반환해야 한다 ----------
 b = [1, 2, 4, 5]
 assert.assert_eq(b.upper_bound(5), 4, "upper_bound of the last element is len")
-
-# ---------- iter.reverse ----------
-# 고쳤다. test/unit/native/iter.un이 iter.reverse를 검증한다.
+assert.assert_eq(b.upper_bound(1), 1, "upper_bound skips the equal elements")
+assert.assert_eq(b.upper_bound(9), 4, "upper_bound of a value past the end is len")
 
 # ---------- in이 list의 원소를 검사해야 한다 ----------
-in_list = false
-try
-    in_list = 2 in [1, 2, 3]
-catch err_def1
-    in_list = false
-assert.assert_true(in_list, "2 in [1, 2, 3] is true")
+assert.assert_true(2 in [1, 2, 3], "2 in [1, 2, 3] is true")
+assert.assert_false(7 in [1, 2, 3], "7 in [1, 2, 3] is false")
 
 # ---------- set == set ----------
-set_eq = false
-try
-    set_eq = set(1, 2) == set(1, 2)
-catch err_def2
-    set_eq = false
-assert.assert_true(set_eq, "two sets with the same elements are equal")
+assert.assert_true(set(1, 2) == set(1, 2), "two sets with the same elements are equal")
+assert.assert_false(set(1, 2) == set(1, 3), "two sets with different elements are not equal")
 
 # ---------- dict == dict ----------
-dict_eq = false
-try
-    dict_eq = {"a": 1} == {"a": 1}
-catch err_def3
-    dict_eq = false
-assert.assert_true(dict_eq, "two dicts with the same entries are equal")
-
-# ---------- iter.zip / iter.chain ----------
-# 고쳤다. test/unit/native/iter.un과 test/unit/runtime/range.un이 검증한다.
-
-# ---------- catch 변수가 전역을 가린다 ----------
-# catch e는 같은 이름의 전역 e를 Err로 덮어쓰고, 그 후 e를 읽으면
-# Err가 다시 던져져 잡히지 않는다. 파일 안에서 검증할 수 없어서
-# test/negative/catch_clobbers.un이 종료 코드로 검증한다.
-
-# ---------- go가 for의 루프 변수를 잡지 못한다 ----------
-# go square(i)를 반복 안에서 만들면 future가 루프 밖에서 평가된다.
-# wait 시점에 루프 변수는 사라져 'undefined variable' 잡히지 않는 예외가
-# 프로세스를 죽인다. 파일 안에서 검증할 수 없어서
-# test/negative/go_loop_var.un이 종료 코드로 검증한다.
-
-# ---------- 클래스 메서드가 전역 내장을 가린다 ----------
-# 고쳤다. test/unit/runtime/classes.un이 len/type/hash 가림을 검증한다.
-
-# ---------- 호출 한도를 올리면 스택이 먼저 고갈된다 ----------
-# sys.setcalldepth(2000) 이후 depth(1000)은 'maximum recursion depth exceeded'
-# 가 잡히지 않는 Stack overflow로 프로세스를 죽인다(종료 코드 -1073741571).
-# 파일 안에서 검증할 수 없어서 test/negative/depth_limit_crash.un이 종료 코드로 검증한다.
+assert.assert_true({"a": 1} == {"a": 1}, "two dicts with the same entries are equal")
+assert.assert_false({"a": 1} == {"a": 2}, "two dicts with different values are not equal")
 
 # ---------- type(none) ----------
-none_type_is_none = false
-try
-    none_type_is_none = type(none) is none
-catch err_def7
-    none_type_is_none = false
-assert.assert_true(none_type_is_none, "type of none is the none type")
+assert.assert_true(type(none) is none, "type of none is the none type")
+
+# ---------- 아래 항목은 파일 안에서 검증할 수 없어서 종료 코드로 검증한다 ----------
+# catch e는 같은 이름의 전역 e를 Err로 덮어쓰고, 그 후 e를 읽으면
+# Err가 다시 던져져 잡히지 않는다. test/negative/catch_clobbers.un이 검증한다.
+#
+# go square(i)를 반복 안에서 만들면 future가 루프 밖에서 평가된다.
+# test/negative/go_loop_var.un이 검증한다.
+#
+# sys.setcalldepth(2000) 이후 depth(1000)은 'maximum recursion depth exceeded'
+# 가 잡히지 않는 Stack overflow로 프로세스를 죽인다.
+# test/negative/depth_limit_crash.un이 검증한다.
 
 assert.summary()

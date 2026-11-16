@@ -3,4 +3,8 @@
 # 각 파일은 문서(README)에 적힌 동작과 실제 구현이 다른 지점을 기대값으로
 # 단언한다. 제품 코드를 고쳐야 통과한다.
 # 형식: <path>
-test/regression/defects.un
+#
+# 2026-11-16 기준 등록된 스크립트 없음.
+# 이전에 등록되어 있던 test/regression/defects.un의 6개 항목(slice 음수 step,
+# upper_bound, set/dict ==, list의 in, type(none))은 표준 semantics에 맞춰
+# 수정되어 test/regression/defects.un으로 Positive 그룹에 옮겨졌다.

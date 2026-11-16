@@ -1,4 +1,4 @@
-# DECISIONS.md — 결정 로그
+﻿# DECISIONS.md — 결정 로그
 
 형식: `D-NNN | 제목 | 상태 | 결정 | 영향`
 - 상태: **Accepted** = 채택되어 코드에 반영, **Proposed** = 채택되었으나 코드 반영 전, **Pending** = 검증 필요
@@ -216,7 +216,10 @@ Un 코드에서 `.clone()`/`.copy()`는 **멤버 테이블** lookup이라 `list`
 (이 항목의 초기 판명은 "`Int.Clone()`는 base `new Obj(Type)` → `[1].clone()`가 `[int]`"였다가
 probe `probes10/{p25,p28,p33,p38}.un`와 source bytes로 반증됐다.)
 
-## D-027 | `Tup` 생성자의 name erase와 `Slice` 음수 step clamping을 그대로 재현한다 | Accepted
+## D-027 | `Tup` 생성자의 name erase와 `Slice` 음수 step clamping을 그대로 재현한다 | Partially superseded by D-067
+
+> D-067에서 `Slice` 음수 step 규칙을 표준 semantics로 바꿨다. 아래 설명은
+> 변경 전 동작의 기록이다. `Tup` 생성자의 name erase 규칙은 그대로다.
 
 `Tup(Obj[] values)`는 `Name[i] = string.Empty`로 이름을 **지운다**. `Tup(Obj[] values,
 string[] names)`는 `Name = names`를 유지하고 `Members[name] = value`를 등록한다. 따라서
@@ -318,7 +321,10 @@ trace(`   at Un.Object.Primitive.Int.Mod(Obj other) in C:\dev\un\src\...\Int.cs:
 追加한다. Rust에 대응하는 frame 정보가 없으므로 stack trace는 **documented divergence**다
 (실측: `p11.un`, `p28.un`의 앞 줄과 exit code는 정합, trace 문자열만 diff).
 
-## D-035 | `List.Slice`의 step != 1은 capacity-0 list를 만들고 bounds check는 남는다 | Accepted
+## D-035 | `List.Slice`의 step != 1은 capacity-0 list를 만들고 bounds check는 남는다 | Superseded by D-067
+
+> D-067에서 step != 1 슬라이스를 표준 semantics로 바꿨다. 아래 설명은 변경 전
+> 동작의 기록이다.
 
 `List.Slice`는 `st == 1`일 때만 `Array.Copy`하고, 그 외에는 `newList = new List()`
 (용량 0)에 `this[i]`를 `Add`한다. `List.Add`는 용량이 차면 `new Err("...")`를 **반환**하고
@@ -464,38 +470,6 @@ compiler는 file module path를 항상 compile하고 `Op::Use`가 run time에
   `Int.Clone()`/`Bool.Clone()`는 `From(Value)`(cached cell 유지),
   `Str/Float/Date Clone()`는 pool을 우회한 fresh object → D-026의 교정을 code에 적용했다.
 
-## D-033 | `chr`의 surrogate range는 inner .NET 문자열만 재현한다 | Accepted
-
-`chr(55296)`은 reference에서 `System.Reflection.TargetInvocationException`으로 감싸진
-`System.ArgumentOutOfRangeException`다. inner message는
-`A valid UTF32 value is between 0x000000 and 0x10ffff, inclusive, and should not include
-surrogate codepoint values (0x00d800 ~ 0x00dfff). (Parameter 'utf32')`이고 wrapper와
-stack trace는 재현하지 않는다(D-024). Rust는 `Payload::Panic { name, message }`로 같은
-inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {message}`로 출력한다.
-`chr`의 range check(`0..1114111`)는 `Err("chr: code point out of range (0..1114111)")`로
-먼저 잡히고, surrogate는 그 뒤의 host throw다.
-
-## D-034 | 네이티브 레이어는 공유 closure + world stdout buffer를 쓴다 | Accepted
-
-- 모든 native는 `Context(Global.GetGlobalScope(), null, null)` 위에 만들어진다. Rust는
-  `native::init`가 만든 **단일** `Context(global_scope, empty Source, new_frames())`를
-  모든 native가 공유 → `CallDepth`가 native 호출 전체의 공유 상태다.
-- `Arg.DefaultValue`는 native 인자에 설정되지 않는다. reference는 C# slot이 `null`이라
-  `sep ??= " "` 같은 `??=`가 발동하고 `GetArgs`는 `Obj defaultValue = Null`을 쓴다.
-  Rust는 unbound optional을 `obj::none()`으로 bind하고 host가 `is_none`으로 `??=`를
-  흉내 낸다. native의 `[ArgInfo]` flag는 Essential/Optional/Positional뿐이고
-  `IsKeyword`는 항상 false다.
-- `*values` positional collector는 `Tup`로 bind되고 `io.write`는 `sep` `" "` /
-  `end` `"\n"` / `ToStr()` → `Repr()` fallback / flush per write를 따른다.
-  `stream` payload가 Phase 14이므로 explicit `stream`/`input`/`output` 인자는
-  reference의 type-check 메시지로 reject한다.
-- stdout는 world-owned buffered `String`이고 `world::flush_stdout()`가 reference의
-  flush 시점(`cw.Write(...)` 후 `cw.Flush()`)에서 real stdout에 넘긴다 → run의 byte
-  순서가 유지되고 sandbox는 buffer를 캡처한다. `exit`는 `process::exit` 전에 flush한다.
-- `Global.Init`는 `io`를 bind하지 않는다. 모든 probe/test 스크립트는 `use io`로 시작한다.
-- `Str`은 `Repr()`를 override하지 않으므로 `repr("a")`는 base form의 type name `str`이다
-  (`type(1)` → `<type: int>`, `len([1,2,3])` → `3`, `chr(65)` → `A`와 실측 비교).
-
 ## D-046 | 함수 본문은 `EvalBlock`을 거치지 않는다 | Accepted
 
 - reference `LFn.Call`은 `foreach (Node node in body) evaluator.Eval(node)`로 본문을 돈다.
@@ -635,20 +609,6 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   `http1..http7.un`, **13 PASS / 0 DIFF**). frame 송수신은 Node `ws` package의
   echo server(port 19085)에 대한 실제 handshake와 echo로 확인한다.
 
-## D-066 | http/ws 인스턴스 타입 이름을 registration key와 맞춘다 | Accepted
-
-- reference가 `0ab82df`(2026-11, leeyj77O9)로 `http`→`http_client`, `socket`→`web_socket`으로
-  인스턴스 `UnType`을 바꿔 멤버 표가 도달 가능해졌다. Rust 포트도 동일하게
-  `obj_new("http_client")` / `obj_new("web_socket")`으로 인스턴스를 만들고, payload
-  `type_name` 매핑을 `http_client` / `web_socket`으로 바꿨다.
-- 이제 `client.get(1)` → `error: expected url is string` 같은 인자 검증 경로와
-  `client.set_header` / `clear_headers`가 Un 코드에서 동작하며 `test/unit/native/http.un`이
-  differential byte-identical이다(16/16 assertions).
-- error 메시지와 `type()` display의 타입 이름이 `http_client` / `web_socket`으로 바뀌었다
-  (reference와 동일).
-- 검증: `scripts/differential.ps1` **108 checked / 0 unexpected DIFF / 4 known-divergent**,
-  `cargo test --release` 199 passed, `dotnet build -c Release` 오류 0 / 경고 0.
-
 ## D-061 | `[Native(Async = true)]`는 binder가 무시하고, `f43637f`의 dead-code 정리는 Rust에 영향이 없다 | Accepted
 
 - reference의 binder는 `Async`를 읽지 않는다(실제 비동기 호출 경로가 없고, `f43637f`는
@@ -736,3 +696,124 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - duplicate key는 find에서 가장 이른 index를 반환(첫 삽입이 get에 응답하는 기존 동작 유지). bucket chain은 head-prepend이고 find는 chain을 끝까지 본다(chain 길이는 평균 1).
 - `Set`도 같은 `KeyMap`으로 backed 했다(value = `none`). member 함수들은 `try_insert`/`contains_key`/`get_key`/`remove`를 쓴다.
 - 검증: cargo test 199/199, differential 37 PASS / 0 DIFF, negcmp 38/4(기존 차이), wscmp 13/0, fullcmp 37/0. dict5000 17.9ms → ~9.3ms(ref ~6.1ms, loop-only는 양쪽 parity). reference보다 느린 나머지는 interpreter dispatch overhead 수준이다.
+
+## D-066 | http/ws 인스턴스 타입 이름을 registration key와 맞춘다 | Accepted
+
+- reference가 `0ab82df`(2026-11, leeyj77O9)로 `http`→`http_client`, `socket`→`web_socket`으로
+  인스턴스 `UnType`을 바꿔 멤버 표가 도달 가능해졌다. Rust 포트도 동일하게
+  `obj_new("http_client")` / `obj_new("web_socket")`으로 인스턴스를 만들고, payload
+  `type_name` 매핑을 `http_client` / `web_socket`으로 바꿨다.
+- 이제 `client.get(1)` → `error: expected url is string` 같은 인자 검증 경로와
+  `client.set_header` / `clear_headers`가 Un 코드에서 동작하며 `test/unit/native/http.un`이
+  differential byte-identical이다(16/16 assertions).
+- error 메시지와 `type()` display의 타입 이름이 `http_client` / `web_socket`으로 바뀌었다
+  (reference와 동일).
+- 검증: `scripts/differential.ps1` **108 checked / 0 unexpected DIFF / 4 known-divergent**,
+  `cargo test --release` 199 passed, `dotnet build -c Release` 오류 0 / 경고 0.
+
+## D-067 | 슬라이스/집합 비교/멤버십/`is`는 표준 semantics를 따른다 | Accepted
+
+- 레퍼런스(C#) 구현의 quirks는 "문서에 있는 동작"과 어긋났고, C# 소스와
+  differential 하네스는 이미 삭제되어 검증 수단이 없다. 따라서 **표준
+  semantics를 ground truth**로 삼아 구현을 고쳤다. `test/regression/defects.un`의
+  6개 항목이 이 변경의 대상이었다.
+- **슬라이스**: `list`/`tuple`/`str`이 같은 규칙을 쓴다. 음수 bound는 뒤에서부터
+  세고, 생략된 bound는 step 부호에 따라 정해진다(양수 step이면 처음→끝, 음수
+  step이면 끝→처음), end는 exclusive, step은 0이 될 수 없다.
+  `l[2:0:-1]` → `[3, 2]`, `l[::-1]` → 역순, `l[10:20]` → `[]`, `l[-2:]` → 뒤 두 개.
+  이전 구현(D-027/D-035)은 step != 1에서 빈 list/무역화 tuple을 만들었고,
+  bound를 `i as i32 as i64`로 잘라 32비트 범위를 넘으면 잘못된 위치가 됐다.
+- **`upper_bound`**: "value보다 큰 첫 원소"의 인덱스, 즉 삽입 위치. 마지막 원소와
+  같으면 `len`이 될 수 있다(`[1,2,4,5].upper_bound(5) == 4`). 이전 구현은
+  `len - 1`에서 시작해 `len`을 반환하지 못했다.
+- **`set`/`dict`의 `==`**: 원소/항목 단위 비교. `dict`는 키와 값이 모두 같아야
+  하고 `set`은 순서와 무관하다. 이전 구현은 `unsupported operand type(s) for ==`
+  에러를 냈다.
+- **`in`**: list/tuple은 원소 단위로 검사하며 스칼라를 받는다. 이전 구현은
+  list/tuple 인스턴스만 받아 스칼라에 대해 에러를 냈다.
+- **`is`**: 우변이 타입 객체면 "좌변이 그 타입의 인스턴스인가"로 판정한다.
+  이전 `is_obj`는 좌우를 뒤집어 `type(none) is none`이 false였다. `type(none)`
+  의 표시는 `<type: none>` 그대로다.
+- 검증: `scripts/test.ps1` Positive **40 files / 1383 passed / 0 failed / 0
+  crashed**, Negative 38 matched / 4 documented divergences, Known 0, exit 0.
+  `cargo test --release` 202 passed. `test/regression/defects.un`은 `known`
+  그룹에서 `regression` 그룹(Positive)으로 옮겨 회귀를 계속 검증한다. (이후
+  네이티브·빌드/문서 감사 후 현재 기준은 **Positive 40 files / 1391 passed,
+  Negative 39 matched / 0 documented divergences**다 — D-068 참고.)
+
+## D-068 | 네이티브 레이어의 침묵 데이터 손상을 수정한다(표준 기준) | Accepted
+
+- 2026-11-16 네이티브/빌드 감사에서 reference 동작과 무관하게 **침묵하는
+  데이터 손상 경로**를 확인하고 고쳤다. 동작 기준은 표준/문서(D-067와 같은
+  원칙)다.
+- **`lower_bound`**: `upper_bound`(D-067)와 같은 구조로 수정 — 삽입 위치를
+  반환하고, 빈 리스트는 0, 끝을 넘으면 `len`. 이전 구현은 `len - 1`에서
+  시작해 `len`을 반환할 수 없었고 빈 리스트에 −1을 반환했다.
+- **eager `extend_insert`**: 이터러블 insert가 원소 순서를 역순으로 삽입하던
+  것을 순서대로 삽입하도록 고치고, 잘못된 `index` 인자는 무음이 아니라
+  `list_insert`와 같은 에러를 반환한다.
+- **`-0.0` float 해시**: `key_eq`는 float를 `==`로 비교하므로 `-0.0 == 0.0`
+  이고, 따라서 `hash_code`도 두 값을 같게 해시해야 한다. 이전 구현은
+  `to_bits()`라 `set([0.0]).contains(-0.0) == false`였다.
+- **lazy `.map()`/`.filter()`의 에러 삼킴**: 람다 에러를 map은 리스트 값으로
+  넣고 filter는 원소를 조용히 버렸다. 이제 `Step::Panic`으로 전파되어 반복이
+  abort된다.
+- **`fs.*` 시간 문자열**: `fs.modified()`/`created()`/`accessed()`가 날짜를
+  ~86배 미래로 인쇄하던 계산 오류를 `runtime::date::parts` 기반으로 수정했다.
+- **`fs.rmdir` 기본값**: `recursive` 기본값이 `true`여서 `fs.rmdir(dir)`이
+  `rm -rf`였다. 기본값은 `false`이고, 재귀 삭제는 `recursive = true`를
+  명시해야 한다.
+- **`fs.move`/`fs.rename`**: destination이 있으면 source를 먼저 copy한 뒤에만
+  source를 지운다(destination 파일의 데이터 손실 창을 없앴다).
+- **`fs.walk_dir` symlink 순환**: canonical path 추적 + 깊이 제한(64).
+- **WS 프레임 마커를 RFC 6455로**: 100/101 → 126/127, 1 MiB 페이로드 상한,
+  `ping`(opcode 9)은 `pong`(opcode 10)으로 응답한다.
+- **무-경계 할당 상한**: `iter.array` 총 원소 ≤ 10,000,000과 음수 차원 거부,
+  `random.range` ≤ 1,000,000, `str.center/left/right` 패딩 ≤ 10,000.
+- **기본 RNG를 entropy로 시드**: 모듈 레벨 `random.*`가 항상 seed 0이었다.
+  재현성은 `random.seed(…)`로 유지된다. `below()`의 modulo bias를 rejection
+  sampling으로 제거하고 `between()`의 i64 오버플로우를 i128로 해결했다.
+- **`time.sleep`**: `as i32` truncation을 제거하고 상한 clamp, 음수는 0으로.
+  계약(int=ms/float=seconds)은 그대로다.
+- **`date.add_years`**: 윤년 2월 29일 + 1년은 3월 1일이 아니라 2월 28일로
+  clamp한다(`add_months`와 같은 규칙).
+- 검증: `scripts/test.ps1` Positive **40 files / 1391 passed / 0 failed / 0
+  crashed**, Negative 39 matched / 0 documented divergences, Known 0, exit 0.
+  (이후 negative 셋 수리로 현재 기준도 같다 — see D-067의 주석과
+  REFACTOR_LOG.md.)
+
+## D-069 | `chr`의 surrogate range는 inner .NET 문자열만 재현한다 | Accepted
+
+> 이름 중복으로 2026-11-16에 D-033(두 번째 사용분)에서 재번호된 항목. 본문은 그대로다.
+
+`chr(55296)`은 reference에서 `System.Reflection.TargetInvocationException`으로 감싸진
+`System.ArgumentOutOfRangeException`다. inner message는
+`A valid UTF32 value is between 0x000000 and 0x10ffff, inclusive, and should not include
+surrogate codepoint values (0x00d800 ~ 0x00dfff). (Parameter 'utf32')`이고 wrapper와
+stack trace는 재현하지 않는다(D-024). Rust는 `Payload::Panic { name, message }`로 같은
+inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {message}`로 출력한다.
+`chr`의 range check(`0..1114111`)는 `Err("chr: code point out of range (0..1114111)")`로
+먼저 잡히고, surrogate는 그 뒤의 host throw다.
+
+## D-070 | 네이티브 레이어는 공유 closure + world stdout buffer를 쓴다 | Accepted
+
+> 이름 중복으로 2026-11-16에 D-034(두 번째 사용분)에서 재번호된 항목. 본문은 그대로다.
+
+- 모든 native는 `Context(Global.GetGlobalScope(), null, null)` 위에 만들어진다. Rust는
+  `native::init`가 만든 **단일** `Context(global_scope, empty Source, new_frames())`를
+  모든 native가 공유 → `CallDepth`가 native 호출 전체의 공유 상태다.
+- `Arg.DefaultValue`는 native 인자에 설정되지 않는다. reference는 C# slot이 `null`이라
+  `sep ??= " "` 같은 `??=`가 발동하고 `GetArgs`는 `Obj defaultValue = Null`을 쓴다.
+  Rust는 unbound optional을 `obj::none()`으로 bind하고 host가 `is_none`으로 `??=`를
+  흉내 낸다. native의 `[ArgInfo]` flag는 Essential/Optional/Positional뿐이고
+  `IsKeyword`는 항상 false다.
+- `*values` positional collector는 `Tup`로 bind되고 `io.write`는 `sep` `" "` /
+  `end` `"\n"` / `ToStr()` → `Repr()` fallback / flush per write를 따른다.
+  `stream` payload가 Phase 14이므로 explicit `stream`/`input`/`output` 인자는
+  reference의 type-check 메시지로 reject한다.
+- stdout는 world-owned buffered `String`이고 `world::flush_stdout()`가 reference의
+  flush 시점(`cw.Write(...)` 후 `cw.Flush()`)에서 real stdout에 넘긴다 → run의 byte
+  순서가 유지되고 sandbox는 buffer를 캡처한다. `exit`는 `process::exit` 전에 flush한다.
+- `Global.Init`는 `io`를 bind하지 않는다. 모든 probe/test 스크립트는 `use io`로 시작한다.
+- `Str`은 `Repr()`를 override하지 않으므로 `repr("a")`는 base form의 type name `str`이다
+  (`type(1)` → `<type: int>`, `len([1,2,3])` → `3`, `chr(65)` → `A`와 실측 비교).

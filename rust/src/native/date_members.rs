@@ -197,10 +197,14 @@ fn add_years(scope: &Scope) -> Obj {
         return obj::err("expected 'years' argument to be of type 'int'");
     };
     let (year, month, day, hour, minute, second, ms) = crate::runtime::date::parts(ticks);
+    let new_year = year + years;
+    // February 29 in a leap year must clamp to February 28 in a non-leap
+    // year (matching the add_months behaviour), not roll into March 1.
+    let new_day = day.min(crate::runtime::date::days_in_month(new_year, month));
     let ticks = crate::runtime::date::ticks_from_civil(
-        year + years,
+        new_year,
         month,
-        day,
+        new_day,
         hour,
         minute,
         second,

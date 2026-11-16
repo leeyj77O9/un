@@ -1,4 +1,4 @@
-use crate::bytecode::instr::{Instr, Op};
+use crate::bytecode::instr::Instr;
 use crate::bytecode::{Constant, ExcEntry, ExcKind, Param, Pattern, Program, Proto, MAGIC, VERSION};
 const NONE: u32 = u32::MAX;
 const CONST_INT: u8 = 0;
@@ -422,12 +422,12 @@ impl<'a> Reader<'a> {
         }
     }
 }
-pub fn opcode_of(instr: &Instr) -> Option<Op> {
-    instr.op_code()
-}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytecode::instr::Op;
+
     fn sample() -> Program {
         let mut program = Program {
             source_path: "test.un".to_string(),

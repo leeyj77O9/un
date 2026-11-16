@@ -287,12 +287,35 @@ fn move_impl(scope: &Scope) -> Obj {
         Ok(path) => path,
         Err(e) => return e,
     };
-    let result = if Path::new(&destination).exists() {
-        std::fs::remove_file(&destination).and_then(|_| std::fs::rename(&source, &destination))
-    } else {
-        std::fs::rename(&source, &destination)
-    };
-    match result {
+    move_or_copy(Path::new(&source), Path::new(&destination))
+}
+
+/// Move a source onto a destination. The destination is never destroyed
+/// before the source is safely copied or renamed: when `rename` cannot
+/// replace an existing destination (Windows), the source is copied first and
+/// only then removed.
+fn move_or_copy(source: &Path, destination: &Path) -> Obj {
+    if destination.is_dir() {
+        return obj::err("destination is a directory");
+    }
+    if destination.exists() {
+        if source.is_file() {
+            // `rename` fails on Windows when the destination exists. Copy
+            // first so the destination survives a partial failure; the
+            // source is only removed after the copy succeeded.
+            if let Err(e) = std::fs::copy(source, destination) {
+                return obj::err(&e.to_string());
+            }
+            if let Err(e) = std::fs::remove_file(source) {
+                return obj::err(&e.to_string());
+            }
+            return obj::none();
+        }
+        if let Err(e) = std::fs::remove_file(destination) {
+            return obj::err(&e.to_string());
+        }
+    }
+    match std::fs::rename(source, destination) {
         Ok(()) => obj::none(),
         Err(e) => obj::err(&e.to_string()),
     }
@@ -311,15 +334,7 @@ fn rename_impl(scope: &Scope) -> Obj {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from(""));
     let destination = parent.join(name);
-    let result = if destination.exists() {
-        std::fs::remove_file(&destination).and_then(|_| std::fs::rename(&path, &destination))
-    } else {
-        std::fs::rename(&path, &destination)
-    };
-    match result {
-        Ok(()) => obj::none(),
-        Err(e) => obj::err(&e.to_string()),
-    }
+    move_or_copy(Path::new(&path), &destination)
 }
 fn touch_impl(scope: &Scope) -> Obj {
     let path = match path_arg(scope, "path") {
@@ -350,7 +365,10 @@ fn rmdir_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     let recursive = scope::get(scope, "recursive");
-    let mut value = true;
+    // `fs.rmdir(path)` must not destroy a non-empty directory by default;
+    // recursion is opt-in. (`fs.rmdir(dir, recursive=true)` is the explicit
+    // recursive form.)
+    let mut value = false;
     if !obj::is_none(&recursive) {
         match obj::payload(&recursive) {
             Payload::Bool(v) => value = v,
@@ -446,7 +464,7 @@ fn walk_impl(scope: &Scope) -> Obj {
         return obj::err("directory not found");
     }
     let mut found: Vec<PathBuf> = Vec::new();
-    walk_dir(path, &mut found);
+    walk_dir(path, &mut found, &mut std::collections::HashSet::new(), 0);
     found.sort();
     collections::list(
         found
@@ -455,7 +473,17 @@ fn walk_impl(scope: &Scope) -> Obj {
             .collect(),
     )
 }
-fn walk_dir(path: &Path, found: &mut Vec<PathBuf>) {
+fn walk_dir(path: &Path, found: &mut Vec<PathBuf>, visited: &mut std::collections::HashSet<PathBuf>, depth: usize) {
+    if depth > MAX_WALK_DEPTH {
+        return;
+    }
+    // Symlink cycles would recurse forever; track the canonical directory
+    // path so a loop is walked at most once.
+    if let Ok(canonical) = path.canonicalize() {
+        if !visited.insert(canonical) {
+            return;
+        }
+    }
     let Ok(reader) = std::fs::read_dir(path) else {
         return;
     };
@@ -463,10 +491,11 @@ fn walk_dir(path: &Path, found: &mut Vec<PathBuf>) {
         let entry_path = entry.path();
         found.push(entry_path.clone());
         if entry_path.is_dir() {
-            walk_dir(&entry_path, found);
+            walk_dir(&entry_path, found, visited, depth + 1);
         }
     }
 }
+const MAX_WALK_DEPTH: usize = 64;
 fn size_impl(scope: &Scope) -> Obj {
     let path = match path_arg(scope, "path") {
         Ok(path) => path,
@@ -485,17 +514,12 @@ fn time_string(time: std::time::SystemTime) -> String {
     let duration = time
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let ticks = duration.as_nanos() / 100;
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:07}Z",
-        crate::runtime::date::civil_from_days((ticks / 10_000_000_000) as i64).0,
-        crate::runtime::date::civil_from_days((ticks / 10_000_000_000) as i64).1,
-        crate::runtime::date::civil_from_days((ticks / 10_000_000_000) as i64).2,
-        (ticks / 3_600_000_000) % 24,
-        (ticks / 60_000_000) % 60,
-        (ticks / 1_000_000) % 60,
-        (ticks % 10_000_000) * 10,
-    )
+    // The runtime calendar works in .NET 100-ns ticks since 0001-01-01;
+    // add the UNIX epoch offset so `parts` can decode it.
+    let unix_ticks = (duration.as_nanos() / 100) as i64;
+    let total = unix_ticks + crate::runtime::date::unix_epoch_ticks();
+    let (y, m, d, hh, mm, ss, ms) = crate::runtime::date::parts(total);
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{ms:03}Z")
 }
 fn created_impl(scope: &Scope) -> Obj {
     let path = match path_arg(scope, "path") {

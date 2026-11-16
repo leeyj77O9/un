@@ -545,7 +545,11 @@ fn str_pad(scope: &Scope, text: &str) -> Result<(i64, char), Obj> {
         }
     };
     let length = text.encode_utf16().count() as i64;
-    let pad = (width - length).max(0);
+    // Padding is written into a fresh String with `repeat`; an enormous
+    // width would overflow the allocation, so clamp the padding to a sane
+    // bound instead of letting the process die on a huge allocation.
+    const MAX_PADDING: i64 = 10_000;
+    let pad = (width - length).max(0).min(MAX_PADDING);
     let fill_char = fill.chars().next().unwrap_or(' ');
     Ok((pad, fill_char))
 }
@@ -995,29 +999,28 @@ fn list_extend_insert(scope: &Scope) -> Obj {
         return obj::err("expected 'list' object");
     };
     let value = scope::get(scope, "obj");
-    let iter = obj::unary(&value, obj::UnOp::Iter);
-    if matches!(obj::payload(&iter), Payload::Iter(_)) {
-        for item in iterate(&iter) {
-            insert_at(&list, item, scope);
-        }
-    } else {
-        insert_at(&list, value, scope);
-    }
-    receiver
-}
-fn insert_at(list: &Rc<RefCell<Vec<Obj>>>, value: Obj, scope: &Scope) {
+    // The insertion index is applied to every inserted element in order; an
+    // invalid index is an error, not a silent no-op.
     let index = match list_index(scope, "index") {
         Ok(index) => index,
-        Err(_) => return,
+        Err(e) => return e,
     };
     let mut items = list.borrow_mut();
-    if items.is_empty() {
-        items.push(value);
-        return;
+    let base = index.max(0) as usize;
+    let base = base.min(items.len());
+    let iter = obj::unary(&value, obj::UnOp::Iter);
+    if matches!(obj::payload(&iter), Payload::Iter(_)) {
+        let mut offset = 0usize;
+        for item in iterate(&iter) {
+            let index = (base + offset).min(items.len());
+            items.insert(index, obj::clone_obj(&item));
+            offset += 1;
+        }
+        return receiver;
     }
-    let index = index.max(0) as usize;
-    let index = index.min(items.len());
+    let index = base.min(items.len());
     items.insert(index, obj::clone_obj(&value));
+    receiver
 }
 fn list_remove(scope: &Scope) -> Obj {
     let Some((_receiver, list)) = list_self(scope) else {
@@ -1140,9 +1143,12 @@ fn list_lower_bound(scope: &Scope) -> Obj {
     };
     let value = scope::get(scope, "obj");
     let items = list.borrow().clone();
+    // `lower_bound` returns the insertion point before the first element that
+    // is not less than the searched value. It can be the length of the list
+    // and is 0 for an empty list.
     let mut low = 0i64;
-    let mut high = items.len() as i64 - 1;
-    while high > low {
+    let mut high = items.len() as i64;
+    while low < high {
         let middle = (low + high) / 2;
         let less = obj::binop(&items[middle as usize], obj::BinOp::Lt, &value);
         match obj::payload(&less) {
@@ -1152,7 +1158,7 @@ fn list_lower_bound(scope: &Scope) -> Obj {
             _ => return obj::err("lower_bound requires '<' to return bool"),
         }
     }
-    obj::int(high)
+    obj::int(low)
 }
 fn list_upper_bound(scope: &Scope) -> Obj {
     let Some((_receiver, list)) = list_self(scope) else {
@@ -1160,9 +1166,12 @@ fn list_upper_bound(scope: &Scope) -> Obj {
     };
     let value = scope::get(scope, "obj");
     let items = list.borrow().clone();
+    // `upper_bound` returns the insertion point after every element that is
+    // less than or equal to the searched value, so the result may be the
+    // length of the list.
     let mut low = 0i64;
-    let mut high = items.len() as i64 - 1;
-    while high > low {
+    let mut high = items.len() as i64;
+    while low < high {
         let middle = (low + high) / 2;
         let greater = obj::binop(&items[middle as usize], obj::BinOp::Gt, &value);
         match obj::payload(&greater) {
@@ -1172,7 +1181,7 @@ fn list_upper_bound(scope: &Scope) -> Obj {
             _ => return obj::err("upper_bound requires '>' to return bool"),
         }
     }
-    obj::int(high)
+    obj::int(low)
 }
 fn list_hpush(scope: &Scope) -> Obj {
     let Some((_receiver, list)) = list_self(scope) else {

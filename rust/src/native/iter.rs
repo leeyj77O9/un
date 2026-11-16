@@ -290,6 +290,21 @@ fn array_impl(scope: &Scope) -> Obj {
     if sizes.is_empty() {
         return obj::err("expected 'size' argument to have at least one dimension");
     }
+    if sizes.iter().any(|d| *d < 0) {
+        return obj::err("expected all items in 'size' list to be non-negative integers");
+    }
+    // Guard against uninterruptible allocations of astronomical arrays.
+    const MAX_TOTAL_ELEMENTS: i64 = 10_000_000;
+    let mut total: i64 = 1;
+    for dim in &sizes {
+        total = match total.checked_mul(*dim) {
+            Some(v) => v,
+            None => return obj::err("expected the total array size to fit in a 64-bit integer"),
+        };
+        if total > MAX_TOTAL_ELEMENTS {
+            return obj::err("expected the total array size to be at most 10000000 elements");
+        }
+    }
     collections::list(create(&value, &sizes))
 }
 fn create(value: &Obj, lengths: &[i64]) -> Vec<Obj> {

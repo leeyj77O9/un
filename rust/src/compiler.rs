@@ -1225,6 +1225,11 @@ impl<'a> Compiler<'a> {
                     let saved_raises = self.raises;
                     let saved_groups = std::mem::take(&mut self.groups);
                     self.begin_proto(&member_name, Some(&class_name));
+                    // Class methods receive `self` implicitly; register it
+                    // as local slot 0 so `self` reads emit Op::LoadLocal
+                    // instead of Op::LoadName (needed for the class-method
+                    // JIT intrinsic and to lower interpreter dispatch work).
+                    self.slot_alloc("self");
                     self.compile_params(&member.children[1])?;
                     self.code_function_body(&member.children[2])?;
                     let proto_slot = self.end_proto();
@@ -1269,6 +1274,7 @@ impl<'a> Compiler<'a> {
                         let saved_raises = self.raises;
                         let saved_groups = std::mem::take(&mut self.groups);
                         self.begin_proto(name, Some(&class_name));
+                        self.slot_alloc("self");
 
                         if accessor_node.value.as_ref()
                             == Some(&Const::Str("set".to_owned()))

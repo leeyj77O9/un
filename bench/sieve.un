@@ -1,0 +1,42 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 체 - 30000 미만의 소수 개수 세기 (에라토스테네스의 체)
+# Node.js 벤치마크: bench/node/sieve.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/sieve.un  (C:\dev\un 에서)
+# ============================================================
+
+fn sieve(n)
+    flags = []
+    for i in iter.range(0, n)
+        flags.add(true)
+    flags[0] = false
+    flags[1] = false
+    p = 2
+    while p * p < n
+        if flags[p]
+            m = p * p
+            while m < n
+                flags[m] = false
+                m += p
+        p += 1
+    count = 0
+    for f in flags
+        if f
+            count += 1
+    -> count
+
+# ---------- 검증 ----------
+assert.assert_eq(sieve(2), 0, "sieve(2) has no primes")
+assert.assert_eq(sieve(30), 10, "sieve(30) finds 2,3,5,7,11,13,17,19,23,29")
+assert.assert_eq(sieve(100), 25, "sieve(100) finds 25 primes")
+assert.assert_eq(sieve(30000), 3245, "sieve(30000) finds 3245 primes")
+
+# ---------- 측정 ----------
+# 한 번의 sieve(30000) = 30000칸의 배열 초기화 + 배수 제거
+bench.measure("sieve30000", fn(n) -> sieve(30000), 30000, 7, 2)
+
+assert.summary()

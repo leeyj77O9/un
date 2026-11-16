@@ -8,8 +8,9 @@
 - **Un**: 들여쓰기 기반 문법, 패턴 매칭, `go`/`wait` 비동기 실행을 제공하는 동적 타입 스크립팅 언어.
 - **구현**: Rust 바이트코드 컴파일러 + 레지스터 기반 VM (`unvm`, 라이브러리 이름 `unvm`).
 - **파이프라인**: `Source -> Lexer -> Parser -> Desugarer -> Optimizer -> Bytecode Compiler -> Register VM`
-- **규모**: Rust 약 90개 파일 / 약 16,500줄, `test/` 아래 `.un` 스크립트 89개.
-- **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을 읽을 때 Int 부분집합과 `math.floor(math.sqrt(x))` 인트리식(f64 두 개 명령으로 인라인)에 속하는 proto를 native로 컴파일하고 `jit_cache`에 등록한다. 결과는 hidden pointer로 (value, tag)를 기록하는데 tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2는 런타임 bail(엔진 오류가 아니라 의미론 보존을 위한 인터프리터 fallback)이다. 나머지는 전부 인터프리터로 fallback. `UV_JIT=0`으로 런타임에 opt-out.
+- **규모**: Rust 76개 파일 / 34,166줄(`tests.rs` 모듈 제외 31,483줄, wc 기준), `test/` 아래 `.un` 스크립트 89개.
+- **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을 읽을 때 Int 부분집합(i64 파라미터·지역변수, `iter.range` 루프, 정수 산술, `FusedIntMulAdd`)과 `math.floor(math.sqrt(x))`·`math.sin(x)` 인트리식, IntDict intrinsic에 속하는 proto를 native로 컴파일하고 `jit_cache`에 등록한다. 결과는 hidden pointer로 (value, tag)를 기록하는데 tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2는 런타임 bail(엔진 오류가 아니라 의미론 보존을 위한 인터프리터 fallback)이다. 나머지는 전부 인터프리터로 fallback. **클래스 메서드는 JIT 대상이 아니다**(JIT 값 모델이 Int/Float만 다뤄 object receiver를 표현할 수 없어서 `precheck_fn`이 거부한다). `UV_JIT=0`으로 런타임에 opt-out.
+- **감사 문서**: `PROJECT_AUDIT.md`(감사 결과), `REFACTOR_PLAN.md`(단계 계획), `REFACTOR_LOG.md`(변경 이력), `ARCHITECTURE.md`(구조), `TECHNICAL_DEBT.md`(부채 목록)가 현재 상태의 기준 문서다. `docs/archive/MIGRATION_AUDIT.md`/`docs/archive/MIGRATION_PROGRESS.md`는 Rust VM/JIT 마이그레이션의 역사 기록(2026-11-15 이전 시점의 기준)으로 남긴다.
 - **이전 역사**: 원래 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었다. Rust 포트가
   differential 검증으로 C# 구현과 byte-identical임을 확인한 뒤 대체했고, C# 소스는
   `git` 이력에만 남아 있다.
@@ -24,23 +25,22 @@ C:\dev\un/
 ├─ rust/
 │  ├─ Cargo.toml            # unvm 라이브러리 + unvm CLI + unvm-playground workspace
 │  ├─ src/
-│  │  ├─ main.rs             # CLI 진입점 (run/compile/tokens/ast/desugar/opt/dis/help)
+│  │  ├─ main.rs             # CLI 진입점 (run/compile/tokens/ast/desugar/opt/dis/dis-reg/plan/help)
 │  │  ├─ lib.rs
 │  │  ├─ bytecode/           # Op(explicit #[repr(u8)]), Instruction, Program, Proto, unbc
 │  │  ├─ lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / module.rs
 │  │  ├─ vm/                 # 단일 실행 모듈: register VM (mod.rs) + stack→register 번역(transfer.rs)
-│  │  ├─ jit.rs             # Cranelift i64-핫루프 JIT 기반 (테스트 전용)
 │  │  ├─ jit_cache.rs        # JIT 컴파일된 함수 전역 캐시/등록
-│  │  ├─ jit_bc.rs         # .unbc가 1:1 대응되는 Cranelift JIT (Int 부분집합 + floor(sqrt(n)) 내장 intrinsic, Float poly-tag 반환)
-│  │  ├─ runtime/            # obj, collections, iters, function, world, scope, date, ...
+│  │  ├─ jit_bc.rs         # .unbc가 1:1 대응되는 Cranelift JIT (Int 부분집합 + floor(sqrt(n))/sin intrinsic, Float poly-tag 반환)
+│  │  ├─ runtime/            # obj, collections, iters, function, world/(모듈 분할), scope, date, ...
 │  │  ├─ native/             # io, fs, re, math, iter, ... (`native::init`에서 명시적 등록)
 │  │  └─ playground/         # WASM 진입점 (PlaygroundRunner.RunCode 대응)
 │  └─ target/               # 빌드 산출물 (gitignore)
-└─ main.un                 # 사용자의 스크래치; 추적하지 않음
+└─ main.un                 # 사용자의 스크래치 (git에 추적 중; 에이전트는 수정하지 않는다)
 ```
 
 - **`main.un`은 사용자의 스크래치 파일**이다. 테스트/제품 진입점이 아니며, 에이전트는
-  이 파일을 수정하거나 스테이징하지 않는다.
+  이 파일을 수정하거나 스테이징하지 않는다. (참고: 이 파일은 현재 `git`에 추적되어 있다.)
 - **`Op` enum은 explicit `#[repr(u8)]`로 고정**되어 있다. opcode 값을 바꾸면 `.unbc`가 깨진다.
 - **외부 crate 의존성**: 기본적으로는 표준 라이브러리이지만, `vendor/` 아래 패치된
   `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`이
@@ -65,11 +65,15 @@ rustup run stable-x86_64-pc-windows-gnu cargo build --release --target wasm32-un
 # 전체 테스트 runner ( Positive + Negative + KnownFailures + KnownDivergent 집계 )
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 
+# JIT on/off differential runner ( 모든 manifest 파일을 UV_JIT=0 과 기본 JIT으로 두 번 실행 )
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
+
 # 벤치마크 runner ( -Group un|node|all, -Rebuild, -NoSave )
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```
 
 - Windows에서 `unvm.exe`는 `rust\target\release\`에 빌드된다. PATH에 추가해서 쓸 수 있다.
+- `.github/workflows/build.yml`이 GNU toolchain 빌드 + `scripts/test.ps1` + `cargo test --release`를 실행한다(`rust-toolchain.toml`이 툴체인을 고정한다).
 - `stable-x86_64-pc-windows-gnu` toolchain을 쓴다(MSVC linker가 없는 개발 머신).
 - `wasm32-unknown-unknown` 타겟도 같은 toolchain으로 빌드된다(link가 필요 없다).
 - 현재 `cargo build --release`는 오류 0개, 경고 0개로 끝난다. **새 경고를 추가하지 말 것.**
@@ -94,8 +98,15 @@ C:\dev\un
 │  ├─ KnownDivergent.txt     # 문서화된 구현 간 차이(실패로 세지 않음)
 │  └─ assert.un              # assert 모듈 (assert_eq / assert_true)
 ├─ scripts/                  (test.ps1, bench.ps1)
-├─ bench/                    (측정 스크립트, bench/node/, bench/results/)
-└─ docs/                     (프로덕션 문서)
+├─ bench/                    (측정 스크립트, bench/node/, bench/results/ — results/는 gitignore)
+├─ vendor/                   (패치된 외부 crate: region, cranelift-jit, icache-coherence — vendor/README.md 참고)
+├─ docs/                     (프로덕션 문서, archive/ = 역사 문서)
+├─ PROJECT_AUDIT.md          # 감사 결과            ┐
+├─ REFACTOR_PLAN.md          # 단계 계획            │ 현재 상태의 기준 문서
+├─ REFACTOR_LOG.md           # 변경 이력            │
+├─ ARCHITECTURE.md           # 구조                 │
+├─ TECHNICAL_DEBT.md         # 부채 목록            ┘
+└─ docs/archive/             # MIGRATION_AUDIT.md / MIGRATION_PROGRESS.md / REGISTER_VM_ROADMAP.md (역사 기록)
 ```
 
 ## 아키텍처 메모
@@ -117,7 +128,11 @@ C:\dev\un
 
 - Rust 2021 edition. 모듈은 `//!` 설명과 함께 파일 상단에 문서를 두고,
   `?` 연산자로 오류를 전파하며, `match`/`if let` 패턴 매칭을 적극적으로 쓴다.
-- 외부 crate 의존성은 없다(표준 라이브러리만).
+- **외부 crate 의존성**: 대부분의 코드는 표준 라이브러리만 쓰지만, `rust/Cargo.toml`은 crates.io에서 `cranelift-codegen/-frontend/-jit/-module/-native 0.137.1`을 가져오고, `vendor/` 아래 패치된
+  `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`이
+  있다(Windows/GNU에서 `dlltool.exe` 부재로 `windows-sys 0.52.0`을 빌드할 수 없기 위해
+  raw kernel32 FFI로 교체). 새 외부 crate는 정말 필요할 때만 추가하고 `vendor/`에 패치할
+  수 있으면 raw FFI로 해결한다.
 - `Op` enum은 explicit `#[repr(u8)]`로 고정되어 있다. opcode 값을 바꾸면 `.unbc`가 깨진다.
 - 네이티브 모듈은 `rust/src/native/`에서 `AnModule` 어트리뷰트 없이 `native::init`이 명시적 등록한다.
 - `README.md`와 `docs/README.md`는 같은 내용의 한/영 쌍이다. 사용자 기능을 바꾸면
@@ -128,14 +143,14 @@ C:\dev\un
 - 통합 테스트 러너(`.csproj`)는 없다. runner는 PowerShell 스크립트이고, 빌드 산출물로
   `.un` 스크립트를 실행한다: `scripts/test.ps1`(test), `scripts/bench.ps1`(bench).
 - `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
-  stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 39 files /
-  1363 passed / 0 failed / 0 crashed**, Negative 38 checks 매칭 + 4 documented divergences,
-  Known 1 file이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다.
+  stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 40 files /
+  1391 passed / 0 failed / 0 crashed**, Negative 39 checks 매칭 + 0 documented divergences,
+  Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).
 - `test/KnownFailures.txt`의 파일은 runner가 KNOWN FAIL로 기록하고 Positive 집계에
-  포함하지 않는다. 현재 1개 파일(`test/regression/defects.un`, 6 assertions)이
-  문서화된 동작과 실제 동작이 다른 결함을 기록한다.
+  포함하지 않는다. 현재 등록된 파일은 없다(2026-11-16에 `test/regression/defects.un`의
+  6개 항목을 표준 semantics로 고치고 `regression` 그룹으로 옮겼다).
 - `test/KnownDivergent.txt`의 파일은 전부 문서화된 차이이다. 정상적으로 실행되지 않지만
   의도된 동작 차이이므로 실패 집계에 포함하지 않는다.
 - `test/test_suite.un`은 가장 넓은 스모크 테스트이며 `test/assert.un`을 모듈로 사용한다.
@@ -164,5 +179,5 @@ C:\dev\un
 - 기본 브랜치: `main`. 기능 브랜치는 `feat/my-feature` 형식을 사용한다.
 - 커밋은 기여자가 직접 수행한다. **에이전트는 사용자가 명시적으로 요청하지 않는 한
   커밋/푸시하지 않는다.**
-- `bin/`, `obj/`와 로컬 에이전트 상태 디렉터리는 `.gitignore`에 의해 제외된다.
+- `.gitignore`에는 `bin/`, `obj/`가 없다(현재 `bin/`·`obj/` 디렉터리는 존재하지 않지만, 그런 경로가 생겨도 자동으로 제외되지 않는다). 로컬 에이전트 상태 디렉터리는 제외된다.
 - 생성된 빌드 산출물이나 도구 캐시를 저장소에 추가하지 않는다.

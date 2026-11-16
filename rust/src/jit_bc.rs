@@ -155,6 +155,8 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
     builder.symbol("un_dict_int_empty", crate::runtime::int_dict::un_dict_int_empty as *const u8);
     builder.symbol("un_dict_int_set", crate::runtime::int_dict::un_dict_int_set as *const u8);
     builder.symbol("un_dict_int_get", crate::runtime::int_dict::un_dict_int_get as *const u8);
+    builder.symbol("un_instance_int_get", crate::runtime::obj::un_instance_int_get as *const u8);
+    builder.symbol("un_instance_int_set", crate::runtime::obj::un_instance_int_set as *const u8);
     let mut module = JITModule::new(builder);
 
     // Declare the depth helpers so the JIT can call into them.
@@ -210,12 +212,33 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
         Ok(fid) => fid,
         Err(_) => return,
     };
+    // Int-field instance access helpers (self pointer + field slot index).
+    let mut sig_ig = module.make_signature();
+    sig_ig.params.push(AbiParam::new(types::I64));
+    sig_ig.params.push(AbiParam::new(types::I64));
+    sig_ig.returns.push(AbiParam::new(types::I64));
+    let fid_int_get = match module.declare_function("un_instance_int_get", Linkage::Import, &sig_ig) {
+        Ok(fid) => fid,
+        Err(_) => return,
+    };
+    let fid_int_ok = match module.declare_function("un_instance_int_ok", Linkage::Import, &sig_ig) {
+        Ok(fid) => fid,
+        Err(_) => return,
+    };
+    let mut sig_is = module.make_signature();
+    sig_is.params.push(AbiParam::new(types::I64));
+    sig_is.params.push(AbiParam::new(types::I64));
+    sig_is.params.push(AbiParam::new(types::I64));
+    let fid_int_set = match module.declare_function("un_instance_int_set", Linkage::Import, &sig_is) {
+        Ok(fid) => fid,
+        Err(_) => return,
+    };
 
     // Pass 1: declare every candidate so they are all callable from each other
     let mut decls: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
     let mut sigs: HashMap<usize, cranelift_codegen::ir::Signature> = HashMap::new();
     for &idx in &candidates {
-        if std::env::var("UV_JIT_DEBUG").is_ok() {
+        if crate::jit_cache::jit_debug() {
             let n = program.names.get(program.protos[idx].name).cloned().unwrap_or_else(|| "?".into());
             eprintln!("JITDBG cand[{idx}] {n}");
         }
@@ -248,7 +271,7 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
     // fails to compile, replace it with a bail stub (tag = 2) ??the rest of
     // the module stays usable, and ineligible calls fall back to the
     // interpreter exactly once per call.
-    let verbose = std::env::var("UV_JIT_DEBUG").is_ok();
+    let verbose = crate::jit_cache::jit_debug();
     for &idx in &candidates {
         let func_id = match decls.get(&idx) {
             Some(fid) => *fid,
@@ -267,6 +290,9 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
             fid_dict_set,
             fid_dict_get,
             fid_sin,
+            fid_int_get,
+            fid_int_ok,
+            fid_int_set,
             &ret_kinds,
         )
         .is_none()
@@ -307,6 +333,7 @@ fn register_eligible_inner(program: &Program, program_ptr: usize) {
 struct Tr<'a> {
     program: &'a Program,
     proto: &'a Proto,
+    proto_index: usize,
     plan: &'a ProtoPlan,
     arena: Vec<String>,
     param_pos: HashMap<String, usize>,
@@ -351,6 +378,10 @@ struct Tr<'a> {
     fid_dict_set: cranelift_module::FuncId,
     fid_dict_get: cranelift_module::FuncId,
     fid_sin: cranelift_module::FuncId,
+    fid_int_get: cranelift_module::FuncId,
+    fid_int_ok: cranelift_module::FuncId,
+    fid_int_set: cranelift_module::FuncId,
+    class_layouts: HashMap<usize, Vec<String>>,
     // Slots that hold IntDict references (opaque i64 ids used by the JIT).
     int_dict_regs: HashSet<usize>,
     local_is_intdict: Vec<bool>,
@@ -538,7 +569,7 @@ impl<'a> Tr<'a> {
 
             if let Some(patch) = self.patches.get(&ip).copied() {
                 if self.emit_range_for_next(builder, code, ip, patch).is_none() {
-                    if std::env::var("UV_JIT_DEBUG").is_ok() {
+                    if crate::jit_cache::jit_debug() {
                         eprintln!("JITREJECT emit_range_for_next ip={ip}");
                     }
                     return None;
@@ -550,7 +581,7 @@ impl<'a> Tr<'a> {
 
             if let Some(patch) = self.intrinsics.get(&ip).copied() {
                 if self.emit_unary_float(builder, patch).is_none() {
-                    if std::env::var("UV_JIT_DEBUG").is_ok() {
+                    if crate::jit_cache::jit_debug() {
                         eprintln!("JITREJECT emit_unary_float ip={ip}");
                     }
                     return None;
@@ -567,7 +598,7 @@ impl<'a> Tr<'a> {
             }
 
             if self.emit_ins(builder, code, ip, ins).is_none() {
-                if std::env::var("UV_JIT_DEBUG").is_ok() {
+                if crate::jit_cache::jit_debug() {
                     eprintln!("JITREJECT emit_ins ip={ip} op={:?}", ins.op);
                 }
                 return None;
@@ -948,6 +979,141 @@ impl<'a> Tr<'a> {
                 }
                 self.local_is_bool[slot] = self.is_bool[ins.a as usize];
                 self.local_is_none[slot] = self.is_none[ins.a as usize];
+                Some(())
+            }
+            Op::GetAttr => {
+                // Class-layout-backed direct field access. For class-method
+                // protos with a known layout, the self local is slot 0 and
+                // we emit a direct `un_instance_int_get` call instead of an
+                // interpreter round-trip.
+                //
+                // The path is disabled for now: `precheck_fn` rejects class
+                // methods, so the layout lookup below can only miss. It stays
+                // in place (and keeps the layout seeding in the VM) so that
+                // Phase 8 can re-enable it once the JIT value model carries
+                // object receivers and the layout index is proven to match
+                // the instance member order.
+                let layout = match self.class_layouts.get(&self.proto_index) {
+                    Some(l) => l.clone(),
+                    None => return None,
+                };
+                let self_slot = 0usize;
+                if (ins.b as usize) != self_slot {
+                    if crate::jit_cache::jit_debug() {
+                        eprintln!("JITREJECT getattr ins.b={} pix={}", ins.b, self.proto_index);
+                    }
+                    return None;
+                }
+                // Map the field-name-at-index-d to a field index into `layout`.
+                let Some(field_ref) = self.arena.get(ins.d as usize) else {
+                    if crate::jit_cache::jit_debug() {
+                        eprintln!("JITREJECT getattr d={} arlen={}", ins.d, self.arena.len());
+                    }
+                    return None;
+                };
+                let field_ix = match layout.iter().position(|f| f == field_ref) {
+                    Some(i) => i,
+                    None => {
+                        if crate::jit_cache::jit_debug() {
+                            eprintln!("JITREJECT getattr not_in_layout ref={} layout={:?}", field_ref, layout);
+                        }
+                        return None;
+                    }
+                };
+                // The receiver pointer is read from the `self` local slot and
+                // the field is probed with `un_instance_int_ok` first: a miss
+                // (the member is gone or holds a non-Int) must send the call
+                // back to the interpreter instead of yielding 0.
+                let f_ok = self.module.declare_func_in_func(self.fid_int_ok, builder.func);
+                let self_ptr = builder.use_var(self.lv_i64(self_slot));
+                let e_idx = builder.ins().iconst(types::I64, field_ix as i64);
+                let ok_call = builder.ins().call(f_ok, &[self_ptr, e_idx]);
+                let ok = builder.inst_results(ok_call)[0];
+                let zero_i = builder.ins().iconst(types::I64, 0);
+                let is_miss = builder.ins().icmp(IntCC::Equal, ok, zero_i);
+                let bail_attr = builder.create_block();
+                let cont_attr = builder.create_block();
+                builder.ins().brif(is_miss, bail_attr, &[], cont_attr, &[]);
+                builder.seal_block(bail_attr);
+                builder.seal_block(cont_attr);
+                builder.switch_to_block(bail_attr);
+                let hp = builder.use_var(self.hp_var);
+                let zero_e = builder.ins().iconst(types::I64, 0);
+                let two_e = builder.ins().iconst(types::I64, 2);
+                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero_e, hp, 0);
+                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two_e, hp, 8);
+                builder.ins().return_(&[]);
+                builder.switch_to_block(cont_attr);
+                let f_ref = self.module.declare_func_in_func(self.fid_int_get, builder.func);
+                let get_call = builder.ins().call(f_ref, &[self_ptr, e_idx]);
+                let res = builder.inst_results(get_call)[0];
+                builder.def_var(self.rv_i64(ins.a as usize), res);
+                self.is_bool[ins.a as usize] = false;
+                self.is_none[ins.a as usize] = false;
+                self.is_float[ins.a as usize] = false;
+                self.int_dict_regs.remove(&(ins.a as usize));
+                self.ret_slot[ins.a as usize] = None;
+                Some(())
+            }
+            Op::SetAttr => {
+                // Symmetric intrinsic for SetAttr(self.<int_field>, v).
+                // Target in `ins.b`; value in `ins.c`; field name index in `ins.d`.
+                let layout = match self.class_layouts.get(&self.proto_index) {
+                    Some(l) => l.clone(),
+                    None => {
+                        if crate::jit_cache::jit_debug() {
+                            eprintln!("JITREJECT setattronatlayout proto_index={} layout_miss=", self.proto_index);
+                        }
+                        return None;
+                    }
+                };
+                let self_slot = 0usize;
+                if (ins.b as usize) != self_slot {
+                    if crate::jit_cache::jit_debug() {
+                        eprintln!("JITREJECT setattronatslot ins.b={} pix={}", ins.b, self.proto_index);
+                    }
+                    return None;
+                }
+                let Some(field_ref) = self.arena.get(ins.d as usize) else {
+                    return None;
+                };
+                let field_ix = match layout.iter().position(|f| f == field_ref) {
+                    Some(i) => i,
+                    None => return None,
+                };
+                // Value must be Int (Float/Bool/etc are not expected here for this bench).
+                if self.is_float[ins.c as usize] || self.is_bool[ins.c as usize] || self.is_none[ins.c as usize] {
+                    return None;
+                }
+                // A write that cannot land (the slot is gone) must bail to the
+                // interpreter instead of silently dropping the store.
+                let f_ref = self.module.declare_func_in_func(self.fid_int_set, builder.func);
+                let self_ptr = builder.use_var(self.lv_i64(self_slot));
+                let e_idx = builder.ins().iconst(types::I64, field_ix as i64);
+                let val = builder.use_var(self.rv_i64(ins.c as usize));
+                let set_call = builder.ins().call(f_ref, &[self_ptr, e_idx, val]);
+                let status = builder.inst_results(set_call)[0];
+                let zero_i = builder.ins().iconst(types::I64, 0);
+                let is_miss = builder.ins().icmp(IntCC::Equal, status, zero_i);
+                let bail_attr = builder.create_block();
+                let cont_attr = builder.create_block();
+                builder.ins().brif(is_miss, bail_attr, &[], cont_attr, &[]);
+                builder.seal_block(bail_attr);
+                builder.seal_block(cont_attr);
+                builder.switch_to_block(bail_attr);
+                let hp = builder.use_var(self.hp_var);
+                let zero_e = builder.ins().iconst(types::I64, 0);
+                let two_e = builder.ins().iconst(types::I64, 2);
+                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero_e, hp, 0);
+                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two_e, hp, 8);
+                builder.ins().return_(&[]);
+                builder.switch_to_block(cont_attr);
+                builder.def_var(self.rv_i64(ins.a as usize), val);
+                self.is_bool[ins.a as usize] = false;
+                self.is_none[ins.a as usize] = false;
+                self.is_float[ins.a as usize] = false;
+                self.int_dict_regs.remove(&(ins.a as usize));
+                self.ret_slot[ins.a as usize] = None;
                 Some(())
             }
             Op::LoadLocal => {
@@ -1990,9 +2156,21 @@ fn find_argpos(code: &[Ins], start: usize) -> Option<usize> {
 
 /// Cheap pre-check that a proto is in the supported subset *shape* (params
 /// only). Does not try to compile; used for up-front module declaration.
+/// Class methods additionally require a hidden `self` Int arg at slot 0 —
+/// this bumps the returned arity by one.
 pub fn precheck_fn(program: &Program, proto_index: usize) -> Option<usize> {
     let proto = program.protos.get(proto_index)?;
     if proto.flags & PROTO_FUNCTION == 0 {
+        return None;
+    }
+    if proto.ext_type.is_some() {
+        // Class methods need an object receiver, but the JIT value model only
+        // carries Int/Float values. The receiver arrives as a raw pointer
+        // (see `jit_fast::try_call_jit`) and the class-layout fast path
+        // cannot prove that the pointer it would dereference is the live
+        // receiver, so class methods stay in the interpreter.
+        // Phase 8 rework: teach the JIT about object receivers, then re-enable
+        // the class-layout `GetAttr`/`SetAttr` fast paths.
         return None;
     }
     let arity = proto.params.len();
@@ -2055,6 +2233,9 @@ pub fn emit_fn_in_module(
     fid_dict_set: cranelift_module::FuncId,
     fid_dict_get: cranelift_module::FuncId,
     fid_sin: cranelift_module::FuncId,
+    fid_int_get: cranelift_module::FuncId,
+    fid_int_ok: cranelift_module::FuncId,
+    fid_int_set: cranelift_module::FuncId,
     ret_kinds: &HashMap<usize, u8>,
 ) -> Option<()> {
     let proto = program.protos.get(proto_index)?;
@@ -2261,6 +2442,7 @@ pub fn emit_fn_in_module(
     let mut tri = Tr {
         program,
         proto,
+        proto_index,
         plan,
         arena,
         param_pos,
@@ -2302,6 +2484,21 @@ pub fn emit_fn_in_module(
         fid_dict_set,
         fid_dict_get,
         fid_sin,
+        fid_int_get,
+        fid_int_ok,
+        fid_int_set,
+        // Wire in the class layout (keyed on proto index) for class methods.
+        class_layouts: {
+            let mut m: HashMap<usize, Vec<String>> = HashMap::new();
+            for (i, p) in program.protos.iter().enumerate() {
+                let Some(ext) = p.ext_type else { continue };
+                let Some(class_name) = program.names.get(ext).cloned() else { continue };
+                if let Some(layout) = crate::runtime::world::class_layout(&class_name) {
+                    m.insert(i, layout);
+                }
+            }
+            m
+        },
         int_dict_regs: HashSet::new(),
         local_is_intdict: vec![false; locals_len],
         call_candidate_regs: HashMap::new(),

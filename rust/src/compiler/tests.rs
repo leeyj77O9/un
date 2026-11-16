@@ -1,7 +1,6 @@
 use std::rc::Rc;
 use crate::bytecode::instr::*;
 use crate::bytecode::{stack_effect, ExcKind, Program};
-use crate::desugar::desugar;
 use crate::lexer::lex;
 use crate::optimize::optimize;
 use crate::parser::parse;
@@ -12,8 +11,7 @@ pub(crate) fn compile_text(text: &str) -> (Rc<Program>, Rc<Source>) {
     let tokens = lex(&mut source).expect("lex");
     let source = Rc::new(source);
     let node = parse(tokens, source.clone()).expect("parse");
-    let desugared = desugar(&node);
-    let root = optimize(&desugared).expect("optimize").root;
+    let root = optimize(&node).expect("optimize").root;
     (Rc::new(compile(&source, &root).expect("compile")), source)
 }
 pub(crate) fn code(program: &Program) -> Vec<(Op, u16, i32)> {

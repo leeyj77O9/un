@@ -50,6 +50,17 @@ assert.assert_err(fn() -> str(fut), "unsupported operand type(s) for str(): 'fut
 assert.assert_err(fn() -> fut + 1, "unsupported operand type(s) for +: 'future' and 'int'")
 assert.assert_err(fn() -> fut(), "unsupported operand type(s) for (): 'future'")
 
+# ---------- 반복문 안의 go/wait ----------
+fn square_v(n)
+    -> n * n
+futs = []
+for i in [1, 2, 3]
+    futs.add(go square_v(i))
+out = []
+for f in futs
+    out.add(wait f)
+assert.assert_eq(list(iter.sorted(out)), [1, 4, 9], "go inside a loop keeps the loop values")
+
 # ---------- lock ----------
 lock = flow.lock()
 assert.assert_eq(str(type(lock)), "<type: lock>", "flow.lock returns a lock")

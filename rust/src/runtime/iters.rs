@@ -211,6 +211,11 @@ fn next(stage: &Stage) -> Step {
                         func,
                         &crate::runtime::function::Args::positional(args),
                     );
+                    // A mapper that threw must not yield a value: the error
+                    // object would become a list value instead of aborting.
+                    if obj::is_err(&value) || obj::is_panic(&value) {
+                        return Step::Panic(value);
+                    }
                     Step::Value(value)
                 }
                 other => other,
@@ -225,6 +230,11 @@ fn next(stage: &Stage) -> Step {
                             func,
                             &crate::runtime::function::Args::positional(vec![o.clone()]),
                         );
+                        // A predicate that threw must abort iteration instead
+                        // of silently filtering the item out.
+                        if obj::is_err(&keep) || obj::is_panic(&keep) {
+                            return Step::Panic(keep);
+                        }
                         if matches!(obj::payload(&keep), Payload::Bool(true)) {
                             return Step::Value(o);
                         }
@@ -639,9 +649,6 @@ pub fn iter_clone(o: &Obj, st: &IterCell) -> Obj {
         Kind::Iters | Kind::Repeat | Kind::Reverse => iter_new(kind, def),
     }
 }
-pub fn iter_copy(o: &Obj) -> Obj {
-    o.clone()
-}
 pub fn iter_init(o: &Obj, st: &IterCell, args: &[Obj]) -> Obj {
     let (kind, _) = head(st);
     match kind {
@@ -715,14 +722,6 @@ pub fn iter_init(o: &Obj, st: &IterCell, args: &[Obj]) -> Obj {
 }
 fn collect_items(def: &Rc<StageDef>) -> Result<Vec<Obj>, Obj> {
     collect(&build(def))
-}
-pub fn next_of(st: &IterCell) -> Obj {
-    let stage = st.borrow().head.clone();
-    match next(&stage) {
-        Step::Value(v) => v,
-        Step::End => obj::err("iteration stopped"),
-        Step::Panic(p) => p,
-    }
 }
 pub fn count_of(st: &IterCell) -> Obj {
     count(&st.borrow().head.clone())

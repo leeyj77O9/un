@@ -1,0 +1,169 @@
+# ARCHITECTURE.md
+
+How the Rust implementation of Un is put together. This document describes
+the code as it is today; `PROJECT_AUDIT.md` lists what is wrong with it and
+`REFACTOR_PLAN.md` lists what will change.
+
+## 1. Overview
+
+```
+   .un source ──► Lexer ──► Parser ──► Desugarer ──► Optimizer ──► Bytecode compiler
+                                                                          │
+                            .unbc container ◄────────────────────────────┘
+                                    │                                        │
+                                    ▼                                        ▼
+                          unbc::read (validate) ────────────► Register VM  ──►  Cranelift JIT
+                                                                   │             (Int/Float subset)
+                                                                   ▼
+                                                          runtime::obj / collections / iters
+                                                                   │
+                                                                   ▼
+                                                        native::* (io, fs, re, math, ...)
+```
+
+The runtime is single-threaded and cooperative: `go`/`wait`, `pool` and `lock`
+all execute on the calling thread (see `docs/DECISIONS.md` D-012, D-054).
+
+## 2. Pipeline
+
+| Stage | Module | Notes |
+| --- | --- | --- |
+| lex | `rust/src/lexer.rs` | indentation-based tokens; `Source` is mutated to record ignored new lines |
+| parse | `rust/src/parser.rs` | recursive descent with a precedence table (`parser.rs:1505-1534`); `Rc<Source>` is the only shared state |
+| desugar | `rust/src/desugar.rs` | two rewrites (compound assignment → binary, `Branch`/`ElIf` → `IfCase`) |
+| optimize | `rust/src/optimize.rs` | AST-level constant folding + dead-branch elimination, fixed-point loop (max 64 passes) |
+| compile | `rust/src/compiler.rs` | stack machine → `Proto` per function; slot table for locals; peephole fuses `a*b+c` into `FusedIntMulAdd` |
+| translate | `rust/src/vm/transfer.rs` | stack → register translation; register count is `locals + max_stack_depth + 1`, capped at 256 |
+| validate | `rust/src/bytecode/mod.rs` | opcode contract, register limit, source-map length invariant |
+| execute | `rust/src/vm/mod.rs` | register VM; `match` dispatch on `Op` |
+
+## 3. Object model
+
+`rust/src/runtime/obj.rs`
+
+```rust
+pub type Obj = Rc<RefCell<ObjData>>;
+
+pub struct ObjData {
+    pub type_name: Rc<str>,     // runtime type ("int", "str", class name, ...)
+    pub declared: Rc<str>,
+    pub types: Types,            // ["obj", "int"] style union
+    pub self_: Option<Obj>,      // bound receiver (class methods)
+    pub super_: Option<Obj>,
+    pub parents: Vec<Obj>,
+    pub members: Vec<(String, Obj)>,   // instance fields, in assignment order
+    pub annotations: Vec<(String, Obj)>,
+    pub payload: Payload,        // 31 variants
+}
+```
+
+- Scalars are **interned**: `obj::int` → `world::int_cached` (cache window
+  `-1024..100000`), `obj::str` → `world::str_pooled` (pool of ≤10,000 strings
+  of ≤1,000 chars), `obj::boolean` → `world::bool_obj`.
+- `Payload` carries the value: `Int`, `Float`, `Str`, `Bool`, `Date`, `List`,
+  `Dict`, `Set`, `Tup`, `Stru`, `Enu`, `Json`, `Func`, `Property`, `FieldRef`,
+  `Iter`, `Future`, `Pool`, `Lock`, `AtomicInt`, `AtomicBool`, `Stream`,
+  `Random`, `HttpClient`, `WebSocket`, `TObj`, `Spread`, `Stru`, `Enu`,
+  `Func`, `Property`, `FieldRef`, `Json`, `Iter`, `Future`, `Pool`, `Lock`,
+  `AtomicInt`, `Stopwatch`. `none` and `null` have no payload variant of
+  their own — they are `Plain` objects distinguished by their `type_name`.
+- Attribute lookup: `get_attr_from` → instance members → bound method →
+  super chain → parents; missing members raise
+  `'{type}' object has no attribute '{name}'`.
+
+### Collections
+
+`rust/src/runtime/collections.rs` implements the `KeyMap` (insertion-ordered
+bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
+`set`, plus `list`, `tuple`, `struct`, `enum`, `json` and `TObj` payloads.
+
+## 4. VM
+
+`rust/src/vm/mod.rs`
+
+- **Locals live in the scope slot table**, not in registers. Registers hold
+  expression temporaries only; the scratch area starts after the local slots
+  (`transfer.rs:29`), so register pressure equals expression depth.
+- **Arguments live in a separate `ArgFrame` stack** (`vm/mod.rs:96-99`).
+- Closures capture the whole `Context`; there is no upvalue cell and
+  `LoadUpv`/`StoreUpv` are ABI placeholders that are never emitted.
+- Exception handling uses a `TryEntry` stack. The recorded handler depth
+  (`TryEntry.depth`) is currently written but never read — the register file
+  is not truncated on handler entry (TD-12).
+- `PLAN_CACHE` (thread-local) maps `Rc::as_ptr(program)` → `(Rc<Program>,
+  Rc<Plan>)`; it is never evicted.
+
+## 5. JIT
+
+`rust/src/jit_bc.rs`, `rust/src/jit_cache.rs`, `rust/src/jit_fast.rs`
+
+- The JIT translates the **register plan** of a proto into Cranelift IR. It
+  supports the Int subset: parameters, locals, `iter.range` loops, integer
+  arithmetic (with constant divisors for `//` and `%`), comparisons,
+  `FusedIntMulAdd`, and two intrinsics (`math.floor(math.sqrt(x))`,
+  `math.sin(x)`).
+- Values are tagged: `0` = Int, `1` = Float (IEEE-754 bits), `2` = runtime
+  bail (the interpreter takes over), `3` = Bool. The tag is written through a
+  hidden pointer to a `(value, tag)` pair.
+- Eligibility is decided by `precheck_fn`; every eligible proto is compiled
+  **eagerly at program load** (`plan_for` → `register_eligible`). Protos that
+  cannot be compiled are registered as *bail stubs* that write tag=2.
+- Class methods are currently **not** eligible: the JIT value model carries
+  only Int/Float and cannot represent an object receiver (see
+  `docs/DECISIONS.md` D-067 and `TECHNICAL_DEBT.md` TD-06).
+- `UV_JIT=0` disables the JIT at runtime; `UV_JIT_DEBUG=1` prints the
+  compile decisions.
+- `rust/src/jit.rs` is a separate, test-only Cranelift probe; it has no
+  production caller.
+
+## 6. Native modules
+
+`rust/src/native/` — `io`, `fs`, `re`, `math`, `iter`, `time`, `os`, `sys`,
+`random`, `http`, `ws`, `atomic`, `flow`, `inspect`, `builtin`, `members`.
+
+Registration is explicit in `native::init`; there is no attribute-based
+discovery. `native/members.rs` is a large member table (the `x.m(...)`
+dispatch); it delegates all semantics to `runtime::obj` and never re-implements
+them.
+
+## 7. Tests and tooling
+
+| Tool | Purpose |
+| --- | --- |
+| `scripts/test.ps1` | runs `test/MANIFEST.txt` groups (`suite`, `unit`, `integration`, `regression`, `known`, `negative`), aggregates `N passed, M failed`, exit 1 on any `[FAIL]` |
+| `test/negative/manifest.txt` | `path|expected exit|expected substring` — exit code and stderr matching for error cases |
+| `test/KnownFailures.txt` | scripts that are expected to fail (currently empty) |
+| `test/KnownDivergent.txt` | documented divergences from the reference behaviour |
+| `scripts/bench.ps1` | warm-up + repetitions + statistics (min/median/mean/max/stddev/ops) |
+| `cargo test --release` | 202 Rust unit tests (lexer, parser, compiler, runtime, VM, native) |
+
+The build is release-only and requires the GNU toolchain:
+
+```bash
+rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
+```
+
+## 8. Global state
+
+`rust/src/runtime/world/` holds the process-wide state in a thread-local
+`World`, split by responsibility into submodules (`world/mod.rs` owns the
+struct and the `WORLD` cell; `caches` owns interned type names and the
+`int`/`str`/`bool`/`none` scalar caches; `classes` owns the class
+registries — `classes`, `classes_tobj`, `original_classes`,
+`original_base_types`, `class_layouts`; `modules` owns the import cache,
+the working path, the global scope and the native registry; `io` owns
+stdout/log/stdin and the sandbox allow-list; `depth` owns the recursion
+limit; `executors` owns the hooks the CLI and the playground install to
+run compiled protos). Everything the runtime mutates at runtime lives
+here, so a test or the WASM playground must restore what it changes.
+
+## 9. Unsafe surface
+
+| Location | Purpose | Guard |
+| --- | --- | --- |
+| `rust/src/runtime/obj.rs` (`un_instance_int_get` / `un_instance_int_ok` / `un_instance_int_set`) | direct member access for the JIT | documented `# Safety` contract, `catch_unwind`, status return |
+| `rust/src/runtime/int_dict.rs` | integer-keyed dictionaries for JIT-emitted code | `Mutex` arena, never freed (TD-07) |
+| `rust/src/jit_cache.rs:57` | `unsafe impl Send for JitEntry` | sound only because the vendored Cranelift backend leaks its allocations |
+| `rust/src/vm/mod.rs` (`F1..F8`) | call into JIT-generated code | hidden result pointer contract, arity asserted |
+| `rust/src/runtime/clock.rs` | WASM host imports | WASM-only |
+| `rust/src/jit.rs` | test-only transmutes of code pointers | test-only |

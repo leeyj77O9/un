@@ -1,7 +1,6 @@
 use std::rc::Rc;
 use crate::bytecode::Program;
 use crate::compiler;
-use crate::desugar::desugar;
 use crate::error::{LangError, Panic};
 use crate::lexer::lex;
 use crate::optimize::optimize;
@@ -24,8 +23,7 @@ pub fn compile_source(source: &Source) -> Result<Program, RunError> {
     let tokens = lex(&mut source).map_err(RunError::Parse)?;
     let source = Rc::new(source);
     let node = parse(tokens, source.clone()).map_err(RunError::Parse)?;
-    let desugared = desugar(&node);
-    let root = optimize(&desugared).map_err(RunError::Panic)?.root;
+    let root = optimize(&node).map_err(RunError::Panic)?.root;
     compiler::compile(&source, &root).map_err(RunError::Panic)
 }
 

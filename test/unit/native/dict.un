@@ -70,5 +70,7 @@ assert.assert_eq(nested["outer"]["inner"][1], 2, "nested dict index")
 assert.assert_eq(len(nested), 1, "nested dict len")
 
 # ---------- dict 비교 연산은 지원되지 않는다 ----------
-assert.assert_err(fn() -> {"a": 1} == {"a": 1}, "unsupported operand type(s) for ==: 'dict' and 'dict'")
+assert.assert_true({"a": 1} == {"a": 1}, "dicts with the same entries are equal")
+assert.assert_false({"a": 1} == {"a": 2}, "dicts with different values are not equal")
+assert.assert_false({"a": 1} == {"b": 1}, "dicts with different keys are not equal")
 assert.summary()

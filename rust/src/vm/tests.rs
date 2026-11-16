@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use crate::compiler::tests::compile_text;
 use crate::error::nl;
 use crate::native;
@@ -77,15 +78,12 @@ fn slice_assignment_replaces_the_range() {
     assert_out("use io\nq = [1, 2, 3, 4]\nq[1:3] = [7]\nio.write(\"q\", q)", "q [1, 7, 4]\n");
 }
 #[test]
-fn a_step_slice_is_an_empty_list() {
-    assert_out("use io\nl = [1, 2, 3, 4]\nio.write(\"s\", l[3:0:-2])", "s []\n");
+fn a_step_slice_keeps_every_selected_element() {
+    assert_out("use io\nl = [1, 2, 3, 4]\nio.write(\"s\", l[3:0:-2])", "s [4, 2]\n");
 }
 #[test]
-fn a_negative_step_past_the_end_is_the_host_exception() {
-    assert_abort(
-        "use io\nl = [1, 2, 3, 4]\nio.write(\"s\", l[4:0:-1])",
-        "System.IndexOutOfRangeException: Index was outside the bounds of the array.",
-    );
+fn a_negative_step_past_the_end_clamps_to_the_last_element() {
+    assert_out("use io\nl = [1, 2, 3, 4]\nio.write(\"s\", l[4:0:-1])", "s [4, 3, 2]\n");
 }
 #[test]
 fn an_optional_call_on_none_is_none() {
@@ -336,4 +334,39 @@ fn go_binds_tighter_than_a_binary_operator() {
         "use io\nfn sq(n)\n    -> go n * n\nio.write(wait sq(5))",
         "unsupported operand type(s) for *: 'future' and 'int'",
     );
+}
+const ROUNDTRIP_SOURCE: &str = "use io\nio.write(\"a\", 40 + 2)\nfn fib(n)\n    if n < 2\n        -> n\n    -> fib(n - 1) + fib(n - 2)\nio.write(\"fib\", fib(13))\nclass Counter\n    count = 0\n    fn __init__(start)\n        self.count = start\n    fn bump(x)\n        self.count = self.count + x\n        -> self.count\nc = Counter(0)\nc.bump(5)\nio.write(\"c\", c.count)\ntry\n    x = 1 / 0\ncatch e\n    io.write(\"caught\", \"caught\")\nio.write(\"done\")\n";
+fn run_via_unbc(text: &str) -> (Outcome, String) {
+    native::init(".");
+    let (program, _source) = compile_text(text);
+    let bytes = crate::bytecode::unbc::write(&program);
+    let program = Rc::new(crate::bytecode::unbc::read(&bytes).expect("unbc read"));
+    let source = Rc::new(crate::source::Source::new("test.un", text));
+    let mut vm = VM::new(program, source).expect("vm");
+    let outcome = vm.run();
+    world::flush_stdout();
+    (outcome, world::log_text())
+}
+#[test]
+fn an_unbc_round_trip_preserves_behavior() {
+    let (direct_outcome, direct_out) = run(ROUNDTRIP_SOURCE);
+    let (unbc_outcome, unbc_out) = run_via_unbc(ROUNDTRIP_SOURCE);
+    assert_eq!(
+        std::mem::discriminant(&unbc_outcome),
+        std::mem::discriminant(&direct_outcome),
+        "outcomes differ between source and .unbc execution"
+    );
+    assert_eq!(unbc_out, direct_out, "stdout differs between source and .unbc execution");
+}
+#[test]
+fn an_unbc_round_trip_preserves_error_behavior() {
+    let text = "use io\nio.write(\"x\", 1 / 0)\n";
+    let (direct_outcome, _) = run(text);
+    let (unbc_outcome, _) = run_via_unbc(text);
+    assert_eq!(
+        std::mem::discriminant(&unbc_outcome),
+        std::mem::discriminant(&direct_outcome),
+        "error outcomes differ between source and .unbc execution"
+    );
+    assert_eq!(message(&unbc_outcome), message(&direct_outcome));
 }

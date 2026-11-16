@@ -1,4 +1,4 @@
-# Un
+﻿# Un
 
 A modern scripting language with concise syntax, explicit asynchronous execution, and pattern matching.
 
@@ -269,11 +269,19 @@ The full suite runs through a runner. It executes the `group|path` rows of
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
+The JIT is validated the same way: every manifest file is executed twice,
+once with `UV_JIT=0` and once with the default, and stdout and exit code
+must match (`scripts/differential.ps1`).
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
+```
+
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
-The current baseline is Positive 39 files / 1363 passed / 0 failed / 0 crashed,
-Negative 42 checks: 38 matched + 4 documented divergences, and Known 1 file.
+The current baseline is Positive 40 files / 1391 passed / 0 failed / 0 crashed,
+Negative 39 checks matched + 0 documented divergences, and Known 0 files.
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
 statistics, and saved to `bench/results/<timestamp>/results.csv` and `results.md`.
@@ -366,6 +374,31 @@ res = match value {
 }
 io.write(res)    # x=3
 ```
+
+### Collections and slicing
+
+```un
+use io
+
+l = [1, 2, 3, 4, 5]
+io.write(l[1:3])                  # [2, 3]
+io.write(l[::2])                  # [1, 3, 5]
+io.write(l[::-1])                 # [5, 4, 3, 2, 1]
+io.write(l[-2:])                  # [4, 5]
+io.write(2 in l)                  # true
+io.write(set(1, 2) == set(1, 2))  # true
+io.write({"a": 1} == {"a": 1})    # true
+```
+
+Slicing follows the same rules for `list`, `tuple` and `str`. A negative start
+or end index counts from the end of the sequence, an omitted bound depends on
+the sign of the step (a positive step runs from the first to the last element,
+a negative step from the last back to the first), the end index is exclusive
+and the step must not be zero.
+
+`==` compares `list`, `tuple`, `dict` and `set` element by element. Two dicts
+are equal when their keys and values match, two sets are equal when they hold
+the same elements regardless of order.
 
 ### Types
 
@@ -536,7 +569,10 @@ Chaining `iter` methods (`(0..10).map(fn(x) -> x * 2).take(3)`) is lazy: nothing
 
 ## Architecture
 
-The interpreter is a single-pass pipeline over an AST:
+The interpreter is a multi-pass pipeline over the AST: the lexer and parser
+produce the AST, the desugarer and optimizer run (the optimizer folds constant
+subexpressions to a fixpoint), the compiler emits bytecode for each proto, and
+the VM either translates the stack bytecode to a register plan or executes it:
 
 ```
 Source (.un)
@@ -570,7 +606,7 @@ Stdlib          native modules (`io`, `fs`, `re`, `math`, ...)
 Key components:
 
 - `rust/src/compiler.rs` compiles desugared, optimized AST to bytecode Protos.
-- `rust/src/vm.rs` runs Protos on a stack machine; `Op` is an explicit `#[repr(u8)]` enum, `Proto` owns `code`/`consts`/`names`/`protos`/`source_map`.
+- `rust/src/vm/` runs Protos on a register machine (stack bytecode is translated to a register plan by `transfer.rs`); `Op` is an explicit `#[repr(u8)]` enum, `Proto` owns `code`/`consts`/`names`/`protos`/`source_map`.
 - `rust/src/runtime/scope.rs` provides slot-based symbol tables with parent chains.
 - `rust/src/runtime/world.rs` owns global state (`path`, `global_scope`, `natives`, `stdout`, `allowed`) and the module cache.
 - `rust/src/native/` holds the standard library modules. They are registered explicitly in `native::init`, without assembly reflection.
@@ -585,15 +621,15 @@ Un/
 |-- rust/
 |   |-- Cargo.toml
 |   |-- src/
-|   |   |-- main.rs          (CLI entry: run/compile/tokens/ast/desugar/opt/dis/help)
+|   |   |-- main.rs          (CLI entry: run/compile/tokens/ast/desugar/opt/dis/dis-reg/plan/help)
 |   |   |-- lib.rs
 |   |   |-- bytecode/        (opcodes, instruction, Program, Proto, unbc container)
-|   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm.rs / module.rs
+|   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm/ / module.rs
 |   |   |-- runtime/         (obj, collections, iters, function, world, scope, date, ...)
 |   |   |-- native/          (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
 |   |-- playground/          (WASM entry point, target of un-playground)
 |   `-- target/              (generated build output, gitignored)
-|-- main.un                 (user's scratch; untracked)
+|-- main.un                 (user's scratch; tracked in git)
 |-- test/                  (.un test scripts and fixtures)
 |   |-- unit/            (unit/lexer, unit/parser, unit/runtime, unit/native)
 |   |-- integration/
@@ -676,7 +712,7 @@ More examples are available in `test/test_suite.un`, `test/integration/algorithm
 Implemented:
 
 - Bytecode compiler and register-based VM (lexer, parser, desugarer, optimizer, compiler, vm)
-- Hot-path Int Cranelift JIT with the `math.floor(math.sqrt(n))` Float-arithmetic intrinsic (disable with `UV_JIT=0`). Includes Int-only IntDict intrinsics for `d[k] = v` / `d[k]` patterns.
+- Hot-path Int Cranelift JIT with `math.floor(math.sqrt(n))` and `math.sin(x)` intrinsics (disable with `UV_JIT=0`). Includes Int-only IntDict intrinsics for `d[k] = v` / `d[k]` patterns and Bool returns.
 - Runtime object model and type system
 - Standard library modules
 - Asynchronous execution and worker pools

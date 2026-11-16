@@ -42,6 +42,9 @@ assert.assert_eq(a.extend([5, 6]), none, "extend returns none")
 assert.assert_eq(a, [9, 3, 1, 2, 4, 5, 6], "extend appends in place")
 assert.assert_eq(a.extend_insert(7, 2), [9, 3, 7, 1, 2, 4, 5, 6], "extend_insert returns the list")
 assert.assert_eq(a, [9, 3, 7, 1, 2, 4, 5, 6], "extend_insert mutates in place")
+e = [1, 4]
+assert.assert_eq(e.extend_insert([2, 3], 1), [1, 2, 3, 4], "extend_insert inserts items in order")
+assert.assert_eq(e, [1, 2, 3, 4], "extend_insert in order mutates in place")
 
 # ---------- search ----------
 assert.assert_eq(a.index_of(9), 0, "index_of hit")
@@ -74,8 +77,12 @@ assert.assert_eq(b.binary_search(9), -5, "binary_search missing above")
 assert.assert_eq(b.lower_bound(1), 0, "lower_bound hit")
 assert.assert_eq(b.lower_bound(3), 2, "lower_bound gap points at the first value >= target")
 assert.assert_eq(b.lower_bound(5), 3, "lower_bound last")
+assert.assert_eq(b.lower_bound(9), 4, "lower_bound past the end is len")
 assert.assert_eq(b.upper_bound(1), 1, "upper_bound hit")
 assert.assert_eq(b.upper_bound(3), 2, "upper_bound gap")
+empty = []
+assert.assert_eq(empty.lower_bound(1), 0, "lower_bound of an empty list is 0")
+assert.assert_eq(empty.upper_bound(1), 0, "upper_bound of an empty list is 0")
 
 # ---------- heap ----------
 h = []
@@ -125,6 +132,11 @@ assert.assert_eq(e.index_of(1), -1, "index_of on empty list")
 assert.assert_false(e.contains(1), "contains on empty list")
 assert.assert_eq(list(iter.take(0, e)), [], "take 0 from empty list")
 assert.assert_eq(e.map(fn(x, i) -> x), [], "map on empty list")
+
+# ---------- order ----------
+o = [3, 1, 2]
+o.order(fn(v) -> 0 - v)
+assert.assert_eq(o, [3, 2, 1], "order sorts ascending by the key")
 
 # ---------- invalid input ----------
 assert.assert_err(fn() -> e.pop(), "pop on empty list")

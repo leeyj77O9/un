@@ -91,7 +91,11 @@ fn list_slice_rules() {
 
     assert_eq!(
         obj::display(&obj::slice(&l, Some(obj::int(3)), Some(obj::int(0)), Some(obj::int(-2)))),
-        "[]"
+        "[4, 2]"
+    );
+    assert_eq!(
+        obj::display(&obj::slice(&l, Some(obj::int(3)), None, Some(obj::int(-1)))),
+        "[4, 3, 2, 1]"
     );
     assert_eq!(obj::display(&obj::slice(&l, Some(obj::int(2)), Some(obj::int(2)), None)), "[]");
     assert_eq!(
@@ -115,10 +119,8 @@ fn list_slice_rules() {
 fn list_membership_and_unops() {
     let l = list(vec![obj::int(1), obj::int(2)]);
 
-    assert_eq!(
-        message(&obj::obj_in(&l, &obj::int(1))),
-        "cannot check if 'int' is in 'list'"
-    );
+    assert_eq!(obj::display(&obj::obj_in(&l, &obj::int(1))), "true");
+    assert_eq!(obj::display(&obj::obj_in(&l, &obj::int(3))), "false");
     assert_eq!(obj::display(&obj::obj_in(&l, &list(vec![obj::int(1)]))), "true");
     assert_eq!(
         obj::display(&obj::obj_in(&l, &list(vec![obj::int(3)]))),
@@ -362,17 +364,17 @@ fn tup_index_and_names() {
     assert_eq!(obj::display(&obj::get_item(&rev, &s("y"))), "2");
 
     assert_eq!(
-        message(&obj::slice(
+        obj::display(&obj::slice(
             &t,
             Some(obj::int(2)),
             Some(obj::int(0)),
             Some(obj::int(-1))
         )),
-        "System.IndexOutOfRangeException: Index was outside the bounds of the array."
+        "(2)"
     );
 
     let from_last = obj::slice(&t, Some(obj::int(1)), Some(obj::int(-3)), Some(obj::int(-1)));
-    assert_eq!(obj::display(&from_last), "(2)");
+    assert_eq!(obj::display(&from_last), "(2, 1)");
 }
 #[test]
 fn tup_membership_and_equality() {

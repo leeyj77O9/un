@@ -3,7 +3,6 @@ use std::rc::Rc;
 use unvm::ast::{Const, Node};
 use unvm::bytecode::stack_effect;
 use unvm::compiler;
-use unvm::desugar::desugar;
 use unvm::error::{nl, LangError};
 use unvm::lexer::lex;
 use unvm::native;
@@ -116,8 +115,16 @@ fn desugar_cmd(args: &[String]) {
         eprintln!("usage: unvm desugar <file>");
         exit(2);
     }
+    // Desugaring is folded into the optimizer as of 2026-11-16; printing the
+    // optimized AST shows exactly what the compiler consumes.
     let (source, node) = parse_file(&args[0]);
-    print_node(&desugar(&node), &source, 0);
+    match optimize(&node) {
+        Ok(result) => print_node(&result.root, &source, 0),
+        Err(panic) => {
+            eprintln!("{}", panic.display());
+            exit(1);
+        }
+    }
 }
 fn opt_cmd(args: &[String]) {
     if args.is_empty() {
@@ -125,8 +132,7 @@ fn opt_cmd(args: &[String]) {
         exit(2);
     }
     let (source, node) = parse_file(&args[0]);
-    let desugared = desugar(&node);
-    match optimize(&desugared) {
+    match optimize(&node) {
         Ok(result) => {
             println!("passes: {}", result.pass_count);
             print_node(&result.root, &source, 0);
@@ -143,8 +149,7 @@ fn dis_reg(args: &[String]) {
         exit(2);
     }
     let (source, node) = parse_file(&args[0]);
-    let desugared = desugar(&node);
-    let root = match optimize(&desugared) {
+    let root = match optimize(&node) {
         Ok(result) => result.root,
         Err(panic) => {
             eprintln!("{}", panic.display());
@@ -170,8 +175,7 @@ fn dis(args: &[String]) {
         exit(2);
     }
     let (source, node) = parse_file(&args[0]);
-    let desugared = desugar(&node);
-    let root = match optimize(&desugared) {
+    let root = match optimize(&node) {
         Ok(result) => result.root,
         Err(panic) => {
             eprintln!("{}", panic.display());

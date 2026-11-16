@@ -1,0 +1,46 @@
+use io
+use iter
+use re
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 정규식 - LCG로 만든 6000개 숫자에서 [0-9]+를 find_all로 찾기
+# Node.js 벤치마크: bench/node/regex.mjs (같은 알고리즘, 같은 검증)
+# 실행: Un.exe run bench/regex.un  (C:\dev\un 에서)
+# ============================================================
+
+words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
+
+fn build_text(tokens)
+    st = 98765
+    s = ""
+    for i in iter.range(0, tokens)
+        st = (st * 1103515245 + 12345) % 100000
+        w = words[st % 6]
+        v = st % 1000
+        s += `{w}{v} `
+    -> s
+
+fn number_sum(text)
+    nums = re.find_all("[0-9]+", text)
+    total = 0
+    for tok in nums
+        total += int(tok)
+    -> total
+
+# ---------- 입력 ----------
+src = build_text(6000)
+assert.assert_eq(len(src), 53813, "the input text is 53813 characters")
+
+# ---------- 검증 ----------
+assert.assert_eq(len(re.find_all("[0-9]+", src)), 6000, "the text holds 6000 numbers")
+assert.assert_eq(number_sum(src), 3345400, "the sum of all numbers")
+masked = re.replace_all("[0-9]+", src, "#")
+assert.assert_eq(len(re.find_all("[0-9]+", masked)), 0, "replace_all removes every number")
+
+# ---------- 측정 ----------
+# 한 번의 측정 = 53813자에서 [0-9]+ 6000개를 찾는다. iters=6000은 매치 수.
+bench.measure("regex6000", fn(n) -> len(re.find_all("[0-9]+", src)), 6000, 7, 2)
+
+assert.summary()

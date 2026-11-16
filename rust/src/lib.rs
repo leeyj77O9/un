@@ -1,9 +1,7 @@
 ﻿pub mod ast;
 pub mod bytecode;
 pub mod compiler;
-pub mod desugar;
 pub mod error;
-pub mod jit;
 pub mod jit_bc;
 pub mod jit_cache;
 pub mod jit_fast;

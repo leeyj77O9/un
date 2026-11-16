@@ -7,6 +7,11 @@ const FORMAT: &str = "Invalid URI: The format of the URI could not be determined
 const AUTHORITY: &str = "Invalid URI: The Authority/Host could not be parsed.";
 const HOST: &str = "Invalid URI: The hostname could not be parsed.";
 const PORT: &str = "Invalid URI: Invalid port specified.";
+/// Maximum accepted WebSocket frame payload (1 MiB). A hostile or broken peer
+/// could claim a huge length and exhaust the process before a single byte
+/// arrives.
+const MAX_FRAME_PAYLOAD: u64 = 1_048_576;
+
 pub const CONNECT: &str = "Unable to connect to the remote server";
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 pub struct Uri {
@@ -431,14 +436,15 @@ pub fn read_frame(stream: &mut TcpStream) -> Result<(u8, Vec<u8>, bool), String>
     let masked = header[1] & 0x80 != 0;
     let length = (header[1] & 0x7F) as u64;
     let length = match length {
-        100 => {
+        // RFC 6455 §5.2: 126 = u16 extended length, 127 = u64 extended length.
+        126 => {
             let mut buffer = [0u8; 2];
             stream
                 .read_exact(&mut buffer)
                 .map_err(|_| CONNECT.to_owned())?;
             u16::from_be_bytes(buffer) as u64
         }
-        101 => {
+        127 => {
             let mut buffer = [0u8; 8];
             stream
                 .read_exact(&mut buffer)
@@ -447,6 +453,9 @@ pub fn read_frame(stream: &mut TcpStream) -> Result<(u8, Vec<u8>, bool), String>
         }
         value => value,
     };
+    if length > MAX_FRAME_PAYLOAD {
+        return Err(CONNECT.to_owned());
+    }
     let mask = if masked {
         let mut buffer = [0u8; 4];
         stream
@@ -469,14 +478,15 @@ pub fn read_frame(stream: &mut TcpStream) -> Result<(u8, Vec<u8>, bool), String>
 }
 pub fn write_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> Result<(), String> {
     let mut out = vec![0x80 | opcode];
+    // RFC 6455 §5.2 markers: 126 = u16 extended length, 127 = u64 extended length.
     match payload.len() {
-        len if len < 100 => out.push(len as u8 | 0x80),
+        len if len < 126 => out.push(len as u8 | 0x80),
         len if len < 65536 => {
-            out.push(100 | 0x80);
+            out.push(126 | 0x80);
             out.extend_from_slice(&(len as u16).to_be_bytes());
         }
         len => {
-            out.push(101 | 0x80);
+            out.push(127 | 0x80);
             out.extend_from_slice(&(len as u64).to_be_bytes());
         }
     }

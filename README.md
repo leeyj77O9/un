@@ -1,4 +1,4 @@
-# Un
+﻿# Un
 
 간결한 문법, 명시적 비동기 실행, 패턴 매칭을 제공하는 현대적인 스크립팅 언어.
 
@@ -267,11 +267,19 @@ rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path ru
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
+JIT 포함/미포함이 같은 동작을 하는지도 같은 절차로 검증한다. runner는
+`test/MANIFEST.txt`와 `test/negative/manifest.txt`의 모든 파일을 `UV_JIT=0`과
+기본 JIT으로 두 번 실행해 stdout과 exit code를 비교한다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
+```
+
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
 Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
-포함하지 않는다. 현재 기준은 Positive 39 파일 / 1363 passed / 0 failed / 0 crashed,
-Negative 42 checks 중 38 매칭 + 4 documented divergences, Known 1 파일이다.
+포함하지 않는다. 현재 기준은 Positive 40 파일 / 1391 passed / 0 failed / 0 crashed,
+Negative 39 checks 매칭 + 0 documented divergences, Known 0 파일이다.
 
 벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`와 `results.md`에 저장한다.
@@ -363,6 +371,29 @@ res = match value {
 }
 io.write(res)    # x=3
 ```
+
+### 컬렉션과 슬라이싱
+
+```un
+use io
+
+l = [1, 2, 3, 4, 5]
+io.write(l[1:3])                  # [2, 3]
+io.write(l[::2])                  # [1, 3, 5]
+io.write(l[::-1])                 # [5, 4, 3, 2, 1]
+io.write(l[-2:])                  # [4, 5]
+io.write(2 in l)                  # true
+io.write(set(1, 2) == set(1, 2))  # true
+io.write({"a": 1} == {"a": 1})    # true
+```
+
+슬라이스는 `list`, `tuple`, `str`에 같은 규칙으로 적용된다. 시작과 끝 인덱스는
+음수이면 뒤에서부터 세고, 생략하면 스텝의 부호에 따라 정해진다(양수 스텝이면
+처음부터 끝까지, 음수 스텝이면 마지막부터 처음까지). 끝 인덱스는 포함하지
+않으며, 스텝은 0이 될 수 없다.
+
+`==`는 `list`, `tuple`, `dict`, `set`을 원소 단위로 비교한다. `dict`는 키와
+값이 모두 같아야 하고, `set`은 순서와 무관하게 원소가 같아야 한다.
 
 ### 타입
 
@@ -553,7 +584,7 @@ Bytecode Compiler   Opcode/Proto/Program, Instruction(flags, operand) 인코딩
 Register VM (interpreter)  Context / Scope / Frame 기반 실행, go/wait를 위한 Future
   |                           + 핫 패스 Int 및 Float 승격 누산기 함수는 Cranelift JIT으로 native 코드로 변환
   v
-Runtime         Obj / Val / Ref / Enu / Stru / TObj / Property와 타입 시스템
+Runtime         Obj / Ref / Enu / Stru / TObj / Property와 타입 시스템
   |
   v
 Stdlib          NativeModule / NativeType 리플렉션 바인딩
@@ -562,7 +593,7 @@ Stdlib          NativeModule / NativeType 리플렉션 바인딩
 주요 구성 요소:
 
 - `rust/src/compiler.rs`는 역탈당·최적화된 AST를 바이트코드 Proto로 컴파일한다.
-- `rust/src/vm.rs`는 Proto를 스택 기계로 실행한다. `Op` enum은 explicit `#[repr(u8)]`로 고정되어 있고, `Proto`는 `code`/`consts`/`names`/`protos`/`source_map`을 owns한다.
+- `rust/src/vm/`은 `Proto`를 레지스터 기계로 실행한다(스택 기계 바이트코드를 `transfer.rs`가 레지스터 계획으로 번역한다). `Op` enum은 explicit `#[repr(u8)]`로 고정되어 있고, `Proto`는 `code`/`consts`/`names`/`protos`/`source_map`을 owns한다.
 - `rust/src/runtime/scope.rs`는 부모 체인을 갖는 슬롯 기반 심볼 테이블을 제공한다. `Scope`의 slot table에서 `Set`은 declaring scope에 write하고(`for` body의 `sum += v` 축적), `SetLocal`/`SetLocalOrDeclare`는 local 전용, `Declare`는 덮지 않는다.
 - `rust/src/runtime/world.rs`는 전역 상태(`path`, `global_scope`, `natives`, `stdout`, `allowed`)를 owns하고 모듈 캐시를 관리한다.
 - `rust/src/native/`는 표준 라이브러리 모듈(`io`, `fs`, `re`, `math`, `iter`, ...)이다. 네이티브 모듈은 `Global`과 같은 방식으로 어셈블리 없이 리플렉션으로 자동 발견되지 않고, `native::init`이 명시적으로 등록한다.
@@ -577,15 +608,15 @@ Un/
 |-- rust/
 |   |-- Cargo.toml
 |   |-- src/
-|   |   |-- main.rs          (CLI 진입점: run/compile/tokens/ast/desugar/opt/dis/help)
+|   |   |-- main.rs          (CLI 진입점: run/compile/tokens/ast/desugar/opt/dis/dis-reg/plan/help)
 |   |   |-- lib.rs
 |   |   |-- bytecode/        (opcodes, instruction, Program, Proto, unbc container)
-|   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm.rs / module.rs
+|   |   |-- lexer.rs / parser.rs / desugar.rs / optimize.rs / compiler.rs / vm/ / module.rs
 |   |   |-- runtime/         (obj, collections, iters, function, world, scope, date, ...)
 |   |   |-- native/          (Builtin, Fs, Http, Inspect, IO, Iter, Math, Os, Random, Re, Sys, Time, Ws)
 |   |-- playground/          (WASM 진입점, un-playground 재빌드 대상)
 |   `-- target/              (생성된 빌드 산출물, gitignore)
-|-- main.un                 (사용자의 스크래치; 추적하지 않음)
+|-- main.un                 (사용자의 스크래치; git에 추적 중)
 |-- test/                  (.un 테스트 스크립트와 픽스처)
 |   |-- unit/            (unit/lexer, unit/parser, unit/runtime, unit/native)
 |   |-- integration/
@@ -668,7 +699,7 @@ class Heap
 구현 완료:
 
 - 바이트코드 컴파일러와 레지스터 기반 VM (lexer, parser, desugarer, optimizer, compiler, vm)
-- 핫 패스 Int 및 `math.floor(math.sqrt(n))` 인트리식을 갖는 Float 승격 누산기 함수를 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화 가능). Int-Int 전용 `d[k] = v` / `d[k]` IntDict intrinsic도 포함.
+- 핫 패스 Int 부분집합과 `math.floor(math.sqrt(n))`, `math.sin(x)` 인트리식을 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화 가능, 클래스 메서드는 JIT 대상 아님). Int-Int 전용 `d[k] = v` / `d[k]` IntDict intrinsic과 Bool 반환도 포함.
 - 런타임 객체 모델과 타입 시스템
 - 표준 라이브러리 모듈
 - 비동기 실행과 워커 풀

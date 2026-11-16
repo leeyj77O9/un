@@ -1,4 +1,4 @@
-//! `vm2` ??a register-based interpreter for Un.
+﻿//! `vm2` ??a register-based interpreter for Un.
 //!
 //! Phase 3 (full integration). The frontend (lexer/parser/desugar/optimizer/
 //! stack compiler) is reused unchanged and emits the validated stack bytecode
@@ -119,7 +119,6 @@ pub struct VM {
 impl VM {
     pub fn new(program: Rc<Program>, source: Rc<Source>) -> Result<Self, String> {
         program.validate()?;
-        world::set_current_program(Some(program.clone()));
         world::set_proto_executor(Some(Rc::new(
             |program: &Rc<Program>, ctx: &Context, proto_index: usize| {
                 let plan = plan_for(program);
@@ -1096,6 +1095,9 @@ impl VM {
                 let name = self.name(ins.d as usize);
                 let created = self.regs[ins.a as usize].clone();
                 world::set_class(&name, created);
+                // The class field layout is seeded once per program at load
+                // time (`seed_class_layouts`); refreshing it here would rescan
+                // every proto on each class registration.
             }
             Op::LoadBaseClass => {
                 let name = self.name(ins.d as usize);
@@ -1324,7 +1326,9 @@ impl VM {
     ) -> Result<Obj, Outcome> {
     // JIT fast-path: route through the shared helper. tag=2 will fall through
     // to the interpreter below, exactly as if JIT were off.
-    if let Some(result) = crate::jit_fast::try_call_jit(&program, proto_index, args) {
+    // Class methods pass their bound receiver as the implicit `self` arg; Tree
+    // route via `try_call_jit` accepts an optional bound receiver slot.
+    if let Some(result) = crate::jit_fast::try_call_jit(&program, proto_index, args, None) {
         return Ok(result);
     }
     let frame = match function::begin_call(callable, args) {
@@ -1469,9 +1473,10 @@ impl VM {
 }
 
 /// Raw result of a JIT-compiled Un function: `value` is either an i64 Int
-/// bits or the raw IEEE-754 bits of a Float, distinguished by `tag`.
-/// The Cranelift side writes this through a hidden pointer, so this is only
-/// a plain Rust struct (not an FFI type).
+/// bits or the raw IEEE-754 bits of a Float, distinguished by `tag`
+/// (`jit_cache::TAG_INT`, `jit_cache::TAG_FLOAT`, `jit_cache::TAG_BOOL`,
+/// `jit_cache::TAG_BAIL`). The Cranelift side writes this through a hidden
+/// pointer, so this is only a plain Rust struct (not an FFI type).
 #[derive(Clone, Copy)]
 pub(crate) struct UnJitResult {
     pub(crate) value: i64,
@@ -1479,9 +1484,10 @@ pub(crate) struct UnJitResult {
 }
 
 /// Invoke a JIT-compiled Un function with positional Int arguments.
-/// Returns the raw value and a tag: 0 = value is an i64 result; 1 = value is
-/// the raw bits of a Float result; 2 = the JIT declined at runtime (the
-/// caller must fall back to the interpreter exactly once).
+/// Returns the raw value and a tag: `TAG_INT` = the value is an i64 result;
+/// `TAG_FLOAT` = the value is the raw bits of a Float result; `TAG_BOOL` = the
+/// value is a Bool; `TAG_BAIL` = the JIT declined at runtime (the caller must
+/// fall back to the interpreter exactly once).
 /// The JIT writes the (value, tag) pair through a hidden pointer so no
 /// aggregate-return ABI rules apply.
 pub(crate) fn jit_call(entry: crate::jit_cache::JitEntry, ints: &[i64]) -> UnJitResult {
@@ -1521,6 +1527,93 @@ thread_local! {
     static PLAN_CACHE: RefCell<HashMap<usize, (Rc<Program>, Rc<Plan>)>> = RefCell::new(HashMap::new());
 }
 
+/// Statically scan the loaded program for class declarations and push a
+/// complete class layout entry into `world::class_layout(name)` — so the JIT
+/// sees the layout at registration time, even though class instantiation is
+/// emitted by `<module>` proto at runtime.
+///
+/// 1. Walk `<module>` for class construction order (MakeClass, AddMethod,
+///    AddMember, RegisterClass) to materialise the method list before any
+///    VM op runs — this reproduces `Op::RegisterClass -> Op::AddMethod` chains.
+/// 2. Walk all function protos tagged with `ext_type == class name` for
+///    `Op::SetAttr` instructions in bytecode order; append their operand
+///    fields to the layout.
+fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
+    #[inline]
+    fn proto_name(program: &Rc<Program>, proto: &crate::bytecode::Proto, slot: usize) -> Option<String> {
+        let &global = proto.names.get(slot)?;
+        program.names.get(global).cloned()
+    }
+    let root_proto = &program.protos[program.root];
+
+    let mut class_regs: HashMap<usize, String> = HashMap::new();
+    let mut layout_out: HashMap<String, Vec<String>> = HashMap::new();
+
+    if crate::jit_cache::jit_debug() {
+        for (i, proto) in program.protos.iter().enumerate() {
+            eprintln!("JITDBG seed proto[{}] name_ix={} wlen={}", i, proto.name, proto.code.len());
+        }
+    }
+
+    for ins in &plan.protos[program.root].code {
+        let op = ins.op;
+        match op {
+            op if op == Op::MakeClass => {
+                let Some(name) = proto_name(program, root_proto, ins.d as usize) else { continue };
+                class_regs.insert(ins.a as usize, name.clone());
+                layout_out.entry(name).or_default();
+            }
+            // Method and class-member names are not instance members, so they
+            // never take part in the field layout.
+            _ => {}
+        }
+    }
+
+    // Field order must match the order the instance writes its members, so the
+    // `__init__` proto — which runs before any other method — contributes its
+    // fields first.
+    let collect_fields = |only_init: bool, layout_out: &mut HashMap<String, Vec<String>>| {
+        for proto in &program.protos {
+            let ext = match proto.ext_type { Some(e) => e, None => continue };
+            let Some(class_name) = program.names.get(ext).cloned() else { continue };
+            let proto_name = program.names.get(proto.name).cloned().unwrap_or_default();
+            let is_init = proto_name == "__init__";
+            if is_init != only_init {
+                continue;
+            }
+            let Some(fields) = layout_out.get_mut(&class_name) else { continue };
+            for ins in &proto.code {
+                if ins.op != Op::SetAttr as u8 {
+                    continue;
+                }
+                let Some(name_ix) = proto.names.get(ins.operand as usize).copied() else { continue; };
+                let Some(field) = program.names.get(name_ix).cloned() else { continue };
+                if field == "self" || fields.contains(&field) {
+                    continue;
+                }
+                fields.push(field);
+            }
+        }
+    };
+    collect_fields(true, &mut layout_out);
+    collect_fields(false, &mut layout_out);
+
+    if crate::jit_cache::jit_debug() {
+        eprintln!("JITDBG class_regs {:?}", class_regs);
+        eprintln!("JITDBG layout_out {:?}", layout_out);
+    }
+    for (class_name, fields) in layout_out {
+        if !fields.is_empty() {
+            if crate::jit_cache::jit_debug() {
+                eprintln!("JITDBG seeding layout {} -> {:?}", class_name, fields);
+            }
+            world::set_class_layout(&class_name, fields);
+        } else if crate::jit_cache::jit_debug() {
+            eprintln!("JITDBG empty layout for {}", class_name);
+        }
+    }
+}
+
 fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
     let key = Rc::as_ptr(program) as usize;
     let found = PLAN_CACHE.with(|cache| cache.borrow().get(&key).cloned());
@@ -1533,6 +1626,9 @@ fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
         "validated program must translate; Program::validate was strengthened
         to enforce the 256-register limit for this reason",
     ));
+    // Seed class layouts before JIT registration runs — so class methods are
+    // specialised against a static layout extracted from the source.
+    seed_class_layouts(&plan, program);
     // Pre-compile eligible Int-only protos into native code, keyed by this
     // program instance.
     crate::jit_bc::register_eligible(program, key);
@@ -1576,11 +1672,22 @@ pub fn panic_display(o: &Obj) -> String {
     }
 }
 
+/// `left is right`.
+///
+/// When the right-hand side is a type object the question is "is `left` an
+/// instance of that type?". Two type objects compare by identity, a value
+/// compares against the types it carries. Otherwise the comparison falls back
+/// to the generic `__is__`/type-name rules.
 fn is_obj(left: &Obj, right: &Obj) -> Obj {
-    if matches!(obj::payload(left), Payload::TObj(..)) || matches!(obj::payload(right), Payload::TObj(..)) {
-        obj::obj_is(right, left)
-    } else {
-        obj::obj_is(left, right)
+    match obj::payload(right) {
+        Payload::TObj(t) => match obj::payload(left) {
+            Payload::TObj(t2) => obj::boolean(t == t2),
+            _ => {
+                let types = obj::types_of(left);
+                obj::boolean(types.contains(&t))
+            }
+        },
+        _ => obj::obj_is(left, right),
     }
 }
 

@@ -53,10 +53,6 @@ impl LangError {
         self.header = header.into();
         self
     }
-    pub fn relocated(mut self, offset: usize) -> Self {
-        self.start += offset;
-        self
-    }
 
     pub fn display(&self, source: &Source) -> String {
         let line_text = source.get_line_text(self.start);

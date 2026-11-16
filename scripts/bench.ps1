@@ -118,6 +118,11 @@ $Pairs = @(
     [pscustomobject]@{ label = "iter10000";      un = "bench/iter.un";   node = "bench/node/iter.mjs" }
     [pscustomobject]@{ label = "math10000";      un = "bench/math.un";   node = "bench/node/math.mjs" }
     [pscustomobject]@{ label = "class1000";      un = "bench/class.un";  node = "bench/node/class.mjs" }
+    [pscustomobject]@{ label = "sieve30000";     un = "bench/sieve.un";    node = "bench/node/sieve.mjs" }
+    [pscustomobject]@{ label = "matrix48";       un = "bench/matrix.un";   node = "bench/node/matrix.mjs" }
+    [pscustomobject]@{ label = "sin20000";       un = "bench/floatmath.un"; node = "bench/node/floatmath.mjs" }
+    [pscustomobject]@{ label = "call200000";     un = "bench/funccall.un"; node = "bench/node/funccall.mjs" }
+    [pscustomobject]@{ label = "regex6000";      un = "bench/regex.un";    node = "bench/node/regex.mjs" }
 )
 
 if ($Rebuild) {

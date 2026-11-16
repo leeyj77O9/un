@@ -23,15 +23,6 @@ impl Source {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default()
     }
-    pub fn full_name(&self) -> String {
-        Path::new(&self.path)
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default()
-    }
-    pub fn len(&self) -> usize {
-        self.code.len()
-    }
     pub fn span(&self, start: usize, length: usize) -> String {
         self.code[start..start + length].iter().collect()
     }

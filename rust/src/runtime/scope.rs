@@ -85,12 +85,6 @@ pub fn get_slot(scope: &Scope, idx: usize) -> Option<Obj> {
     }
 }
 
-pub fn get_slot_name(scope: &Scope, idx: usize) -> Option<String> {
-    let owner = scope.borrow().slot_scope.clone()?;
-    let d = owner.borrow();
-    d.slot_names.get(idx).cloned()
-}
-
 pub fn set_slot(scope: &Scope, idx: usize, value: Obj) -> bool {
     let is_owner = scope
         .borrow()
@@ -173,7 +167,11 @@ pub fn set_local(scope: &Scope, key: &str, value: Obj) {
         None => declare_new(scope, key, value),
     }
 }
-pub fn declare(scope: &Scope, key: &str, initial: Option<Obj>) {
+/// Declare a slot without overwriting an existing binding (idempotent
+/// declarator). Only the slot-scope unit tests use this; production scope
+/// population goes through `declare_new` and `set_local`.
+#[cfg(test)]
+pub(crate) fn declare(scope: &Scope, key: &str, initial: Option<Obj>) {
     if scope.borrow().symbols.contains_key(key) {
         return;
     }
@@ -213,7 +211,10 @@ pub fn contains_key(scope: &Scope, key: &str) -> bool {
 pub fn contains_key_in_top(scope: &Scope, key: &str) -> bool {
     scope.borrow().symbols.contains_key(key)
 }
-pub fn remove(scope: &Scope, key: &str) -> bool {
+/// Remove a top-level symbol. Only the slot-scope unit tests use this;
+/// production never removes slots.
+#[cfg(test)]
+pub(crate) fn remove(scope: &Scope, key: &str) -> bool {
     let mut d = scope.borrow_mut();
     let removed = d.symbols.remove(key).is_some();
     if removed {

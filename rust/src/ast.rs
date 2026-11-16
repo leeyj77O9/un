@@ -22,20 +22,6 @@ pub enum NodeKind {
     Index,
     Slice,
     Assign,
-    PlusAssign,
-    MinusAssign,
-    AsteriskAssign,
-    DoubleAsteriskAssign,
-    SlashAssign,
-    DoubleSlashAssign,
-    PercentAssign,
-    BAndAssign,
-    BOrAssign,
-    BXorAssign,
-    LeftShiftAssign,
-    RightShiftAssign,
-    QuestionAssign,
-    DoubleQuestionAssign,
     Function,
     Extension,
     Accessor,
@@ -54,18 +40,14 @@ pub enum NodeKind {
     Catch,
     Finally,
     Defer,
-    Go,
     Block,
     Pair,
     Typed,
     Class,
     Enum,
     Parameter,
-    Argument,
-    Alias,
     Annotation,
     Lambda,
-    Target,
     Wildcard,
     Case,
     ClassBases,
@@ -157,8 +139,5 @@ impl Node {
     pub fn with_annotations(mut self, annotations: Vec<Node>) -> Self {
         self.annotations = Some(annotations);
         self
-    }
-    pub fn end(&self) -> usize {
-        self.start + self.length
     }
 }

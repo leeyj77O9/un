@@ -6,7 +6,10 @@ use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
 use super::{arg, native};
 thread_local! {
-    static RANDOM: RefCell<Rng> = RefCell::new(Rng::new(0));
+    // Seed the shared generator from the OS clock like the `random.random()`
+    // constructor does — a fixed seed made every process produce the same
+    // sequence. Reproducibility stays available through `random.seed`.
+    static RANDOM: RefCell<Rng> = RefCell::new(Rng::new(crate::runtime::clock::seed_nanos()));
 }
 pub struct Rng {
     state: u64,
@@ -32,14 +35,24 @@ impl Rng {
         if bound == 0 {
             return 0;
         }
-        self.next_u64() % bound
+        // Rejection sample to remove the modulo bias.
+        let limit = u64::MAX / bound * bound;
+        loop {
+            let value = self.next_u64();
+            if value < limit {
+                return value % bound;
+            }
+        }
     }
 
     fn between(&mut self, min: i64, max: i64) -> i64 {
         if max <= min {
             return min;
         }
-        min + self.below((max - min + 1) as u64) as i64
+        // `max - min + 1` can overflow i64 when the range spans the whole
+        // integer space; compute the span in 128 bits.
+        let span = (max as i128) - (min as i128) + 1;
+        min + self.below(span as u64) as i64
     }
 
     fn next_double(&mut self) -> f64 {
@@ -477,6 +490,13 @@ fn range_impl(scope: &Scope) -> Obj {
     };
     if min > max {
         return obj::err("'start' cannot be greater than 'end'");
+    }
+    // The whole range is materialised, so refuse an insane length instead
+    // of building an uninterruptible vector.
+    let len = max - min + 1;
+    const MAX_RANGE: i64 = 1_000_000;
+    if len > MAX_RANGE {
+        return obj::err("expected 'random.range' to cover at most 1000000 values");
     }
     let mut values: Vec<Obj> = (min..=max).map(obj::int).collect();
     shuffle_values(scope, &mut values);

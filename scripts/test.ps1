@@ -9,7 +9,7 @@
 
     - test/negative/manifest.txt : 비정상 입력/구문 오류 스크립트.
       형식: <path>|<expected exit code>|<expected message substring>
-    - test/KnownFailures.txt : 현재 실패가Known된 스크립트. 집계에 포함하지 않는다.
+    - test/KnownFailures.txt : 현재 실패가 알려진 스크립트. 집계에 포함하지 않는다.
 
 .PARAMETER Group
     all(기본) | unit | integration | regression | negative | known | suite
@@ -195,7 +195,15 @@ if ($File -ne "") {
     $r = Invoke-Un $File
     Write-Host ("exit={0}" -f $r.code)
     Write-Host $r.text
-    exit 0
+    $res = Parse-Result $r.text
+    if ($null -ne $res -and $res.failed -gt 0) { exit 1 }
+    exit $r.code
+}
+
+$knownGroups = @("all", "unit", "integration", "regression", "negative", "known", "suite")
+if ($knownGroups -notcontains $Group) {
+    Write-Host ("Unknown -Group '{0}'. Valid groups: {1}" -f $Group, ($knownGroups -join ", "))
+    exit 2
 }
 
 $selected = $groups | Where-Object {

@@ -1,4 +1,4 @@
-# Test Guide
+﻿# Test Guide
 
 This document explains how the Un test suite is organized and how to run it.
 There is no unit-test runner in a build system: every test is an `.un` script
@@ -75,10 +75,10 @@ Counts at the time of writing:
 | Group | Files | Assertions |
 |---|---|---|
 | suite | 1 | 109 |
-| unit + integration | 38 | (1363 - 109) |
-| **Positive total** | **39** | **1363** |
-| negative (exit-code checks) | 42 checks | 38 matched + 4 documented divergences |
-| known (documented defects) | 1 | 6 failing assertions |
+| unit + integration + regression | 39 | (1391 - 109) |
+| **Positive total** | **40** | **1391** |
+| negative (exit-code checks) | 39 checks | 39 matched + 0 documented divergences |
+| known (documented defects) | 0 | none registered |
 | fixtures (not run directly) | 8 | n/a |
 
 ## Manifests
@@ -140,16 +140,15 @@ them as `NEG KNOWN` and excludes them from the negative totals.
 ## Current status
 
 ```
-Positive: 31 files, 1150 passed, 0 failed, 0 crashed
-Negative: 36 matched, 0 mismatched
-Known failures: 1 still failing, 0 unexpectedly passing
+Positive: 40 files, 1391 passed, 0 failed, 0 crashed
+Negative: 39 matched, 0 mismatched, 0 documented divergences
+Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```
 
-The 10 known failures are recorded expectations of documented behaviour, not
-workarounds: list slicing with a negative step, `upper_bound` of the last
-element, `iter.reverse`, `2 in [1, 2, 3]`, set equality, dict equality,
-`iter.zip`, `iter.chain`, a class method shadowing the global `len`, and
-`type(none)`. Fixing the implementation is the only path to making them pass.
-The full list with the expected values is in
-`test/regression/defects.un`, and the history is in `docs/TEST_CLEANUP_LOG.md`.
+All previously known failures are fixed: negative-step slicing, `upper_bound`,
+`lower_bound` past-the-end, set equality, dict equality, `2 in [1, 2, 3]`,
+`type(none) is none`. The regression coverage lives in
+`test/regression/defects.un`, which runs as a Positive member of the
+`regression` group. `test/KnownFailures.txt` is currently empty, so a file
+that is added there must pass after re-measurement or be cleaned up.

@@ -1,11 +1,9 @@
 //! Global registry of JIT-compiled Un functions.
 //!
-//! Two kinds of entries are registered:
-//!
-//! - `"unbc:<ptr>:<proto_index>"` -> the `.unbc` translation of a specific
-//!   proto of a specific compiled program. `<ptr>` is the `Rc::as_ptr` of the
-//!   `Rc<Program>` used by the VM, which makes entries precise per program.
-//! - `"fn:<name>"` -> the AST-based i64 subset translation (single Int param).
+//! Entries are keyed `"unbc:<ptr>:<proto_index>"` -> the `.unbc` translation of
+//! a specific proto of a specific compiled program. `<ptr>` is the
+//! `Rc::as_ptr` of the `Rc<Program>` used by the VM, which makes entries
+//! precise per program.
 //!
 //! Each entry records the native function pointer and its arity so the caller
 //! can dispatch with the right signature.
@@ -15,11 +13,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
+/// JIT result tag: the value is an Int.
+pub const TAG_INT: i64 = 0;
+/// JIT result tag: the value is the IEEE-754 bits of a Float.
+pub const TAG_FLOAT: i64 = 1;
+/// JIT result tag: the JIT declined at runtime; the caller must fall back to
+/// the interpreter exactly once.
+pub const TAG_BAIL: i64 = 2;
+/// JIT result tag: the value is a Bool (dispatched to `boolean()`).
+pub const TAG_BOOL: i64 = 3;
+
 /// A JIT-compiled function. The `ptr` points to the Cranelift-emitted native
 /// function with `arity` `i64` parameters plus a hidden result pointer,
 /// returning via that hidden pointer: the first i64 cell carries the result
-/// value (sent as i64 bits for Float too), the second cell carries a tag:
-/// 0 = Int, 1 = Float, 2 = bail to the interpreter.
+/// value (sent as i64 bits for Float too), the second cell carries one of
+/// `TAG_INT`, `TAG_FLOAT`, `TAG_BAIL`, `TAG_BOOL`.
 #[derive(Clone, Copy)]
 pub struct JitEntry {
     pub ptr: *const u8,
@@ -74,6 +82,17 @@ pub fn jit_enabled() -> bool {
     *JIT_ENABLED
 }
 
+/// Whether the JIT emits diagnostic output (`UV_JIT_DEBUG` is set).
+///
+/// The flag is read once per process: the emitters ask for it per emitted
+/// instruction, and an environment lookup per opcode is expensive enough to
+/// show up in the JIT compile cost.
+pub fn jit_debug() -> bool {
+    static JIT_DEBUG: LazyLock<bool> =
+        LazyLock::new(|| std::env::var_os("UV_JIT_DEBUG").is_some());
+    *JIT_DEBUG
+}
+
 /// Register a JIT-compiled entry under `key`.
 pub fn register_jit_entry(key: &str, entry: JitEntry) {
     if !jit_enabled() {
@@ -93,10 +112,4 @@ pub fn get_jit_entry(key: &str) -> Option<JitEntry> {
         return None;
     }
     JIT_FNS.lock().ok()?.get(key).copied()
-}
-
-/// Wipe the registry. Used by tests/playground to avoid leaking compiled
-/// functions across runs.
-pub fn clear() {
-    JIT_FNS.lock().expect("jit_cache").clear();
 }
