@@ -1,4 +1,4 @@
-# ARCHITECTURE.md
+﻿# ARCHITECTURE.md
 
 How the Rust implementation of Un is put together. This document describes
 the code as it is today; `PROJECT_AUDIT.md` lists what is wrong with it and

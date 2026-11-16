@@ -284,6 +284,12 @@ Callers unchanged — everything is re-exported through `world::`.
 - `vendor/THIRD_PARTY.md` added; `vendor/README.md` attribution corrected
   (the two wasmtime crates ship without the upstream `LICENSE` files —
   recorded as debt TD-31).
+- Dead-weight `slot_names` removed from `Scope` and from the per-`go`
+  scope snapshot (each future used to carry a `Vec<String>` it never read).
+- `runtime/global.rs` renamed to `runtime/modules.rs`; its tests moved to
+  `runtime/modules/tests.rs`; the module tree is now `mod`/`fn`/`obj`/
+  `scope`/`world`/`iters`/`collections`/`context`/`date`/`modules`/`types`/
+  `int_dict`/`prims`/`clock`.
 
 ### Verification
 

@@ -34,7 +34,7 @@ use crate::module;
 use crate::runtime::collections;
 use crate::runtime::context::{self, Context, Frame};
 use crate::runtime::function::{self, Args};
-use crate::runtime::global;
+use crate::runtime::modules;
 use crate::runtime::obj;
 use crate::runtime::obj::{BinOp, Obj, Payload};
 use crate::runtime::scope;
@@ -1267,7 +1267,7 @@ impl VM {
                 let parts: Vec<String> = path.split('.').map(|s| s.to_string()).collect();
                 let last = parts.last().cloned().unwrap_or_default();
                 let result = if world::is_native(&last) {
-                    global::include(&last, alias, imports).map_err(module::ModuleError::Panic)
+                    modules::include(&last, alias, imports).map_err(module::ModuleError::Panic)
                 } else {
                     let source_path = self.ctx.borrow().source.path.clone();
                     module::import_file(&parts, &source_path, alias, imports)

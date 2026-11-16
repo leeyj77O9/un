@@ -12,7 +12,6 @@ pub struct ScopeData {
 
     pub order: Vec<String>,
     pub slots: Vec<Obj>,
-    pub slot_names: Vec<String>,
 
     /// the scope that owns the function's slot table, if any; children inherit it
     pub slot_scope: Option<Scope>,
@@ -24,7 +23,6 @@ pub fn new(parent: Option<Scope>, is_function_scope: bool) -> Scope {
         symbols: HashMap::with_capacity(8),
         order: Vec::new(),
         slots: Vec::new(),
-        slot_names: Vec::new(),
         slot_scope: None,
     }))
 }
@@ -38,14 +36,12 @@ pub fn preseed_slots(scope: &Scope, names: &[String]) -> bool {
     }
     let count = names.len();
     d.slots.reserve(count);
-    d.slot_names.reserve(count);
     d.order.reserve(count);
     d.symbols.reserve(count);
     let sentinel = world::uninitialized_obj();
     for name in names {
         let idx = d.slots.len();
         d.slots.push(sentinel.clone());
-        d.slot_names.push(name.clone());
         d.order.push(name.clone());
         d.symbols.insert(name.clone(), idx);
     }
@@ -183,7 +179,6 @@ fn declare_new(scope: &Scope, key: &str, value: Obj) {
     d.symbols.insert(key.to_owned(), idx);
     d.order.push(key.to_owned());
     d.slots.push(value);
-    d.slot_names.push(key.to_owned());
 }
 pub fn local_symbols(scope: &Scope) -> Vec<(String, Obj)> {
     let d = scope.borrow();
@@ -226,7 +221,7 @@ pub fn slot_count(scope: &Scope) -> usize {
     scope.borrow().slots.len()
 }
 pub fn snapshot(scope: &Scope) -> Scope {
-    let (is_function_scope, parent, symbols, order, slots, slot_names, slot_scope) = {
+    let (is_function_scope, parent, symbols, order, slots, slot_scope) = {
         let d = scope.borrow();
         (
             d.is_function_scope,
@@ -234,7 +229,6 @@ pub fn snapshot(scope: &Scope) -> Scope {
             d.symbols.clone(),
             d.order.clone(),
             d.slots.clone(),
-            d.slot_names.clone(),
             d.slot_scope.clone(),
         )
     };
@@ -244,7 +238,6 @@ pub fn snapshot(scope: &Scope) -> Scope {
         symbols,
         order,
         slots,
-        slot_names: slot_names.clone(),
         slot_scope: slot_scope.clone(),
     }))
 }

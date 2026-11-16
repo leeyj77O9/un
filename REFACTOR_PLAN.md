@@ -106,8 +106,9 @@ Each item needs a before/after benchmark number in `REFACTOR_LOG.md`.
       (stdout/log/stdin, sandbox allow-list, exit gate, EOF), `world/depth.rs`
       (recursion limit), `world/executors.rs` (executor hooks). Callers
       unchanged — everything re-exported through `world::`.
-- [ ] Move `runtime/global.rs` (class seeding, module objects, import
-      resolution) into `runtime/modules.rs`.
+- [x] Move `runtime/global.rs` into `runtime/modules.rs` (class seeding,
+      module objects, import resolution). The module directory
+      `runtime/modules/` holds the test module.
 - [ ] Collapse the two scope abstractions (VM frame registers + lexical scope
       chain) and the four "frame" types (`context::Frame`, `function::CallFrame`,
       `vm::ArgFrame`, `vm::TryEntry`).

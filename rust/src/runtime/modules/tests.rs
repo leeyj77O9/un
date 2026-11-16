@@ -1,7 +1,7 @@
-use crate::native;
+﻿use crate::native;
 use crate::runtime::collections;
 use crate::runtime::function;
-use crate::runtime::global;
+use crate::runtime::modules;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::world;
 fn message(o: &Obj) -> String {
@@ -12,7 +12,7 @@ fn message(o: &Obj) -> String {
     }
 }
 fn include(name: &str, alias: Option<String>, imports: Option<Vec<(String, String)>>) -> Obj {
-    match global::include(name, alias, imports) {
+    match modules::include(name, alias, imports) {
         Ok(()) => obj::none(),
         Err(e) => e,
     }

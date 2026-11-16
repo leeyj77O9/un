@@ -1,7 +1,7 @@
-use std::rc::Rc;
+﻿use std::rc::Rc;
 use crate::runtime::context::{self, Context};
 use crate::runtime::function::{self, ArgData};
-use crate::runtime::global;
+use crate::runtime::modules;
 use crate::runtime::obj::Obj;
 use crate::runtime::scope::Scope;
 use crate::source::Source;
@@ -31,7 +31,7 @@ pub mod http;
 pub fn init(path: &str) {
     world::reset();
     world::set_path(path);
-    global::init_classes();
+    modules::init_classes();
 
     let closure = native_closure();
 

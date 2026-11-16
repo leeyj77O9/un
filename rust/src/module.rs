@@ -1,7 +1,7 @@
-use std::rc::Rc;
+﻿use std::rc::Rc;
 use crate::error::LangError;
 use crate::runtime::context;
-use crate::runtime::global;
+use crate::runtime::modules;
 use crate::runtime::obj::{self, Obj};
 use crate::runtime::scope;
 use crate::runtime::world;
@@ -47,7 +47,7 @@ pub fn import_file(
     let map = load(&full)?;
     let module_name = parts.join(".");
     let object_name = parts.last().cloned().unwrap_or_default();
-    global::import_map(&map, &module_name, &object_name, module_alias, imports)
+    modules::import_map(&map, &module_name, &object_name, module_alias, imports)
         .map_err(ModuleError::Panic)
 }
 pub fn load(full_path: &str) -> Result<Vec<(String, Obj)>, ModuleError> {
