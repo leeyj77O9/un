@@ -68,12 +68,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 # JIT on/off differential runner ( 모든 manifest 파일을 UV_JIT=0 과 기본 JIT으로 두 번 실행 )
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 
+# .unbc 왕복 runner ( Positive + negative 중 컴파일 가능 파일을 run vs compile+run 으로 바이트 비교 )
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\unbc-roundtrip.ps1 -IncludeNegative
+
 # 벤치마크 runner ( -Group un|node|all, -Rebuild, -NoSave )
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```
 
 - Windows에서 `unvm.exe`는 `rust\target\release\`에 빌드된다. PATH에 추가해서 쓸 수 있다.
-- `.github/workflows/build.yml`이 GNU toolchain 빌드 + `scripts/test.ps1` + `cargo test --release`를 실행한다(`rust-toolchain.toml`이 툴체인을 고정한다).
+- `.github/workflows/build.yml`이 GNU toolchain 빌드 + `scripts/test.ps1` + `cargo test --release` + `scripts/unbc-roundtrip.ps1 -IncludeNegative`를 실행한다(`rust-toolchain.toml`이 툴체인을 고정한다).
 - `stable-x86_64-pc-windows-gnu` toolchain을 쓴다(MSVC linker가 없는 개발 머신).
 - `wasm32-unknown-unknown` 타겟도 같은 toolchain으로 빌드된다(link가 필요 없다).
 - 현재 `cargo build --release`는 오류 0개, 경고 0개로 끝난다. **새 경고를 추가하지 말 것.**
@@ -97,7 +100,7 @@ C:\dev\un
 │  ├─ KnownFailures.txt      # runner가 KNOWN FAIL로 기록하는 파일
 │  ├─ KnownDivergent.txt     # 문서화된 구현 간 차이(실패로 세지 않음)
 │  └─ assert.un              # assert 모듈 (assert_eq / assert_true)
-├─ scripts/                  (test.ps1, bench.ps1)
+├─ scripts/                  (test.ps1, differential.ps1, unbc-roundtrip.ps1, bench.ps1)
 ├─ bench/                    (측정 스크립트, bench/node/, bench/results/ — results/는 gitignore)
 ├─ vendor/                   (패치된 외부 crate: region, cranelift-jit, icache-coherence — vendor/README.md 참고)
 ├─ docs/                     (프로덕션 문서, archive/ = 역사 문서)
@@ -141,7 +144,11 @@ C:\dev\un
 ## 테스트와 검증
 
 - 통합 테스트 러너(`.csproj`)는 없다. runner는 PowerShell 스크립트이고, 빌드 산출물로
-  `.un` 스크립트를 실행한다: `scripts/test.ps1`(test), `scripts/bench.ps1`(bench).
+  `.un` 스크립트를 실행한다: `scripts/test.ps1`(test), `scripts/bench.ps1`(bench),
+  `scripts/differential.ps1`(JIT on/off 비교), `scripts/unbc-roundtrip.ps1`(.unbc 왕복 검증).
+- `scripts/unbc-roundtrip.ps1`은 Positive manifest 전체와 negative 중 컴파일 가능한
+  파일을 `unvm run` vs `unvm compile` + `unvm run <file>.unbc`로 실행해 stdout/stderr/
+  exit code를 바이트 비교한다. `-IncludeNegative`를 쓰면 negative manifest도 포함한다.
 - `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 40 files /
   1391 passed / 0 failed / 0 crashed**, Negative 39 checks 매칭 + 0 documented divergences,

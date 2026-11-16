@@ -46,7 +46,13 @@ pub fn compile(source: &Source, ast: &Node) -> Result<Program, Panic> {
 impl<'a> Compiler<'a> {
     pub fn new(source: &'a Source) -> Self {
         let mut program = Program {
-            source_path: source.name().to_string(),
+            // Store the full path as passed (not just the file stem): the
+            // VM resolves `use` modules relative to the importing file's
+            // directory, and `.unbc` re-runs must resolve modules exactly
+            // like a direct `unvm run` from the same cwd. Error display
+            // still shows the stem via `Source::name()`, so messages keep
+            // their current shape.
+            source_path: source.path.clone(),
             source: None,
             names: Vec::new(),
             consts: Vec::new(),

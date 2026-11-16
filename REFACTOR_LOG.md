@@ -518,3 +518,44 @@ re-run; both verify the lazy path recompiles after invalidation.
 | `cargo test --release` | **204 passed / 0 failed** |
 | `scripts/test.ps1` | Positive **40 files / 1395 passed / 0 failed / 0 crashed**; Negative **39 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **79 files, 0 differences** |
+
+---
+
+## 2026-11-16 — Pass 8: `.unbc` round-trip harness + `source_path` defect fix
+
+### Harness
+
+New `scripts/unbc-roundtrip.ps1`: for every Positive manifest file (and, with
+`-IncludeNegative`, every compilable Negative fixture), run
+`unvm run <file>` vs `unvm compile <file>` + `unvm run <file>.unbc` and
+byte-compare stdout, stderr and the exit code. Parse-rejected Negative files
+cannot produce a `.unbc` and are counted as skipped. The harness is wired
+into CI (`.github/workflows/build.yml`, after `cargo test`) and documented in
+AGENTS.md / REFACTOR_PLAN.md (Phase 5 item checked off).
+
+### Defect found and fixed (D-072)
+
+The harness caught a real defect: `compiler.rs` stored only the file stem
+(`Source::name()`) in `Program.source_path`, and `run_bytecode` reconstructs
+the `Source` from it. Module resolution (`module::resolve_module` is
+"importing file's directory, then cwd") therefore diverged between direct run
+and `.unbc` re-run:
+
+- `test/fixtures/rel_test/main.un` — direct run exits 0 (`rel ok`); the
+  `.unbc` re-run panicked with `module 'C:\dev\un\utils' not found`.
+- `circular_main.un` — the `circular import detected` diagnostic printed an
+  absolute path on the direct run but a cwd-relative path on `.unbc` re-run.
+
+Fix: `Program.source_path` stores the full path as passed at compile time
+(`source.path.clone()`). Error display still shows the stem via
+`Source::name()`, so message shape is unchanged; `.unbc` format and opcode
+ABI untouched. Documented as decision **D-072** in `docs/DECISIONS.md`.
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** |
+| `cargo test --release` | **204 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **40 files / 1395 passed**; exit **0** |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40 identical**; Negative compilable **33/33 identical**, 6 skipped (parse-rejected) |

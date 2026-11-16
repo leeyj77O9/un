@@ -151,7 +151,13 @@ Each item needs a before/after benchmark number in `REFACTOR_LOG.md`.
       tree listing, build/test toolchain and the new runner commands.
 - [x] Move the historical VM/JIT documents to `docs/archive/`
       (`MIGRATION_AUDIT.md`, `MIGRATION_PROGRESS.md`, `REGISTER_VM_ROADMAP.md`).
-- [ ] Add a `.unbc` round-trip test (compile → write → read → run → compare).
+- [x] Add a `.unbc` round-trip test (compile → write → read → run → compare).
+      `scripts/unbc-roundtrip.ps1` runs every Positive manifest file plus the
+      compilable Negative fixtures through `unvm run` vs
+      `unvm compile` + `unvm run <file>.unbc` and byte-compares
+      stdout/stderr/exit code; wired into CI. It caught a real defect:
+      `Program.source_path` stored only the file stem, which broke
+      source-dir-relative module resolution on `.unbc` re-run (see D-072).
 - [ ] Decide whether `bench/results/` stays committed.
 
 ## Phase 8 — JIT rework (in progress, tracked in `TECHNICAL_DEBT.md`)

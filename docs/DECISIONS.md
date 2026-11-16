@@ -860,3 +860,33 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - `Global.Init`는 `io`를 bind하지 않는다. 모든 probe/test 스크립트는 `use io`로 시작한다.
 - `Str`은 `Repr()`를 override하지 않으므로 `repr("a")`는 base form의 type name `str`이다
   (`type(1)` → `<type: int>`, `len([1,2,3])` → `3`, `chr(65)` → `A`와 실측 비교).
+
+## D-072 | `Program.source_path`는 stem이 아니라 전체 경로를 저장한다 | Accepted
+
+- `.unbc` 왕복(compile → write → read → run)을 검증하는 과정에서 발견한
+  정합성 결함이다. compiler는 `Program.source_path`에 `source.name()`(파일 stem,
+  예 `rel_test`)만 저장했고, `run_bytecode`는 임베디드 source 텍스트를
+  `Source::new(source_path, …)`로 복원한다. 때문에 `.unbc` 재실행에서는
+  `use` 모듈 해석의 "임포터 디렉토리 기준" 규칙이 stem의 빈 parent에 적용되어
+  cwd 상대 경로로 어긋났다:
+  - `test/fixtures/rel_test/main.un` 은 direct run에서 통과(exit 0)하지만
+    `.unbc`에서는 `use utils`가 cwd(=repo root) 기준으로 해석되어
+    `panic : module 'C:\dev\un\utils' not found`로 죽는다.
+  - `circular_main.un`의 "circular import detected" 진단이 direct(절대 경로)와
+    `.unbc`(cwd 상대 경로)에서 서로 다른 문자열을 출력한다.
+- **수정**: compiler가 `source.path.clone()`(전달받은 전체 경로를 그대로)을
+  저장한다. compile-timed cwd와 re-run cwd가 같으면 direct run과 바이트 단위로
+  동일하게 해석되고, cwd가 달라도 왜 그런지가 "임베디드 path"로 설명 가능하다.
+  에러 디스플레이는 `Source::name()`(stem)을 쓰므로 메시지 모양은 그대로다.
+  `.unbc` 포맷과 opcode ABI는 바뀌지 않았다.
+- **검증 하니스**: `scripts/unbc-roundtrip.ps1`(신규). Positive manifest 전체 +
+  negative manifest 중 컴파일 가능한 파일을 `unvm run` vs
+  `unvm compile` 후 `unvm run <file>.unbc`로 실행해 stdout/stderr/종료 코드를
+  바이트 비교한다. 파싱 단계에서 거부되는 negative 파일(6개)은 바이트코드를
+  만들 수 없으므로 skip으로 집계한다. 수정 후 Positive **40/40 identical**,
+  negative compilable **33/33 identical**(수정 전 0/40→2건 불일치: 위 두 건이
+  잡혔다). CI(`.github/workflows/build.yml`)에도 같은 step을 추가했다.
+  `test.ps1`/`cargo test` 기준은 그대로 green(아래 REFACTOR_LOG 참고).
+- **교훈**: 음성(negative) 픽스처 셋은 "모듈 해석의 명세"였는데, 지금까지는
+  source 경로만 통해서만 실행됐다. `.unbc` 경로도 동일 명세로 검증해야
+  컴파일 아티팩트가 1급 실행 경로로 유지된다.
