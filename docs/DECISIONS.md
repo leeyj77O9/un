@@ -983,3 +983,19 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   3개(`chr_space`/`ord_space`/`multi_space_arg`: `codes.chr()`/`codes.ord()`).
 - **검증**: Positive **1415 passed**(동일), Negative 41, differential 81/0, cargo test
   205(release+debug), unbc-roundtrip 40/40+34/34, suite 109.
+
+
+## D-077 | JIT depth guard: atomic에서 cached static으로 | Accepted
+
+- **문제**: `fib(24)` (150k 재귀 호출)에서 Un JIT이 Python과 비슷한 3.39ms에 머물렀다.
+  VM/JIT/Python 모두 같은 하네스(7 reps, warmup 2, median)로 측정한다.
+- **근본 원인**: Cranelift-native recursion은 동일 함수를 자기 자신으로 직접 호출(emit_user_call)하지만,
+  모든 진입경로가 `un_jit_depth_enter`(`atomic fetch_add` + `WORLD.with(borrow)`로 max였던
+  `max_recursion_depth()` 호출)를 수행했다. 단일 스레드 + 협력형 환경인데 힙 셀 TLS + 원자 RMW를
+  매 호출마다 수행했다.
+- **해결**: 단일 전역 원자 카운터(Relaxed)로 변경하고, `max_recursion_depth`를 `Relaxed` 로드 가능한
+  `AtomicUsize` 캐시로 바꾸었다. 핫패스가 `WORLD`를 borrow하지 않고, 역시 RMW는 필요한 만큼만 수행한다.
+  `sys.setrecursionlimit`이 호출되면 `world::set_max_recursion_depth`가 캐시를 갱신한다.
+- **결과**: fib24 3.39ms → **1.32ms** (Python 3.13ms의 **0.4x**, Python 대비 2.4배 빠름).
+  정확성/게이트는 동일: Positive 1415, Negative 41, differential 81/0,
+  cargo test 205, unbc-roundtrip 40/40+34/34.

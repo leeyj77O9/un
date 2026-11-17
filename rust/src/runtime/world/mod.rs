@@ -121,4 +121,5 @@ impl World {
 
 pub fn reset() {
     WORLD.with(|w| *w.borrow_mut() = World::new());
+    crate::jit_cache::sync_max_jit_depth(crate::runtime::function::MAX_RECURSION_DEPTH);
 }

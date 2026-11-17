@@ -14,7 +14,6 @@
 use cranelift_jit::JITModule;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
@@ -39,22 +38,33 @@ pub struct JitEntry {
     pub arity: u32,
 }
 
-/// Thread of execution here; JIT functions count call depth using this
-/// counter (both from VM dispatch — no, VM increments its own limit — and
-/// from JIT-internal call sites). Capped at world::max_recursion_depth().
-pub static JIT_DEPTH: AtomicUsize = AtomicUsize::new(0);
+// The JIT increments this counter on entry and decrements on exit. The
+// process is single-threaded and the runtime is cooperative, so Relaxed
+// order is sufficient — an RMW per call is about as cheap as it gets for
+// shared memory, and there is no contention.
+pub static JIT_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+// Cached copy of `world::max_recursion_depth()`. Refreshed by
+// `sync_max_jit_depth()` so the hot path never borrows `WORLD`.
+pub static JIT_MAX_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Refresh the JITed bound after a `set_max_recursion_depth()` call.
+pub(crate) fn sync_max_jit_depth(depth: usize) {
+    JIT_MAX_DEPTH.store(depth, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Cranelift-imported helper for entry/depth check.
 /// Returns 1 when the JIT function must bail (too deep), 0 otherwise.
 #[no_mangle]
 pub extern "C" fn un_jit_depth_enter() -> i64 {
-    let depth = JIT_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
-    if depth >= crate::runtime::world::max_recursion_depth() {
-        // Revert the increment so the VM doesn't double-count on bail.
-        JIT_DEPTH.fetch_sub(1, Ordering::Relaxed);
-        1
-    } else {
+    let depth = JIT_DEPTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let max = JIT_MAX_DEPTH.load(std::sync::atomic::Ordering::Relaxed);
+    if max == 0 || depth < max {
         0
+    } else {
+        // Revert the increment so the caller's own bail path doesn't double
+        // count; the normal return will fetch_sub anyway.
+        JIT_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        1
     }
 }
 
@@ -63,7 +73,7 @@ pub extern "C" fn un_jit_depth_enter() -> i64 {
 /// nested calls.
 #[no_mangle]
 pub extern "C" fn un_jit_depth_exit() -> i64 {
-    JIT_DEPTH.fetch_sub(1, Ordering::Relaxed);
+    JIT_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     0
 }
 

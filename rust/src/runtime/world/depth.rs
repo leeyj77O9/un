@@ -7,4 +7,5 @@ pub fn max_recursion_depth() -> usize {
 }
 pub fn set_max_recursion_depth(depth: usize) {
     WORLD.with(|w| w.borrow_mut().max_recursion_depth = depth);
+    crate::jit_cache::sync_max_jit_depth(depth);
 }

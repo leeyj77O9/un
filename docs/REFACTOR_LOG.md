@@ -1194,3 +1194,42 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 | `cargo test --release` | **205 passed / 0 failed** |
 | `cargo test` (debug) | **205 passed / 0 failed** |
 | `test/test_suite.un` | **109 passed / 0 failed** |
+
+
+---
+
+## 2026-11-17 — Pass 22: fib benchmark — depth guard cost removed
+
+### Starting state
+
+- `fib24` (150,049 recursive calls, measured via warmup=2/reps=7/median) was
+  ~3.39 ms on Un JIT — on par with CPython's 3.13 ms on the same machine and
+  ~13x slower than Node/V8 (0.27 ms). The user asked to close the gap with
+  Python at minimum.
+
+### Analysis
+
+- The recursion itself compiles natively through `emit_user_call` (direct
+  Cranelift call, no interpreter round-trip). The per-call overhead was the
+  *entry* guard: every entry emitted `call un_jit_depth_enter`, which did an
+  atomic `fetch_add` AND a fresh `WORLD.with(|w| w.borrow()...)` lookup of
+  `max_recursion_depth()` — a heap RefCell TLS borrow on the hot path
+  hundreds of thousands of times.
+- `un_jit_depth_exit` was a second `fetch_sub`.
+
+### Changes
+
+- `rust/src/jit_cache.rs`: `JIT_DEPTH` is now a plain shared-memory
+  `AtomicUsize` (Relaxed); `max_recursion_depth` is served from a cached
+  `AtomicUsize` (Relaxed) instead of borrowing `WORLD` per call.
+  `sync_max_jit_depth()` refreshes the cached bound from
+  `world::set_max_recursion_depth()`; `world::reset()` initializes the cache.
+- Semantics preserved (depth overflow still bails via `TAG_BAIL` → interpreter
+  fallback, which still enforces `max_recursion_depth` exactly).
+
+### Result
+
+- `fib24`: **~1.32 ms** (was 3.39 ms) — ~2.4x faster than Python's 3.13 ms on
+  the same machine.
+- Correctness re-verified: Positive 1415/41/0, differential 81/0,
+  cargo test 205 (release+debug), unbc-roundtrip 40/40+34/34, suite 109.

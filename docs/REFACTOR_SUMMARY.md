@@ -41,6 +41,7 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | (pass 19) | 19 | User-facing semantics (`D-074`): `str.split()` now defaults the separator to `' '`; every `map` native accepts Func **or a TObj** (`["3","1"].map(int)` as converter) and dispatches arity-adaptively — 2-arg callee gets `(value, index)`, 1-arg callee gets just `(value)`. `io.read().split().map(int)` works. Positive assertions 1406→**1414**; all gates re-verified (41/81/205/40+34). |
 | (pass 20) | 20 | Ergonomics sweep + fix: `str.trim()` now defaults `chars` to Unicode whitespace (Python `strip()` parity; `missing required argument` gone). Rest of the probe sweep found nothing else broken: `int(" 42")`/`float()`, `dict.get`, `list.pop()` (last element), `index_of` miss=-1, `sort`/`reverse`/`keys`/`values` all idiomatic already. Positive **1414→1415**; all gates re-verified. |
 | (pass 21) | 21 | Global namespace shrink: `bin`/`oct`/`hex`/`ascii`/`chr`/`ord` moved verbatim to the new `codes` module (`use codes`); globals now exactly `len`/`exit`/`type`/`hash`/`throw`/`throw_if`/`throw_unless`/`repr` (+ constructors and `true`/`false`/`none`/`null`). Tests/fixtures updated; D-076; all gates re-verified (1415/41/205/81/40+34/109). |
+| (pass 22) | 22 | fib benchmark: 150k recursive calls at ~3.4 ms (CPython parity), asking to catch up. Root cause: `un_jit_depth_enter` did an atomic RMW *and* a `WORLD.with(|w| w.borrow()...)` `max_recursion_depth()` lookup on every call. Fix: cached `AtomicUsize` (Relaxed) `JIT_MAX_DEPTH`, plain shared-memory `AtomicUsize` (Relaxed) `JIT_DEPTH`; `sync_max_jit_depth()` refreshes after `sys.setrecursionlimit`. **fib24: 3.39 → 1.32 ms** (~2.4x faster than Python); D-077; all gates re-verified. |
 
 Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; the audit findings with
 fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
@@ -77,7 +78,7 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | `scripts/differential.ps1` | **81 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40**; Negative compilable **34/34** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |
-| `scripts/bench.ps1 -Group all -Report` | all 15 x 4 lanes self-validate; root `BENCHMARK.md` regenerated; Un JIT/Python geomean **1.99x** (JIT is live again after pass 18) |
+| `scripts/bench.ps1 -Group all -Report` | all 15 x 4 lanes self-validate; root `BENCHMARK.md` regenerated; Un JIT/Python geomean **2.124x** (JIT live since pass 18; depth-guard fix moved fib24 3.39 → 1.32 ms in pass 22) |
 
 ## Intentionally not done / known limits
 
