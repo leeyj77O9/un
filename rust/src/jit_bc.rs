@@ -381,6 +381,12 @@ struct Tr<'a> {
     skip_ips: HashSet<usize>,
     arity: usize,
     locals_len: usize,
+    // Slots whose local name is `field`; those bindings hold the Un
+    // `FieldRef` written by `accessor_bind` (property accessors). The JIT
+    // must never touch them: a store would silently overwrite the FieldRef
+    // instead of writing through to the property backing, and a load would
+    // read it as an Int. Any such local disqualifies the whole proto.
+    field_locals: HashSet<usize>,
     // params [0..arity), locals [arity..arity+locals_len), registers after
     vars: Vec<Variable>,
     f64_vars: Vec<Variable>,
@@ -868,7 +874,7 @@ impl<'a> Tr<'a> {
                 }
                 Op::LoadLocal => {
                     let slot = ins.d as usize;
-                    if slot >= self.locals_len {
+                    if slot >= self.locals_len || self.field_locals.contains(&slot) {
                         return None;
                     }
                     if self.local_float[slot] {
@@ -1057,7 +1063,7 @@ impl<'a> Tr<'a> {
             }
             Op::StoreLocal => {
                 let slot = ins.d as usize;
-                if slot >= self.locals_len {
+                if slot >= self.locals_len || self.field_locals.contains(&slot) {
                     return None;
                 }
                 let src_float = self.is_float[ins.a as usize];
@@ -1235,7 +1241,7 @@ impl<'a> Tr<'a> {
             }
             Op::LoadLocal => {
                 let slot = ins.d as usize;
-                if slot >= self.locals_len {
+                if slot >= self.locals_len || self.field_locals.contains(&slot) {
                     return None;
                 }
                 let float_slot = self.local_float[slot];
@@ -1655,7 +1661,13 @@ impl<'a> Tr<'a> {
                 // (none, a class instance, an unexpected payload) bails to the
                 // interpreter, which runs the function with full semantics.
                 if self.is_none[ins.a as usize] {
-                    return None;
+                    // An implicit-None return (class `__init__`s, void-ish
+                    // functions). Emit `tag = TAG_NONE`; the value cell is
+                    // ignored by the caller.
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let five = builder.ins().iconst(types::I64, crate::jit_cache::TAG_NONE);
+                    self.emit_return_pair(builder, zero, five);
+                    return Some(());
                 }
                 // An IntDict id returned as tag=0 Int would masquerade as a
                 // number for the caller — decline.
@@ -2405,6 +2417,22 @@ pub fn precheck_fn(program: &Program, proto_index: usize) -> Option<usize> {
     if proto.flags & PROTO_FUNCTION == 0 {
         return None;
     }
+    // Local slots named `field` hold Un `FieldRef`s inside property
+    // accessors; the JIT cannot model them (a store would silently
+    // overwrite the FieldRef instead of writing through to the property
+    // backing). Disqualify the proto here, before any codegen is attempted.
+    // `proto.locals` indices are proto-local name indices: resolve through
+    // `proto.names` before hitting `program.names`.
+    let has_field_local = proto.locals.iter().any(|&proto_ix| {
+        proto
+            .names
+            .get(proto_ix)
+            .and_then(|&m| program.names.get(m))
+            .is_some_and(|n| n == "field")
+    });
+    if has_field_local {
+        return None;
+    }
     if proto.ext_type.is_some() {
         // Class methods carry the receiver as an extra hidden first argument
         // (arity = params.len() + 1) and bind local slot 0 to it; `self` reads
@@ -2589,6 +2617,22 @@ pub fn emit_fn_in_module(
 
     let mut builder = FunctionBuilder::new(&mut fun_ctx.func, &mut func_ctx);
     let locals_len = proto.locals.len();
+    // Local slots bound to a `field` name are FieldRef holders (see the
+    // `field_locals` field on `Tr`). Compute once; `LoadLocal`/`StoreLocal`
+    // bail on sight of one. `proto.locals` indices are proto-local name
+    // indices: resolve through `proto.names` before `program.names`.
+    let field_locals: HashSet<usize> = proto
+        .locals
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, &proto_ix)| {
+            proto
+                .names
+                .get(proto_ix)
+                .and_then(|&m| program.names.get(m))
+                .and_then(|n| if n == "field" { Some(slot) } else { None })
+        })
+        .collect();
     let total_slots = arity + locals_len + plan.reg_count;
     let mut vars: Vec<Variable> = Vec::with_capacity(total_slots);
     let mut f64_vars: Vec<Variable> = Vec::with_capacity(total_slots);
@@ -2695,6 +2739,7 @@ pub fn emit_fn_in_module(
         f64_vars,
         arity,
         locals_len,
+        field_locals,
         vars,
         is_bool: vec![false; plan.reg_count],
         is_none: vec![false; plan.reg_count],

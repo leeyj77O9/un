@@ -73,6 +73,7 @@ pub(crate) fn try_call_jit(
         crate::jit_cache::TAG_FLOAT => Some(obj::float(f64::from_bits(res.value as u64))),
         crate::jit_cache::TAG_BAIL => None, // JIT declined at runtime. Interpreter handles normally.
         crate::jit_cache::TAG_BOOL => Some(obj::boolean(res.value != 0)), // Bool-typed return
+        crate::jit_cache::TAG_NONE => Some(obj::none()), // implicit-None return (no value)
         // An out-of-contract tag means the entry is not from this JIT build;
         // fall back to the interpreter instead of panicking.
         _ => None,

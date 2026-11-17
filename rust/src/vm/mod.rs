@@ -1493,7 +1493,8 @@ pub(crate) struct UnJitResult {
 /// Invoke a JIT-compiled Un function with positional Int arguments.
 /// Returns the raw value and a tag: `TAG_INT` = the value is an i64 result;
 /// `TAG_FLOAT` = the value is the raw bits of a Float result; `TAG_BOOL` = the
-/// value is a Bool; `TAG_BAIL` = the JIT declined at runtime (the caller must
+/// value is a Bool; `TAG_NONE` = the callee returned `None` (the value cell is
+/// meaningless); `TAG_BAIL` = the JIT declined at runtime (the caller must
 /// fall back to the interpreter exactly once).
 /// The JIT writes the (value, tag) pair through a hidden pointer so no
 /// aggregate-return ABI rules apply.

@@ -26,12 +26,16 @@ pub const TAG_FLOAT: i64 = 1;
 pub const TAG_BAIL: i64 = 2;
 /// JIT result tag: the value is a Bool (dispatched to `boolean()`).
 pub const TAG_BOOL: i64 = 3;
+/// JIT result tag: the callee produced Un's `None` singleton (written by
+/// class `__init__`s and other implicit-None functions). The value cell is
+/// ignored; the caller returns `world::none_obj()`.
+pub const TAG_NONE: i64 = 5;
 
 /// A JIT-compiled function. The `ptr` points to the Cranelift-emitted native
 /// function with `arity` `i64` parameters plus a hidden result pointer,
 /// returning via that hidden pointer: the first i64 cell carries the result
 /// value (sent as i64 bits for Float too), the second cell carries one of
-/// `TAG_INT`, `TAG_FLOAT`, `TAG_BAIL`, `TAG_BOOL`.
+/// `TAG_INT`, `TAG_FLOAT`, `TAG_BAIL`, `TAG_BOOL` or `TAG_NONE`.
 #[derive(Clone, Copy)]
 pub struct JitEntry {
     pub ptr: *const u8,
