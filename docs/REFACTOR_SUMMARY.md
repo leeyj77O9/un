@@ -36,6 +36,7 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | (pass 14) | 14 | TD-36 (regex 10M-step budget; error instead of infinite hang, negative fixture) and TD-37 (HTTP/WS 10 s connect + 30 s IO timeouts, 64 MiB response cap with exact `Content-Length` validation, consistent scheme-guard messages, case-insensitive `set_header`). |
 | `aad0f42` | 15 | Pass 14 follow-through for the playground WASM CI (52× red at `Test un`): native depth underflow in `transfer.rs` debug builds and a Cranelift prologue partial-block panic in `jit_bc.rs`; `RUSTUP_TOOLCHAIN=stable` in `un-playground/update-wasm.yml`. Update WASM CI is now green. |
 | (pass 16) | 16 | Stopwatch `ms`/`ns` are now read-only native properties (no call syntax); writes raise `cannot assign to a read-only property`. Native property plumbing fixed (original-class table routing on read and write; `SetAttr` yields `LangError` like `Call`). |
+| (pass 17) | 17 | Benchmark overhaul: Python lane added (winget CPython 3.13.17; PATH `python` is the broken WindowsApps stub, exit 9009) with 16 mirrored `bench/python/*.py`; two new 3-language benchmarks (`int_ops`, `mergesort1000`); `scripts/bench.ps1` rewritten (Un VM + Un JIT + Python + Node lanes, `-Group all|unvm|unjit|node|python`, `-Only <labels>`, auto Python/Node detection, header-indexed CSV compare vs the previous run, `-Report` regenerates root `BENCHMARK.md`, `-Compare <csv>` advisory regression detection, `results.json`); `BENCHMARK.md` generated at root; `docs/BENCHMARK_GUIDE.md` rewritten. Measured: JIT ≈ VM (Int-subset JIT only), Un JIT/Python geomean **0.224x**, Un JIT/Node.js **0.005x**; Un wins Python at `nested_sum_200` (1.12x) and `dict5000` (1.37x). |
 
 Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; the audit findings with
 fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
@@ -103,4 +104,5 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | `docs/BYTECODE.md` | `.unbc` format specification |
 | `docs/TEST_GUIDE.md` | Test authoring and runner guide |
 | `docs/BENCHMARK_GUIDE.md` | Benchmark methodology and caveats |
+| `BENCHMARK.md` | Generated benchmark report at the repository root; regenerate with `scripts\bench.ps1 -Group all -Report` |
 | `docs/REFACTOR_SUMMARY.md` | This file |

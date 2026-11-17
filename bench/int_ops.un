@@ -1,0 +1,27 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 기본 정수 연산 - 곱셈/나눗셈/나머지/비트 AND/XOR/이동
+# Node.js 벤치마크: bench/node/int_ops.mjs (같은 알고리즘, 같은 입력, 같은 검증)
+# Python 벤치마크: bench/python/int_ops.py (같은 알고리즘, 같은 입력, 같은 검증)
+# ============================================================
+
+fn int_ops(n)
+    total = 0
+    for i in iter.range(1, n + 1)
+        total += (i * 1103515245 + 12345) % 10007
+        total += (i * 7) // 3
+        total += i & 255
+        total += i ^ 0x5a5a
+    -> total
+
+assert.assert_eq(int_ops(1), 28799, "int_ops(1)")
+assert.assert_eq(int_ops(1000), 29272316, "int_ops(1000)")
+assert.assert_eq(int_ops(1000000), 1672061256084, "int_ops(1000000)")
+
+bench.measure("int_ops", fn(n) -> int_ops(n), 1000000, 7, 2)
+
+assert.summary()

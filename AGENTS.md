@@ -71,8 +71,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 # .unbc 왕복 runner ( Positive + negative 중 컴파일 가능 파일을 run vs compile+run 으로 바이트 비교 )
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\unbc-roundtrip.ps1 -IncludeNegative
 
-# 벤치마크 runner ( -Group un|node|all, -Rebuild, -NoSave )
+# 벤치마크 runner ( -Group all|un|unvm|unjit|node|python, -Rebuild, -NoSave, -Report, -Compare <csv> )
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
+# Un VM과 JIT을 각각 측정한다. -Report는 BENCHMARK.md도 갱신한다.
 ```
 
 - Windows에서 `unvm.exe`는 `rust\target\release\`에 빌드된다. PATH에 추가해서 쓸 수 있다.
@@ -101,7 +102,7 @@ C:\dev\un
 │  ├─ KnownDivergent.txt     # 문서화된 구현 간 차이(실패로 세지 않음)
 │  └─ assert.un              # assert 모듈 (assert_eq / assert_true)
 ├─ scripts/                  (test.ps1, differential.ps1, unbc-roundtrip.ps1, bench.ps1)
-├─ bench/                    (측정 스크립트, bench/node/, bench/results/ — results/는 gitignore)
+├─ bench/                    (측정 스크립트, bench/{node,python}/, bench/results/ — results/는 gitignore)
 ├─ vendor/                   (패치된 외부 crate: region, cranelift-jit, icache-coherence — vendor/README.md 참고)
 ├─ docs/                     # 문서 전체
 │  ├─ README.md              # 영어 user doc (docs/README.md ↔ README.md 쌍)
@@ -168,8 +169,9 @@ C:\dev\un
   정상 기준 출력은 `109 passed, 0 failed`이고, 실패 시 `[FAIL]` 라인이 나온다.
 - 상대 import/순환 import/디렉터리 모듈 검증용 픽스처는 `test/fixtures/circular/`,
   `test/fixtures/rel_test/`, `test/fixtures/dirmod/`, `test/fixtures/dirall/`에 있다.
-- 벤치마크 스크립트는 `bench/`에 있고, Node.js 상대 스크립트는 `bench/node/`에 있다.
+- 벤치마크 스크립트는 `bench/`에 있고, 언어별 대응은 `bench/node/`(Node.js)와 `bench/python/`(Python)에 있다.
   측정은 웜업 + 반복 + 통계(최솟값·중위값·평균·최댓값·표준편차·연산 수)를 사용한다.
+  Un은 VM(UV_JIT=0)과 JIT 모두를 측정한다.
   결과와 측정 한계는 `docs/BENCHMARK_GUIDE.md`를 참고한다.
 - 변경 후 최소한 다음을 수행한다.
   1. `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml`

@@ -10,6 +10,10 @@
 # Node (bench/node)
 node_modules/
 
+# Python (bench/python)
+__pycache__/
+*.pyc
+
 # Local / agent state
 .opencode/
 .claude/

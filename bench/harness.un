@@ -30,8 +30,8 @@ fn measure(label, work, iters, reps, warmup)
         sw.start()
         work(iters)
         sw.stop()
-        # tick은 0.1ms 단위다. ms()는 정수 ms만 반환해서 짧은 작업의
-        # 측정 해상도가 너무 낮다.
+        # tick은 100ns 단위다(시간당 10^7 틱). 정수 ms만 반환하면
+        # 짧은 작업의 측정 해상도가 너무 낮다.
         times.add(sw.tick() / 10000.0)
         r += 1
 
