@@ -60,6 +60,16 @@ pub(crate) fn try_call_jit(
     for arg in &args.values {
         match obj::payload(arg) {
             crate::runtime::obj::Payload::Int(v) => ints.push(v),
+            crate::runtime::obj::Payload::List(_) => {
+                // All-Int/all-Bool homogeneous lists enter the Int-JIT as a
+                // raw arena handle. The callee's list intrinsics validate
+                // handle identity at runtime, so no side-band typing is
+                // required; mixed or non-Int lists decline the JIT slot.
+                match crate::runtime::int_list::materialize(arg) {
+                    Some(handle) => ints.push(handle),
+                    None => return None,
+                }
+            }
             _ => return None,
         }
     }
@@ -74,6 +84,14 @@ pub(crate) fn try_call_jit(
         crate::jit_cache::TAG_BAIL => None, // JIT declined at runtime. Interpreter handles normally.
         crate::jit_cache::TAG_BOOL => Some(obj::boolean(res.value != 0)), // Bool-typed return
         crate::jit_cache::TAG_NONE => Some(obj::none()), // implicit-None return (no value)
+        // The callee returned a raw IntVec handle: materialise it back to an
+        // Un list and drop the handle. If the handle vanished or turned
+        // poisoned meanwhile, bail (interpreter re-runs).
+        crate::jit_cache::TAG_INTLIST => {
+            let items = crate::runtime::int_list::snapshot(res.value)?;
+            crate::runtime::int_list::un_list_int_free(res.value);
+            Some(crate::runtime::collections::list(items))
+        }
         // An out-of-contract tag means the entry is not from this JIT build;
         // fall back to the interpreter instead of panicking.
         _ => None,

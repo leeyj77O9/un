@@ -402,7 +402,7 @@ if ($PreviousCsv -and (Test-Path $PreviousCsv)) {
     foreach ($line in ($prevLines | Select-Object -Skip 1)) {
         $parts = $line -split ","
         if ($parts.Count -lt 10) { continue }
-        $get = { param($idx) if ($null -eq $idx) { $null } else { [double]$parts[$idx] } }
+        $get = { param($idx) if ($null -eq $idx) { $null } else { $v = $parts[$idx]; if ($v -match '^-?\d+(\.\d+)?$') { [double]::Parse($v, [System.Globalization.CultureInfo]::InvariantCulture) } else { $null } } }
         $prev[$parts[0]] = @{ unjit = (& $get $iUnjit); python = (& $get $iPython); node = (& $get $iNode) }
     }
     foreach ($row in $Rows) {

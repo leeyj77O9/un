@@ -41,12 +41,7 @@ fn rle_decode(text)
         j = i + 1
         while j < n
             d = text[j]
-            ok = false
-            try
-                int(d)
-                ok = true
-            catch err_b1
-                ok = false
+            ok = d >= "0" and d <= "9"
             if not ok
                 break
             digits += d

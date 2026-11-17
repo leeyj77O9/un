@@ -450,11 +450,43 @@ impl<'a> Engine<'a> {
         }
     }
 
-    pub fn finish(self) -> MatchData {
+    /// Move the capture state out into a `MatchData`, leaving `self` empty
+    /// but structurally reusable (`reset()` restores it for the next attempt).
+    pub fn finish(&mut self) -> MatchData {
         MatchData {
             capsize: self.caps,
-            captures: self.matches,
-            capcount: self.matchcount,
+            captures: std::mem::take(&mut self.matches),
+            capcount: std::mem::take(&mut self.matchcount),
+        }
+    }
+    /// Rewind the engine for another `run()` attempt at a different start
+    /// position. Reusing the stacks between attempts during `find_all`
+    /// avoids one `Engine::new` (and its half a dozen allocations) per
+    /// candidate start position. Semantics are identical to a fresh engine:
+    /// `run()` re-establishes the operator for the current code, and every
+    /// dirty field is explicitly reset here.
+    pub fn reset(&mut self) {
+        self.pos = 0;
+        self.right_to_left = false;
+        self.operator = 0;
+        self.codepos = 0;
+        self.sp = self.stack.len();
+        self.track_pos = self.track.len();
+        self.crawl_pos = self.crawl.len();
+        self.steps = 0;
+        if self.matches.capacity() == 0 {
+            self.matches = vec![Vec::new(); self.caps.max(1)];
+        } else {
+            for m in &mut self.matches {
+                m.clear();
+            }
+        }
+        if self.matchcount.capacity() == 0 {
+            self.matchcount = vec![0; self.caps.max(1)];
+        } else {
+            for v in &mut self.matchcount {
+                *v = 0;
+            }
         }
     }
     /// True when the dispatch loop exhausted `STEP_LIMIT` — the last `run()`

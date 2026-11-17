@@ -26,10 +26,15 @@ pub const TAG_FLOAT: i64 = 1;
 pub const TAG_BAIL: i64 = 2;
 /// JIT result tag: the value is a Bool (dispatched to `boolean()`).
 pub const TAG_BOOL: i64 = 3;
-/// JIT result tag: the callee produced Un's `None` singleton (written by
+/// JIT result tag: the callee produced `Un`'s `None` singleton (written by
 /// class `__init__`s and other implicit-None functions). The value cell is
 /// ignored; the caller returns `world::none_obj()`.
 pub const TAG_NONE: i64 = 5;
+/// JIT result tag: the callee returned the handle of a freshly-materialised
+/// `Obj::List` (an all-Int/all-Bool IntVec). The value cell carries the raw
+/// handle; the caller materialises it back into an Un list and frees the
+/// handle.
+pub const TAG_INTLIST: i64 = 6;
 
 /// A JIT-compiled function. The `ptr` points to the Cranelift-emitted native
 /// function with `arity` `i64` parameters plus a hidden result pointer,

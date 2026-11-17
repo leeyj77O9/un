@@ -64,11 +64,14 @@ impl Regex {
     }
 
     pub fn find_at(&self, text: &[char], from: usize) -> Result<Option<Match>, String> {
+        let caps = self.capsize.max(1) as usize;
+        let mut engine = interp::Engine::new(&self.code, text, caps);
+        self.find_next(&mut engine, text, from)
+    }
+    fn find_next(&self, engine: &mut interp::Engine<'_>, text: &[char], from: usize) -> Result<Option<Match>, String> {
         let len = text.len();
         let mut start = from.min(len);
         loop {
-            let caps = self.capsize.max(1) as usize;
-            let mut engine = interp::Engine::new(&self.code, text, caps);
             if engine.run(start as i64) {
                 let data = engine.finish();
                 let mut captures: Vec<Vec<(usize, usize)>> = Vec::with_capacity(data.captures.len());
@@ -99,15 +102,18 @@ impl Regex {
                 return Ok(None);
             }
             start += 1;
+            engine.reset();
         }
     }
 
     pub fn find_all(&self, text: &[char]) -> Result<Vec<Match>, String> {
         let len = text.len();
         let mut out = Vec::new();
+        let caps = self.capsize.max(1) as usize;
+        let mut engine = interp::Engine::new(&self.code, text, caps);
         let mut pos = 0usize;
         while pos <= len {
-            match self.find_at(text, pos)? {
+            match self.find_next(&mut engine, text, pos)? {
                 Some(found) => {
                     let empty = found.start == found.end;
                     let end = found.end;
@@ -120,6 +126,7 @@ impl Regex {
                     } else {
                         pos = end;
                     }
+                    engine.reset();
                 }
                 None => break,
             }
