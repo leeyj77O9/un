@@ -916,3 +916,30 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   JIT이 사망했다는 신호다. 남은 관측성 부채는 TD-51.
 - **검증**: differential 81 files 0 differences, test.ps1 1406/41, cargo test 205(release+debug),
   unbc-roundtrip 40/40 + 34/34, `scripts/bench.ps1 -Group all -Report` exit 0.
+
+
+## D-074 | `split` 기본 구분자 `' '`, `map`은 타입=변환기·인자 수에 따른 호출 | Accepted
+
+- **문제**: `io.read().split(' ').map(int)` 관용구가 Un에서 동작하지 않았다. 세 겹의 원인이
+  있었다: ① `split`에 구분자가 **필수 인자**(`arg("sep", true, ...)`)라 `split()` 문법이 불가,
+  ② `list.map`/`iter.map`/global `iter.map`/`lazy .map`이 콜러블을 `function::is_func`로
+  확인하고 `function::fn_call`로 호출했는데, `int`는 TObj라 `fn_cell`이 없어
+  `unsupported operand type(s) for (): 'type'`, ③ `list.map`은 인자 수와 무관하게
+  `(item, index)` 2개를 넘겨 1-arg lambda가 `too many positional arguments`를 냈다.
+- **결정 (사용자 요청)**:
+  1. `str.split()`의 `sep`는 생략 가능하며 기본값은 단일 공백 `' '`이다.
+  2. `map` 계열 네이티브(`list.map`, `iter_map`(lazy method), `iter.map`(global),
+     `iters::StageDef::Map`)는 콜러블로 **Func와 TObj 둘 다** 받는다(`function::is_callable`).
+     타입 객체는 각 요소에 대해 그 타입으로 변환한다: `["3", "1", "2"].map(int)` → `[3, 1, 2]`,
+     `io.read().split().map(int)` 가능.
+  3. 콜러블의 호출은 `function::arg_count(f) >= 2`이면 `(value, index)`, 아니면 `(value)`를
+     넘긴다. 타입 변환기는 항상 1-arg.
+  4. 호출은 모두 `obj::call_args`로 디스패치(Func → `fn_call`, TObj → `tobj_call`의
+     프리미티브 캐스팅/클래스 생성자 경로와 동일)한다. 호출 실패는 기존처럼 `is_err`로 전파.
+- **호환성**: 기존 `list.map(fn(x, i) -> ...)` 2-arg lambda는 그대로 동작한다. 1-arg lambda에
+  대한 기존 에러 기대(`"map requires a 2-arg lambda"`, `test/unit/native/list.un`)는 이
+  요청으로 의미론이 바뀌므로 그대로 두고 테스트를 **양방향 검증으로 교체**했다(약화 아님).
+  `filter`/`any`/`all`은 Func-only 계약을 유지한다.
+- **검증**: Positive **1414 passed**(증가 +8 assertions), Negative **41**, differential
+  **81 files / 0 differences**, cargo test **205**(release + debug), unbc-roundtrip
+  40/40 + 34/34, `test_suite.un` 109.

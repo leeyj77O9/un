@@ -611,6 +611,11 @@ pub fn fn_clone(f: &Obj) -> Obj {
 pub fn is_func(o: &Obj) -> bool {
     matches!(obj::payload(o), Payload::Func(..))
 }
+/// A value usable as a callback in higher-order natives: a function, or a
+/// type object acting as a 1-argument converter (`list.map(int)`).
+pub fn is_callable(o: &Obj) -> bool {
+    matches!(obj::payload(o), Payload::Func(..) | Payload::TObj(..))
+}
 pub type PropCell = Rc<RefCell<PropData>>;
 pub struct PropData {
     pub name: String,

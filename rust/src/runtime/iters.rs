@@ -207,7 +207,7 @@ fn next(stage: &Stage) -> Step {
                     } else {
                         vec![o]
                     };
-                    let value = crate::runtime::function::fn_call(
+                    let value = crate::runtime::obj::call_args(
                         func,
                         &crate::runtime::function::Args::positional(args),
                     );

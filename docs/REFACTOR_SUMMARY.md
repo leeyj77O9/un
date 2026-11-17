@@ -38,6 +38,7 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | (pass 16) | 16 | Stopwatch `ms`/`ns` are now read-only native properties (no call syntax); writes raise `cannot assign to a read-only property`. Native property plumbing fixed (original-class table routing on read and write; `SetAttr` yields `LangError` like `Call`). |
 | (pass 17) | 17 | Benchmark overhaul: Python lane added (winget CPython 3.13.17; PATH `python` is the broken WindowsApps stub, exit 9009) with 16 mirrored `bench/python/*.py`; two new 3-language benchmarks (`int_ops`, `mergesort1000`); `scripts/bench.ps1` rewritten (Un VM + Un JIT + Python + Node lanes, `-Group all|unvm|unjit|node|python`, `-Only <labels>`, auto Python/Node detection, header-indexed CSV compare vs the previous run, `-Report` regenerates root `BENCHMARK.md`, `-Compare <csv>` advisory regression detection, `results.json`); `BENCHMARK.md` generated at root; `docs/BENCHMARK_GUIDE.md` rewritten. Measured: JIT ≈ VM (Int-subset JIT only), Un JIT/Python geomean **0.224x**, Un JIT/Node.js **0.005x**; Un wins Python at `nested_sum_200` (1.12x) and `dict5000` (1.37x). |
 | (pass 18) | 18 | **The JIT was silently dead** (Pass 15 regression, `aad0f42`): prologue/block layout made the parameterless prologue the layout entry block, so Cranelift's verifier rejected every proto and `define_function` failed → silent interpreter fallback with all gates green. Fixed: prologue carries the signature parameters (it is the layout entry), body is parameterless, prologue jumps into it. Also added `Band`/`Bor`/`Bxor` to the Int subset and a `UV_JIT_DEBUG` log for `define_function` failures. **`int_ops`: 3226 ms → 0.08 s** (~400x); geomean Un JIT/Python **0.224x → 1.987x**; Un JIT now beats Python on Int/intrinsic rows and beats Node.js on 4 rows. All gates re-verified: 1406/41/205; differential 81/0; round-trip 40+34; `BENCHMARK.md` regenerated. |
+| (pass 19) | 19 | User-facing semantics (`D-074`): `str.split()` now defaults the separator to `' '`; every `map` native accepts Func **or a TObj** (`["3","1"].map(int)` as converter) and dispatches arity-adaptively — 2-arg callee gets `(value, index)`, 1-arg callee gets just `(value)`. `io.read().split().map(int)` works. Positive assertions 1406→**1414**; all gates re-verified (41/81/205/40+34). |
 
 Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; the audit findings with
 fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
@@ -70,7 +71,7 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
 | `cargo test --release` | **205 passed / 0 failed** |
-| `scripts/test.ps1` | Positive **40 files / 1406 passed**; Negative **41 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/test.ps1` | Positive **40 files / 1414 passed** / 0 failed / 0 crashed; Negative **41 matched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **81 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40**; Negative compilable **34/34** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |

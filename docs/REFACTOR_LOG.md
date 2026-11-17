@@ -1057,3 +1057,52 @@ Python/Node.js 0.018x.
 | `cargo test --release` | **205 passed / 0 failed** |
 | `cargo test` (debug, verifier active) | **205 passed / 0 failed** |
 | `scripts/bench.ps1 -Group all -Report` | exit 0; BENCHMARK.md + results.json regenerated |
+
+
+---
+
+## 2026-11-17 — Pass 19: `split` default, `map` type converters, adaptive callable arity
+
+### Starting state
+
+- `io.read().split(' ').map(int)` failed with `unsupported operand type(s) for (): 'type'`.
+- Diagnosis: three compounding gaps — `split` REQUIRED the `sep` arg; every `map` native
+  demanded a Func payload (`function::is_func` + `fn_call`) so a TObj type object was
+  rejected; `list.map` passed `(value, index)` regardless of the callee's arity (a 1-arg
+  lambda died with `too many positional arguments`), while `iter.map` was already
+  adaptive via `arg_count`.
+
+### Changes (requested by the user; D-074)
+
+- `rust/src/native/members.rs` — `str.split()`: `sep` is now optional with default `' '`.
+  `list.map(f)`: callable check widened to Func|TObj (`function::is_callable`), arity
+  adaptive (`arg_count >= 2` → `(value, index)`), dispatched through `obj::call_args`.
+- `rust/src/runtime/function.rs` — new `is_callable(o) -> bool` (`Func | TObj`).
+- `rust/src/runtime/iters.rs` — lazy `.map` stage calls `call_args` instead of `fn_call`.
+- `rust/src/native/iter.rs` — global `iter.map`: TObj converters accepted, adaptive arity
+  (TObj → 1 arg; `arg_count >= 2` → `(value, index)`), dispatched via `call_args`.
+- `rust/src/native/members.rs` — lazy method `iter.map`: callable check widened the same
+  way (wants_index already adaptive).
+- Tests: `list.un` (1-arg + 2-arg lambdas, TObj converter expectations replace the
+  obsolete "requires a 2-arg lambda" error assertion per the requested semantics),
+  `str.un` (default `split()`), `iter.un` (global `iter.map` converter + 2-arg lambda),
+  `range.un` (lazy `.map` converter + 2-arg lambda).
+- Positive assertions 1406 -> **1414**.
+
+### Decisions
+
+- D-074 recorded. `filter`/`any`/`all` keep the Func-only contract (predicates have no
+  type-converter meaning). Keyword kwarg name `type` of `list.map` is unchanged
+  (renaming would break kwarg callers for zero gain).
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `scripts/test.ps1` | Positive 40 files / **1414 passed** / 0 failed / 0 crashed; Negative **41 matched / 0 divergences**; exit **0** |
+| `scripts/differential.ps1` | **81 files, 0 differences** |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive 40/40; Negative 34/34 (+7 parse-rejected skips) |
+| `cargo test --release` | **205 passed / 0 failed** |
+| `cargo test` (debug) | **205 passed / 0 failed** |
+| `test/test_suite.un` | **109 passed / 0 failed** |
+| `io.read().split().map(int)` | works: `'3 1 2'` -> `[3, 1, 2]` |

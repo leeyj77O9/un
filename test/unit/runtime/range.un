@@ -52,6 +52,8 @@ assert.assert_eq(len(r), 3, "len does not consume the range")
 
 # ---------- 연산자 체이닝 (괄호로 범위를 묶는다) ----------
 assert.assert_eq(list((1..5).map(fn(x) -> x * 2)), [2, 4, 6, 8], "map over a range")
+assert.assert_eq(list((1..4).map(str)), ["1", "2", "3"], "lazy map accepts a type as a converter")
+assert.assert_eq(list((1..4).map(fn(x, i) -> x + i)), [1, 3, 5], "lazy map passes value and index to 2-arg functions")
 assert.assert_eq(list((1..5).filter(fn(x) -> x % 2 == 1)), [1, 3], "filter over a range")
 assert.assert_eq(list((1..10).take(3)), [1, 2, 3], "take from a range")
 assert.assert_eq(list(iter.range(1, 5, 2)), [1, 3], "step with the .. type")

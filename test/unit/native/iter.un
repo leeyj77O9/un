@@ -102,6 +102,8 @@ fn count_id(x)
 eager_map = iter.map(count_id, [1, 2, 3])
 assert.assert_eq(eager_state["calls"], 3, "the global iter.map evaluates immediately")
 assert.assert_eq(eager_map, [1, 2, 3], "the global iter.map returns a list")
+assert.assert_eq(iter.map(str, [1, 2]), ["1", "2"], "global iter.map accepts a type as a converter")
+assert.assert_eq(iter.map(fn(x, i) -> x + i, [10, 10, 10]), [10, 11, 12], "global iter.map passes value and index to 2-arg functions")
 
 fn count_odd_eager(x)
     eager_state["calls"] += 1

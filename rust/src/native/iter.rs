@@ -543,13 +543,22 @@ fn filter_impl(scope: &Scope) -> Obj {
 fn map_impl(scope: &Scope) -> Obj {
     let transform = scope::get(scope, "transform");
     let value = scope::get(scope, "iterable");
+    if !function::is_callable(&transform) {
+        return obj::err("invalid argument: 'transform'");
+    }
+    let wants_index = function::arg_count(&transform) >= 2;
     let values = match iter_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
-    let mut list: Vec<Obj> = Vec::new();
-    for item in values {
-        let result = function::fn_call(&transform, &function::Args::positional(vec![item]));
+    let mut list: Vec<Obj> = Vec::with_capacity(values.len());
+    for (index, item) in values.into_iter().enumerate() {
+        let args = if wants_index {
+            function::Args::positional(vec![item, obj::int(index as i64)])
+        } else {
+            function::Args::positional(vec![item])
+        };
+        let result = obj::call_args(&transform, &args);
         if obj::is_err(&result) {
             return result;
         }

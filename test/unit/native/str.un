@@ -66,6 +66,7 @@ assert.assert_true("".is_alphabet(), "is_alphabet empty is true")
 # ---------- split / join ----------
 assert.assert_eq("a,b,c".split(","), ["a", "b", "c"], "split")
 assert.assert_eq("a b".split(" "), ["a", "b"], "split on space")
+assert.assert_eq("a b c".split(), ["a", "b", "c"], "split defaults to a single space")
 assert.assert_eq("a::b".split("::"), ["a", "b"], "split multi char separator")
 assert.assert_eq("".split(","), [""], "split empty string")
 assert.assert_eq(",".join(["a", "b", "c"]), "a,b,c", "join strs")

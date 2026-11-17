@@ -144,7 +144,7 @@ fn iter_map(scope: &Scope) -> Obj {
         return obj::err("expected 'iter' object");
     };
     let func = scope::get(scope, "fn");
-    if !function::is_func(&func) {
+    if !function::is_callable(&func) {
         return obj::err("invalid argument: 'fn'");
     }
 
@@ -291,7 +291,7 @@ fn str_members(closure: &Context) -> Vec<(String, Obj)> {
         ),
         (
             "split".to_owned(),
-            native(closure, "split", one("sep"), str_split),
+            native(closure, "split", vec![arg("sep", false, true, false)], str_split),
         ),
         (
             "trim".to_owned(),
@@ -434,9 +434,15 @@ fn str_split(scope: &Scope) -> Obj {
     let Some(text) = str_self(scope) else {
         return obj::err("expected 'str' object");
     };
-    let sep = match str_arg(&scope::get(scope, "sep")) {
-        Ok(sep) => sep,
-        Err(e) => return e,
+    let sep_obj = scope::get(scope, "sep");
+    // No separator given -> split on a single space (`io.read().split()`).
+    let sep = if obj::is_none(&sep_obj) {
+        " ".to_owned()
+    } else {
+        match str_arg(&sep_obj) {
+            Ok(sep) => sep,
+            Err(e) => return e,
+        }
     };
     let parts: Vec<Obj> = if sep.is_empty() {
         text.chars().map(|c| obj::str(&c.to_string())).collect()
@@ -1265,13 +1271,21 @@ fn list_map(scope: &Scope) -> Obj {
         return obj::err("expected 'list' object");
     };
     let func = scope::get(scope, "type");
+    if !function::is_callable(&func) {
+        return obj::err("invalid argument: 'fn'");
+    }
     let items = list.borrow().clone();
+    // 2-arg functions receive (value, index); 1-arg functions and type
+    // converters receive just the value.
+    let wants_index = function::arg_count(&func) >= 2;
     let mut result = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().enumerate() {
-        let value = function::fn_call(
-            &func,
-            &function::Args::positional(vec![item.clone(), obj::int(index as i64)]),
-        );
+    for (index, item) in items.into_iter().enumerate() {
+        let args = if wants_index {
+            function::Args::positional(vec![item, obj::int(index as i64)])
+        } else {
+            function::Args::positional(vec![item])
+        };
+        let value = obj::call_args(&func, &args);
         if obj::is_err(&value) {
             return value;
         }
