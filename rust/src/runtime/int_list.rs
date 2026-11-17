@@ -85,14 +85,102 @@ fn iter_decode(v: i64) -> Option<usize> {
     (v >= ID_BASE).then(|| (v - ID_BASE) as usize)
 }
 
+/// Outer-list iterator: yields child Flat IntVec handles (by index) for a
+/// `KIND_OUTER` list, so `for row in m` lowers to the same iterator family.
+struct IntOuterIter {
+    handle: i64,
+    idx: usize,
+}
+
+struct IntOuterIterArena {
+    slots: Vec<Option<IntOuterIter>>,
+}
+
+static INT_OUTER_ITER_ARENA: Mutex<IntOuterIterArena> = Mutex::new(IntOuterIterArena {
+    slots: Vec::new(),
+});
+
+fn outer_iter_arena() -> MutexGuard<'static, IntOuterIterArena> {
+    let g = INT_OUTER_ITER_ARENA.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    g
+}
+
+/// Outer iterators live in their own high-bit namespace so `iterated`
+/// handles can never alias an IntVec or IntDict value.
+fn outer_id_of(idx: usize) -> i64 {
+    idx as i64 + ID_BASE + (1i64 << 61) // disjoint from plain handles (idx + ID_BASE)
+}
+
+fn outer_decode(v: i64) -> Option<usize> {
+    let base = ID_BASE + (1i64 << 61);
+    (v >= base).then(|| (v - base) as usize)?.checked_sub(1)
+}
+
+/// Allocate a new forward iterator over a `KIND_OUTER` list of row
+/// handles; 0 when the value is not an outer handle (the JIT bails and the
+/// interpreter rebuilds the loop).
+fn outer_iter_alloc(handle: i64, idx: usize) -> i64 {
+    let mut a = outer_iter_arena();
+    a.slots.push(Some(IntOuterIter { handle, idx }));
+    outer_id_of(a.slots.len())
+}
+
+/// 1 while the iterator has more rows, 0 when exhausted/dead.
+fn outer_iter_has_next(iter: i64) -> i64 {
+    let idx = match outer_decode(iter) {
+        Some(i) => i,
+        None => return 0,
+    };
+    let cur = {
+        let a = outer_iter_arena();
+        a.slots.get(idx).and_then(|s| s.as_ref().map(|i| (i.handle, i.idx)))
+    };
+    match cur {
+        Some((handle, idx)) => {
+            let len = arena().get(handle).map(|l| l.items.len()).unwrap_or(0);
+            i64::from(idx < len)
+        }
+        None => 0,
+    }
+}
+
+/// Read and advance one row handle; returns 0 when exhausted/dead.
+fn outer_iter_next(iter: i64) -> i64 {
+    let slot_idx = match outer_decode(iter) {
+        Some(i) => i,
+        None => return 0,
+    };
+    let cur = {
+        let a = outer_iter_arena();
+        a.slots.get(slot_idx).and_then(|s| s.as_ref().map(|it| (it.handle, it.idx)))
+    };
+    let Some((handle, it_idx)) = cur else {
+        return 0;
+    };
+    let res = {
+        let lists = arena();
+        lists.get(handle).and_then(|l| l.items.get(it_idx).copied())
+    };
+    {
+        let mut a = outer_iter_arena();
+        if let Some(slot) = a.slots.get_mut(slot_idx).and_then(|s| s.as_mut()) {
+            slot.idx = it_idx + 1;
+        }
+    }
+    res.unwrap_or(0)
+}
+
 /// Allocate a new forward iterator over the IntVec `v`; returns its handle.
-/// 0 means "invalid" (dead list). `KIND_OUTER` lists are not iterable here;
-/// the JIT bails and the interpreter rebuilds the nested loop instead.
+/// 0 means "invalid" (dead list). `KIND_OUTER` lists create an outer
+/// iterator that yields child row handles instead.
 #[no_mangle]
 pub extern "C" fn un_list_int_iter_new(v: i64) -> i64 {
     match arena().get(v) {
-        Some(list) if list.kind == KIND_OUTER => return 0,
-        Some(_) => {}
+        Some(list) => {
+            if list.kind == KIND_OUTER {
+                return outer_iter_alloc(v, 0);
+            }
+        }
         None => return 0,
     }
     let mut a = iter_arena();
@@ -106,6 +194,9 @@ pub extern "C" fn un_list_int_iter_new(v: i64) -> i64 {
 /// 1 while the iterator has more elements, 0 when exhausted (or dead).
 #[no_mangle]
 pub extern "C" fn un_list_int_iter_has_next(iter: i64) -> i64 {
+    if outer_decode(iter).is_some() {
+        return outer_iter_has_next(iter);
+    }
     let idx = match iter_decode(iter).and_then(|i| i.checked_sub(1)) {
         Some(i) => i,
         None => return 0,
@@ -127,6 +218,11 @@ pub extern "C" fn un_list_int_iter_has_next(iter: i64) -> i64 {
 /// never read past their own `has_next` guard, so this is only a safeguard).
 #[no_mangle]
 pub extern "C" fn un_list_int_iter_next(iter: i64) -> i64 {
+    if outer_decode(iter).is_some() {
+        let h = outer_iter_next(iter);
+        // Row handles are >= ID_BASE; values below it mean exhausted.
+        return if h >= ID_BASE { h } else { i64::MAX };
+    }
     let idx = match iter_decode(iter).and_then(|i| i.checked_sub(1)) {
         Some(i) => i,
         None => return i64::MAX,
@@ -154,6 +250,11 @@ pub extern "C" fn un_list_int_iter_next(iter: i64) -> i64 {
 /// Free the IntVec iterator behind `iter`.
 #[no_mangle]
 pub extern "C" fn un_list_int_iter_free(iter: i64) {
+    if let Some(o) = outer_decode(iter) {
+        let mut a = outer_iter_arena();
+        a.slots.get_mut(o).map(|s| s.take());
+        return;
+    }
     let Some(idx) = iter_decode(iter).and_then(|i| i.checked_sub(1)) else {
         return;
     };

@@ -212,6 +212,11 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     ]
 }
 fn iter_values(value: &Obj) -> Result<Vec<Obj>, Obj> {
+    // Fast path for plain lists: skip creating an Iter object and another
+    // materialised List copy just to take the borrowed slots out again.
+    if let crate::runtime::obj::Payload::List(cell) = crate::runtime::obj::payload(value) {
+        return Ok(cell.borrow().clone());
+    }
     let iter = obj::unary(value, obj::UnOp::Iter);
     if !matches!(obj::payload(&iter), Payload::Iter(_)) {
         return Err(obj::err("expected 'iterable' argument to be of type 'iter'"));
@@ -448,8 +453,34 @@ fn enumerate_impl(scope: &Scope) -> Obj {
         .collect();
     iters::seq(pairs)
 }
+/// Sum a plain `Obj::List` with no tuple round-trips; returns `None` for
+/// anything that is not a plain list so the caller can fall back.
+fn sum_list(value: &Obj) -> Option<Obj> {
+    let crate::runtime::obj::Payload::List(cell) = crate::runtime::obj::payload(value) else {
+        return None;
+    };
+    let items = cell.borrow();
+    let mut iter = items.iter();
+    let mut total = iter.next()?.clone();
+    for item in iter {
+        let sum = obj::binop(&total, obj::BinOp::Add, item);
+        if obj::is_err(&sum) {
+            return Some(sum);
+        }
+        total = sum;
+    }
+    Some(total)
+}
+
 fn sum_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "iterable");
+    // Fast path: summing a plain list — avoid the generic normalize_to_tuple,
+    // which builds a tuple, re-wraps a nested list in another tuple (three
+    // whole-list shallow clones + a names vector per tuple), only to clone
+    // it back out again to the same items.
+    if let Some(answer) = sum_list(&value) {
+        return answer;
+    }
     let values = match normalize_to_tuple(&value) {
         Ok(values) => values,
         Err(e) => return e,
