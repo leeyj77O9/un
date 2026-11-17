@@ -785,7 +785,13 @@ impl VM {
                 let target = self.regs[ins.b as usize].clone();
                 let value = self.regs[ins.c as usize].clone();
                 let name = self.name(ins.d as usize);
-                self.regs[ins.a as usize] = obj::set_attr(&target, &name, &value);
+                let outcome = obj::set_attr(&target, &name, &value);
+                // A native __setattr__/property setter reports failures with
+                // an Error payload; surface it like Op::Call does.
+                if obj::is_err(&outcome) {
+                    return Err(self.error(err_message(&outcome), span));
+                }
+                self.regs[ins.a as usize] = outcome;
             }
             Op::GetItem => {
                 let key = self.regs[ins.c as usize].clone();

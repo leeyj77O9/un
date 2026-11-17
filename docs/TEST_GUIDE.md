@@ -75,8 +75,8 @@ Counts at the time of writing:
 | Group | Files | Assertions |
 |---|---|---|
 | suite | 1 | 109 |
-| unit + integration + regression | 39 | (1401 - 109) |
-| **Positive total** | **40** | **1401** |
+| unit + integration + regression | 39 | (1406 - 109) |
+| **Positive total** | **40** | **1406** |
 | negative (exit-code checks) | 41 checks | 41 matched + 0 documented divergences |
 | known (documented defects) | 0 | none registered |
 | fixtures (not run directly) | 8 | n/a |
@@ -140,7 +140,7 @@ moved into meaningful tests (2026-11-16), and `scripts/test.ps1` passes with
 ## Current status
 
 ```
-Positive: 40 files, 1401 passed, 0 failed, 0 crashed
+Positive: 40 files, 1406 passed, 0 failed, 0 crashed
 Negative: 41 matched, 0 mismatched, 0 documented divergences
 Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0

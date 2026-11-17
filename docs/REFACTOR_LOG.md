@@ -834,3 +834,83 @@ The `main` push of `dff50d1` triggered `.github/workflows/build.yml`:
 `actions/checkout@v4` targets Node.js 20, which GitHub is deprecating in
 favour of Node.js 24 (forced there; a future `actions/checkout@v5` bump
 will silence it).
+
+---
+
+## 2026-11-17 — Pass 15: playground WASM CI — root-cause fixes
+
+### What
+
+The `un-playground` WASM CI (`update-wasm.yml`) had failed 52 consecutive
+times at its `Test un` step with
+`error: target tuple in channel name 'stable-x86_64-pc-windows-gnu'`:
+`un`'s `rust-toolchain.toml` pins a Windows-only GNU toolchain, and Linux
+rustup refuses to read the file (the Linux playground runner hits it; the
+Windows CI for `un` itself uses `rustup default stable-x86_64-pc-windows-gnu`
+first).
+
+Two complementary un-side debug-profile defects were exposed once the Linux
+workflow got past the toolchain issue (local workflow was release-only):
+
+- `transfer.rs`: register-plan `depth` math in `i64` with a clamping `s()`
+  helper; a module that ends at stack depth 0 underflowed `depth - 1` in
+  `Op::Return` and panicked every debug build.
+- `jit_bc.rs`: emit the prologue into its own block and jump into the
+  body, so the entry block stays pristine and Cranelift's debug verifier
+  accepts the initial `switch_to_block`.
+
+In `un-playground`: `update-wasm.yml` sets `RUSTUP_TOOLCHAIN: stable`,
+which overrides the Windows-only pin on the Linux runner.
+
+### Result
+
+`Update WASM` #54 (43980496909) **success 3m 18s** — all steps green
+(Test / Build / Smoke / Commit and push), pushing `chore: rebuild WASM
+from un@aad0f42` to `un-playground` main (`7bab16cb`).
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** |
+| `cargo test` (debug) | **205 passed / 0 failed** |
+| `cargo test --release` / all gates | **205 / 1406 / 41 / 81** (unchanged) |
+
+---
+
+## 2026-11-17 — Pass 16: stopwatch read-only `ms`/`ns` properties
+
+### What
+
+`time.stopwatch()` now exposes `ms` and `ns` as **read-only properties**
+(no `()` call syntax): `sw.ms` returns the elapsed milliseconds (int),
+`sw.ns` the elapsed nanoseconds (int). `sw.ms = x` / `sw.ns = x` raise an
+error ("cannot assign to a read-only property") instead of silently shadowing
+to a member. The `ms`/`ns` getters are the same native functions previously
+exposed as methods; a private `read_only` setter always returns the error.
+
+Native objects advertised through `register_original_class` needed routing
+both ways: `get_attr_from` and `set_attr_from` now invoke property members
+found on the original-class table (previously a property there was returned
+verbatim, bypassing `Property::getter`/`Property::setter`), and `Op::SetAttr`
+converts an `Error` payload to a `LangError` the same way `Op::Call` already
+did (native `__setattr__`/property-setter failures were previously swallowed
+silently).
+
+### Tests / call-site updates
+
+`sw.ms()` → `sw.ms` in `test/unit/native/time.un`, `test/unit/runtime/date.un`,
+`rust/playground/smoke.mjs`, `test/unit/runtime` etc. `time.un` gains
+assertions for `sw.ms`/`sw.ns` being ints and for the set-error path; `date.un`
+uses `sleeping.ms` (date's own `dt.ms()` is unchanged — different object).
+Docs: README/docs-README member tables, BENCHMARK_GUIDE resolution note.
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | exit 0, **0 warnings** |
+| `cargo test` (debug) | **205 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **40 files / 1406 passed** (+5 assertions) / 0 crashed; Negative **41 matched**; exit **0** |
+| `scripts/differential.ps1` | **81 files, 0 differences** |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive 40/40; Negative 34/34 (+7 parse-rejected skips) |

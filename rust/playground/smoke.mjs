@@ -162,7 +162,7 @@ expect("two reads both lines stdout", r8d.stdout, "first: second: one two\n");
 // time APIs (the host supplies the clock)
 // ---------------------------------------------------------------------------
 
-const r9 = run("use io\nuse time\nsw = time.stopwatch()\nsw.start()\nsw.stop()\nio.write(sw.ms() >= 0)");
+const r9 = run("use io\nuse time\nsw = time.stopwatch()\nsw.start()\nsw.stop()\nio.write(sw.ms >= 0)");
 expect("stopwatch exit code", r9.exitCode, 0);
 expect("stopwatch runs on host clock", r9.stdout, "true\n");
 
@@ -199,7 +199,7 @@ const r17 = run(joinLines([
     "    sum += i",
     "sw.stop()",
     "io.write(sum)",
-    "io.write(sw.ms())",
+    "io.write(sw.ms)",
     "io.write(sw.is_running())",
 ]));
 expect("stopwatch busy loop exit code", r17.exitCode, 0);

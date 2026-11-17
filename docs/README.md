@@ -280,7 +280,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
-The current baseline is Positive 40 files / 1401 passed / 0 failed / 0 crashed,
+The current baseline is Positive 40 files / 1406 passed / 0 failed / 0 crashed,
 Negative 41 checks matched + 0 documented divergences, and Known 0 files.
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
@@ -554,7 +554,7 @@ work()    # start done
 | `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
-| `time` | `sleep` (int=ms, float=s)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` |
+| `time` | `sleep` (int=ms, float=s)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` (with read-only `ms`/`ns` properties) |
 | `flow` | `spawn` (pool) and `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options` and their `_async` variants, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |

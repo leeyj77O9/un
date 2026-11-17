@@ -69,9 +69,10 @@ Both harnesses follow the same rules, so numbers are comparable:
    (Un `times[n // 2]`, Node `times[Math.floor(n/2)]`). Both harnesses use the
    same definition, so medians are directly comparable.
 6. **Timer resolution**: Un `time.stopwatch().tick()` is an int at 0.1 ms
-   resolution, so Un times are recorded as `tick / 10000.0` ms. `sw.ms()`
-   (integer ms) is too coarse for workloads under 10 ms. Node uses
-   `performance.now()`.
+   resolution, so Un times are recorded as `tick / 10000.0` ms. `sw.ms` and
+   `sw.ns` are read-only properties on the stopwatch (ms in whole ms, ns in
+   nanoseconds); `tick / 10000.0` is still the benchmark-internal metric.
+   Node uses `performance.now()`.
 7. **Environment is recorded**: `bench/env.un` and `bench/node/env.mjs` print
    `ENV|` lines (OS, platform, arch, CPU count, recursion limit, CPU model), and
    the runner stores them with the results.

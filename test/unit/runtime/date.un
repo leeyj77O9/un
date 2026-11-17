@@ -84,7 +84,7 @@ assert.assert_eq(sw.tick(), 0, "reset clears the elapsed time")
 sleeping = time.stopwatch()
 sleeping.start()
 time.sleep(20)
-assert.assert_true(sleeping.ms() >= 20, "ms measures the elapsed time after a sleep")
+assert.assert_true(sleeping.ms >= 20, "ms measures the elapsed time after a sleep")
 assert.assert_true(sleeping.seconds() >= 0.0, "seconds is a float elapsed time")
 
 assert.summary()

@@ -2,10 +2,25 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use crate::runtime::clock;
 use crate::runtime::context::Context;
+use crate::runtime::function;
 use crate::runtime::obj::{self, Obj, Payload, StopwatchState};
 use crate::runtime::scope::{self, Scope};
-use super::native;
+use super::{arg, native};
 const TICKS_PER_SECOND: i64 = 10_000_000;
+
+/// A property that exposes `getter` and always rejects writes.
+fn read_only_property(
+    closure: &Context,
+    name: &str,
+    getter: fn(&Scope) -> Obj,
+) -> Obj {
+    let getter_fn = native(closure, name, Vec::new(), getter);
+    let setter_fn = native(closure, "read_only", vec![arg("value", true, false, false)], |_scope| {
+        obj::err("cannot assign to a read-only property")
+    });
+    function::property_with(name, Some(getter_fn), Some(setter_fn), obj::none())
+}
+
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     vec![
         (
@@ -36,7 +51,8 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
             "tick".to_owned(),
             native(closure, "tick", Vec::new(), tick),
         ),
-        ("ms".to_owned(), native(closure, "ms", Vec::new(), ms)),
+        ("ms".to_owned(), read_only_property(closure, "ms", ms)),
+        ("ns".to_owned(), read_only_property(closure, "ns", ns)),
         (
             "seconds".to_owned(),
             native(closure, "seconds", Vec::new(), seconds),
@@ -149,6 +165,13 @@ fn ms(scope: &Scope) -> Obj {
     };
     let ticks = elapsed_ticks(&state.borrow());
     obj::int(ticks / 10_000)
+}
+fn ns(scope: &Scope) -> Obj {
+    let Some(state) = watch_self(scope) else {
+        return obj::err("expected 'stopwatch' object");
+    };
+    let ticks = elapsed_ticks(&state.borrow());
+    obj::int(ticks.saturating_mul(100))
 }
 fn seconds(scope: &Scope) -> Obj {
     let Some(state) = watch_self(scope) else {

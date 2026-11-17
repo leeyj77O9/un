@@ -762,6 +762,11 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
         }
     }
     if let Some(v) = world::try_get_original_value(&type_name(o), name) {
+        // Native objects advertise their members through the original-class
+        // registry; a property member there must be invoked, not returned.
+        if is_property(&v) {
+            return property_get(&v, receiver);
+        }
         return bind_self(v, receiver);
     }
     for p in parents(o).iter().skip(1) {
@@ -836,6 +841,15 @@ pub fn set_attr_from(o: &Obj, name: &str, value: &Obj, receiver: &Obj) -> Obj {
         return set_attr_from(&s, name, value, receiver);
     }
     let tn = type_name(o);
+    if let Some(v) = world::try_get_original_value(&tn, name) {
+        // Mirror get_attr_from: a property found on the native member table
+        // owns its writes — a read-only property must reject the write.
+        if is_property(&v) {
+            return property_set(&v, receiver, value);
+        }
+        // Non-property native members keep the historical shadow-member
+        // behavior (instance writes shadow the shared table).
+    }
     if matches!(&*tn, "int" | "float" | "str" | "bool" | "date" | "none" | "null") {
         return err(format!("'{tn}' object has no attribute '{name}'"));
     }

@@ -34,6 +34,8 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | (pass 12) | 12 | Debt closures: TD-46 (`iter.range` swap), TD-12 (dead `TryEntry.depth`), TD-42 (`rw` read_line UTF-8/EOF), TD-07 (IntDict arena: free-on-exit, poison-tolerant lock) + IntDict id escape fix. |
 | `c2cc664` | 13 | Bug sweep: `a[]` no longer panics the process (clean `LangError`); probed string/UTF-8, try-remove semantics, unsafe surface, interner bounds — all clean. |
 | (pass 14) | 14 | TD-36 (regex 10M-step budget; error instead of infinite hang, negative fixture) and TD-37 (HTTP/WS 10 s connect + 30 s IO timeouts, 64 MiB response cap with exact `Content-Length` validation, consistent scheme-guard messages, case-insensitive `set_header`). |
+| `aad0f42` | 15 | Pass 14 follow-through for the playground WASM CI (52× red at `Test un`): native depth underflow in `transfer.rs` debug builds and a Cranelift prologue partial-block panic in `jit_bc.rs`; `RUSTUP_TOOLCHAIN=stable` in `un-playground/update-wasm.yml`. Update WASM CI is now green. |
+| (pass 16) | 16 | Stopwatch `ms`/`ns` are now read-only native properties (no call syntax); writes raise `cannot assign to a read-only property`. Native property plumbing fixed (original-class table routing on read and write; `SetAttr` yields `LangError` like `Call`). |
 
 Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; the audit findings with
 fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
@@ -66,7 +68,7 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
 | `cargo test --release` | **205 passed / 0 failed** |
-| `scripts/test.ps1` | Positive **40 files / 1401 passed**; Negative **41 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/test.ps1` | Positive **40 files / 1406 passed**; Negative **41 matched / 0 mismatched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **81 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40**; Negative compilable **34/34** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |

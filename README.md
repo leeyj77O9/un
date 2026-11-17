@@ -278,7 +278,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
 Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
-포함하지 않는다. 현재 기준은 Positive 40 파일 / 1401 passed / 0 failed / 0 crashed,
+포함하지 않는다. 현재 기준은 Positive 40 파일 / 1406 passed / 0 failed / 0 crashed,
 Negative 41 checks 매칭 + 0 documented divergences, Known 0 파일이다.
 
 벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
@@ -545,7 +545,7 @@ work()    # start done
 | `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
-| `time` | `sleep`(int=ms, float=초)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` |
+| `time` | `sleep`(int=ms, float=초)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` (`ms`·`ns` read-only 프로퍼티) |
 | `flow` | `spawn`(pool)과 `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options`와 `_async` 변형, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |

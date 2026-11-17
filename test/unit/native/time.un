@@ -45,7 +45,22 @@ assert.assert_true(elapsed >= 0.035, "both int(ms) and float(s) sleep durations 
 sw = time.stopwatch()
 sw.start()
 time.sleep(10)
-assert.assert_true(sw.ms() >= 0, "stopwatch measures elapsed ms")
+assert.assert_true(sw.ms >= 0, "stopwatch measures elapsed ms via property")
+assert.assert_eq(type(sw.ms), int, "sw.ms is an int property, not a method")
+assert.assert_eq(type(sw.ns), int, "sw.ns is an int property, not a method")
+assert.assert_true(sw.ns >= sw.ms * 1_000_000, "sw.ns is at least ms * 1e6 ticks (100 ns each)")
+try
+    sw.ms = 5
+    assert.assert_false(true, "assigning to a read-only property must error")
+catch assign_err1
+    caught_ms = `${assign_err1}`
+    assert.assert_true(caught_ms.contains("read-only"), "ms is read-only")
+try
+    sw.ns = 5
+    assert.assert_false(true, "assigning to a read-only property must error")
+catch assign_err2
+    caught_ns = `${assign_err2}`
+    assert.assert_true(caught_ns.contains("read-only"), "ns is read-only")
 assert.assert_eq(type(sw), type(time.stopwatch()), "time.stopwatch returns stopwatch")
 
 assert.summary()
