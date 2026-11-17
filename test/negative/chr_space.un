@@ -1,2 +1,3 @@
 use io
-io.write(chr(32) == " ")
+use codes
+io.write(codes.chr(32) == " ")

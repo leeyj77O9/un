@@ -1,6 +1,7 @@
 use io
+use codes
 
 fn p(a, b)
     -> a
 
-io.write(p("x", ord(" ")))
+io.write(p("x", codes.ord(" ")))

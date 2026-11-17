@@ -295,7 +295,7 @@ fn str_members(closure: &Context) -> Vec<(String, Obj)> {
         ),
         (
             "trim".to_owned(),
-            native(closure, "trim", one("chars"), str_trim),
+            native(closure, "trim", vec![arg("chars", false, true, false)], str_trim),
         ),
         (
             "join".to_owned(),
@@ -455,13 +455,22 @@ fn str_trim(scope: &Scope) -> Obj {
     let Some(text) = str_self(scope) else {
         return obj::err("expected 'str' object");
     };
-    let chars = match str_arg(&scope::get(scope, "chars")) {
-        Ok(chars) => chars,
-        Err(e) => return e,
+    let chars = scope::get(scope, "chars");
+    // No chars given -> strip Unicode whitespace at both ends (Python's
+    // str.strip()). With `chars`, strip every character present in the set
+    // (a character-set trim, not a substring trim).
+    let trimmed = if obj::is_none(&chars) {
+        text.trim_matches(|c: char| c.is_whitespace()).to_string()
+    } else {
+        match str_arg(&chars) {
+            Ok(chars) => {
+                let set: Vec<char> = chars.chars().collect();
+                text.trim_matches(|c| set.contains(&c)).to_string()
+            }
+            Err(e) => return e,
+        }
     };
-    let set: Vec<char> = chars.chars().collect();
-    let trimmed = text.trim_matches(|c| set.contains(&c));
-    obj::str(trimmed)
+    obj::str(&trimmed)
 }
 fn str_join(scope: &Scope) -> Obj {
     let Some(text) = str_self(scope) else {

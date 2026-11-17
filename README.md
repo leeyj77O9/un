@@ -278,7 +278,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
 Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
-포함하지 않는다. 현재 기준은 Positive 40 파일 / 1414 passed / 0 failed / 0 crashed,
+포함하지 않는다. 현재 기준은 Positive 40 파일 / 1415 passed / 0 failed / 0 crashed,
 Negative 41 checks 매칭 + 0 documented divergences, Known 0 파일이다.
 
 벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
@@ -541,6 +541,7 @@ work()    # start done
 | `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
 | `math` | `round`/`abs`/`ceil`/`floor`/`trunc`/`sign`, `sqrt`/`cbrt`/`pow`/`exp`/`log`/`log2`/`log10`, `sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`hypot`, `gcd`/`lcm`/`clamp`, `is_nan`/`is_infinite`/`is_finite`, `pi`/`e`/`tau` |
+| `codes` | `bin`/`oct`/`hex` (정수 2/8/16진), `ascii` (첫 UTF-16 코드 유닛), `chr`/`ord` (코드포인트 ↔ 문자) |
 | `iter` | `array`/`range`/`counter`/`reverse`/`repeat`, `zip`/`enumerate`, `map`/`filter`/`take`/`skip`/`chain`/`flatten`, `sum`/`max`/`min`/`sorted`, `all`/`any`/`count` |
 | `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
@@ -552,7 +553,7 @@ work()    # start done
 
 컬렉션 메서드로는 `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, 그리고 `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with` 같은 문자열 메서드가 있다.
 
-모듈 없이 전역에 있는 내장 함수는 `len`/`type`/`hash`/`exit`/`throw`/`throw_if`/`throw_unless`/`chr`/`ord`/`bin`/`oct`/`hex`/`repr`/`ascii`이고, 생성자로는 `int`/`float`/`str`/`bool`/`list`/`set`/`tuple`/`date`가 있다. `math.pi`, `math.e`, `math.tau`, `os.sep`, `os.pathsep`, `os.linesep`, `os.cpuCount`, `os.is64bit` 같은 값은 함수로 노출되므로 호출해서 쓴다.
+모듈 없이 전역에 있는 내장 함수는 `len`/`type`/`hash`/`exit`/`throw`/`throw_if`/`throw_unless`/`repr`이고, 생성자로는 `int`/`float`/`str`/`bool`/`list`/`set`/`tuple`/`date`가 있다. 기수/문자 코드 변환은 `use codes`로 가져온다 (`codes.hex()`/`codes.bin()`/`codes.oct()`/`codes.ascii()`/`codes.chr()`/`codes.ord()`). `math.pi`, `math.e`, `math.tau`, `os.sep`, `os.pathsep`, `os.linesep`, `os.cpuCount`, `os.is64bit` 같은 값은 함수로 노출되므로 호출해서 쓴다.
 
 `iter`의 메서드 체이닝(`(0..10).map(fn(x) -> x * 2).take(3)`)은 지연 평가되어 소비할 때만 실행되고, 전역 `iter.map`/`iter.filter`/`iter.take`은 인자를 즉시 평가해 `list`를 반환한다. `iter.zip`는 두 소스를 같은 속도로 소비하므로 무한 `iter.counter`와 유한 범위를 함께 쓸 수 있다.
 

@@ -1,2 +1,3 @@
 use io
-io.write(ord(" "))
+use codes
+io.write(codes.ord(" "))

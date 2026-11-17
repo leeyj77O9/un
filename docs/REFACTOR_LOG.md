@@ -1106,3 +1106,91 @@ Python/Node.js 0.018x.
 | `cargo test` (debug) | **205 passed / 0 failed** |
 | `test/test_suite.un` | **109 passed / 0 failed** |
 | `io.read().split().map(int)` | works: `'3 1 2'` -> `[3, 1, 2]` |
+
+
+---
+
+## 2026-11-17 — Pass 20: ergonomics sweep — `str.trim()` (default strip) and the audit that found it
+
+### Starting state
+
+- Pass 19 fixed `split`'s required separator, the `map` Func-vs-TObj callable gap and the
+  `list.map` non-adaptive arity (D-074). The user then asked for the same class of
+  defects to be found and fixed wholesale.
+
+### Sweep (probe → verdict)
+
+Fixed: `str.trim(chars)` previously **required** `chars`; Python-style
+`"  hi  ".trim()` errored with `missing required argument`. Now `chars` is optional and
+defaults to Unicode whitespace at both ends (`char::is_whitespace()`), matching Python
+`str.strip()`; the explicit-`chars` form is unchanged. The one test asserting the old
+err is replaced with positive coverage (D-075).
+
+Checked and left unchanged (each verified in the VM, reasons noted):
+
+| Idiom | Status |
+| --- | --- |
+| `int(" 42")`, `float(" 1.5 ")`, `int("42\n")` | works already |
+| `int("  ")` | errors correctly (`cannot convert '  ' to 'int'`) |
+| `dict.get(k)` / `d.get(k, default)` | default `none` works; two-arg form works |
+| `l.pop()` | pops last element; negative indices work |
+| `l.index_of(x)` / `s.index_of(x)` | `-1` on miss (Python parity) |
+| `l.sort()`, `l.reverse()`, `d.keys()`, `d.values()` | plain-call form works |
+| global `sum`/`sorted`/`max`/`min` | intentionally absent (module design, `use iter`/`use math`) — not a defect |
+| `.keys()`'s dict iteration etc. | already idiomatic |
+| `" 42 ".is_number()` | `false` is correct (`isdigit` parity) |
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `scripts/test.ps1` | Positive 40 files / **1415 passed** / 0 failed / 0 crashed; Negative **41 matched / 0 divergences**; exit **0** |
+| `scripts/differential.ps1` | **81 files, 0 differences** |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive 40/40; Negative 34/34 (+7 parse-rejected skips) |
+| `cargo test --release` | **205 passed / 0 failed** |
+| `cargo test` (debug) | **205 passed / 0 failed** |
+| `test/test_suite.un` | **109 passed / 0 failed** |
+| `cargo build --release` | 0 errors, 0 warnings |
+
+
+---
+
+## 2026-11-17 — Pass 21: global namespace shrink — `codes` module
+
+### Starting state
+
+- 14 global builtins lived in `native/builtin.rs` at world scope; the user wanted the
+  global surface to shrink. Usage survey across tests/benches/docs: `len` 171,
+  `type` 95, `repr` 10, `hash` 10, `exec`/`throw*` 4–6, `bin`/`oct`/`hex`/`ascii` 2 each,
+  `chr`/`ord` ~5.
+- Type objects (constructors) and `true`/`false`/`none`/`null` are language constants
+  and stay in the global scope.
+
+### Changes
+
+- New module **`codes`** (`rust/src/native/codes.rs`, `use codes`): `bin`/`oct`/`hex`
+  (radix strings, `-0b...` for negatives), `ascii` (first UTF-16 unit of a one-char
+  string), `chr`/`ord` (codepoint <-> char). Same implementations, same error strings,
+  same boundary checks — moved verbatim from `builtin.rs` and registered in
+  `native::init`.
+- `builtin.rs`: the six members and impls are gone; globals are now exactly
+  `len`/`exit`/`type`/`hash`/`throw`/`throw_if`/`throw_unless`/`repr`.
+- `rust/src/runtime/modules/tests.rs`: global-set assertions updated — the six moved
+  names must NOT be global; `codes` must carry them (via `native_members`).
+- Tests fixture updates: `builtins.un` (`use codes`, `codes.*`), negative
+  `chr_space`/`ord_space`/`multi_space_arg` (`codes.chr()`/`codes.ord()`).
+- Docs: `docs/README.md` (Korean `README.md`쌍) 모듈 표에 `codes` 행 추가 + built-in 목록
+  갱신; `docs/DECISIONS.md` **D-076**; SUMMARY/LOG 갱신.
+- User's `main.un` uses none of the moved functions (checked, unchanged).
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | 0 errors, **0 warnings** |
+| `scripts/test.ps1` | Positive 40 files / **1415 passed** / 0 failed / 0 crashed; Negative **41 matched / 0 divergences**; exit **0** |
+| `scripts/differential.ps1` | **81 files, 0 differences** |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive 40/40; Negative 34/34 (+7 parse-rejected skips) |
+| `cargo test --release` | **205 passed / 0 failed** |
+| `cargo test` (debug) | **205 passed / 0 failed** |
+| `test/test_suite.un` | **109 passed / 0 failed** |

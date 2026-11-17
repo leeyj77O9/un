@@ -9,6 +9,7 @@ use crate::runtime::types::Types;
 use crate::runtime::world;
 pub mod atomic;
 pub mod builtin;
+pub mod codes;
 pub mod date_members;
 pub mod flow;
 pub mod fs;
@@ -48,6 +49,7 @@ pub fn init(path: &str) {
     world::register_native("flow", flow::members(&closure));
     world::register_native("atomic", atomic::members(&closure));
     world::register_native("re", re::members(&closure));
+    world::register_native("codes", codes::members(&closure));
     world::register_native("http", http::members(&closure));
     world::register_native("ws", ws::members(&closure));
     for (name, f) in builtin::members(&closure) {

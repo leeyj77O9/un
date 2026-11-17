@@ -1,4 +1,5 @@
 use io
+use codes
 use test.assert as assert
 
 # ============================================================
@@ -7,21 +8,21 @@ use test.assert as assert
 # ============================================================
 
 # ---------- 진법 ----------
-assert.assert_eq(hex(255), "0xff", "hex of 255")
-assert.assert_eq(hex(0), "0x0", "hex of zero")
-assert.assert_eq(bin(10), "0b1010", "bin of 10")
-assert.assert_eq(bin(0), "0b0", "bin of zero")
-assert.assert_eq(oct(8), "0o10", "oct of 8")
-assert.assert_eq(oct(0), "0o0", "oct of zero")
+assert.assert_eq(codes.hex(255), "0xff", "hex of 255")
+assert.assert_eq(codes.hex(0), "0x0", "hex of zero")
+assert.assert_eq(codes.bin(10), "0b1010", "bin of 10")
+assert.assert_eq(codes.bin(0), "0b0", "bin of zero")
+assert.assert_eq(codes.oct(8), "0o10", "oct of 8")
+assert.assert_eq(codes.oct(0), "0o0", "oct of zero")
 
 # ---------- 문자 코드 ----------
-assert.assert_eq(chr(65), "A", "chr of 65")
-assert.assert_eq(ord("A"), 65, "ord of A")
-assert.assert_eq(chr(ord("a")), "a", "chr/ord round trip")
+assert.assert_eq(codes.chr(65), "A", "chr of 65")
+assert.assert_eq(codes.ord("A"), 65, "ord of A")
+assert.assert_eq(codes.chr(codes.ord("a")), "a", "chr/ord round trip")
 
 # ---------- ascii는 코드값 ----------
-assert.assert_eq(ascii("a"), 97, "ascii code of a")
-assert.assert_eq(ascii("한"), 54620, "ascii code of a unicode character")
+assert.assert_eq(codes.ascii("a"), 97, "ascii code of a")
+assert.assert_eq(codes.ascii("한"), 54620, "ascii code of a unicode character")
 
 # ---------- hash는 문자열만 지원 ----------
 assert.assert_eq(hash("a") == hash("a"), true, "equal strings hash equal")

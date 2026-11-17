@@ -114,6 +114,7 @@ assert.assert_err(fn() -> "abc".contains(1), "contains non-str argument")
 assert.assert_err(fn() -> "abc".find(sub_str=1), "find non-str argument")
 assert.assert_err(fn() -> "abc".starts_with(1), "starts_with non-str argument")
 assert.assert_err(fn() -> "abc".split(1), "split non-str argument")
-assert.assert_err(fn() -> "abc".trim(), "trim requires chars")
+assert.assert_eq("  hi  ".trim(), "hi", "trim strips whitespace when no chars are given")
+assert.assert_eq("\t x \n".trim(), "x", "trim default strips tabs/newlines")
 
 assert.summary()

@@ -153,12 +153,22 @@ fn builtin_instances_are_registered_and_their_member_tables_are_filled() {
 fn the_global_scope_holds_the_builtin_functions_and_main_name() {
     native::init("");
     for name in [
-        "len", "exit", "type", "hash", "throw", "throw_if", "throw_unless", "chr", "ord",
-        "bin", "oct", "hex", "repr", "ascii",
+        "len", "exit", "type", "hash", "throw", "throw_if", "throw_unless", "repr",
     ] {
         assert!(
             world::try_get_global(name).is_some(),
             "builtin '{name}' is not bound"
+        );
+    }
+    // The moved-away functions live behind the `codes` module now (D-076).
+    for name in ["chr", "ord", "bin", "oct", "hex", "ascii"] {
+        assert!(
+            world::try_get_global(name).is_none(),
+            "builtin '{name}' must no longer be bound in the global scope"
+        );
+        assert!(
+            world::native_members("codes").is_some_and(|m| m.iter().any(|(n, _)| n == name)),
+            "codes module is missing member '{name}'"
         );
     }
     assert_eq!(obj::display(&global("__name__")), "__main__");
@@ -179,7 +189,13 @@ fn builtins_run_through_the_shared_native_closure() {
 
     let r = obj::call(&global("repr"), &[obj::str("a")]);
     assert_eq!(obj::display(&r), "str");
-    let c = obj::call(&global("chr"), &[obj::int(65)]);
+    let codes = world::native_members("codes").expect("codes module is registered");
+    let chr = codes
+        .iter()
+        .find(|(n, _)| n == "chr")
+        .map(|(_, v)| v.clone())
+        .expect("codes.chr");
+    let c = obj::call(&chr, &[obj::int(65)]);
     assert_eq!(obj::display(&c), "A");
     let e = obj::call(&global("throw"), &[obj::str("boom")]);
     assert_eq!(message(&e), "boom");

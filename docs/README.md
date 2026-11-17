@@ -280,7 +280,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
-The current baseline is Positive 40 files / 1414 passed / 0 failed / 0 crashed,
+The current baseline is Positive 40 files / 1415 passed / 0 failed / 0 crashed,
 Negative 41 checks matched + 0 documented divergences, and Known 0 files.
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
@@ -550,6 +550,7 @@ work()    # start done
 | `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
 | `math` | `round`/`abs`/`ceil`/`floor`/`trunc`/`sign`, `sqrt`/`cbrt`/`pow`/`exp`/`log`/`log2`/`log10`, `sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`hypot`, `gcd`/`lcm`/`clamp`, `is_nan`/`is_infinite`/`is_finite`, `pi`/`e`/`tau` |
+| `codes` | `bin`/`oct`/`hex` (integer in base 2/8/16), `ascii` (code of the first UTF-16 unit), `chr`/`ord` (code point <-> single character) |
 | `iter` | `array`/`range`/`counter`/`reverse`/`repeat`, `zip`/`enumerate`, `map`/`filter`/`take`/`skip`/`chain`/`flatten`, `sum`/`max`/`min`/`sorted`, `all`/`any`/`count` |
 | `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
@@ -561,7 +562,7 @@ work()    # start done
 
 Collection methods include `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, and string methods such as `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with`.
 
-The built-in functions available without a module are `len`/`type`/`hash`/`exit`/`throw`/`throw_if`/`throw_unless`/`chr`/`ord`/`bin`/`oct`/`hex`/`repr`/`ascii`, and the constructors are `int`/`float`/`str`/`bool`/`list`/`set`/`tuple`/`date`. Values such as `math.pi`, `math.e`, `math.tau`, `os.sep`, `os.pathsep`, `os.linesep`, `os.cpuCount`, and `os.is64bit` are exposed as functions, so call them.
+The built-in functions available without a module are `len`/`type`/`hash`/`exit`/`throw`/`throw_if`/`throw_unless`/`repr`, and the constructors are `int`/`float`/`str`/`bool`/`list`/`set`/`tuple`/`date`. Conversion helpers and character codes live behind `use codes` (`codes.hex()`/`codes.bin()`/`codes.oct()`/`codes.ascii()`/`codes.chr()`/`codes.ord()`). Values such as `math.pi`, `math.e`, `math.tau`, `os.sep`, `os.pathsep`, `os.linesep`, `os.cpuCount`, and `os.is64bit` are exposed as functions, so call them.
 
 Chaining `iter` methods (`(0..10).map(fn(x) -> x * 2).take(3)`) is lazy: nothing runs until the result is consumed. The global `iter.map`/`iter.filter`/`iter.take` evaluate their arguments immediately and return a `list`. `iter.zip` consumes both sources at the same rate, so an infinite `iter.counter` can be paired with a finite range.
 

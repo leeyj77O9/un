@@ -943,3 +943,43 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **검증**: Positive **1414 passed**(증가 +8 assertions), Negative **41**, differential
   **81 files / 0 differences**, cargo test **205**(release + debug), unbc-roundtrip
   40/40 + 34/34, `test_suite.un` 109.
+
+
+## D-075 | `str.trim()` 기본은 Unicode 공백 제거 | Accepted
+
+- D-074 계열의 "필수 인자지만 기본값이 자연스러운" 문제의 또 하나. `trim(chars)`는 Python
+  `str.strip()`과 이름이 다른 Un의 `trim`이지만, `chars` 생략 시 **Unicode 양끝 공백**을
+  제거한다(`char::is_whitespace()`, Python `strip()`과 동일한 White_Space 집합). 기존
+  `trim("x")`처럼 chars를 주면 그 문자 집합을 양끝에서 드물게 제거하는 동작은 그대로다.
+- **호환성**: 기존 기대 `assert_err(fn() -> "abc".trim(), "trim requires chars")`는
+  사용자 편의 요청으로 교체되었다(약화 아님). Positive 1414 → **1415**.
+- **조사에서 확인된 것 (수정 없음)**:
+  - `int(" 42")`/`float(" 1.5 ")`/`int("42\n")` — 이미 공백을 허용.
+  - `dict.get(k)` / `(k, default)` — 이미 두 형태 지원, 미존재 키는 `none`.
+  - `list.pop()` — 인자 생략 시 마지막 요소를 pop하고 음수 인덱스도 지원.
+  - `s.index_of(x)`(문자열/리스트), `d.keys()`/`.values()`, `l.sort()`, `l.reverse()`,
+    `len`, `type(x)` 등 — 기존 호환 동작 양호.
+  - 전역 builtin(`sorted`/`sum`/`max`/`min`)은 모듈 설계(`use iter`/`use math`)상 비워두는
+    것이 Un의 선택이며, Python 관용구라서 추가하지 않는다(범위 밖).
+- **재검증**: Positive **1415 passed**, Negative 41, differential 81/0, cargo test
+  205(debug+release), unbc-roundtrip 40/40+34/34, suite 109.
+
+
+## D-076 | 전역 빌트인 6개를 `codes` 모듈로 이동 | Accepted
+
+- **배경/문제**: 전역 네임스페이스는 `len`/`type`/… + 타입 객체로 구성되어 있었는데,
+  `bin`/`oct`/`hex`/`ascii`/`chr`/`ord`는 실제 사용 빈도가 매우 낮았다(테스트·벤치·문서
+  전수에서 bin 2, oct 2, hex 2, ascii 2, chr 5, ord 4). 전역이 크면 자동완성/충돌/신규
+  API 선택이 나빠진다. `int`/`str`/… 와 같은 타입 객체는 생성자 필수라 전역에 남겼고,
+  `true`/`false`/`none`/`null` 도 언어 상수이므로 전역 그대로다.
+- **결정 (사용자 요청)**: `bin`/`oct`/`hex`/`ascii`/`chr`/`ord`를 새 모듈 `codes`
+  (`use codes`)로 이동한다. 동작·에러 메시지·경계값(문자 코드 0..0x10FFFF
+  범위, `-0b...`, UTF-16 단위 동작)는 전혀 바꾸지 않는다. 하드 브레이크: 전역
+  이름은 완전히 제거한다(`WORLD`의 전역에서 삭제; `world::try_get_global(name)`로
+  `None` 확인하는 테스트가 이를 고정한다).
+- **전역에 남는 것**: `len`/`exit`/`type`/`hash`/`throw`/`throw_if`/`throw_unless`/`repr`
+  + 타입 객체 + `true`/`false`/`none`/`null` 상수.
+- **사용처 갱신**: `test/unit/runtime/builtins.un`(`codes.hex()` 등), negative 픽스처
+  3개(`chr_space`/`ord_space`/`multi_space_arg`: `codes.chr()`/`codes.ord()`).
+- **검증**: Positive **1415 passed**(동일), Negative 41, differential 81/0, cargo test
+  205(release+debug), unbc-roundtrip 40/40+34/34, suite 109.
