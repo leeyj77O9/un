@@ -40,6 +40,33 @@ pub fn register_original_class(type_name: &str, attrs: Vec<(String, Obj)>) {
 pub fn original_class_attrs(type_name: &str) -> Option<Vec<(String, Obj)>> {
     WORLD.with(|w| w.borrow().original_classes.get(type_name).cloned())
 }
+
+/// True when any member of the class (direct or along the base chain) is a
+/// property accessor (`Payload::Property`). JIT intrinsics must not touch
+/// storage for such members: calls have to go through the real setter, the
+/// getter, or `__setattr__`, not through a raw slot read/write.
+pub fn class_has_property(type_name: &str) -> bool {
+    WORLD.with(|w| {
+        let w = w.borrow();
+        let mut current = type_name.to_owned();
+        loop {
+            if let Some(attrs) = w.original_classes.get(&current) {
+                for (_, value) in attrs {
+                    if crate::runtime::function::is_property(value) {
+                        return true;
+                    }
+                }
+            }
+            match w.original_base_types.get(&current) {
+                Some(base) => {
+                    let base = base.clone();
+                    current = base;
+                }
+                None => return false,
+            }
+        }
+    })
+}
 pub fn try_set_original_class(type_name: &str, name: &str, value: Obj) -> bool {
     WORLD.with(|w| {
         let mut w = w.borrow_mut();

@@ -1613,6 +1613,15 @@ fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
         eprintln!("JITDBG layout_out {:?}", layout_out);
     }
     for (class_name, fields) in layout_out {
+        if world::class_has_property(&class_name) {
+            // The original class carries accessor properties somewhere along
+            // its ancestry; JIT intrinsics must bail here because property
+            // dispatch is inductive and cannot be specialised safely by name alone.
+            if crate::jit_cache::jit_debug() {
+                eprintln!("JITDBG skip layout for {}: class has properties", class_name);
+            }
+            continue;
+        }
         if !fields.is_empty() {
             if crate::jit_cache::jit_debug() {
                 eprintln!("JITDBG seeding layout {} -> {:?}", class_name, fields);

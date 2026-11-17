@@ -297,27 +297,39 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
             Some(fid) => *fid,
             None => continue,
         };
-        if emit_fn_in_module(
-            program,
-            idx,
-            &mut module,
-            &decls,
-            sigs.get(&idx).unwrap().clone(),
-            func_id,
-            fid_enter,
-            fid_exit,
-            fid_dict_empty,
-            fid_dict_set,
-            fid_dict_get,
-            fid_dict_free,
-            fid_sin,
-            fid_int_get,
-            fid_int_ok_name,
-            fid_int_set,
-            &ret_kinds,
-        )
-        .is_none()
+        // Contain a backend panic (e.g. SSA type mismatch in
+        // `f64_vars`-promoted loops) so it doesn't take the whole module
+        // down with it: this candidate becomes an all-bail stub and the
+        // rest of the module stays usable.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            emit_fn_in_module(
+                program,
+                idx,
+                &mut module,
+                &decls,
+                sigs.get(&idx).unwrap().clone(),
+                func_id,
+                fid_enter,
+                fid_exit,
+                fid_dict_empty,
+                fid_dict_set,
+                fid_dict_get,
+                fid_dict_free,
+                fid_sin,
+                fid_int_get,
+                fid_int_ok_name,
+                fid_int_set,
+                &ret_kinds,
+            )
+        }))
+        .ok()
+        .flatten();
+        if result.is_none()
         {
+            if std::env::var_os("UV_JIT_DEBUG").is_some() {
+                let name = program.names.get(program.protos[idx].name).cloned().unwrap_or_else(|| "?".into());
+                eprintln!("JITREJECT proto[{idx}] {name} (panic in JIT codegen, fallback stub)");
+            }
             if verbose {
                 let name = program.names.get(program.protos[idx].name).cloned().unwrap_or_default();
                 eprintln!("JITDBG STUB proto[{idx}] {name} (fallback stub ??will tag=2 bail)");
@@ -1636,10 +1648,12 @@ impl<'a> Tr<'a> {
                 self.ret_slot[dst] = None;
                 Some(())
             }
-            Op::Return => {
+    Op::Return => {
                 // The JIT ABI writes the (value, tag) pair through a hidden
                 // pointer: tag 0 ??value is an Int result; tag 1 ??Float bits;
-                // tag 2 ??runtime bail; tag 3 ??Bool (0/1).
+                // tag 2 ??runtime bail; tag 3 ??Bool (0/1). Anything else
+                // (none, a class instance, an unexpected payload) bails to the
+                // interpreter, which runs the function with full semantics.
                 if self.is_none[ins.a as usize] {
                     return None;
                 }
@@ -2544,25 +2558,10 @@ pub fn emit_fn_in_module(
 
     // ---------- pass 2c: Int占쏙옙Float promotion fixpoint ----------
     let local_float = compute_local_float(code, proto, program, &intrinsics, &consumed);
-    // Reject programs that hold a literal Float const across a JIT range
-    // loop: the frontend crashes (`declared type of variable N doesn't
-    // match type of value M`) when a Float literal-derived local coexists
-    // with ForNext. Int-start accumulators that promote mid-loop carry no
-    // Float const (their value enters through the intrinsic), so they stay
-    // eligible; Float-start accumulators fall back to the interpreter
-    // until the merge-path design is reworked.
-    let has_float_const = code.iter().any(|ins| {
-        ins.op == Op::LoadConst
-            && proto
-                .consts
-                .get(ins.d as usize)
-                .and_then(|&i| program.consts.get(i))
-                .map(|c| matches!(c, Constant::Float(_)))
-                .unwrap_or(false)
-    });
-    if has_float_const && code.iter().any(|ins| ins.op == Op::ForNext) {
-        return None;
-    }
+    // Float-const-bearing range-loops are no longer rejected wholesale. The
+    // per-candidate catch_unwind above converts any SSA-type mismatch into a
+    // bail-stub for just this proto, so the rest of the module still gets
+    // native code. If this proto panics, it falls back to the interpreter.
     // reject a floor(sqrt()) whose Int argument is a promoted local ? the
     // window previously matched with only Int assumptions
     for &p in intrinsics.values() {
