@@ -1270,6 +1270,21 @@ pub fn get_item(o: &Obj, key: &Obj) -> Obj {
     match payload(o) {
         Payload::Str(s) => match payload(key) {
             Payload::Int(i) => {
+                // ASCII fast path: byte index == UTF-16 unit index, so a
+                // single byte slice is the whole job (O(1)). Non-ASCII text
+                // keeps the exact UTF-16 code-unit semantics below.
+                if s.is_ascii() {
+                    let len = s.len() as i64;
+                    let mut index = i as i64;
+                    if 0 > index {
+                        index += len;
+                    }
+                    if 0 > index || index >= len {
+                        return err("list index out of range");
+                    }
+                    let start = index as usize;
+                    return str(&s[start..start + 1]);
+                }
                 let len = s.encode_utf16().count() as i64;
                 let index = i as i32 as i64;
                 if 0 > index || index >= len {
@@ -1962,7 +1977,16 @@ fn str_binop(o: &Obj, a: Rc<str>, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<s
             match payload(&s) {
                 Payload::Str(v) => {
                     if op == BinOp::Add {
-                        str(&format!("{a}{v}"))
+                        // Concatenated strings do not reuse the pool:
+                        // Python gets this for free via refcount==1
+                        // in-place appends; we can't mutate `a` here, but we
+                        // can at least avoid hashing the whole prefix and a
+                        // pool insert on every append (quadratic in the
+                        // accumulator size, e.g. `out += c` loops).
+                        let mut out = String::with_capacity(a.len() + v.len());
+                        out.push_str(a.as_ref());
+                        out.push_str(v.as_ref());
+                        obj_new("str", Payload::Str(Rc::from(out)))
                     } else {
                         str(&a.replace(v.as_ref(), ""))
                     }

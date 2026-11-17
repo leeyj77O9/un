@@ -2583,6 +2583,26 @@ impl<'a> Tr<'a> {
                 let f_ref = self.module.declare_func_in_func(fid, builder.func);
                 let call = builder.ins().call(f_ref, &[d_i]);
                 let handle = builder.inst_results(call)[0];
+                // `0` means the receiver is not iterable by the Int-JIT
+                // (e.g. a KIND_OUTER nested list); bail to the interpreter.
+                let zero_iv = builder.ins().iconst(types::I64, 0);
+                let is_zero = builder.ins().icmp(IntCC::Equal, handle, zero_iv);
+                let bail_blk = builder.create_block();
+                let cont_blk = builder.create_block();
+                builder.ins().brif(is_zero, bail_blk, &[], cont_blk, &[]);
+                self.terminated = true;
+                builder.seal_block(bail_blk);
+                builder.seal_block(cont_blk);
+                self.goto(builder, bail_blk);
+                self.emit_int_dict_cleanup(builder);
+                let hp = builder.use_var(self.hp_var);
+                let zb = builder.ins().iconst(types::I64, 0);
+                let tb = builder.ins().iconst(types::I64, 2);
+                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zb, hp, 0);
+                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tb, hp, 8);
+                builder.ins().return_(&[]);
+                self.terminated = true;
+                self.goto(builder, cont_blk);
                 builder.def_var(self.rv_i64(ins.a as usize), handle);
                 self.is_bool[ins.a as usize] = false;
                 self.is_none[ins.a as usize] = false;

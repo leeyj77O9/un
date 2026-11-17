@@ -61,13 +61,16 @@ pub(crate) fn try_call_jit(
         match obj::payload(arg) {
             crate::runtime::obj::Payload::Int(v) => ints.push(v),
             crate::runtime::obj::Payload::List(_) => {
-                // All-Int/all-Bool homogeneous lists enter the Int-JIT as a
-                // raw arena handle. The callee's list intrinsics validate
-                // handle identity at runtime, so no side-band typing is
-                // required; mixed or non-Int lists decline the JIT slot.
-                match crate::runtime::int_list::materialize(arg) {
+                // Nested homogeneous lists ([[1,2],[3,4],...]) enter the
+                // Int-JIT as a KIND_OUTER arena handle; flat homogeneous
+                // Int/Bool lists keep the flat path. Anything else
+                // declines and the caller runs the interpreter.
+                match crate::runtime::int_list::materialize_nested(arg) {
                     Some(handle) => ints.push(handle),
-                    None => return None,
+                    None => match crate::runtime::int_list::materialize(arg) {
+                        Some(handle) => ints.push(handle),
+                        None => return None,
+                    },
                 }
             }
             _ => return None,

@@ -9,6 +9,117 @@ pub struct MatchData {
     pub captures: Vec<Vec<(i32, i32)>>,
     pub capcount: Vec<i32>,
 }
+/// Cheap prefix check for the first meaningful op of the compiled program.
+/// The writer always emits `OP_LAZYBRANCH` at index 0 (its operand at index 1
+/// is patched to the position right after the body); index 2 holds the
+/// pattern's first body op. When that op is an unconditional, consuming char
+/// test, a start position that fails the test can never match — rejecting it
+/// here avoids running the whole engine (and its track push/pop) per position.
+/// Quantifiers are NOT eligible (a failing first op there may still match via
+/// a zero-width run, e.g. `a*` at a `b`). RTL programs are excluded (the
+/// pattern scans backwards, so a forward-start check is meaningless); ops with
+/// `OP_CASEINS`/`BACKTRACKING` bits are excluded too.
+#[derive(Debug, Clone, Copy)]
+enum FirstCheck {
+    Class(usize),
+    One(i32),
+    NotOne(i32),
+    Multi(usize),
+}
+
+const FLAG_MASK: i32 = OP_RTL | OP_CASEINS | OP_BACKTRACKING | OP_BACKTRACKING_SECOND;
+
+impl FirstCheck {
+    fn analyze(code: &Code) -> Option<FirstCheck> {
+        let codes = &code.codes;
+        if codes.iter().any(|&op| (op & OP_RTL) != 0) {
+            return None;
+        }
+        // Skip the non-consuming prefix (LAZYBRANCH and its track/mark
+        // bookkeeping) and stop at the first op that must consume a char.
+        // Anything else bails out: quantifiers may match with zero reps, so
+        // they are never eligible prefilter openers. Only the entry
+        // LAZYBRANCH may be skipped; any LAZYBRANCH at a later position is an
+        // alternation boundary, where the "first char" is branch-dependent.
+        let mut i = 0usize;
+        for _ in 0..64 {
+            let Some(&op) = codes.get(i) else { return None; };
+            let bits = op & FLAG_MASK;
+            if bits != 0 {
+                return None;
+            }
+            let base = op & !FLAG_MASK;
+            match base {
+                OP_LAZYBRANCH if i == 0 => {
+                    if codes.get(i + 1).is_none() {
+                        return None;
+                    }
+                    i += 2;
+                }
+                OP_NULLCOUNT | OP_SETCOUNT => {
+                    if codes.get(i + 1).is_none() {
+                        return None;
+                    }
+                    i += 2;
+                }
+                OP_SETJUMP | OP_FOREJUMP | OP_BACKJUMP | OP_NULLMARK | OP_SETMARK => {
+                    i += 1;
+                }
+                OP_CAPTUREMARK => {
+                    // args: capnum, kind — 2 operand words
+                    if codes.get(i + 1).is_none() || codes.get(i + 2).is_none() {
+                        return None;
+                    }
+                    i += 3;
+                }
+                OP_SET | OP_SETREP => {
+                    let operand = *codes.get(i + 1)?;
+                    return Some(FirstCheck::Class(operand as usize));
+                }
+                OP_ONE | OP_ONEREP => {
+                    let operand = *codes.get(i + 1)?;
+                    return Some(FirstCheck::One(operand));
+                }
+                OP_NOTONE | OP_NOTONEREP => {
+                    let operand = *codes.get(i + 1)?;
+                    return Some(FirstCheck::NotOne(operand));
+                }
+                OP_MULTI => {
+                    let operand = *codes.get(i + 1)?;
+                    let s = code.strings.get(operand as usize)?;
+                    if s.is_empty() {
+                        return None; // matches everywhere; not eligible
+                    }
+                    return Some(FirstCheck::Multi(operand as usize));
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    fn can_match(&self, code: &Code, input: &[char], start: i64) -> bool {
+        if start < 0 {
+            return true;
+        }
+        let ch = match input.get(start as usize) {
+            Some(&c) => c,
+            None => return false, // consuming op always needs a char
+        };
+        match self {
+            FirstCheck::Class(i) => code.sets.get(*i).map(|s| s.char_in_class(ch)).unwrap_or(false),
+            FirstCheck::One(v) => (ch as u32) == (*v as u32),
+            FirstCheck::NotOne(v) => (ch as u32) != (*v as u32),
+            FirstCheck::Multi(i) => code
+                .strings
+                .get(*i)
+                .and_then(|s| s.first())
+                .map(|&c| c == ch)
+                .unwrap_or(false),
+        }
+    }
+}
+
 pub struct Engine<'a> {
     code: &'a Code,
     input: &'a [char],
@@ -16,17 +127,18 @@ pub struct Engine<'a> {
     pos: i64,
     right_to_left: bool,
     stack: Vec<i32>,
-    sp: usize, 
+    sp: usize,
     track: Vec<i32>,
-    track_pos: usize, 
+    track_pos: usize,
     crawl: Vec<i32>,
-    crawl_pos: usize, 
+    crawl_pos: usize,
     matchcount: Vec<i32>,
     matches: Vec<Vec<(i32, i32)>>,
     operator: i32,
     codepos: usize,
     caps: usize,
     steps: u64,
+    first: Option<FirstCheck>,
 }
 impl<'a> Engine<'a> {
     pub fn new(code: &'a Code, input: &'a [char], caps: usize) -> Self {
@@ -49,6 +161,7 @@ impl<'a> Engine<'a> {
             codepos: 0,
             caps,
             steps: 0,
+            first: FirstCheck::analyze(code),
         }
     }
     fn ensure_storage(&mut self) {
@@ -500,6 +613,12 @@ impl<'a> Engine<'a> {
         self.pos = startpos;
         if self.code.codes.is_empty() {
             return false;
+        }
+        // Fast prefilter: reject impossible starts without running a single op.
+        if let Some(first) = &self.first {
+            if !first.can_match(self.code, self.input, startpos) {
+                return false;
+            }
         }
         self.set_operator(self.code.codes[0]);
         self.codepos = 0;

@@ -47,8 +47,10 @@ fn rle_decode(text)
             digits += d
             j += 1
         count = int(digits)
-        for k in iter.range(0, count)
+        k = 0
+        while k < count
             out += c
+            k += 1
         i = j
     -> out
 

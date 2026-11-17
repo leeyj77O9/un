@@ -8,6 +8,7 @@ mod prop_table;
 mod unicode;
 mod unicode_table;
 mod writer;
+use crate::native::regex::opts::*;
 pub use charclass::CharClass;
 pub use interp::{Engine, MatchData};
 pub use node::Node;
@@ -49,17 +50,276 @@ pub struct Regex {
     capsize: i32,
     capnames: std::collections::HashMap<String, i32>,
     capnumlist: Option<Vec<i32>>,
+    fast: Option<FastRegex>,
 }
+/// Weak-DFA fast path. Eligible shapes produced by this writer are: a plain
+/// sequence of single-char atoms, possibly ending in one unbounded greedy
+/// loop of a single set/char atom (`[0-9]+`, `[^a]+`, `\d+`, `[0-9]{2}`,
+/// `a+b` is NOT eligible). Such a pattern is deterministic at every start
+/// position and greedy maximal length is the backtracking engine's result;
+/// `CAPTUREMARK` is only allowed in slot 0 (the full match). Anything
+/// outside the eligible shape returns `None` and keeps the normal engine,
+/// which is always correct.
+#[derive(Debug, Clone)]
+enum FastAtom {
+    Class(usize),
+    One(u32),
+    NotOne(u32),
+}
+impl FastAtom {
+    fn matches(&self, sets: &[CharClass], ch: char) -> bool {
+        match self {
+            FastAtom::Class(i) => sets[*i].char_in_class(ch),
+            FastAtom::One(v) => ch as u32 == *v,
+            FastAtom::NotOne(v) => ch as u32 != *v,
+        }
+    }
+}
+const FAST_FLAG_MASK: i32 = crate::native::regex::opts::OP_RTL
+    | crate::native::regex::opts::OP_CASEINS
+    | crate::native::regex::opts::OP_BACKTRACKING
+    | crate::native::regex::opts::OP_BACKTRACKING_SECOND;
+
+#[derive(Debug, Clone)]
+struct FastRegex {
+    pre: Vec<FastAtom>,
+    greedy: Option<FastAtom>,
+}
+impl FastRegex {
+    fn analyze(code: &Code) -> Option<FastRegex> {
+        let codes = &code.codes;
+        if codes.len() < 4 {
+            return None;
+        }
+        // NOTE: no blanket scan over `codes` here — operand words (e.g. -1)
+        // are not opcodes. RTL/case-insensitive markers are rejected at the
+        // prefix and atom stages, which only touch opcode positions.
+        let mut i = 0usize;
+        // Non-consuming prefix, same shape as the interpreter's prefilter:
+        // LAZYBRANCH at index 0 (its operand is patched to after the body),
+        // plus mark/count bookkeeping ops. Only slot-0 CAPTUREMARKs.
+        for _ in 0..64 {
+            let Some(&op) = codes.get(i) else { return None; };
+            if (op & FAST_FLAG_MASK) != 0 {
+                return None;
+            }
+            match op {
+                x if x == OP_LAZYBRANCH && i == 0 => {
+                    if codes.get(i + 1).is_none() {
+                        return None;
+                    }
+                    i += 2;
+                }
+                OP_NULLMARK | OP_SETMARK => {
+                    i += 1;
+                }
+                OP_SETCOUNT | OP_NULLCOUNT => {
+                    if codes.get(i + 1).is_none() {
+                        return None;
+                    }
+                    i += 2;
+                }
+                OP_CAPTUREMARK => {
+                    if codes.get(i + 1) != Some(&0) {
+                        return None;
+                    }
+                    if codes.get(i + 2).is_none() {
+                        return None;
+                    }
+                    i += 3;
+                }
+                _ => break,
+            }
+        }
+        let mut pre: Vec<FastAtom> = Vec::new();
+        let mut greedy: Option<FastAtom> = None;
+        for _ in 0..64 {
+            let Some(&op) = codes.get(i) else { return None; };
+            if (op & FAST_FLAG_MASK) != 0 {
+                return None;
+            }
+            let base = op;
+            match base {
+                OP_SET | OP_SETREP => {
+                    let idx = *codes.get(i + 1)?;
+                    code.sets.get(idx as usize)?;
+                    let n = if base == OP_SETREP {
+                        let n = *codes.get(i + 2)?;
+                        if !(1..=8).contains(&n) {
+                            return None;
+                        }
+                        n
+                    } else {
+                        1
+                    };
+                    for _ in 0..n {
+                        pre.push(FastAtom::Class(idx as usize));
+                    }
+                    i += if base == OP_SETREP { 3 } else { 2 };
+                }
+                OP_ONE | OP_ONEREP => {
+                    let ch = *codes.get(i + 1)? as u32;
+                    let n = if base == OP_ONEREP {
+                        let n = *codes.get(i + 2)?;
+                        if !(1..=8).contains(&n) {
+                            return None;
+                        }
+                        n
+                    } else {
+                        1
+                    };
+                    for _ in 0..n {
+                        pre.push(FastAtom::One(ch));
+                    }
+                    i += if base == OP_ONEREP { 3 } else { 2 };
+                }
+                OP_NOTONE | OP_NOTONEREP => {
+                    let ch = *codes.get(i + 1)? as u32;
+                    let n = if base == OP_NOTONEREP {
+                        let n = *codes.get(i + 2)?;
+                        if !(1..=8).contains(&n) {
+                            return None;
+                        }
+                        n
+                    } else {
+                        1
+                    };
+                    for _ in 0..n {
+                        pre.push(FastAtom::NotOne(ch));
+                    }
+                    i += if base == OP_NOTONEREP { 3 } else { 2 };
+                }
+                OP_SETLOOP | OP_ONELLOOP | OP_NOTONELLOOP => {
+                    let v = *codes.get(i + 1)?;
+                    let tail = *codes.get(i + 2)?;
+                    if tail != i32::MAX {
+                        return None;
+                    }
+                    let atom = match base {
+                        OP_SETLOOP => {
+                            code.sets.get(v as usize)?;
+                            FastAtom::Class(v as usize)
+                        }
+                        OP_ONELLOOP => FastAtom::One(v as u32),
+                        _ => FastAtom::NotOne(v as u32),
+                    };
+                    greedy = Some(atom);
+                    i += 3;
+                    // trailing slot-0 CAPTUREMARKs and STOP only
+                    for _ in 0..16 {
+                        let Some(&op2) = codes.get(i) else { return None; };
+                        if (op2 & FAST_FLAG_MASK) != 0 {
+                            return None;
+                        }
+                        match op2 {
+                            OP_CAPTUREMARK => {
+                                if codes.get(i + 1) != Some(&0) {
+                                    return None;
+                                }
+                                if codes.get(i + 2).is_none() {
+                                    return None;
+                                }
+                                i += 3;
+                            }
+                            OP_STOP => {
+                                return Some(FastRegex { pre, greedy });
+                            }
+                            _ => return None,
+                        }
+                    }
+                    return None;
+                }
+                OP_CAPTUREMARK => {
+                    if codes.get(i + 1) != Some(&0) {
+                        return None;
+                    }
+                    if codes.get(i + 2).is_none() {
+                        return None;
+                    }
+                    i += 3;
+                }
+                OP_STOP => {
+                    return Some(FastRegex { pre, greedy });
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    // Index one past the end of the match that starts at `start`, or `None`
+    // when the pattern cannot match there. Greedy atoms run to the input
+    // end or the first char outside their set, which is exactly what the
+    // backtracking engine produces for these shapes.
+    fn end_at(&self, sets: &[CharClass], text: &[char], start: usize) -> Option<usize> {
+        if start > text.len() {
+            return None;
+        }
+        let mut i = start;
+        for atom in &self.pre {
+            if i >= text.len() {
+                return None;
+            }
+            if !atom.matches(sets, text[i]) {
+                return None;
+            }
+            i += 1;
+        }
+        if let Some(g) = &self.greedy {
+            while i < text.len() && g.matches(sets, text[i]) {
+                i += 1;
+            }
+        }
+        Some(i)
+    }
+
+    fn find_all_direct(&self, sets: &[CharClass], text: &[char]) -> Vec<Match> {
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        while pos <= text.len() {
+            match self.end_at(sets, text, pos) {
+                Some(end) => {
+                    let empty = pos == end;
+                    out.push(Match {
+                        start: pos,
+                        end,
+                        captures: vec![vec![(pos, end.saturating_sub(pos))]],
+                        capcount: vec![1],
+                        matched: vec![true],
+                    });
+                    if empty {
+                        if end == text.len() {
+                            break;
+                        }
+                        pos = end + 1;
+                    } else {
+                        pos = end;
+                    }
+                }
+                None => {
+                    // No match starts at `pos`; advance to the next start,
+                    // mirroring the forward scan in `find_next`.
+                    pos += 1;
+                    continue;
+                }
+            }
+        }
+        out
+    }
+}
+
 impl Regex {
     pub fn new(pattern: &str) -> Result<Self, String> {
         let parsed = parse::parse(pattern).map_err(|e| e.message)?;
         let sparse = parsed.sparse.clone();
         let code = writer::write(&parsed.root, &sparse);
+        let fast = FastRegex::analyze(&code);
         Ok(Regex {
             code,
             capsize: parsed.capsize,
             capnames: parsed.capnames,
             capnumlist: parsed.capnumlist,
+            fast,
         })
     }
 
@@ -107,6 +367,12 @@ impl Regex {
     }
 
     pub fn find_all(&self, text: &[char]) -> Result<Vec<Match>, String> {
+        // Weak-DFA fast path: eligible patterns are deterministic at every
+        // start position, so this produces exactly what the backtracking
+        // engine would produce (leftmost-first, greedy maximal tail).
+        if let Some(fast) = &self.fast {
+            return Ok(fast.find_all_direct(&self.code.sets, text));
+        }
         let len = text.len();
         let mut out = Vec::new();
         let caps = self.capsize.max(1) as usize;
