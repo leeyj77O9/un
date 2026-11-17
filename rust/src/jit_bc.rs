@@ -159,7 +159,16 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     builder.symbol("un_instance_int_get", crate::runtime::obj::un_instance_int_get as *const u8);
     builder.symbol("un_instance_int_ok", crate::runtime::obj::un_instance_int_ok as *const u8);
     builder.symbol("un_instance_int_ok_name", crate::runtime::obj::un_instance_int_ok_name as *const u8);
-    builder.symbol("un_instance_int_set", crate::runtime::obj::un_instance_int_set as *const u8);
+    builder.symbol("un_instance_int_set_name", crate::runtime::obj::un_instance_int_set_name as *const u8);
+    builder.symbol("un_class_make_0", crate::runtime::int_class::un_class_make_0 as *const u8);
+    builder.symbol("un_class_make_1", crate::runtime::int_class::un_class_make_1 as *const u8);
+    builder.symbol("un_class_make_2", crate::runtime::int_class::un_class_make_2 as *const u8);
+    builder.symbol("un_class_make_3", crate::runtime::int_class::un_class_make_3 as *const u8);
+    builder.symbol("un_class_make_4", crate::runtime::int_class::un_class_make_4 as *const u8);
+    builder.symbol("un_class_make_5", crate::runtime::int_class::un_class_make_5 as *const u8);
+    builder.symbol("un_class_make_6", crate::runtime::int_class::un_class_make_6 as *const u8);
+    builder.symbol("un_class_make_7", crate::runtime::int_class::un_class_make_7 as *const u8);
+    builder.symbol("un_class_make_8", crate::runtime::int_class::un_class_make_8 as *const u8);
     let mut module = JITModule::new(builder);
 
     // Declare the depth helpers so the JIT can call into them.
@@ -245,14 +254,33 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         Ok(fid) => fid,
         Err(_) => return,
     };
-    let mut sig_is = module.make_signature();
-    sig_is.params.push(AbiParam::new(types::I64));
-    sig_is.params.push(AbiParam::new(types::I64));
-    sig_is.params.push(AbiParam::new(types::I64));
-    let fid_int_set = match module.declare_function("un_instance_int_set", Linkage::Import, &sig_is) {
+    let mut sig_isn = module.make_signature();
+    for _ in 0..5 {
+        sig_isn.params.push(AbiParam::new(types::I64));
+    }
+    sig_isn.returns.push(AbiParam::new(types::I64));
+    let fid_int_set_name = match module.declare_function("un_instance_int_set_name", Linkage::Import, &sig_isn) {
         Ok(fid) => fid,
         Err(_) => return,
     };
+    // Class-constructor intrinsic, one signature per Int arity:
+    // `un_class_make_<N>(desc_id, a0..aN-1) -> raw instance pointer (0 = bail)`.
+    let mut fid_class_make = Vec::with_capacity(9);
+    for arity in 0..=8usize {
+        let mut sig = module.make_signature();
+        for _ in 0..=arity {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+        match module.declare_function(
+            &format!("un_class_make_{arity}"),
+            Linkage::Import,
+            &sig,
+        ) {
+            Ok(fid) => fid_class_make.push(fid),
+            Err(_) => return,
+        }
+    }
 
     // Pass 1: declare every candidate so they are all callable from each other
     let mut decls: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
@@ -318,7 +346,8 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
                 fid_sin,
                 fid_int_get,
                 fid_int_ok_name,
-                fid_int_set,
+                fid_int_set_name,
+                &fid_class_make,
                 &ret_kinds,
             )
         }))
@@ -426,7 +455,10 @@ struct Tr<'a> {
     fid_sin: cranelift_module::FuncId,
     fid_int_get: cranelift_module::FuncId,
     fid_int_ok_name: cranelift_module::FuncId,
-    fid_int_set: cranelift_module::FuncId,
+    fid_int_set_name: cranelift_module::FuncId,
+    // Per-arity class constructor intrinsics (`un_class_make_<N>`); index is
+    // the argument count.
+    fid_class_make: Vec<cranelift_module::FuncId>,
     class_layouts: HashMap<usize, Vec<String>>,
     // True when the proto is a class method (its first hidden argument is the
     // receiver, a raw `Rc<RefCell<ObjData>>` pointer). Local slot 0 is `self`.
@@ -435,9 +467,31 @@ struct Tr<'a> {
     // straight from `LoadLocal(0)` without being overwritten). Only those
     // may serve as the `self` operand of the direct attr-field intrinsic.
     self_regs: HashSet<usize>,
+    // Register holding the class token of a program-declared constructor
+    // (`Point`), emitted by `LoadName`. The value is a compile-time
+    // descriptor id; `Op::Call` on it lowers to `un_class_make_<N>`.
+    class_ctor_regs: HashMap<usize, i64>,
+    // Register holding a raw `Rc<RefCell<ObjData>>` pointer to a freshly
+    // constructed instance of a known class (`un_class_make_<N>`). The i64
+    // value is the descriptor id. Tracked like `int_dict_regs` so no
+    // arithmetic, return or spill ever observes it, and so `.norm()` /
+    // `SetAttr`/`StoreLocal` can specialise on it.
+    instance_regs: HashMap<usize, i64>,
+    // Register holding a "bound class-method" marker from `GetAttr` on an
+    // instance register. Never materialised as a value; `Op::Call` on it
+    // lowers to a direct native call into the method proto with the
+    // instance as hidden `self` argument 0. Carries the receiver register.
+    method_regs: HashMap<usize, (i64, usize, usize)>,
+    // Descriptor id -> method name -> proto index for every JIT-eligible
+    // method of every program-declared class. Built once per compiled
+    // function from the compile-time program view.
+    class_methods: HashMap<i64, HashMap<String, usize>>,
+    // Class name -> descriptor id (for program-declared classes only).
+    class_desc_ids: HashMap<String, i64>,
     // Slots that hold IntDict references (opaque i64 ids used by the JIT).
     int_dict_regs: HashSet<usize>,
     local_is_intdict: Vec<bool>,
+    local_is_instance: Vec<Option<i64>>,
     // Proto indices by global function name (exact match against arena).
     callee_lookup: HashMap<String, usize>,
     // Register -> proto index for registers holding a callable function
@@ -447,12 +501,19 @@ struct Tr<'a> {
 }
 
 impl<'a> Tr<'a> {
-    /// True if any register refers to an IntDict id rather than an ordinary
-    /// Int. IntDict ids must never flow into values the interpreter can
-    /// observe (an id returned as a tag=0 Int would masquerade as a number,
-    /// and stored/passed ids would corrupt scope or callee arguments).
+    /// True if any register refers to a non-Int opaque handle (an IntDict
+    /// id, a class token, a constructed instance pointer or a bound-method
+    /// marker) rather than an ordinary Int. Handles must never flow into
+    /// values the interpreter can observe (a handle returned as a tag=0 Int
+    /// would masquerade as a number, and leaked handles would corrupt scope
+    /// or callee arguments).
     fn int_dict_seen(&self, regs: &[usize]) -> bool {
-        regs.iter().any(|&r| self.int_dict_regs.contains(&r))
+        regs.iter().any(|&r| {
+            self.int_dict_regs.contains(&r)
+                || self.instance_regs.contains_key(&r)
+                || self.class_ctor_regs.contains_key(&r)
+                || self.method_regs.contains_key(&r)
+        })
     }
 
     fn emit_user_call(
@@ -526,6 +587,9 @@ impl<'a> Tr<'a> {
         builder.seal_block(cont_blk);
         builder.def_var(self.rv_i64(ins.a as usize), val);
         self.ret_slot[ins.a as usize] = None;
+        self.class_ctor_regs.remove(&(ins.a as usize));
+        self.instance_regs.remove(&(ins.a as usize));
+        self.method_regs.remove(&(ins.a as usize));
         match pure_kind {
             RET_INT => {
                 self.is_bool[ins.a as usize] = false;
@@ -572,6 +636,183 @@ impl<'a> Tr<'a> {
     /// tombstones slots, so an id reachable through both a local and a
     /// register (e.g. created, stored, loaded again) is freed exactly once
     /// at runtime.
+    /// Constructor fast path: emit `un_class_make_<argc>(desc_id, args...)`,
+    /// parking the allocated instance in the thread-local arena (the raw
+    /// pointer is valid for the duration of this native frame). Returns
+    /// `None`, making the whole proto bail, when any class- or call-site
+    /// condition is violated.
+    fn emit_class_make(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        ins: Ins,
+        argc: usize,
+        callee_reg: usize,
+        desc_id: i64,
+    ) -> Option<()> {
+        if argc > 8 {
+            return None;
+        }
+        // The class token itself is a pointer-width constant we control;
+        // its type flags are all false by construction.
+        for k in 0..argc {
+            let r = callee_reg + 1 + k;
+            if self.is_none[r] || self.is_float[r] || self.is_bool[r] {
+                return None;
+            }
+            if self.int_dict_seen(&[r]) {
+                return None;
+            }
+        }
+        let func_id = *self.fid_class_make.get(argc)?;
+        let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+        let mut arg_vals: Vec<Value> = Vec::with_capacity(argc + 1);
+        arg_vals.push(builder.ins().iconst(types::I64, desc_id));
+        for k in 0..argc {
+            arg_vals.push(builder.use_var(self.rv_i64(callee_reg + 1 + k)));
+        }
+        let call = builder.ins().call(func_ref, &arg_vals);
+        let v = builder.inst_results(call)[0];
+        // A zero result means the runtime declined (unknown class,
+        // constructor threw); bail the whole frame to the interpreter.
+        let zero_c = builder.ins().iconst(types::I64, 0);
+        let is_miss = builder.ins().icmp(IntCC::Equal, v, zero_c);
+        let bail_blk = builder.create_block();
+        let cont_blk = builder.create_block();
+        builder.ins().brif(is_miss, bail_blk, &[], cont_blk, &[]);
+        builder.seal_block(bail_blk);
+        builder.switch_to_block(bail_blk);
+        self.emit_int_dict_cleanup(builder);
+        let hp = builder.use_var(self.hp_var);
+        let zb = builder.ins().iconst(types::I64, 0);
+        let tb = builder.ins().iconst(types::I64, 2);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zb, hp, 0);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tb, hp, 8);
+        builder.ins().return_(&[]);
+        builder.switch_to_block(cont_blk);
+        builder.seal_block(cont_blk);
+        builder.def_var(self.rv_i64(ins.a as usize), v);
+        self.ret_slot[ins.a as usize] = None;
+        self.int_dict_regs.remove(&(ins.a as usize));
+        // Drop the constructor token and any stale marker; the register
+        // now holds a live instance pointer only.
+        self.class_ctor_regs.remove(&(ins.a as usize));
+        self.method_regs.remove(&(ins.a as usize));
+        self.instance_regs.insert(ins.a as usize, desc_id);
+        self.is_bool[ins.a as usize] = false;
+        self.is_none[ins.a as usize] = false;
+        self.is_float[ins.a as usize] = false;
+        Some(())
+    }
+
+    /// Bound-class-method call on an instance register created by
+    /// `GetAttr`'s method-marker path. Emits a direct native call into the
+    /// method proto with `[hidden result ptr, raw self pointer, ...args]`,
+    /// mirroring `emit_user_call`'s hidden-slot and tag=2 bail handling.
+    /// The callee's `tag=2` (runtime name-check miss) bails the whole
+    /// frame; anything else re-types the destination register.
+    fn emit_class_method_call(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        ins: Ins,
+        argc: usize,
+        proto_index: usize,
+        recv_reg: usize,
+    ) -> Option<()> {
+        if argc > MAX_ARITY {
+            return None;
+        }
+        // The receiver must be a known instance register; anything else is
+        // rejected so the marker can never be fed a raw handle it doesn't
+        // own.
+        if !self.instance_regs.contains_key(&recv_reg) {
+            return None;
+        }
+        for k in 0..argc {
+            let r = ins.b as usize + 1 + k;
+            if self.is_none[r] || self.is_float[r] || self.is_bool[r] {
+                return None;
+            }
+            if self.int_dict_seen(&[r]) {
+                return None;
+            }
+        }
+        let func_id = *self.decls.get(&proto_index)?;
+        let callee_kind = self.ret_kinds.get(&proto_index).copied().unwrap_or(RET_INT);
+        let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+        let hp = builder.use_var(self.hp_var);
+        let recv = builder.use_var(self.rv_i64(recv_reg));
+        let mut arg_vals: Vec<Value> = Vec::with_capacity(argc + 2);
+        arg_vals.push(hp);
+        arg_vals.push(recv);
+        for k in 0..argc {
+            arg_vals.push(builder.use_var(self.rv_i64(ins.b as usize + 1 + k)));
+        }
+        builder.ins().call(func_ref, &arg_vals);
+        let pure_kind = callee_kind & (RET_INT | RET_FLOAT | RET_BOOL);
+        let has_bool = (pure_kind & RET_BOOL) != 0;
+        let has_numeric = (pure_kind & (RET_INT | RET_FLOAT)) != 0;
+        if has_bool && has_numeric {
+            // Mixed Bool × Int paths: outer can't type statically.
+            return None;
+        }
+        if pure_kind == 0 {
+            return None;
+        }
+        let val = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 0);
+        let tag = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 8);
+        let two_v = builder.ins().iconst(types::I64, 2);
+        let is_bail = builder.ins().icmp(IntCC::Equal, tag, two_v);
+        let bail_blk = builder.create_block();
+        let cont_blk = builder.create_block();
+        builder.ins().brif(is_bail, bail_blk, &[], cont_blk, &[]);
+        builder.seal_block(bail_blk);
+        builder.switch_to_block(bail_blk);
+        self.emit_int_dict_cleanup(builder);
+        let hp = builder.use_var(self.hp_var);
+        let zb = builder.ins().iconst(types::I64, 0);
+        let tb = builder.ins().iconst(types::I64, 2);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zb, hp, 0);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tb, hp, 8);
+        builder.ins().return_(&[]);
+        builder.switch_to_block(cont_blk);
+        builder.seal_block(cont_blk);
+        builder.def_var(self.rv_i64(ins.a as usize), val);
+        self.ret_slot[ins.a as usize] = None;
+        self.int_dict_regs.remove(&(ins.a as usize));
+        // The register now holds the method's return value; stale markers
+        // must not survive onto it.
+        self.class_ctor_regs.remove(&(ins.a as usize));
+        self.instance_regs.remove(&(ins.a as usize));
+        self.method_regs.remove(&(ins.a as usize));
+        match pure_kind {
+            RET_INT => {
+                self.is_bool[ins.a as usize] = false;
+                self.is_none[ins.a as usize] = false;
+                self.is_float[ins.a as usize] = false;
+                Some(())
+            }
+            RET_FLOAT => {
+                self.is_bool[ins.a as usize] = false;
+                self.is_none[ins.a as usize] = false;
+                self.is_float[ins.a as usize] = true;
+                Some(())
+            }
+            k if k == RET_INT | RET_FLOAT => {
+                self.is_bool[ins.a as usize] = false;
+                self.is_none[ins.a as usize] = false;
+                self.is_float[ins.a as usize] = false;
+                Some(())
+            }
+            RET_BOOL => {
+                self.is_bool[ins.a as usize] = true;
+                self.is_none[ins.a as usize] = false;
+                self.is_float[ins.a as usize] = false;
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
     fn emit_int_dict_cleanup(&mut self, builder: &mut FunctionBuilder<'_>) {
         let slots: Vec<usize> = self
             .local_is_intdict
@@ -915,13 +1156,27 @@ impl<'a> Tr<'a> {
         ins: Ins,
     ) -> Option<()> {
         // `ins.a` is the destination register for most emitters; marking it
-        // fresh keeps stale receiver identities out of the attr intrinsic.
-        // `LoadLocal(slot 0)` re-declares its destination as the receiver
-        // inside the arm, so it must not be dropped here.
+        // fresh keeps stale identities out of the marker maps. Marker
+        // accounting is split between this flush (for value-defining
+        // ops) and explicit re-derivation inside the identity ops
+        // (`LoadLocal`, `Dup`, `Unwrap`) and the marker-producing ops
+        // (`LoadName`, `GetAttr`, `Call`). Every marker-carrying register
+        // is either rebound here or has had its markers cleared/re-set by
+        // the arm that wrote it, so no stale marker can survive past an
+        // instruction below the dataflow edge it belonged to.
         let is_load_local = ins.op == Op::LoadLocal;
+        let preserve = matches!(
+            ins.op,
+            Op::LoadLocal | Op::Dup | Op::Unwrap | Op::LoadName | Op::GetAttr | Op::Call
+        );
         let r = self.emit_ins_body(builder, code, ip, ins);
         if !is_load_local {
             self.self_regs.remove(&(ins.a as usize));
+        }
+        if !preserve {
+            self.class_ctor_regs.remove(&(ins.a as usize));
+            self.instance_regs.remove(&(ins.a as usize));
+            self.method_regs.remove(&(ins.a as usize));
         }
         r
     }
@@ -1000,6 +1255,9 @@ impl<'a> Tr<'a> {
                 // NB: call_candidate_regs is populated by the match below
                 // (it knows the name's param/global identity).
                 self.call_candidate_regs.remove(&(ins.a as usize));
+                self.class_ctor_regs.remove(&(ins.a as usize));
+                self.instance_regs.remove(&(ins.a as usize));
+                self.method_regs.remove(&(ins.a as usize));
                 match self.param_pos.get(&name) {
                     Some(&pos) => {
                         let v = builder.use_var(self.vars[pos]);
@@ -1011,6 +1269,19 @@ impl<'a> Tr<'a> {
                         Some(())
                     }
                     None => {
+                        // Program-declared class constructor: emit a
+                        // compile-time constructor token. `Op::Call` on
+                        // this register lowers to `un_class_make_<N>`.
+                        if let Some(&desc_id) = self.class_desc_ids.get(&name) {
+                            self.class_ctor_regs.insert(ins.a as usize, desc_id);
+                            let v = builder.ins().iconst(types::I64, desc_id);
+                            builder.def_var(self.rv_i64(ins.a as usize), v);
+                            self.is_bool[ins.a as usize] = false;
+                            self.is_none[ins.a as usize] = false;
+                            self.is_float[ins.a as usize] = false;
+                            self.ret_slot[ins.a as usize] = None;
+                            return Some(());
+                        }
                         // The name must be a known-JIT-eligible proto of the
                         // enclosing program (e.g. a direct self-call of fib).
                         // The ABI passes Int args as raw i64; the caller uses
@@ -1053,7 +1324,20 @@ impl<'a> Tr<'a> {
                 self.is_float[ins.a as usize] = self.is_float[ins.b as usize];
                 if self.int_dict_regs.contains(&(ins.b as usize)) {
                     self.int_dict_regs.insert(ins.a as usize);
+                } else {
+                    self.int_dict_regs.remove(&(ins.a as usize));
                 }
+                if let Some(&desc) = self.instance_regs.get(&(ins.b as usize)) {
+                    self.instance_regs.insert(ins.a as usize, desc);
+                } else {
+                    self.instance_regs.remove(&(ins.a as usize));
+                }
+                if let Some(&desc) = self.class_ctor_regs.get(&(ins.b as usize)) {
+                    self.class_ctor_regs.insert(ins.a as usize, desc);
+                } else {
+                    self.class_ctor_regs.remove(&(ins.a as usize));
+                }
+                self.method_regs.remove(&(ins.a as usize));
                 self.ret_slot[ins.a as usize] = self.ret_slot[ins.b as usize];
                 Some(())
             }
@@ -1094,11 +1378,48 @@ impl<'a> Tr<'a> {
                 } else {
                     self.local_is_intdict[slot] = false;
                 }
+                self.local_is_instance[slot] = self.instance_regs.get(&(ins.a as usize)).copied();
                 self.local_is_bool[slot] = self.is_bool[ins.a as usize];
                 self.local_is_none[slot] = self.is_none[ins.a as usize];
                 Some(())
             }
             Op::GetAttr => {
+                // The destination is rebound here: stale identities are
+                // dropped before any branch re-marks it. Capture the
+                // receiver marker first — `q = p.norm()` keeps `p`'s
+                // identity; `p = p.norm()` overwrites it and re-marks the
+                // destination inside the branch.
+                let inst_recv = self.instance_regs.get(&(ins.b as usize)).copied();
+                self.class_ctor_regs.remove(&(ins.a as usize));
+                self.instance_regs.remove(&(ins.a as usize));
+                self.method_regs.remove(&(ins.a as usize));
+                if let Some(&desc_id) = inst_recv.as_ref() {
+                    let Some(method_name) = self.arena.get(ins.d as usize).cloned() else {
+                        return None;
+                    };
+                    if let Some(&proto_idx) = self
+                        .class_methods
+                        .get(&desc_id)
+                        .and_then(|m| m.get(&method_name))
+                    {
+                        // Keep the receiver pointer live in the destination
+                        // variable: `p.norm()` hands it to the direct call
+                        // as hidden self, and it must round-trip through
+                        // `Unwrap` etc. unchanged.
+                        let ptr = builder.use_var(self.rv_i64(ins.b as usize));
+                        builder.def_var(self.rv_i64(ins.a as usize), ptr);
+                        self.instance_regs.insert(ins.a as usize, desc_id);
+                        // The raw pointer moves with the value, so the bound
+                        // callable sits on `ins.a` itself.
+                        self.method_regs.insert(ins.a as usize, (desc_id, proto_idx, ins.a as usize));
+                        self.is_bool[ins.a as usize] = false;
+                        self.is_none[ins.a as usize] = false;
+                        self.is_float[ins.a as usize] = false;
+                        self.ret_slot[ins.a as usize] = None;
+                        return Some(());
+                    }
+                    return None;
+                }
                 // Class-layout-backed direct field access — only for class
                 // methods with a name-checked receiver (see `self_regs`). The
                 // receiver is verified to be the live instance of this proto's
@@ -1136,8 +1457,11 @@ impl<'a> Tr<'a> {
                 let f_ok = self.module.declare_func_in_func(self.fid_int_ok_name, builder.func);
                 let self_ptr = builder.use_var(self.rv_i64(ins.b as usize));
                 let e_idx = builder.ins().iconst(types::I64, field_ix as i64);
-                let name_ptr = builder.ins().iconst(types::I64, field_ref.as_ptr() as i64);
-                let name_len = builder.ins().iconst(types::I64, field_ref.len() as i64);
+                // The native code holds this pointer past the end of the
+                // translation; leak the string so it outlives the module.
+                let leaked: &'static str = Box::leak(field_ref.clone().into_boxed_str());
+                let name_ptr = builder.ins().iconst(types::I64, leaked.as_ptr() as i64);
+                let name_len = builder.ins().iconst(types::I64, leaked.len() as i64);
                 let ok_call = builder.ins().call(f_ok, &[self_ptr, e_idx, name_ptr, name_len]);
                 let ok = builder.inst_results(ok_call)[0];
                 let zero_i = builder.ins().iconst(types::I64, 0);
@@ -1201,14 +1525,21 @@ impl<'a> Tr<'a> {
                     return None;
                 }
                 // The write verifies the member name at the field index and
-                // its Int-ness; any mismatch bails to the interpreter instead
-                // of silently overwriting a wrong field.
-                let f_ok = self.module.declare_func_in_func(self.fid_int_ok_name, builder.func);
+                // its Int-ness (or appends at the layout-seeded append
+                // position); any mismatch bails to the interpreter instead
+                // of silently overwriting a wrong field. One intrinsic call,
+                // one branch: the append-time order is exactly the seeded
+                // layout order, so the push maintains it byte-for-byte.
+                let f_ok = self.module.declare_func_in_func(self.fid_int_set_name, builder.func);
+                // The native code holds this pointer past the end of the
+                // translation; leak the string so it outlives the module.
+                let leaked: &'static str = Box::leak(field_ref.clone().into_boxed_str());
                 let self_ptr = builder.use_var(self.rv_i64(ins.b as usize));
-                let name_ptr = builder.ins().iconst(types::I64, field_ref.as_ptr() as i64);
-                let name_len = builder.ins().iconst(types::I64, field_ref.len() as i64);
+                let name_ptr = builder.ins().iconst(types::I64, leaked.as_ptr() as i64);
+                let name_len = builder.ins().iconst(types::I64, leaked.len() as i64);
                 let e_idx = builder.ins().iconst(types::I64, field_ix as i64);
-                let ok_call = builder.ins().call(f_ok, &[self_ptr, e_idx, name_ptr, name_len]);
+                let val = builder.use_var(self.rv_i64(ins.c as usize));
+                let ok_call = builder.ins().call(f_ok, &[self_ptr, e_idx, val, name_ptr, name_len]);
                 let ok = builder.inst_results(ok_call)[0];
                 let zero_i = builder.ins().iconst(types::I64, 0);
                 let is_miss = builder.ins().icmp(IntCC::Equal, ok, zero_i);
@@ -1226,11 +1557,6 @@ impl<'a> Tr<'a> {
                 builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two_e, hp, 8);
                 builder.ins().return_(&[]);
                 builder.switch_to_block(cont_attr);
-                let f_ref = self.module.declare_func_in_func(self.fid_int_set, builder.func);
-                let val = builder.use_var(self.rv_i64(ins.c as usize));
-                let e_idx2 = builder.ins().iconst(types::I64, field_ix as i64);
-                let set_call = builder.ins().call(f_ref, &[self_ptr, e_idx2, val]);
-                let _ = set_call;
                 builder.def_var(self.rv_i64(ins.a as usize), val);
                 self.is_bool[ins.a as usize] = false;
                 self.is_none[ins.a as usize] = false;
@@ -1244,6 +1570,9 @@ impl<'a> Tr<'a> {
                 if slot >= self.locals_len || self.field_locals.contains(&slot) {
                     return None;
                 }
+                self.class_ctor_regs.remove(&(ins.a as usize));
+                self.instance_regs.remove(&(ins.a as usize));
+                self.method_regs.remove(&(ins.a as usize));
                 let float_slot = self.local_float[slot];
                 if float_slot {
                     let v = builder.use_var(self.lv_f64(slot));
@@ -1260,6 +1589,9 @@ impl<'a> Tr<'a> {
                     self.is_float[ins.a as usize] = false;
                     if self.local_is_intdict[slot] {
                         self.int_dict_regs.insert(ins.a as usize);
+                    }
+                    if let Some(desc) = self.local_is_instance[slot] {
+                        self.instance_regs.insert(ins.a as usize, desc);
                     }
                     if self.is_class_method && slot == 0 {
                         // Local slot 0 is `self`; a register loaded straight
@@ -1353,6 +1685,28 @@ impl<'a> Tr<'a> {
             Op::Call => {
                 let argc = ins.d as usize;
                 let callee_reg = ins.b as usize;
+                // The destination register is rebound here: stale markers
+                // are dropped before any branch re-marks it. When the
+                // callee sits in the same register, that marker is the
+                // *input* (e.g. the class token) and is consumed by the
+                // branches below instead.
+                let dst = ins.a as usize;
+                if dst != callee_reg {
+                    self.call_candidate_regs.remove(&dst);
+                    self.class_ctor_regs.remove(&dst);
+                    self.instance_regs.remove(&dst);
+                    self.method_regs.remove(&dst);
+                }
+                // Class constructor (`Point(i, i + 1)`): lower to the
+                // un_class_make intrinsic.
+                if let Some(&desc_id) = self.class_ctor_regs.get(&callee_reg) {
+                    return self.emit_class_make(builder, ins, argc, callee_reg, desc_id);
+                }
+                // Bound class-method of a known instance (`p.norm()`):
+                // direct native call into the method proto.
+                if let Some(&(_, proto_index, recv_reg)) = self.method_regs.get(&callee_reg) {
+                    return self.emit_class_method_call(builder, ins, argc, proto_index, recv_reg);
+                }
                 // User JIT-eligible callee: call it.
                 if let Some(&proto_index) = self.call_candidate_regs.get(&callee_reg) {
                     if self.decls.contains_key(&proto_index) {
@@ -2506,7 +2860,8 @@ pub fn emit_fn_in_module(
     fid_sin: cranelift_module::FuncId,
     fid_int_get: cranelift_module::FuncId,
     fid_int_ok_name: cranelift_module::FuncId,
-    fid_int_set: cranelift_module::FuncId,
+    fid_int_set_name: cranelift_module::FuncId,
+    fid_class_make: &[cranelift_module::FuncId],
     ret_kinds: &HashMap<usize, u8>,
 ) -> Option<()> {
     let proto = program.protos.get(proto_index)?;
@@ -2710,6 +3065,40 @@ pub fn emit_fn_in_module(
         entry_blk = entry;
     }
 
+    // Program-declared classes: one constructor descriptor per class, plus
+    // the method targets for the bound-method fast path. Descriptors are
+    // process-global (deduplicated by name) and live until
+    // `jit_cache::clear()`.
+    let (class_desc_ids, class_methods) = {
+        let mut names: Vec<String> = Vec::new();
+        for p in &program.protos {
+            for instr in &p.code {
+                if instr.op_code() != Some(Op::MakeClass) || instr.operand < 0 {
+                    continue;
+                }
+                names.push(program.name(p, instr.operand as usize).to_string());
+            }
+        }
+        names.sort();
+        names.dedup();
+        let mut ids: HashMap<String, i64> = HashMap::new();
+        for name in &names {
+            ids.insert(name.clone(), crate::runtime::int_class::register(name));
+        }
+        let mut methods: HashMap<i64, HashMap<String, usize>> = HashMap::new();
+        for (i, p) in program.protos.iter().enumerate() {
+            let Some(ext) = p.ext_type else { continue };
+            let Some(class_name) = program.names.get(ext) else { continue };
+            let Some(&id) = ids.get(class_name) else { continue };
+            if precheck_fn(program, i).is_none() {
+                continue;
+            }
+            let method_name = program.names.get(p.name).cloned().unwrap_or_default();
+            methods.entry(id).or_default().insert(method_name, i);
+        }
+        (ids, methods)
+    };
+
     let mut blocks: HashMap<usize, Block> = HashMap::new();
     blocks.insert(0, entry_blk);
     for &ip in &leaders {
@@ -2775,7 +3164,13 @@ pub fn emit_fn_in_module(
         fid_sin,
         fid_int_get,
         fid_int_ok_name,
-        fid_int_set,
+        fid_int_set_name,
+        fid_class_make: fid_class_make.to_vec(),
+        class_ctor_regs: HashMap::new(),
+        instance_regs: HashMap::new(),
+        method_regs: HashMap::new(),
+        class_methods,
+        class_desc_ids,
         class_layouts: {
             let mut m: HashMap<usize, Vec<String>> = HashMap::new();
             for (i, p) in program.protos.iter().enumerate() {
@@ -2789,6 +3184,7 @@ pub fn emit_fn_in_module(
         },
         int_dict_regs: HashSet::new(),
         local_is_intdict: vec![false; locals_len],
+        local_is_instance: vec![None; locals_len],
         call_candidate_regs: HashMap::new(),
         module,
         is_class_method: is_class,

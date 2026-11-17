@@ -3,6 +3,7 @@ pub mod collections;
 pub mod context;
 pub mod date;
 pub mod function;
+pub mod int_class;
 pub mod int_dict;
 pub mod int_list;
 pub mod iters;

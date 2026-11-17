@@ -216,6 +216,7 @@ pub fn clear() {
     let modules = std::mem::take(&mut *JIT_MODULES.lock().expect("jit_cache"));
     crate::runtime::int_dict::clear();
     crate::runtime::int_list::clear();
+    crate::runtime::int_class::clear();
     JIT_LAZY_ATTEMPTED.lock().expect("jit_cache").clear();
     JIT_FNS.lock().expect("jit_cache").clear();
     for (_id, modules) in modules.into_iter() {

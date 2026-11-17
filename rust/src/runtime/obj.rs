@@ -474,6 +474,65 @@ pub unsafe extern "C" fn un_instance_int_get(self_ptr: i64, field_index: i64) ->
     }
 }
 
+/// Name-checked Int member write for the Cranelift JIT. Replaces the
+/// member at `field_index` with a fresh Int, or pushes a new member at
+/// exactly `members.len()` (the layout-seeded append position, so the
+/// seeded layout stays byte-identical to the live member table). Anything
+/// else — a name mismatch, a non-Int slot, a sparse index — returns 0
+/// and the caller bails to the interpreter.
+///
+/// # Safety
+///
+/// Same contract as [`un_instance_int_set`]: `self_ptr` must be a live
+/// `*const RefCell<ObjData>` whose `Rc` outlives the call.
+#[no_mangle]
+pub unsafe extern "C" fn un_instance_int_set_name(
+    self_ptr: i64,
+    field_index: i64,
+    value: i64,
+    name_ptr: i64,
+    name_len: i64,
+) -> i64 {
+    fn write(self_ptr: i64, field_index: i64, value: i64, name_ptr: i64, name_len: i64) -> bool {
+        if self_ptr == 0 || field_index < 0 || name_ptr == 0 || name_len < 0 {
+            return false;
+        }
+        let bytes = unsafe {
+            std::slice::from_raw_parts(name_ptr as *const u8, name_len as usize)
+        };
+        let Ok(name) = std::str::from_utf8(bytes) else {
+            return false;
+        };
+        let cell = unsafe { &*(self_ptr as *const RefCell<ObjData>) };
+        let mut data = cell.borrow_mut();
+        let idx = field_index as usize;
+        if idx < data.members.len() {
+            let Some((mname, slot)) = data.members.get_mut(idx) else {
+                return false;
+            };
+            if mname.as_bytes() != name.as_bytes() {
+                return false;
+            }
+            if !matches!(slot.borrow().payload, Payload::Int(_)) {
+                return false;
+            }
+            *slot = int(value);
+            true
+        } else if idx == data.members.len() {
+            data.members.push((name.to_owned(), int(value)));
+            true
+        } else {
+            false
+        }
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        write(self_ptr, field_index, value, name_ptr, name_len)
+    })) {
+        Ok(true) => 1,
+        _ => 0,
+    }
+}
+
 /// Direct Int member write for the Cranelift JIT. Replaces the member
 /// (matched by index) with a fresh Int Obj.
 ///
