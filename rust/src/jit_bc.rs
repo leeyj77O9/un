@@ -1299,6 +1299,39 @@ impl<'a> Tr<'a> {
                 self.ret_slot[ins.a as usize] = None;
                 Some(())
             }
+            Op::Band | Op::Bor | Op::Bxor => {
+                // Int-only, exact two's-complement i64 semantics (mirrors
+                // `bit()` in runtime/obj.rs for `int & int`). Bool/None/Float
+                // operands bail to the interpreter, which raises
+                // "unsupported operand type(s)" for those shapes — computing
+                // anything here would diverge from the interpreter.
+                if self.int_dict_seen(&[ins.b as usize, ins.c as usize]) {
+                    return None;
+                }
+                if self.is_float[ins.b as usize]
+                    || self.is_float[ins.c as usize]
+                    || self.is_bool[ins.b as usize]
+                    || self.is_bool[ins.c as usize]
+                    || self.is_none[ins.b as usize]
+                    || self.is_none[ins.c as usize]
+                {
+                    return None;
+                }
+                let lhs = builder.use_var(self.rv_i64(ins.b as usize));
+                let rhs = builder.use_var(self.rv_i64(ins.c as usize));
+                let v = match ins.op {
+                    Op::Band => builder.ins().band(lhs, rhs),
+                    Op::Bor => builder.ins().bor(lhs, rhs),
+                    Op::Bxor => builder.ins().bxor(lhs, rhs),
+                    _ => return None,
+                };
+                builder.def_var(self.rv_i64(ins.a as usize), v);
+                self.is_bool[ins.a as usize] = false;
+                self.is_none[ins.a as usize] = false;
+                self.is_float[ins.a as usize] = false;
+                self.ret_slot[ins.a as usize] = None;
+                Some(())
+            }
             Op::Call => {
                 let argc = ins.d as usize;
                 let callee_reg = ins.b as usize;
@@ -2565,15 +2598,19 @@ pub fn emit_fn_in_module(
         f64_vars.push(builder.declare_var(types::F64));
     }
 
-    let entry = builder.create_block();
-    builder.append_block_params_for_function_params(entry); // hidden result ptr, args...
-    let incoming = builder.block_params(entry).to_vec();
+    let prologue = builder.create_block();
+    builder.append_block_params_for_function_params(prologue); // hidden result ptr, args...
+    let incoming = builder.block_params(prologue).to_vec();
     let hidden_ptr = incoming[0];
+    // Cranelift's layout entry block (the one in position 0) must carry the
+    // function signature's parameters, so the prologue is that block. The
+    // body starts at `entry`, an empty parameterless block; the prologue
+    // terminates with a jump into it (no arguments).
+    let entry = builder.create_block();
     // The prologue writes into its own block and jumps into `entry`, so the
     // body block starts pristine. Cranelift's debug verifier requires the
     // current block to be empty/terminated/unreachable before a
     // switch_to_block; a partial prologue block would fail that check.
-    let prologue = builder.create_block();
     builder.switch_to_block(prologue);
     // keep the hidden pointer in a dedicated variable so returns can store
     let hp_var = builder.declare_var(types::I64);
@@ -2625,7 +2662,7 @@ pub fn emit_fn_in_module(
         builder.ins().return_(&[]);
         entry_blk = cont_entry_blk;
     } else {
-        // no depth guard inserted ??the IR starts at the original entry block
+        // no depth guard inserted — jump straight into the body block
         builder.ins().jump(entry, &[]);
         entry_blk = entry;
     }
@@ -2719,7 +2756,11 @@ pub fn emit_fn_in_module(
     builder.seal_all_blocks();
     builder.finalize(module.target_config());
 
-    if module.define_function(func_id, &mut fun_ctx).is_err() {
+    if let Err(err) = module.define_function(func_id, &mut fun_ctx) {
+        if crate::jit_cache::jit_debug() {
+            let name = program.names.get(proto.name).cloned().unwrap_or_default();
+            eprintln!("JITREJECT define_function ip proto={name} err={err:?}");
+        }
         return None;
     }
     Some(())

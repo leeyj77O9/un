@@ -988,3 +988,72 @@ Docs: README/docs-README member tables, BENCHMARK_GUIDE resolution note.
 | `bench/int_ops.un` / `bench/mergesort.un` | `3 passed, 0 failed` each; Node/Python twins print `verify ok` |
 | `scripts/test.ps1` | Positive 40 files / **1406 passed** / 0 failed / 0 crashed; Negative **41 matched / 0 divergences**; exit **0** |
 | Build | no Rust changes in this pass; toolchain baseline unchanged |
+
+
+---
+
+## 2026-11-17 — Pass 18: the JIT was silently dead (Pass 15 regression); benchmark-observed, fixed, verified
+
+### Starting state
+
+- `int_ops(1_000_000)` on the un-committed benchmark showed Un JIT ≈ Un VM at ~3.2 s
+  (both pure interpreter), Geomean Un JIT / Python **0.224x**. `UV_JIT_DEBUG=1` showed
+  `JITDBG STUB proto[1] int_ops` — every proto fell back to a stub.
+- Root cause, verified in Cranelift sources:
+  `append_block_params_for_function_params` must attach to the **layout entry block**
+  (position 0). Pass 15 attached the signature params to `entry` (first-created block)
+  and then switched to a fresh `prologue` first, making `prologue` the layout entry —
+  which had no parameters. `module.define_function` -> verifier error
+  (`entry block parameters (0) must match function signature (2)`) -> STUB -> silent
+  interpreter fallback. Debug and release builds both failed the verifier; every gate
+  stayed green because fallback is byte-identical.
+
+### Changes
+
+- `rust/src/jit_bc.rs`
+  - **Fix (root cause)**: the prologue block now carries the function-signature
+    parameters itself (it *is* the layout entry); the body block (`entry`) is
+    parameterless; the prologue terminates with a `jump` into it. The `has_user_call`
+    (brif->cont/bail) path is unchanged in structure. `int_ops` now JITs: **0.08 s**
+    vs UV_JIT=0 ~31 s vs the previous release ~3.2 s.
+  - `Band`/`Bor`/`Bxor` (`i64 & | ^`) are supported in the Int subset; IntDict ids,
+    bool/none/float operands bail to the interpreter (which raises
+    `unsupported operand type(s)` there) — bit ops match the interpreter exactly.
+  - `define_function` failure now prints `JITREJECT define_function ... err={err:?}`
+    under `UV_JIT_DEBUG=1` (was a silent `return None`).
+- `BENCHMARK.md` regenerated: **Un JIT / Python geomean 1.987x** (was 0.224x),
+  Un JIT / Node.js 0.037x (was 0.004x); Un JIT now beats Python on the Int arithmetic/
+  intrinsic rows (`int_ops` 794x, `math10000` 271x, `call200000` 201x, `nested_sum_200`
+  1237x) and even Node.js on 4 rows.
+- `docs/BENCHMARK_GUIDE.md`, `docs/REFACTOR_SUMMARY.md`, `AGENTS.md` (bitwise support),
+  `docs/TECHNICAL_DEBT.md` (new TD-51: silent JIT death is undetectable by current
+  gates), `docs/DECISIONS.md` (**D-073**).
+- `scripts/bench.ps1`: Executive Summary binary-choice fix for JIT-beats-Python,
+  performance-analysis bullets rewritten to computed ratios (no stale claims), and the
+  "VM ≈ JIT" wording replaced with the actual interpreter/native split.
+
+### Measured (Ryzen 7 9800X3D, Windows 10, CPython 3.13.17, Node 26.13.0)
+
+| Benchmark | Before (interpreter) | After (JIT native) | JIT / Python | JIT / Node |
+| --- | --- | --- | --- | --- |
+| int_ops | 3226.599 ms | **2.96 ms** | 794x | 3.23x |
+| nested_sum_200 | 14.14 ms | **0.013 ms** | 1237x | 3.58x |
+| math10000 | 22.6 ms | **0.0185 ms** | 271x | 3.40x |
+| call200000 | 362 ms | **0.688 ms** | 201x | 5.55x |
+| fib24 | 177 ms | **3.38 ms** | 0.92x | 0.079x |
+| iter10000 | 17.4 ms | **4.31 ms** | 1.07x | 0.051x |
+
+Geomeans: Un JIT/Python **1.987x**, Un JIT/Node.js **0.037x**, Un VM/Python 0.229x,
+Python/Node.js 0.018x.
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo build --release` | 0 errors, 0 warnings |
+| `scripts/test.ps1` | Positive 40 files / **1406 passed** / 0 failed / 0 crashed; Negative **41 matched / 0 divergences**; exit **0** |
+| `scripts/differential.ps1` | **81 files, 0 differences** |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive 40/40; Negative compilable 34/34 |
+| `cargo test --release` | **205 passed / 0 failed** |
+| `cargo test` (debug, verifier active) | **205 passed / 0 failed** |
+| `scripts/bench.ps1 -Group all -Report` | exit 0; BENCHMARK.md + results.json regenerated |

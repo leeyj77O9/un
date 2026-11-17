@@ -38,6 +38,7 @@ Severity:
 | TD-48 | low | `dict.add` on a duplicate key panics with the .NET `ArgumentException` — the message is byte-identical parity (D-024) and has no test | `rust/src/native/members.rs:1362-1370` |
 | TD-49 | low | `exit()` with a non-int code silently exits 0; `ord` accepts multi-char strings and returns the first codepoint; `ascii` on an astral char errors while returning UTF-16 units elsewhere; `inspect.delattr` only removes own instance members | `rust/src/native/builtin.rs`, `rust/src/native/inspect.rs` |
 | TD-50 | low | `hash` of a NaN key is unfindable (IEEE semantics, consistent with `.NET`); document, do not "fix" | `rust/src/runtime/obj.rs:299` |
+| TD-51 | medium | JIT native emission can fail at any stage (frontend debug asserts, Cranelift verifier, `catch_unwind`) and every failure is silently swallowed into an interpreter-fallback stub: the whole JIT can be dead with every gate green (it was, between `aad0f42` and Pass 18). No CI canary detects "0 protos JIT-compiled" today; mitigate by eye with `UV_JIT_DEBUG=1` (per-proto OK/STUB) or the VM vs JIT columns in `scripts/bench.ps1 -Group all` — a `UV_JIT=2` strict mode would be the real fix | `rust/src/jit_bc.rs`, `.github/workflows/build.yml` |
 
 ## Resolved in 2026-11
 

@@ -37,6 +37,7 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | `aad0f42` | 15 | Pass 14 follow-through for the playground WASM CI (52× red at `Test un`): native depth underflow in `transfer.rs` debug builds and a Cranelift prologue partial-block panic in `jit_bc.rs`; `RUSTUP_TOOLCHAIN=stable` in `un-playground/update-wasm.yml`. Update WASM CI is now green. |
 | (pass 16) | 16 | Stopwatch `ms`/`ns` are now read-only native properties (no call syntax); writes raise `cannot assign to a read-only property`. Native property plumbing fixed (original-class table routing on read and write; `SetAttr` yields `LangError` like `Call`). |
 | (pass 17) | 17 | Benchmark overhaul: Python lane added (winget CPython 3.13.17; PATH `python` is the broken WindowsApps stub, exit 9009) with 16 mirrored `bench/python/*.py`; two new 3-language benchmarks (`int_ops`, `mergesort1000`); `scripts/bench.ps1` rewritten (Un VM + Un JIT + Python + Node lanes, `-Group all|unvm|unjit|node|python`, `-Only <labels>`, auto Python/Node detection, header-indexed CSV compare vs the previous run, `-Report` regenerates root `BENCHMARK.md`, `-Compare <csv>` advisory regression detection, `results.json`); `BENCHMARK.md` generated at root; `docs/BENCHMARK_GUIDE.md` rewritten. Measured: JIT ≈ VM (Int-subset JIT only), Un JIT/Python geomean **0.224x**, Un JIT/Node.js **0.005x**; Un wins Python at `nested_sum_200` (1.12x) and `dict5000` (1.37x). |
+| (pass 18) | 18 | **The JIT was silently dead** (Pass 15 regression, `aad0f42`): prologue/block layout made the parameterless prologue the layout entry block, so Cranelift's verifier rejected every proto and `define_function` failed → silent interpreter fallback with all gates green. Fixed: prologue carries the signature parameters (it is the layout entry), body is parameterless, prologue jumps into it. Also added `Band`/`Bor`/`Bxor` to the Int subset and a `UV_JIT_DEBUG` log for `define_function` failures. **`int_ops`: 3226 ms → 0.08 s** (~400x); geomean Un JIT/Python **0.224x → 1.987x**; Un JIT now beats Python on Int/intrinsic rows and beats Node.js on 4 rows. All gates re-verified: 1406/41/205; differential 81/0; round-trip 40+34; `BENCHMARK.md` regenerated. |
 
 Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; the audit findings with
 fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
@@ -73,6 +74,7 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | `scripts/differential.ps1` | **81 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40**; Negative compilable **34/34** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |
+| `scripts/bench.ps1 -Group all -Report` | all 15 x 4 lanes self-validate; root `BENCHMARK.md` regenerated; Un JIT/Python geomean **1.99x** (JIT is live again after pass 18) |
 
 ## Intentionally not done / known limits
 

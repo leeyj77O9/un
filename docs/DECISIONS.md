@@ -890,3 +890,29 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **교훈**: 음성(negative) 픽스처 셋은 "모듈 해석의 명세"였는데, 지금까지는
   source 경로만 통해서만 실행됐다. `.unbc` 경로도 동일 명세로 검증해야
   컴파일 아티팩트가 1급 실행 경로로 유지된다.
+
+
+## D-073 | JIT의 조용한 사망과 레이아웃 진입 블록 시그니처 파라미터 | Accepted
+
+- Pass 15(`aad0f42`)에서 도입한 "prologue를 별도 블록으로 분리하고 body block으로 점프" 구조는
+  Cranelift layout의 **entry block(position 0)이 시그니처 파라미터를 갖지 않는** IR을 만들었다.
+  `append_block_params_for_function_params`는 첫 블록에만 파라미터를 붙여야 하는데, 시그니처
+  파라미터는 `entry`(첫 번째로 만든 블록)에 붙이고 직후에는 `prologue`를 먼저 switch해서
+  layout position 0은 파라미터 없는 `prologue`가 됐다. `module.define_function`의 verifier
+  (`typecheck_entry_block_params`: "entry block parameters (0) must match function signature (2)")가
+  모든 proto를 거부했다.
+- 거부는 STUB 치환을 통해 **인터프리터 fallback**으로 조용히 삼켜졌다. `UV_JIT=0` vs 기본 JIT
+  differential은 완전히 clean, `scripts/test.ps1`(1406/41), `unbc-roundtrip` 40/40, `cargo test`
+  205는 모두 green이었다. 즉 Pass 16/17의 모든 JIT 수치는 사실상 인터프리터 수치였다(예:
+  `int_ops` 3,226 ms). 컴파일이 실패할 때 proto별 OK/STUB 로그는 `UV_JIT_DEBUG=1`로만 보이며
+  어느 게이트도 이를 감시하지 않는다.
+- **수정**: prologue 블록에 시그니처 파라미터를 붙여 그 자체를 layout entry로 만들고, 본체는
+  파라미터 없는 `entry`로 점프. `has_user_call`(brif→cont/bail) 경로도 동일한 순서로 유지된다.
+- **부가 변경**: ① `jit_bc.rs`의 `Band`/`Bor`/`Bxor`(&, |, ^)을 Int-only i64로 지원(IntDict/bool/none/float 피연산자는 인터프리터로 bail), 정수 `i & 0x5a5a` 패턴이 native로 실행되도록 했다. ② `define_function` 실패를 `UV_JIT_DEBUG` 로그로 남기도록 했다.
+- **측정**: `int_ops(1_000_000)` — UV_JIT=0 ≈ 31 s, 수정 전(=전부 fallback) ≈ 3.2 s, 수정 후
+  **≈ 0.08 s**(약 400배). 벤치 전체 geomean `Un JIT / Python`이 0.224x → **1.99x**로 갱신.
+- **교훈**: fallback은 의미론을 보존하지만, "**fallback이 전면적으로 켜져 있는지도 알 수 없다**"는
+  문제가 있었다. `UV_JIT_DEBUG=1`로 proto별 OK/STUB를 보고, 벤치의 VM/JIT 비교로 두 값이 일치하면
+  JIT이 사망했다는 신호다. 남은 관측성 부채는 TD-51.
+- **검증**: differential 81 files 0 differences, test.ps1 1406/41, cargo test 205(release+debug),
+  unbc-roundtrip 40/40 + 34/34, `scripts/bench.ps1 -Group all -Report` exit 0.

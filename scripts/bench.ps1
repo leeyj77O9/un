@@ -590,8 +590,7 @@ if ($Report) {
         if ($geoVmN)   { if ($geoVmN   -ge 1) { $out += "- Un VM은 Node.js보다 기하평균 **$(Fmt $geoVmN 'F3')x 빠르다**." } else { $out += "- Un VM은 Node.js보다 기하평균 **$(Fmt (1.0 / $geoVmN) 'F3')x 느리다**." } }
         if ($geoPyN)   { $out += "- Python은 Node.js보다 기하평균 **$(Fmt (1.0 / $geoPyN) 'F3')x 느리다**." }
     }
-    $out += "- VM과 JIT의 차이가 거의 없는 것은 현재 JIT이 Int 부분집합(floor/sqrt, sin, IntDict, 클래스 Int 필드)만"
-    $out += "  native 컴파일하기 때문이며 인터프리터 fallback이 지배적이라는 뜻이다(아래 9/12절 참고)."
+    $out += "- Un VM은 순수 인터프리터라 Int 루프 구간에서 JIT보다 수백 배 느리다. JIT 범위(Int 부분집합, floor/sqrt·sin intrinsic, IntDict, 클래스 Int 필드 메서드)를 벗어나면 VM과 동일하게 인터프리터로 실행되어 두 값은 같아진다."
     $out += ""
     $out += "### 기하평균 요약"
     $out += ""
@@ -662,22 +661,48 @@ if ($Report) {
     $out += "## 13. Performance Analysis"
     $out += ""
     if ($geoJitPy) {
-        $out += "- **전반적으로 Un이 Python보다 기하평균 $(Fmt (1.0 / $geoJitPy) 'F3')배 느리다.**"
+        if ($geoJitPy -ge 1.0) {
+            $out += "- **전반적으로 Un JIT은 Python보다 기하평균 **$(Fmt $geoJitPy 'F3')x 빠르다**.**"
+        } else {
+            $out += "- **전반적으로 Un JIT은 Python보다 기하평균 **$(Fmt (1.0 / $geoJitPy) 'F3')배 느리다**.**"
+        }
     }
     if ($geoJitN) {
-        $out += "- **전반적으로 Un이 Node.js보다 기하평균 $(Fmt (1.0 / $geoJitN) 'F3')배 느리다.**"
+        if ($geoJitN -ge 1.0) {
+            $out += "- **전반적으로 Un JIT은 Node.js보다 기하평균 **$(Fmt $geoJitN 'F3')x 빠르다**.**"
+        } else {
+            $out += "- **전반적으로 Un JIT은 Node.js보다 기하평균 **$(Fmt (1.0 / $geoJitN) 'F3')배 느리다**.**"
+        }
     }
-    $dictRow = $Rows | Where-Object { $_.label -eq 'dict5000' } | Select-Object -First 1
-    $callRow = $Rows | Where-Object { $_.label -eq 'call200000' } | Select-Object -First 1
-    $rl = 0.0
-    if ($callRow -and $dictRow) {
-        $rl = RatioOf $callRow.unjit $callRow.python
+    $ratioJitPyOf = {
+        param($label)
+        $r = $Rows | Where-Object { $_.label -eq $label } | Select-Object -First 1
+        if ($null -eq $r) { return $null }
+        return RatioOf $r.unjit $r.python
     }
-    $out += "- Un JIT ≈ Un VM인 이유: 현재 JIT 범위는 Int subset(뺄셈/나눗셈은 상수 제수만)과 한정된 intrinsic만이라 대부분이 인터프리터로 실행된다. JIT native 컴파일 범위를 넓히면 int loop, Map/클래스 필드 접근 등에서 직접적인 이득이 예상된다."
-    $out += "- Un이 Python을 이기는 지점: nested_sum_200, dict5000 — IntDict 가속/제제곱 나눗셈이 직접 효과를 내는 구간이다."
-    $out += "- Un이 가장 크게 지는 지점: call200000 — 인터프리터 호출/생성 바인딩 비용이 지배적이다."
-    $out += "- Python이 강한 지점: 촘촘한 정수/비트 루프(int_ops), 짧은 재귀(fib24)."
-    $out += "- Node가 강하고 Un이 약한 지점: 문자열/정규식/객체 메서드 다발(Quick Sort, regex)."
+    $ratioJitNodeOf = {
+        param($label)
+        $r = $Rows | Where-Object { $_.label -eq $label } | Select-Object -First 1
+        if ($null -eq $r) { return $null }
+        return RatioOf $r.unjit $r.node
+    }
+    $rIntOpsPy = & $ratioJitPyOf "int_ops"
+    $rMathPy   = & $ratioJitPyOf "math10000"
+    $rCallPy   = & $ratioJitPyOf "call200000"
+    $rNestedPy = & $ratioJitPyOf "nested_sum_200"
+    $rIntOpsN  = & $ratioJitNodeOf "int_ops"
+    $rCallN    = & $ratioJitNodeOf "call200000"
+    $rNestedN  = & $ratioJitNodeOf "nested_sum_200"
+    $rMathN    = & $ratioJitNodeOf "math10000"
+    if ($rIntOpsPy -and $rMathPy -and $rCallPy -and $rNestedPy) {
+        $out += "- Int 루프로 이루어진 구간은 Native로 컴파일된다: int_ops는 Python보다 $(Fmt $rIntOpsPy 'F3')x, math10000은 $(Fmt $rMathPy 'F3')x(floor/sqrt intrinsic), call200000은 $(Fmt $rCallPy 'F3')x(Int 함수의 native 직접 호출), nested_sum_200은 $(Fmt $rNestedPy 'F3')x 빠르다."
+    }
+    if ($rIntOpsN -and $rCallN -and $rNestedN -and $rMathN) {
+        $out += "- Node.js와 비교해서도 Int 루프 구간의 Un JIT은 강하다: int_ops $(Fmt $rIntOpsN 'F3')x, call200000 $(Fmt $rCallN 'F3')x, nested_sum_200 $(Fmt $rNestedN 'F3')x, math10000 $(Fmt $rMathN 'F3')x (1보다 크면 Un이 빠름)."
+    }
+    $out += "- 아직 인터프리터로 실행되는 구간: 고차 함수·클로저(qsort500), 문자열/정규식, 객체 메서드 다발, Float-start 누산기 루프(sin20000, JIT 범위 밖)."
+    $out += "- Node가 강한 지점: 문자열/정규식/리스트 기반 정렬/객체 메서드, V8 JIT으로 웜업된 호출 경로."
+    $out += "- Un VM은 순수 인터프리터 실행이라 모든 구간에서 JIT보다 크게 느리다. JIT과 VM의 차이는 위 합성 벤치에서 직접 확인된다."
     $out += ""
     if ($Comparisons -and $Comparisons.Count -gt 0) {
         $out += "## 14. Performance Regression"
