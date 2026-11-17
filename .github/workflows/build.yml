@@ -41,6 +41,11 @@ jobs:
         run: |
           rustup run stable-x86_64-pc-windows-gnu cargo test --release --manifest-path rust/Cargo.toml
 
+      - name: Test (differential JIT on/off)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
+
       - name: Test (.unbc round-trip)
         shell: powershell
         run: |

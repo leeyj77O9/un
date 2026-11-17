@@ -90,9 +90,7 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
   external crates remain off-limits.
 - `bench/results/` is gitignored (history shows it was committed early,
   un-tracked later).
-- CI (`.github/workflows/build.yml`) runs on every push to `main`; executed
-  twice so far (2026-11-17), both green (`build #1` 4m 0s, `build #2` 3m 28s).
-  The local runner sequence above remains the fast feedback loop.
+- CI (`.github/workflows/build.yml`) runs on every push to `main`: `cargo build --release`, `scripts/test.ps1`, `cargo test --release`, `scripts/differential.ps1`, `scripts/unbc-roundtrip.ps1 -IncludeNegative`. 2026-11-17에 두 번 green (`build #1`, `build #2`). The local runner sequence above remains the fast feedback loop.
 - `test/KnownDivergent.txt` documents deliberate implementation differences
   (currently none registered); `test/KnownFailures.txt` is empty.
 
