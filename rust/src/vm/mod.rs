@@ -216,7 +216,25 @@ impl VM {
                 return Outcome::Value(value);
             };
             let depth_before = self.plan().depths[self.ip] as usize;
-            match self.step(&ins, depth_before) {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.step(&ins, depth_before)
+            }));
+            // A Rust panic slipping out of user code (e.g. a re-entrant
+            // mutation of a collection inside its own `__str__`) would kill
+            // the worker thread with a raw panic instead of an Un error.
+            // RefCell drops release the borrows during unwinding, so turning
+            // it into an Un panic here leaves the VM consistent.
+            let result = match result {
+                Ok(result) => result,
+                Err(payload) => {
+                    let message = panic_payload_message(&payload);
+                    Err(Outcome::Panic(obj::panic(
+                        "panic",
+                        format!("internal error (please report): {message}"),
+                    )))
+                }
+            };
+            match result {
                 Ok(advance) => {
                     if advance {
                         self.ip += 1;
@@ -873,14 +891,18 @@ impl VM {
                     }
                 }
                 let v = self.regs[ins.a as usize].clone();
-                let frame = self.args.last_mut().expect("argument list");
+                let Some(frame) = self.args.last_mut() else {
+                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span));
+                };
                 frame.values.push(v);
                 frame.names.push(String::new());
             }
             Op::ArgKw => {
                 let name = self.name(ins.d as usize);
                 let v = self.regs[ins.a as usize].clone();
-                let frame = self.args.last_mut().expect("argument list");
+                let Some(frame) = self.args.last_mut() else {
+                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span));
+                };
                 frame.values.push(v);
                 frame.names.push(name);
             }
@@ -892,7 +914,9 @@ impl VM {
                         return Err(self.header_error(first, span));
                     }
                 }
-                let frame = self.args.last_mut().expect("argument list");
+                let Some(frame) = self.args.last_mut() else {
+                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span));
+                };
                 for item in items {
                     frame.values.push(item);
                     frame.names.push(String::new());
@@ -904,11 +928,18 @@ impl VM {
                     Payload::Dict(map) => map,
                     _ => return Err(self.error("** argument must be dict", span)),
                 };
-                let frame = self.args.last_mut().expect("argument list");
-                for (key, item) in dict.borrow().iter_pairs() {
-                    let name = match obj::payload(key) {
+                let pairs: Vec<(Obj, Obj)> = dict
+                    .borrow()
+                    .iter_pairs()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let Some(frame) = self.args.last_mut() else {
+                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span));
+                };
+                for (key, item) in pairs {
+                    let name = match obj::payload(&key) {
                         Payload::Str(s) => s.to_string(),
-                        _ => obj::display(&obj::repr(key)),
+                        _ => obj::display(&obj::repr(&key)),
                     };
                     frame.values.push(item.clone());
                     frame.names.push(name);
@@ -940,6 +971,9 @@ impl VM {
                     Ok(result) => {
                         if obj::is_err(&result) {
                             return Err(self.error(err_message(&result), span));
+                        }
+                        if obj::is_panic(&result) {
+                            return Err(Outcome::Panic(result));
                         }
                         if popped.is_err() {
                             return Err(Outcome::Panic(obj::panic("panic", "stack is empty")));
@@ -1218,6 +1252,15 @@ impl VM {
                         }
                     }
                 };
+                // A pooled function that failed queues its error object as
+                // the future's value; propagate it like any other uncaught
+                // error instead of delivering it as a plain value.
+                if obj::is_err(&result) {
+                    return Err(self.error(err_message(&result), span));
+                }
+                if obj::is_panic(&result) {
+                    return Err(Outcome::Panic(result));
+                }
 
                 state.borrow_mut().value = Some(result.clone());
                 self.regs[ins.a as usize] = result;
@@ -1720,6 +1763,16 @@ fn execute_proto(program: &Rc<Program>, ctx: &Context, proto_index: usize, plan:
     }
 }
 
+fn panic_payload_message(payload: &(dyn std::any::Any + Send + 'static)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message.to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 pub fn err_message(o: &Obj) -> String {
     match obj::payload(o) {
         Payload::Error { message, .. } => message,
@@ -1754,7 +1807,7 @@ fn is_obj(left: &Obj, right: &Obj) -> Obj {
             Payload::TObj(t2) => obj::boolean(t == t2),
             _ => {
                 let types = obj::types_of(left);
-                obj::boolean(types.contains(&t))
+                obj::boolean(t.accepts(&types))
             }
         },
         _ => obj::obj_is(left, right),

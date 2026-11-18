@@ -1316,7 +1316,8 @@ impl<'a> Compiler<'a> {
         self.emit(Op::MakeEnum, 0, name_slot as i32, span);
         let register_slot = self.push_name_raw(&enum_name);
         self.emit(Op::RegisterClass, 0, register_slot as i32, span);
-        let mut index = 1i64;
+        // The reference implementation (and the docs) start enum values at 0.
+        let mut index = 0i64;
         for member in node.children.iter().skip(1) {
             let (member_name, value) = match member.kind {
                 NodeKind::Assign => {

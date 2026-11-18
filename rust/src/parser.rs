@@ -1278,11 +1278,20 @@ impl Parser {
         };
         let parameters = self.parse_parameters()?;
         self.skip_new_lines();
+        let ret_type = if self.match_(TokenType::Return) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.skip_new_lines();
         let body = self.parse_block()?;
         let length = len(t(&func), n(&body));
         children.push(name);
         children.push(parameters);
         children.push(body);
+        if let Some(ret_type) = ret_type {
+            children.push(ret_type);
+        }
         Ok(
             Node::with_children(func.start, length, kind, None, children)
                 .with_annotations(annotations),
@@ -1361,7 +1370,13 @@ impl Parser {
         Ok(Node::with_children(value.start, value.length, NodeKind::Parameter, None, vec![value]))
     }
     fn parse_type(&mut self) -> Result<Node, LangError> {
-        let mut typ = self.parse_identifier()?;
+        let mut typ = if self.match_(TokenType::NoneKw) {
+            let tok = self.previous();
+            Node::new(tok.start, tok.length, NodeKind::Identifier)
+                .with_value(Const::Str("none".to_string()))
+        } else {
+            self.parse_identifier()?
+        };
         if self.match_(TokenType::LBrack) {
             let inner_start = typ.start;
             if self.current().typ != TokenType::RBrack {
