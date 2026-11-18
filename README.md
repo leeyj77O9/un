@@ -1,4 +1,4 @@
-# Un
+﻿# Un
 
 간결한 문법, 명시적 비동기 실행, 패턴 매칭을 제공하는 현대적인 스크립팅 언어.
 
@@ -60,7 +60,7 @@ Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(�
 
 - 백그라운드에서 표현식을 실행하고 `Future`를 반환하는 `go`
 - `Future`를 대기하는 `wait`
-- `map`과 `submit`을 제공하는 `flow.spawn(n)` 워커 풀
+- map과 submit을 제공하는 low.spawn(n) 풀 핸들 (Un은 협업적 싱글스레드 런타임이라 OS 스레드를 만들지 않고, pool.map은 인자마다 결과를 만들지만 호출자 스레드에서 인라인으로 실행됨)
 
 ### 계획됨
 
@@ -482,7 +482,7 @@ a = go slow(5)
 io.write(wait a)    # 10
 ```
 
-`flow.spawn(n)`은 워커 풀이다. `pool.map`은 인자마다 결과를 만들고, `pool.submit`은
+- map과 submit을 제공하는 low.spawn(n) 풀 핸들 (Un은 협업적 싱글스레드 런타임이라 OS 스레드를 만들지 않고, pool.map은 인자마다 결과를 만들지만 호출자 스레드에서 인라인으로 실행됨)
 Future를 돌려준다. 공유 상태를 두고 경쟁이 일어나지 않게 하려면 `atomic.int`/`atomic.bool`
 (예: `counter.inc()`)로 원자 연산을 할 수 있다.
 
@@ -500,7 +500,7 @@ use io
 use flow
 use iter
 
-using pool = flow.spawn(2)
+- map과 submit을 제공하는 low.spawn(n) 풀 핸들 (Un은 협업적 싱글스레드 런타임이라 OS 스레드를 만들지 않고, pool.map은 인자마다 결과를 만들지만 호출자 스레드에서 인라인으로 실행됨)
 r = pool.map(fn(x) -> x * x, 1, 2, 3, 4)
 io.write(list(iter.sorted(r)))   # [1, 4, 9, 16]
 s = pool.submit(fn(x) -> x * 3, (7))
@@ -537,7 +537,7 @@ work()    # start done
 
 | 모듈 | 주요 API |
 |---|---|
-| `atomic` | `atomic.int(초기값?)`/`atomic.bool(초기값?)`로 `atomic_int`/`atomic_bool` 생성. `get`/`set`/`add`(int만)/`inc`/`dec`(int만)/`exchange`/`compare_and_swap`, `Interlocked` 기반 |
+| tomic | tomic.int/tomic.bool?쇰줈 tomic_int/tomic_bool ?앹꽦. get/set/dd(int留?/inc/dec(int留?/exchange/compare_and_swap ?쒓났, RefCell 湲곕컲(?묒뾽???깃??ㅻ젅???고??? Int overflow??Un Int泥섎읆 wrapping) |
 | `io` | `write`, `read`, `open`, `clear` |
 | `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
@@ -548,7 +548,7 @@ work()    # start done
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
 | `time` | `sleep`(int=ms, float=초)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` (`ms`·`ns` read-only 프로퍼티) |
-| `flow` | `spawn`(pool)과 `lock` |
+| `flow` | `spawn`(pool 핸들, 협업적 싱글스레드 — 호출자 스레드에서 인라인 실행)과 `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options`와 `_async` 변형, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
 

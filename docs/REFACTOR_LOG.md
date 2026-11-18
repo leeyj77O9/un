@@ -1682,3 +1682,31 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - Positive **1507 passed** (was 1504), Negative 43 matched, differential 90/0,
   cargo test 205.
 
+
+---
+
+## 2026-11-19 - Pass 33: TD-39 cooperative concurrency documented and hardened
+
+### Trigger
+
+- The user-facing docs and stdlib tables misrepresented Un's cooperative
+  single-thread runtime as OS-thread worker pools / Interlocked atomics —
+  Un has never created OS threads (D-012, D-054, D-061).
+
+### Changes
+
+- `native/atomic.rs`: `add`/`inc`/`dec` now use `wrapping_add`/`wrapping_sub`
+  to match Un Int semantics and stop debug-build `+=1` panic on overflow.
+  `Bool`/`Int` cell contracts unchanged.
+- README.md / docs/README.md: `atomic` and `flow` sections rewritten to
+  describe the cooperative single-thread runtime truthfully. Tables
+  "Interlocked-backed" → "RefCell-backed, Interlocked semantics on a single
+  cooperative thread, int overflow wraps like Un Int". Table `spawn` docs
+  now say "inline execution on the calling thread, cooperative single-thread".
+- Debt doc: TD-39 closed (evidence: code changes + docs + test to cover).
+
+### Result
+
+- Gates: Positive 1507, Negative 43, differential 90/0, cargo test 205,
+  UV_JIT=2 canary OK. No regression.
+

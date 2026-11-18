@@ -491,9 +491,16 @@ a = go slow(5)
 io.write(wait a)    # 10
 ```
 
-`flow.spawn(n)` is a worker pool. `pool.map` produces one result per argument, and
-`pool.submit` hands back a `Future`. For shared state that must not race, use
-`atomic.int`/`atomic.bool` (e.g. `counter.inc()`) to perform atomic operations.
+`flow.spawn(n)` creates a pool handle, but Un is a cooperative single-thread runtime:
+`pool.map` produces one result per argument, and `pool.submit` hands back a `Future`; no OS
+threads are created. For shared state that must not race, use `atomic.int`/`atomic.bool`
+(e.g. `counter.inc()`) — inside a single cooperative thread they hold a small
+`RefCell`-backed state, so they're correct for any interleaving Un can produce, and
+`atomic.add`/`inc`/`dec` wrap i64 the same way Un's Int arithmetic does (they will not
+panic in debug builds). Compare-and-swap is a flat compare-then-write on that cell.
+
+This is a single-thread model, not preemptive multithreading — `pool.map` runs inline with
+the caller, and there is no background worker doing parallel work.
 
 ```un
 use atomic
@@ -546,7 +553,7 @@ work()    # start done
 
 | Module | Main API |
 |---|---|
-| `atomic` | `atomic.int(initial?)`/`atomic.bool(initial?)` create `atomic_int`/`atomic_bool`. Methods: `get`/`set`/`add` (int only)/`inc`/`dec` (int only)/`exchange`/`compare_and_swap`, backed by `Interlocked` |
+| `atomic` | `atomic.int(initial?)`/`atomic.bool(initial?)` create `atomic_int`/`atomic_bool`. Methods: `get`/`set`/`add` (int only)/`inc`/`dec` (int only)/`exchange`/`compare_and_swap`. Backed by `RefCell` (single-thread cooperative runtime) |
 | `io` | `write`, `read`, `open`, `clear` |
 | `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
@@ -557,7 +564,7 @@ work()    # start done
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
 | `time` | `sleep` (int=ms, float=s)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` (with read-only `ms`/`ns` properties) |
-| `flow` | `spawn` (pool) and `lock` |
+| `flow` | `spawn` (pool handle, cooperative single-thread: inline execution) and `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options` and their `_async` variants, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
 

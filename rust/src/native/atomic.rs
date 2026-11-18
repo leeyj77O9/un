@@ -190,7 +190,7 @@ fn int_add(scope: &Scope) -> Obj {
     match obj::payload(&scope::get(scope, "amount")) {
         Payload::Int(v) => {
             let mut value = cell.borrow_mut();
-            *value += v;
+            *value = value.wrapping_add(v);
             obj::int(*value)
         }
         _ => obj::err("expected 'value' argument to be of type 'int'"),
@@ -200,7 +200,7 @@ fn int_inc(scope: &Scope) -> Obj {
     match int_cell(scope) {
         Some(cell) => {
             let mut value = cell.borrow_mut();
-            *value += 1;
+            *value = value.wrapping_add(1);
             obj::int(*value)
         }
         None => obj::err("expected 'atomic_int' object"),
@@ -210,7 +210,7 @@ fn int_dec(scope: &Scope) -> Obj {
     match int_cell(scope) {
         Some(cell) => {
             let mut value = cell.borrow_mut();
-            *value -= 1;
+            *value = value.wrapping_sub(1);
             obj::int(*value)
         }
         None => obj::err("expected 'atomic_int' object"),
