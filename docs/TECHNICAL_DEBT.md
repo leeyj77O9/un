@@ -38,13 +38,29 @@ Severity:
 | TD-48 | low | `dict.add` on a duplicate key panics with the .NET `ArgumentException` — the message is byte-identical parity (D-024) and has no test | `rust/src/native/members.rs:1362-1370` |
 | TD-49 | low | `exit()` with a non-int code silently exits 0; `ord` accepts multi-char strings and returns the first codepoint; `ascii` on an astral char errors while returning UTF-16 units elsewhere; `inspect.delattr` only removes own instance members | `rust/src/native/builtin.rs`, `rust/src/native/inspect.rs` |
 | TD-50 | low | `hash` of a NaN key is unfindable (IEEE semantics, consistent with `.NET`); document, do not "fix" | `rust/src/runtime/obj.rs:299` |
-| TD-51 | medium | JIT native emission can fail at any stage (frontend debug asserts, Cranelift verifier, `catch_unwind`) and every failure is silently swallowed into an interpreter-fallback stub: the whole JIT can be dead with every gate green (it was, between `aad0f42` and Pass 18). No strict canary detects "0 protos JIT-compiled" today (differential can't see it either — both lanes produce byte-identical output); mitigate by eye with `UV_JIT_DEBUG=1` (per-proto OK/STUB) or the VM vs JIT columns in `scripts/bench.ps1 -Group all` — a `UV_JIT=2` strict mode would be the real fix. CI does run `scripts/differential.ps1` for JIT on/off miscompilation, which is a different failure class | `rust/src/jit_bc.rs`, `.github/workflows/build.yml` |
+| TD-51 | medium | JIT native emission can fail at any stage (frontend debug asserts, Cranelift verifier, `catch_unwind`) and every failure was silently swallowed into an interpreter-fallback stub: the whole JIT could be dead with every gate green (it was, between `aad0f42` and Pass 18). | `rust/src/jit_bc.rs`, `.github/workflows/build.yml` | **Mitigated (2026-11-19):** `UV_JIT=2` strict canary makes any JIT candidate that fails to compile abort the process with exit code 2 and a named proto list, instead of a silent stub. Curated canary `test/jit/strict.un` (self-contained Int-subset, all protos must compile; marker `jit-strict canary OK`) runs under `UV_JIT=2` in the `JIT strict canary` step of `.github/workflows/build.yml`. Verified locally (exit-2 on forced stub; marker passes under default JIT and UV_JIT=0). Remaining subclasses still print via `UV_JIT_DEBUG=1` only. |
 
 ## Resolved in 2026-11
 
 evidence and `docs/DECISIONS.md` for the semantics decisions):
 TD-01, TD-02, TD-04, TD-06, TD-07, TD-12, TD-13, TD-14, TD-15, TD-19, TD-23,
 TD-25, TD-28, TD-29, TD-30, TD-32, TD-33, TD-34, TD-35, TD-36, TD-37, TD-42, TD-44, TD-46.
+
+- **TD-52** (JIT locals mis-resolution, fixed 2026-11-19): the Int-JIT resolved
+  frame-local slots via the program's *global* name table indexed by
+  proto-local indices, so a parameter rebound in body (`n = n - 1`) made every
+  subsequent `LoadName n` read the stale FFI argument register — the emitted
+  native loop never observed the decremented value and spun forever
+  (`while n > 0` on a rebound parameter infinite-looped in native code; only
+  `UV_JIT=0` was correct). Fixed by two-step resolution through
+  `proto.names` (like `analyze_return_kinds`/`arena` construction) and by
+  routing `LoadName` of a locally-declared name through the local slot
+  (including the ABI-parameter shadow case via `local_name_to_slot`), with the
+  entry block initialising parameter-shadowing locals from the FFI args.
+  Verified: probes matching the hang class (countdown/`probe5`/`m1`/`p_const`)
+  now terminate and agree byte-for-byte with UV_JIT=0; differential 88/88.
+
+- **TD-51** (see table): strict canary mitigated 2026-11-19.
 
 Closed-out notes: TD-37 kept the deliberate API shape (4xx/5xx responses
 return the body, matching the .NET reference — the Un http client does not
