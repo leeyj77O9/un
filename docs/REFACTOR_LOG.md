@@ -1635,3 +1635,23 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   UV_JIT=2 strict canary OK.
 - High-severity and medium debt: none touching the hot path.
 
+
+---
+
+## 2026-11-19 - Pass 31: TD-43/TD-50 documented; BENCHMARK re-pin
+
+### Trigger
+
+- Two low-severity debt items were "document, do not fix": the stopwatch's
+  elapsed-duration semantics and the NaN-hash unfindability, both matching
+  .NET behaviour. Documenting them closes the entries.
+
+### Changes
+
+- README.md / docs/README.md: new "의미 주의사항" / "Semantic notes" section
+  before the architecture chapter. Stopwatch `.elapsed` monotonic duration
+  in a date (not a wall-clock), `start()` resets instead of resuming;
+  NaN hash keys are unfindable — IEEE/.NET parity.
+- Debt doc: TD-43, TD-50 marked Resolved.
+- BENCHMARK.md re-pinned to 22e3919 (geomean JIT/Python 7.667x).
+

@@ -560,6 +560,11 @@ work()    # start done
 
 `skip`은 예약어이므로 `iter.skip(...)`나 `.skip(...)`는 파싱 오류로 끝나 이름으로 호출할 수 없다. 앞 부분을 잘라내려면 `take`나 슬라이싱을 쓴다.
 
+### 의미 주의사항
+
+- `time.stopwatch`: `.elapsed`는 단조 경과시간을 담은 `date`를 반환한다(타임스탬프가 아니다). `start()`는 재개가 아니라 타이머 재시작이다.
+- `hash(...)`: `NaN`에 대한 해시 키는 딕셔너리에서 찾을 수 없다 — IEEE semantics / .NET과 같은 동작이며 버그가 아니다. `NaN`이 키에 들어가면 조회는 항상 `key not found`가 된다.
+
 ## 아키텍처
 
 바이트코드 컴파일러와 레지스터 기반 VM 위에서 동작하며, 핫 패스 Int 및 Float 승격 누산기 함수는 Cranelift JIT으로 native로 컴파일된다.

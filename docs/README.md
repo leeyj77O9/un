@@ -569,6 +569,11 @@ Chaining `iter` methods (`(0..10).map(fn(x) -> x * 2).take(3)`) is lazy: nothing
 
 `skip` is a reserved keyword, so `iter.skip(...)` and `.skip(...)` are parse errors and cannot be called by name. Use `take` or slicing to drop a leading segment.
 
+### Semantic notes
+
+- `time.stopwatch`: `.elapsed` returns a `date` that holds the monotonic duration (not a wall-clock timestamp). `start()` resets the timer — it does not resume it.
+- `hash(...)`: a `NaN` hash key is unfindable in dictionaries — every lookup raises `key not found`. This is the IEEE/.NET behaviour, not a bug.
+
 ## Architecture
 
 The interpreter is a multi-pass pipeline over the AST: the lexer and parser
