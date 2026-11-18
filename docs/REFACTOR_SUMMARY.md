@@ -1,4 +1,4 @@
-﻿# Refactor Summary — 2026-11
+# Refactor Summary — 2026-11
 
 One-page overview of the architecture audit, migration verification,
 redundancy removal and performance work done on the Un implementation in
@@ -73,10 +73,10 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | Gate | Result |
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
-| `cargo test --release` | **205 passed / 0 failed** |
-| `scripts/test.ps1` | Positive **47 files / 1504 passed** / 0 failed / 0 crashed; Negative **43 matched / 0 divergences**; Known **0**; exit **0** |
-| `scripts/differential.ps1` | **90 files, 0 differences** (JIT on vs off, byte-identical) |
-| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **40/40**; Negative compilable **34/34** identical |
+| `cargo test --release` | **213 passed / 0 failed** |
+| `scripts/test.ps1` | Positive **47 files / 1538 passed** / 0 failed / 0 crashed; Negative **45 matched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/differential.ps1` | **92 files, 0 differences** (JIT on vs off, byte-identical) |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **47/47**; Negative compilable **36/36** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |
 | `scripts/bench.ps1 -Group all -Report` | all 15 x 4 lanes self-validate; root `BENCHMARK.md` regenerated; Un JIT/Python geomean **2.124x** (JIT live since pass 18; depth-guard fix moved fib24 3.39 → 1.32 ms in pass 22) |
 

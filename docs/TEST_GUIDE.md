@@ -1,4 +1,4 @@
-﻿# Test Guide
+# Test Guide
 
 This document explains how the Un test suite is organized and how to run it.
 There is no unit-test runner in a build system: every test is an `.un` script
@@ -75,9 +75,9 @@ Counts at the time of writing:
 | Group | Files | Assertions |
 |---|---|---|
 | suite | 1 | 109 |
-| unit + integration + regression | 46 | (1504 - 109) |
-| **Positive total** | **47** | **1504** |
-| negative (exit-code checks) | 43 checks | 43 matched + 0 documented divergences |
+| unit + integration + regression | 46 | (1538 - 109) |
+| **Positive total** | **47** | **1538** |
+| negative (exit-code checks) | 45 checks | 45 matched + 0 documented divergences |
 | known (documented defects) | 0 | none registered |
 | fixtures (not run directly) | 8 | n/a |
 
@@ -140,16 +140,16 @@ moved into meaningful tests (2026-11-16), and `scripts/test.ps1` passes with
 ## Current status
 
 ```
-Positive: 47 files, 1504 passed, 0 failed, 0 crashed
-Negative: 43 matched, 0 mismatched, 0 documented divergences
+Positive: 47 files, 1538 passed, 0 failed, 0 crashed
+Negative: 45 matched, 0 mismatched, 0 documented divergences
 Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```
 
-`cargo test --release` covers the Rust side (205 tests). Two additional
+`cargo test --release` covers the Rust side (213 tests). Two additional
 runners compare execution shapes: `scripts/differential.ps1` runs every
 manifest file with `UV_JIT=0` and default JIT and diffs stdout + exit code
-(90 files, 0 differences), and `scripts/unbc-roundtrip.ps1 -IncludeNegative`
+(92 files, 0 differences), and `scripts/unbc-roundtrip.ps1 -IncludeNegative`
 byte-compares `unvm run` against `unvm compile` + `unvm run <file>.unbc`
 (Positive 47/47, compilable Negative 36/36).
 

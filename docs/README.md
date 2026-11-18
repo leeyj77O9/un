@@ -1,4 +1,4 @@
-﻿# Un
+# Un
 
 A modern scripting language with concise syntax, explicit asynchronous execution, and pattern matching.
 
@@ -121,6 +121,27 @@ p = Point(10, 20)
 io.write(p.x)      # 10
 io.write(p.len())  # 30
 ```
+
+Members keep their value in the instance slot they'd otherwise use. Class-level
+members can carry a type annotation and an optional default — the annotation is
+a declaration of intent; the stored value is whatever the member holds at
+runtime:
+
+```un
+use io
+
+class TypedDefaults
+    count: int = 0
+    name: str = "anon"
+
+t = TypedDefaults()
+io.write(t.count)   # 0
+io.write(t.name)    # anon
+t.count = 42        # any int is fine; the slot is not dynamically typed
+```
+
+A bare annotation without a default initialises the member to `none`:
+`class Foo\n    x: int` — `Foo().x == none`.
 
 Ordinary class members have a default getter and setter, and `get`/`set`
 accessors override them. Inside an accessor `field` is the stored value of that
@@ -281,8 +302,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
-The current baseline is Positive 47 files / 1504 passed / 0 failed / 0 crashed,
-Negative 43 checks matched + 0 documented divergences, and Known 0 files.
+The current baseline is Positive 47 files / 1538 passed / 0 failed / 0 crashed,
+Negative 45 checks matched + 0 documented divergences, and Known 0 files.
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
 statistics, and saved to `bench/results/<timestamp>/results.csv` and `results.md`.
@@ -580,6 +601,13 @@ Chaining `iter` methods (`(0..10).map(fn(x) -> x * 2).take(3)`) is lazy: nothing
 
 - `time.stopwatch`: `.elapsed` returns a `date` that holds the monotonic duration (not a wall-clock timestamp). `start()` resets the timer — it does not resume it.
 - `hash(...)`: a `NaN` hash key is unfindable in dictionaries — every lookup raises `key not found`. This is the IEEE/.NET behaviour, not a bug.
+- `2 ** 3 ** 2` evaluates as `2 ** (3 ** 2)` (right-associative, like Python/JS). `2 ** 3` is `8`.
+- String escapes: unknown escapes keep the backslash. `"\q"` is `"\q"`, `"\x"` is `"\x"`. Only `\n`, `\r`, `\t`, `\\`, `\"` and `\'` are interpreted.
+- A statement may not be followed by another statement on the same line. `x := 1 y := 2` is a parse error: `expected a newline after the previous statement`.
+- `b?.v = e` (assignment to an optional-chain target) raises `'none' object has no attribute` when `b` is none — Un does not silently skip the assignment; keep the error or use `if b` first.
+- `http.get/post/put/patch/head/options/delete`: redirects (301/302/303/307/308) are followed up to 8 hops. 301/302/303 rewrite the method to GET and drop the body (.NET behaviour); 307/308 preserve method and body. A missing Location header makes the redirect response the final one. `get` keeps the 404-style exception contract; the other verbs return status and body as-is.
+- `time`'s `date(str)` constructor validates year/month/day (including leap years), hour/minute/second and millisecond strictly; `date("2024-02-30")` is an error.
+- `use a.*` is sugar for `use a { * }` (wildcard import of every public member).
 
 ## Architecture
 

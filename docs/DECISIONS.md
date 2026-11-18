@@ -1057,3 +1057,112 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **근거**: reference Un과의 의미론 동일성이 최우선 계약, 측정된 snapshot 비용이 pool/interpreter dispatch 밑에 파묻혀 측정이 안정적으로 분리되지 않는다.
 - **후속**: 필요 시 컴파일타임 capture-set 분석은 구현 가능하나 현 스케일에 맞지 않아 보류.
 - **검증**: 20,000 forks ≈ 99 ms / 200,000 forks ≈ 1,058 ms — 현재 구현에서 병목이 아님. TD-09 closed by evidence.
+
+## D-081 | use a.*를 use a { * }의 축약형으로 쓰기 | Accepted
+
+- **배경**: `use a.*`는 파서가 wildcard import로 인식했으나 코드 경로는 지원하지 않았고, 런타임에 `module '<절대경로>\a\*'를 찾을 수 없음` panic이 발생했다.
+- **결정**: `use a.*`를 `use a { * }`와 동일하게 wildcard import로 컴파일한다. `parse_use_path`가 생성하는 `Unary(Wildcard, [path])`를 code_use가 `imports = [("*", "*")]`로 매핑한다.
+- **전**: 알 수 없는 모듈 panic. **후**: `use re { * }`와 같은 와일드카드 import.
+
+## D-082 | JIT: hidden `param_tags` ABI + 프로토 엔트리 가드 (list-handle 인자) | Accepted
+
+- **배경**: JIT ABI의 Int 인자로 `IntVec` arena handle이 섞여 들어오는 경우(원시 Int 인자가 ID_BASE 이상이면 FFI 경계에서 거부됐지만, List 인자는 materialize되어 통과) 다음 결함이 있었다.
+  1. `xs + 1`처럼 List를 산술에 쓰면 interpreter는 TypeError로 거부하지만 JIT는 raw handle + 1을 Int로 반환했다(silent miscompile).
+  2. `-> xs` identity 반환은 Return probe blanket가 handle을 INTLIST로 잘못 tag했다(heterogeneous probe 남용).
+  3. `xs.add(inner)`에서 inner를 handle로 넘겼는데 `intlist_regs` 마커가 ArgPos를 지나며 flush되어 plain Int처럼 취급됐다.
+  4. `int_dict_seen`가 list 마커를 포함해 IntVec row 삽입까지 거부했다.
+- **결정**:
+  - JIT entry는 hidden `param_tags: i64`를 받는다. 비트 p는 argument p의 IntVec arena handle 여부.
+  - `try_call_jit`이 list 인자의 bit를 set한다. nested JIT call은 staged arg reg 마커로 bitmap을 구성한다.
+  - 프로토 진입 시 `unsafe_param_mask(code, param_mask_by_d)`를 한 번 검사한다. 산술/비교/ToStr 등 Int-consuming op에 흐를 수 있는 파라미터 위치면 태그가 있으면 전체 프레임을 interpreter로 bail (int 인자면 0 비용).
+  - Return probe는 UNION 또는 param_idx인 경우에만 수행. 다른 레지스터는 태그 없음.
+  - `int_dict_seen`에서 IntVec은 분리해 `int_list_foreign_seen`(dict/instance/method/iter)로 IntVec intrinsic에서 거부 범위를 좁혔다.
+  - ArgBegin/ArgPos/ArgKw를 JIT marker flush에서 제외(순수 인자 프레이밍).
+  - `un_list_int_push_scalar`/`un_list_int_set_scalar` entry point 추가 — 평범한 Int는 KIND_OUTER row로 승격되지 않음.
+- **검증**: fib(24) JIT ~34-53 ms vs UV_JIT=0 ~221 ms. union_calls.un 포함 differential 91/0. strict.un/strict_float.un canary UV_JIT=2 green. functions.un identity list + union_calls list 인자 가드 신규 회귀 테스트 추가.
+- **남음**: nested JIT-only 경로에서 handshake 태그가 아닌 mark로 우회되는 caller가 있으면 동일 클래스의 케이스가 남는다.
+
+## D-083 | 다중 `catch`는 컴파일 에러로 거부 | Accepted
+
+- **배경**: 파서는 `catch`를 무한 허용하지만 컴파일러는 첫 번째 catch만 등록하고 나머지를 무시했다(사용자는 모르고 넘어감).
+- **결정**: 두 번째 `catch`는 `error: multiple 'catch' clauses are not supported; use a single catch and discriminate inside it` 컴파일 에러로 거부.
+- **검증**: `test/negative/multi_catch.un` regression (manifest에 `multi_catch.un|1|multiple 'catch' clauses` 추가). Positive 1525 / Negative 44 matched.
+
+## D-084 | `**`는 오른쪽 결합 | Accepted
+
+- **기준**: `2 ** 3 ** 2`는 `2 ** (3 ** 2)` = 512. Python/JS/수학 표기와 같은 규칙.
+- **이전**: 왼쪽 결합이라 `(2 ** 3) ** 2` = 64 (테스트 문구는 "right associative"로 바이트 파라미터가 틀렸음을 2026-11-18 감사에서 지적받음).
+- **변경점**: `parse_binary`가 DoubleAsterisk의 오른쪽 피연산자를 `precedence - 1` 수준으로 재귀.
+- **테스트**: `test/unit/lexer/literals.un`, `test/unit/parser/precedence.un`, `test/unit/runtime/operators.un`의 기대값 64 → 512.
+- **대조 검증**: 테스트 + 벤치마크(bench) 모두 통과. 바이트코드 diff 러너 91/0.
+- **사용자 결정**: 2026-11-19 "오른쪽 결합으로 변경".
+
+## D-085 | 알 수 없는 이스케이프는 백슬래시를 그대로 유지 | Accepted
+
+- **이전**: `"a\qb"` → `"aqb"` (백슬래시 삭제). `"\x41"` → `"x41"`.
+- **변경**: `Some(c)` 미매칭은 `out.push('\\'); out.push(c)`를 추가. 끝의 외로운 백슬래시도 유지.
+- **결과**: `\q` → `\q`, `\x` → `\x`. Python의 unknown escape 규칙과 동일.
+- **사용자 결정**: 2026-11-19 "백슬래시 유지 (Python 방식)".
+
+## D-086 | 한 줄에 여러 문장 금지 | Accepted
+
+- **이전**: `x := 1 y := 2` 같은 같은 줄 연속 문장이 조용히 허용됐다(토큰 유형이 문장 시작이면 무조건 허용).
+- **변경**: 블록/간격 경계 기준으로, 이전 유의미 토큰과 같은 줄에 새 문장이 시작하면
+  `expected a newline after the previous statement (got \`Identifier\`)` 파싱 에러.
+  같은 줄이 아닌 경우(Dedent 뒤의 첫 문장)는 여전히 허용.
+- **테스트**: `test/negative/same_line.un` (manifest에 `same_line.un|1|expected a newline after the previous statement` 추가).
+- **사용자 결정**: 2026-11-19 "엄격하게 거부". Positive 1525 / Negative 45 matched.
+
+## D-087 | HTTP 리다이렉트(301/302/303/307/308) 자동 추적 (최대 8회) | Accepted
+
+- **이전**: 어떤 3xx도 따라가지 않고 Location 무시; `get`만 404류에서 예외.
+- **변경**:
+  - 301/302/303 → GET 으로 메서드 바꾸고 본문 버림 (.NET HttpClient 규칙).
+  - 307/308 → 메서드/본문 유지.
+  - Location은 절대/상대 모두 지원(RFC 7231 계단식 path resolution), `..`/`.` 세그먼트 정리 포함.
+  - `//host/path` scheme-relative, `/path`, `?query`, `#fragment` 모두 처리.
+  - https Location은 거부(클라이언트는 http만 지원).
+  - Location 헤더가 없으면 리다이렉트 응답을 최종 응답으로 반환.
+  - 8홉 초과 → `http redirect limit exceeded` 에러.
+- **검증**: `net::redirect_tests` 8개 Rust 통합 테스트(실제 127.0.0.1 TCP 서버 기반: 302→301 체인,
+  POST→GET 전환, HEAD 유지, PUT+본문 307 보존, 상대 Location 해석, 절대 Location, 무한루프 제한).
+- **이전과의 차이**: `get`의 404식 예외 계약은 유지(사용자 결정: "verb 오류 모델은 개별 유지"가 아닌 "리다이렉트만 추가").
+- **사용자 결정**: 2026-11-19 "리다이렉트 추적 추가".
+
+## D-088 | `b?.v = e`는 런타임 에러 유지 | Accepted
+
+- **이전**: `'none' object has no attribute 'v'` 에러 (선택적 체이닝을 대입 좌변에 쓸 때).
+- **결정**: 현행 유지. 조용히 skip하는 것은 사용자의 눈 가려짐(데이터 손실이 보이지 않음)으로 금지;
+  컴파일 에러는 현 테스트/파이프라인 호환성상 후순위. 문서화만 한다.
+- **사용자 결정**: 2026-11-19 "현행 유지 + 문서화".
+
+## D-089 | `date(str)`의 성분 엄격 검증(회귀 확인) | Accepted (확인)
+
+- **2026-11-18 감사 A17**: `date::parse`에 hour/minute/second 범위 검사가 없던 결함 → 해당 패스에서 수정됨.
+- **이번 감사에서 검증**: `date("2024-02-30")`, `date("2024-13-01")`, `date("2024-01-01 25:00:00")`,
+  `date("2024-02-29")`, `date("2023-02-29")`, `date("2024-01-01 23:60:00")`, `date("e")` — 모두 올바르게 판정.
+- **사용자 결정**: "엄격하게 거부" — 현행과 일치. 코드 변경 없음.
+
+## D-090 | 클래스 멤버의 타입 어노테이션은 선언이다 | Accepted
+
+- **이전**: 클래스 본문 `x: float` / `x: float = 5`처럼 쓰면 멤버가 `x: float`라는
+  *이상한 이름*으로 등록되거나(`x: float = 5`), 아예 등록되지 않았다(`x: float`).
+  `class Point(x, y)`의 클래스 헤더 파라미터는 `Identifier`/`Typed`만 허용해서
+  기본값이 섞인 파라미터는 `internal: invalid initializer`로 죽었다.
+- **결정**:
+  - 클래스 본문 멤버의 어노테이션은 이름 결정 시 벗겨진다. `x: float = 5` → 멤버는
+    `x`, 저장값은 `5`. `x: float` (기본값 없음) → 멤버는 `x`, 저장값은 `none`.
+  - 클래스 헤더 파라미터에 어노테이션·기본값이 있어도 필드 이름은 맨 바깥
+    식별자다. `class Pair(x: float = 0.0)` → 필드는 `x`로 등록된다
+    (다만 struct-init 의미론은 기존 그대로: 정확히 `len(fields)`개의 위치 인자를
+    넘겨야 하고, 아니면 `invalid initialize`다 — `class Point(x, y)`와 같은 규칙).
+  - 저장값에는 어떤 타입이든 들어간다. 어노테이션은 "내가 이 슬롯에 무엇을 넣을 것이다"
+    선언일 뿐이며, 동적 타입 체크는 없다.
+- **검증**: `test/unit/runtime/classes.un`에 타입 어노테이션 케이스 추가(73개 통과).
+  기대 출력 message column은 상수.
+- **거절된 대안**:
+  - 슬롯별 동적 타입 강제: Un의 동적 타입 철학(어노테이션은 힌트)에 어긋난다.
+  - `Point()`에서 기본값 사용: struct-init 의미론(위치 인자 정확히 일치)과의
+    역류가 있을 수 있어 보류. 향후 `class Point(x=0.0, y=0.0)`의 기본값 배선을
+    지원하려면 별도의 결정이 필요하다.
+- **사용자 결정** (2026-11-19 "클래스 내부의 멤버 변수에 타입 어노테이션이 안되는데 가능하게 해줘").

@@ -1772,3 +1772,210 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - Full gates re-run: Positive 1504, Negative 43, differential 90/0, unbc-roundtrip
   47/47 identical + 36/36, cargo test 205, strict canary Int+Float OK.
 
+
+---
+
+## 2026-11-19 - Pass 36: audit sweep
+
+### Scope
+
+Full audit pass across: build, unit tests, gates, checked arithmetic paths, numeric formatters, arena refcounts, JIT strict canaries, `.unbc` roundtrip, negative manifest, `math`/`date`/`epoch` domain boundaries.
+
+### Verification results
+
+| Gate | Result |
+|---|---|
+| `cargo build --release` | 0 errors / 0 warnings |
+| `cargo test --release` | **205 passed / 0 failed** |
+| `scripts/test.ps1` | Positive 47 files / **1504 passed** / 0 failed; Negative **43 matched** / 0 divergences; Known 0; exit 0 |
+| `scripts/differential.ps1` | **90 files, 0 differences** (JIT on vs off, byte-identical) |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **47/47 identical** (Positive), Negative **36/36 identical** (7 skipped, compile-rejected) |
+| `test/test_suite.un` | 109 passed |
+| `test/regression/defects.un` | 16 passed |
+| `UV_JIT=2 test/jit/strict.un` | OK |
+| `UV_JIT=2 test/jit/strict_float.un` | OK |
+| `WASM` playground build | OK |
+
+### Domain probes (ad hoc, all pass)
+
+- `time.add_years(9223372036854775807)` — checked add returns catchable `date arithmetic overflowed` (typed error, try/catch works).
+- `time.from_epoch(9223372036854775807)` — same.
+- `math.lcm(9223372036854775807, 2)` — returns `"integer overflow"` (not wrap to -2).
+- `math.pow(2, 63)` — returns `9.223372036854776e18` (Float), not i64::MAX.
+- `use io; str(0.1 + 0.2)` → `"0.30000000000000004"`, `str(1.0 / 3.0)` → `"0.3333333333333333"`, `str(math.exp(100))` → `"2.6881171418161356E+43"`.
+- `l.add(l)`-style cyclic refs: not re-tested this pass (A13 tested, unchanged).
+- Nested outer-list arena (`outer = [[0, 1], [2, 3], ...]`, 2000 rows): len and indices correct.
+- `math.log(-1)` — catchable domain error (positive messages consistent with interpreter).
+
+### Minor notes (not defects, documented)
+
+- `math.exp(100)` formatted as `2.6881171418161356E+43`, not the .NET `E+018` style — this is Un's `prims::fmt_double` choice, not a regression.
+- `time.add_years(999999999999999)` produces a nonsensical but i64-representable date — Un allows wide ticks, no overflow occurs; nothing to fix without a Un-wide calendar model decision.
+- `math.log` (and similar) deviate from .NET in message text but stay error objects catchable from Un.
+
+### Disposition
+
+No action items. No regression against the 2026-11-18 baseline; the 17 commits since that audit all pass the gates deterministically.
+
+
+---
+
+## 2026-11-19 - Pass 37: comprehensive audit fix sweep (remediation)
+
+### Trigger
+
+- User-ordered full project audit ("전면 기술 감사 및 아키텍처 검증"). Three probe agents worked independently (frontend, runtime/VM/JIT unsafe, natives/tests) plus a byte-level .unbc fuzz of 380 offsets (XOR 0x20, step 3) and targeted repro probes. Findings were verified with minimal repro scripts and implemented this pass.
+
+### Findings fixed (all call-site verified, none guessed)
+
+| Area | Defect | Fix |
+|---|---|---|
+| bytecode verifier | `Program::validate` never bounded `source_map` spans vs embedded source; `Source::span` could panic on hostile `.unbc` | span bounds check in `validate`; `Source::span` now clamps |
+| `.unbc` loader | trailing garbage after the last proto accepted silently | `read` now errors on nonzero remaining bytes |
+| VM | `Op::ArgBegin` operand trusted for `Vec::with_capacity` (65 GB commit from a crafted .unbc) | `validate` rejects `d > 256` |
+| VM | `MakeClass` field-count `flags >> 8` unchecked index `name_slot + 1 + i` | `validate` bounds both |
+| VM | `BuildTupleNamed` `first + n` / `flags` unvalidated indexes | `validate` bounds both |
+| compiler | typed compound assign (`x: int += 1`) reached codegen as an invalid `Binary(Typed)` | desugar now unwraps the annotation into the load and re-wraps the store |
+| compiler | `use a.*` produced module path "a.*" → bogus panic | compiler maps the `Unary(Wildcard)` path to the `*` wildcard import |
+| compiler | second/third `catch` silently dropped | compile error: "multiple 'catch' clauses are not supported"; regression `test/negative/multi_catch.un` |
+| compiler | `enum E { A = -1 }` (unary consts) → `internal: invalid enum value` | `const_int_value` helper folds `+/-/~` unary chains and Typed wraps; user error message instead of "internal:" |
+| compiler | `as u16` truncations could alias call-site name tables / field counts / defaults | compile errors at 255/65535 bounds |
+| optimize | compound-assign desugar `span.1 - start` treated `span.1` as end though it is a length → usize underflow, corrupt poison spans emitted into `.unbc` | `span.1` used directly; **compound assignment `.unbc` files could not round-trip before this** |
+| runtime (collections) | user `__eq__` ran under `km.borrow_mut()` → "RefCell already borrowed" panic, silent dict corruption (value lost, duplicate entry) | snapshot/candidate/generation-retry lookup (`find_index`), `dict_get_item`, `dict_set_item`, `set_get_item`, `dict_add_item`, `dict_get_default`, `map_remove_item`, `map_contains` rewritten over it; `__eq__` never runs inside a borrow |
+| JIT | raw Int ≥ ID_BASE aliases an arena handle: `xs.add(n)` with plain Int promoted to KIND_OUTER corruption, Return blanket-probe minted a wrong-type IntVec | arg-tag enum in `un_list_int_push` (`un_list_int_push_scalar`) and `un_list_int_set` (`un_list_int_set_scalar`); Return blanket probe reduced to `was_union` or `param_idx` only |
+| JIT | **hidden `param_tags` ABI**: FFI entries now take `(hp, tags, args...)`; `try_call_jit` sets a bit per borrowed-handle argument; nested JIT calls compute it from staged register markers | JIT can finally distinguish "list passed as argument" from "plain Int" |
+| JIT | entry guard: if any parameter position that can reach an Int-consuming op (`unsafe_param_mask` over the bytecode) is tagged, the frame bails to the interpreter before executing | closes the `xs + 1` silent-garbage class (previously: raw handle + 1 returned as Int vs interpreter TypeError); zero cost for Int-only calls (fib JIT ~34–53 ms vs ~221 ms interpreter) |
+| JIT | `ArgPos`/`ArgKw`/`ArgBegin` flushed `intlist_regs` markers off the staged argument | those ops are pure framing; no longer flush |
+| JIT | `int_dict_seen` included list markers, so IntVec `xs.add(row)` refused to lower | split out `int_list_foreign_seen` (dict/instance/method/iter only) |
+| JIT | Return probe of unmarked plain-int register could emit TAG_INTLIST | now `was_union` or `param_idx` only |
+| JIT | end-of-stream bail for Return-less protos leaked `JIT_DEPTH` (after ~1000 calls, silent permanent interpreter fallback) | depth-exit + dict cleanup emitted before the bail pair |
+| math native | `math.pow(2, 63)` returned the saturated Int 9223372036854775807 (the pinning test passed vacuously against the lossy Int→Float comparison) | boundary check; returns 9223372036854775808.0; test now also pins the type |
+| math native | `math.abs(i64::MIN)` truncated to i64::MAX | unsigned_abs / float fallback |
+| math native | `math.gcd(MIN, …)` could return negative | unsigned_abs; float 2^63 when needed (matches lcm contract) |
+| http | `http.head()` violated Content-Length equality because HEAD responses legitimately carry the would-be body's length | 1xx/204/304/HEAD are exempt from the strict check |
+| ws | `ws.receive()` delivered PONG as a message; binary frames silently produced `""`; control-frame flood not bounded (A22 cap didn't cover them) | pong skipped; binary and reserved opcodes are catchable errors; invalid UTF-8 text frames error; control-frame flood cap (1000) |
+| ws | `wss://` accepted but always failed with a contradictory error message | honest `ws://`-only message at the native layer |
+| fs | `fs.modified/accessed/created` pre-1970 times clamped to 1970-01-01 | negative tick arithmetic |
+| fuzz | 8 panic sites in 380-offset .unbc fuzz all now produce clean `vm: malformed bytecode` errors | 0 crashes over 380 probes × 2 patterns (plus all prior cases) |
+| docs | baseline counts outdated; D-081/D-082/D-083 recorded | see DECISIONS.md; TEST_GUIDE/READMEs/AGENTS synced (Positive 1525, Negative 44) |
+
+### Verification
+
+- `cargo build --release`: 0 errors / 0 warnings.
+- `cargo test --release`: **205 passed / 0 failed**.
+- `scripts/test.ps1`: Positive 47 files / **1525 passed** / 0 failed / 0 crashed; Negative **44 matched** / 0 divergences; Known 0.
+- `scripts/differential.ps1`: **91 files, 0 differences**.
+- `scripts/unbc-roundtrip.ps1 -IncludeNegative`: Positive **47/47 identical**; Negative **36/36 identical** (8 skipped — multi_catch.un is compile-rejected).
+- `test/test_suite.un`: 109 passed. `test/regression/defects.un`: 16 passed. UV_JIT=2 `strict.un` / `strict_float.un`: OK.
+- fib(24): JIT produced `46368` in ~53 ms wall including process startup (interpreter ~221 ms measured). `qsort` on a 500-element list produced correct output (first 2370, last 99245, len 500) under the default JIT. The `xs + 1` list-argument case now bails at the JIT entry guard and raises the interpreter TypeError consistently.
+
+### Behavior changes (user-visible, all documented)
+
+- Second `catch` block → compile error instead of silent no-op.
+- `use a.*` is now valid sugar for `use a { * }` (previously runtime panic).
+- `enum` values must be integer literals (unary-folded allowed); a float/str value now errors as "enum member must be an integer literal" instead of "internal:".
+- `ws.receive()` no longer returns control frames; binary frames produce a catchable error.
+- `use a.*` / multiple catch / typed compound assign (`rational` form) notes added to docs (D-081…D-083).
+
+---
+
+## 2026-11-19 - Pass 38: user-ordered remediation ("전면 감사 후속조치")
+
+### Trigger
+
+- User asked for every finding from the 2026-11-19 audit to be fixed, with decisions reserved for them (six questions asked and answered on 2026-11-19).
+
+### User decisions incorporated
+
+| Topic | Decision |
+|---|---|
+| http redirects | Follow 301/302/303/307/308 up to 8 hops; 301/302/303 -> GET + drop body; 307/308 preserve (D-087) |
+| date parse | Strict (was already strict — verified by tests, no change) (D-089) |
+| `**` associativity | Right-associative (2 ** 3 ** 2 == 512) (D-084) |
+| `b?.v = e` | Keep runtime error, document (D-088) |
+| unknown escapes | Keep backslash (Python parity) (D-085) |
+| same-line statements | Hard parse error (D-086) |
+
+### Changes
+
+- `parser.rs`:
+  - `parse_binary`: DoubleAsterisk RHS parsed at `precedence - 1` (right-associative).
+  - `unescape`: unknown escapes now emit `\\` + char (Python parity); trailing lone backslash kept.
+  - statement-end check: `expected a newline after the previous statement` parse error
+    for directly-adjacent statements on the same line. Zero-width Dedent/Indent markers
+    no longer confuse the check; a fresh line after a block remains legal.
+- `net.rs`:
+  - `request_body` follows 301/302/303/307/308, up to 8 hops.
+  - New `send_once` helper; Location header resolved with RFC-7231 relative resolution
+    (`normalize_path` resolves `.`/`..`); 301/302/303 rewrite to GET + drop body; 307/308 preserve.
+  - Non-2xx behaviour per verb unchanged (only `get` errors), per user decision.
+  - New in-process redirect integration tests (8 cases, real TCP listener at 127.0.0.1:0).
+- `compiler.rs`:
+  - `fuse_int_mul_add`: `original_to_new` sized `len + 1` and skipped slots
+    filled with the fused instruction's new index; a jump targeting code len
+    maps to new_code.len() (was: out-of-bounds panic or silent miscompile).
+  - nested JIT calls (`emit_user_call`) accept list-typed arguments via
+    `int_list_foreign_seen` (dict/instance/method/iter only): the callee prologue
+    bails when its unsafe_param_mask tags a list arg. qsort500 runs natively again
+    (0.846 ms, was 19.4 ms after the param_tags tightening skipped its recursion).
+  - `compiler/tests.rs`: fixture `a isnot b` was a latent typo (`isnot` is not a
+    token — `is not` is two words); the old lenient lexer swallowed it silently.
+    It now fails the strict statement-end check, so it was corrected to `is not`.
+    Fixture now passes strict parsing.
+- `world/caches.rs`: new `with_intern_type` avoids one Rc clone per `is_type`
+  call on hot paths; removed now-unused `try_intern_type`.
+- `date.rs`: **no change** — `date()` was already strict on all components
+  (month 1-12, day vs days_in_month incl. leap, hour 0-23, minute 0-59,
+  second 0-59, ms); user asked for strict, reality already matched. Confirmed
+  by probes.
+- tests: `test/negative/same_line.un` added (manifest `same_line.un|1|expected a newline`);
+  Negative 45.
+- docs: README.md + docs/README.md — semantic notes for the six decisions;
+  DECISIONS.md D-084…D-089; counts synced (Positive 1525 / Negative 45).
+
+### Verification
+
+- cargo build --release: 0 errors / 0 warnings.
+- cargo test --release: **213 passed / 0 failed** (205 + 8 new redirect tests).
+- scripts/test.ps1: Positive 47 / 1525 passed / 0 failed / 0 crashed; Negative **45 matched**.
+- scripts/differential.ps1: **92 files, 0 differences**.
+- scripts/unbc-roundtrip.ps1 -IncludeNegative: Positive 47/47 identical; Negative 36/36 identical (9 skipped).
+- UV_JIT=2 strict Int/Float canaries: OK. WASM playground build: OK (no warnings).
+- Bench (`bench.ps1 -Only qsort500,fib24,call200000`): qsort500 JIT 0.846 ms,
+  fib24 1.932 ms, call200000 0.684 ms — no regression vs the `db4e869` pin.
+
+---
+
+## 2026-11-19 - Pass 39: class member type annotation (D-090)
+
+### Trigger
+
+- User (2026-11-19): "클래스 내부의 멤버 변수에 타입 어노테이션이 안되는데 가능하게 해줘"
+
+### Changes
+
+- `compiler.rs`:
+  - new `member_target_name` helper: strips `Assign`/`Typed` layers to find the bare
+    field identifier. Used for class-header field names and body member emits.
+  - class header field-list: `Typed | Assign` params no longer panic with
+    "internal: invalid initializer" — fields register under the bare name.
+  - class body members with `Typed` sugar:
+    - bare annotation is registered as `Member (name, Value::none)`
+    - annotation + default: `x: float = 5` -> member `x` stored with `5`.
+  - typed accessors' default-search path respects the same stripping.
+- `test/unit/runtime/classes.un`: new tests pinning
+  "annotation does not gate assignment" (class accepts any runtime value in
+  the slot), annotation-only members default to `none`, header annotations
+  work including across inheritance and `is` checks.
+- `README.md` / `docs/README.md`: class section now documents member type
+  annotation semantics.
+- 13 new assertions; `test/unit/runtime/classes.un`: 73 passed
+- docs: DECISIONS.md D-090 recorded; counts synced (Positive 1538 / Negative 45).
+
+### Verification
+
+- cargo build --release: 0 errors / 0 warnings.
+- cargo test --release: 213 passed / 0 failed.
+- scripts/test.ps1: Positive 47 / 1538 passed / 0 failed / 0 crashed; Negative 45 matched.
+- scripts/differential.ps1: 92 files, 0 differences.
+- UV_JIT=2 strict Int/Float canaries: OK. WASM playground build: OK.

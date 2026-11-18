@@ -4,6 +4,14 @@
 감사 문서: `AUDIT.md`(Phase 1 구조/기준선), `AUDIT_FINDINGS.md`(발견 사항),
 `AUDIT_PLAN.md`(계획), `AUDIT_PROGRESS.md`(수정 기록), 이 문서(최종 결과).
 
+> **2026-11-19 supersession note**: a fresh comprehensive audit (the user-ordered
+> "전면 기술 감사") ran the same probe discipline again and produced new defects + fixes.
+> See `AUDIT_2026-11-19.md` for that pass's findings, fixes, residuals and gate
+> deltas. The counts in this document (1493 passed etc.) are the 2026-11-18
+> snapshot, not the current baseline; the current baseline in
+> `docs/TEST_GUIDE.md` / `AGENTS.md` is Positive 47 files / 1538 passed / 0 failed,
+> Negative 45 matched.
+
 > 주의: 이 감사 기간 동안 사용자(또는 다른 에이전트)가 같은 워킹 트리에서 typed return
 > annotation 기능을 진행 중이었고(`rust/src/parser.rs`, `test/unit/runtime/functions.un`의
 > 변경분), 그 코드가 오늘의 테스트를 모두 통과했다. 감사 대상이었던 nested-JIT-call 경로

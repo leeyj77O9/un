@@ -1,4 +1,4 @@
-﻿# Un
+# Un
 
 간결한 문법, 명시적 비동기 실행, 패턴 매칭을 제공하는 현대적인 스크립팅 언어.
 
@@ -121,6 +121,24 @@ p = Point(10, 20)
 io.write(p.x)      # 10
 io.write(p.len())  # 30
 ```
+
+클래스 본문의 멤버에는 타입 어노테이션과(선택적으로) 기본값을 함께 쓸 수 있다.
+어노테이션은 "의도 선언"일 뿐이며, 저장값은 런타임에 들어온 그대로다:
+
+```un
+use io
+
+class TypedDefaults
+    count: int = 0
+    name: str = "anon"
+
+t = TypedDefaults()
+io.write(t.count)   # 0
+io.write(t.name)    # anon
+t.count = 42        # int면 무엇이든 통과한다; 슬롯은 동적 타입이다
+```
+
+기본값이 없는 어노테이션 멤버(`class Foo\n    x: int`)는 `none`으로 초기화된다.
 
 클래스의 일반 멤버는 기본 Getter/Setter를 갖고, `get`/`set` 접근자로 재정의할 수
 있다. 접근자 안에서 `field`는 그 멤버의 저장 값, `value`는 setter에 들어온 값이다.
@@ -279,8 +297,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
 Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
-포함하지 않는다. 현재 기준은 Positive 47 파일 / 1504 passed / 0 failed / 0 crashed,
-Negative 43 checks 매칭 + 0 documented divergences, Known 0 파일이다.
+포함하지 않는다. 현재 기준은 Positive 47 파일 / 1538 passed / 0 failed / 0 crashed,
+Negative 45 checks 매칭 + 0 documented divergences, Known 0 파일이다.
 
 벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`와 `results.md`에 저장한다.
@@ -564,6 +582,13 @@ work()    # start done
 
 - `time.stopwatch`: `.elapsed`는 단조 경과시간을 담은 `date`를 반환한다(타임스탬프가 아니다). `start()`는 재개가 아니라 타이머 재시작이다.
 - `hash(...)`: `NaN`에 대한 해시 키는 딕셔너리에서 찾을 수 없다 — IEEE semantics / .NET과 같은 동작이며 버그가 아니다. `NaN`이 키에 들어가면 조회는 항상 `key not found`가 된다.
+- `2 ** 3 ** 2`는 `2 ** (3 ** 2)`(거듭제곱은 오른쪽 결합, Python/JS와 동일)로 평가된다. `2 ** 3`은 `8`이다.
+- 문자열 이스케이프: 알 수 없는 이스케이프는 백슬래시를 그대로 남긴다. `"\q"`는 `"\q"`이고 `"\x"`는 `"\x"`이다. `\n`, `\r`, `\t`, `\\`, `\"`, `\'`만 해석된다.
+- 한 줄에 두 개의 문장을 쓸 수 없다. `x := 1 y := 2`는 `expected a newline after the previous statement` 파싱 에러다.
+- `b?.v = e`(선택적 체이닝 좌변 대입)는 `b`가 none이면 `'none' object has no attribute` 에러를 던진다. Un은 대입을 조용히 건너뛰지 않는다.
+- `http.get/post/put/patch/head/options/delete`: 301/302/303/307/308 리다이렉트를 최대 8회 따라간다. 301/302/303은 메서드를 GET으로 바꾸고 본문을 버린다(.NET 동작); 307/308은 메서드와 본문을 유지한다. Location 헤더가 없으면 리다이렉트 응답 자체가 최종 응답이다. `get`은 404식 예외 계약을 유지하고, 나머지 verb는 상태와 본문을 그대로 반환한다.
+- `time`의 `date(str)` 생성자는 연/월/일(윤년 포함), 시/분/초/밀리초를 모두 엄격하게 검증한다. `date("2024-02-30")`은 에러다.
+- `use a.*`는 `use a { * }`의 축약형이다(공개 멤버 전부를 와일드카드 import).
 
 ## 아키텍처
 

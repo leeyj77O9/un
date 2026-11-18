@@ -114,12 +114,23 @@ bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
   per program). Protos that cannot be compiled are not registered at all;
   the caller falls back to the interpreter.
 - Class methods are eligible: the hidden `self` pointer arrives as a raw
-  `Rc<ObjData>` at ABI position 1 (after the hidden result pointer) and is
-  pinned to local slot 0 in the entry block. `self.<Int>` get/set is a
-  **name-checked** intrinsic that verifies `[member name == field name ∧
-  payload == Int]` at call time; a mismatch bails to the interpreter
-  (tag = 2). Constructors and non-Int-field methods still bail (by design),
-  as do anything that cannot lift into the Int/Float value model.
+  `Rc<ObjData>` at ABI position 2 (after the hidden result pointer and the
+  `param_tags` hidden argument) and is pinned to local slot 0 in the entry
+  block. `self.<Int>` get/set is a **name-checked** intrinsic that verifies
+  `[member name == field name ∧ payload == Int]` at call time; a mismatch
+  bails to the interpreter (tag = 2). Constructors and non-Int-field methods
+  still bail (by design), as do anything that cannot lift into the Int/Float
+  value model.
+- The JIT FFI ABI is `(hidden result ptr, param_tags: i64, args...)`.
+  `param_tags` bit `p` is set iff argument `p` is a borrowed IntVec arena
+  handle rather than a plain Int (plain Ints ≥ `ID_BASE` never reach the
+  JIT). A per-proto entry guard reads `unsafe_param_mask` — the set of
+  parameter positions that can reach an Int-consuming op — and bails the
+  whole frame to the interpreter when a handle lands in one of them.
+  This is what stops `xs + 1` from silently returning a handle value.
+- Nested JIT calls carry list handles: `emit_user_call` accepts them
+  (`int_list_foreign_seen`), and the callee prologue tags its args on entry
+  "borrowed, not for free'd".
 - All per-program JIT state (`JIT_FNS`, `JIT_MODULES`, `JIT_LAZY_ATTEMPTED`,
   and the `PLAN_CACHE` key) is keyed by the opaque monotone `Program.id`,
   never by pointer identity — a program dropped and re-allocated at the same
@@ -182,10 +193,10 @@ them.
 | `test/negative/manifest.txt` | `path|expected exit|expected substring` — exit code and stderr matching for error cases |
 | `test/KnownFailures.txt` | scripts that are expected to fail (currently empty) |
 | `test/KnownDivergent.txt` | documented divergences (currently none registered) |
-| `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (90 files) |
+| `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (92 files) |
 | `scripts/unbc-roundtrip.ps1` | `.unbc` round-trip byte comparison for Positive and compilable Negative files |
 | `scripts/bench.ps1` | warm-up + repetitions + statistics (min/median/mean/max/stddev/ops) |
-| `cargo test --release` | 205 Rust unit tests (lexer, parser, compiler, runtime, VM, native) |
+| `cargo test --release` | 213 Rust unit tests (lexer, parser, compiler, runtime, VM, native, net/redirects) |
 
 The build is release-only and requires the GNU toolchain:
 
@@ -214,5 +225,5 @@ here, so a test or the WASM playground must restore what it changes.
 | `rust/src/runtime/obj.rs` (`un_instance_int_get` / `un_instance_int_ok` / `un_instance_int_ok_name` / `un_instance_int_set`) | direct member access for the JIT | documented `# Safety` contract, `catch_unwind`, name-checked for the class-layout intrinsic, bails to the interpreter on any mismatch |
 | `rust/src/runtime/int_dict.rs` | integer-keyed dictionaries for JIT-emitted code | `Mutex` arena (poison-tolerant lock); tables are freed at JIT exits via `un_dict_int_free`; the arena itself is process-lifetime, wiped by `jit_cache::clear()` |
 | `rust/src/jit_cache.rs:57` | `unsafe impl Send for JitEntry` | sound only because the vendored Cranelift backend leaks its allocations |
-| `rust/src/vm/mod.rs` (`F1..F8`) | call into JIT-generated code | hidden result pointer contract, arity asserted |
+| `rust/src/vm/mod.rs` (`F1..F10`) | call into JIT-generated code | hidden result pointer + `param_tags` bitmask contract, arity asserted |
 | `rust/src/runtime/clock.rs` | WASM host imports | WASM-only |
