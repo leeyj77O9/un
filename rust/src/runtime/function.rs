@@ -42,8 +42,11 @@ pub struct Args {
 }
 impl Args {
     pub fn positional(values: Vec<Obj>) -> Self {
-        let names = vec![String::new(); values.len()];
-        Self { values, names }
+        // No per-argument `String::new()` bookkeeping — positional call
+        // sites are the hot path and every call would pay for an empty
+        // String per argument otherwise. Consumers use `.get(i)` and treat
+        // a missing name as positional.
+        Self { values, names: Vec::new() }
     }
     pub fn named(values: Vec<Obj>, mut names: Vec<String>) -> Self {
 
@@ -498,7 +501,9 @@ fn try_bind_simple_positional_with_cell(
     args: &Args,
 ) -> Option<Obj> {
     for i in 0..args.count() {
-        if !args.names[i].is_empty() || matches!(obj::payload(&args.values[i]), Payload::Spread(..)) {
+        if args.names.get(i).is_some_and(|n| !n.is_empty())
+            || matches!(obj::payload(&args.values[i]), Payload::Spread(..))
+        {
             return None;
         }
     }
@@ -539,12 +544,12 @@ pub fn unpack_args(args: &Args) -> (Vec<Obj>, Vec<String>) {
             Payload::Spread(items) => {
                 for v in items.iter() {
                     values.push(v.clone());
-                    names.push(args.names[i].clone());
+                    names.push(args.names.get(i).cloned().unwrap_or_default());
                 }
             }
             _ => {
                 values.push(args.values[i].clone());
-                names.push(args.names[i].clone());
+                names.push(args.names.get(i).cloned().unwrap_or_default());
             }
         }
     }

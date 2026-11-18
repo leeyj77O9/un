@@ -29,6 +29,7 @@ pub use self::transfer::dump_register_plan;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::bytecode::instr::*;
@@ -1612,9 +1613,18 @@ pub(crate) fn jit_call(entry: crate::jit_cache::JitEntry, ints: &[i64]) -> UnJit
 thread_local! {
     // Keyed by Program.id — never by pointer identity. Plan holders keep
     // Rc<Program>, so the id is stable exactly as long as any clone of this
-    // program exists; no ABA can alias two distinct programs.
-    static PLAN_CACHE: RefCell<HashMap<u64, (Rc<Program>, Rc<Plan>)>> = RefCell::new(HashMap::new());
+    // program exists; no ABA can alias two distinct programs. The map is
+    // bounded: order is a FIFO of first inserts, and insertion beyond
+    // PLAN_CACHE_LIMIT evicts the oldest entry (a later hit just recompiles).
+    static PLAN_CACHE: RefCell<(HashMap<u64, (Rc<Program>, Rc<Plan>)>, VecDeque<u64>)> =
+        RefCell::new((HashMap::new(), VecDeque::new()));
 }
+
+/// Upper bound on cached plans per process. A few dozen loaded programs is
+/// typical for a CLI run; anything beyond that is an embedding doing heavy
+/// module loading, where an unbounded retained `Rc<Program>` per entry is
+/// what this bound prevents.
+const PLAN_CACHE_LIMIT: usize = 64;
 
 /// Statically scan the loaded program for class declarations and push a
 /// complete class layout entry into `world::class_layout(name)` — so the JIT
@@ -1755,7 +1765,7 @@ fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
 fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
     // Keyed by the per-program opaque id, never by pointer identity.
     let key = program.id;
-    let found = PLAN_CACHE.with(|cache| cache.borrow().get(&key).cloned());
+    let found = PLAN_CACHE.with(|cache| cache.borrow().0.get(&key).cloned());
     if let Some((_, cached_plan)) = found {
         // Plan cache holds the only Rc<Program> that matters; id collision
         // is impossible (`next_program_id` is monotonic).
@@ -1768,8 +1778,16 @@ fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
     // Seed class layouts so class methods can be specialised against a
     // static layout extracted from the source.
     seed_class_layouts(&plan, program);
-    PLAN_CACHE
-        .with(|cache| cache.borrow_mut().insert(key, (program.clone(), plan.clone())));
+    PLAN_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        while cache.0.len() >= PLAN_CACHE_LIMIT {
+            if let Some(oldest) = cache.1.pop_front() {
+                cache.0.remove(&oldest);
+            }
+        }
+        cache.1.push_back(key);
+        cache.0.insert(key, (program.clone(), plan.clone()));
+    });
     plan
 }
 
