@@ -130,6 +130,39 @@ bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
   afterwards).
 - `UV_JIT=0` disables the JIT at runtime; `UV_JIT_DEBUG=1` prints the
   compile decisions.
+- **Resource lifecycle** (the part that is not obvious from the code):
+  - Every program that enters the JIT goes through `jit_cache::JIT_MODULES`,
+    keyed by the opaque monotone `Program.id` (never by pointer identity).
+    The arenas — `INT_LIST_ARENA`, `INT_DICT_ARENA`, `INT_CLASSES` — are
+    **process-lifetime and grow monotonically**; they never recycle freed
+    slots. Only `jit_cache::clear()` releases them, and after that no JIT
+    code may be entered: calling into a cleared module is out of contract
+    (that is also what makes `unsafe impl Send for JitEntry` hold today —
+    the vendored Cranelift backend never frees native code inside a running
+    process, see TD-05). `clear_program(id)` frees exactly one program's
+    native code and is what tests use.
+  - `PLAN_CACHE` (thread-local) keeps every loaded `Rc<Program>` and
+    `Rc<Plan>` for the process lifetime (TD-03, by design — the registry is
+    cheap and the alternative is re-validation on every call; a mis-keyed
+    cache is impossible because keys are opaque ids, not pointers).
+  - The recursion-depth guard is an atomic counter (`JIT_DEPTH`); its bound
+    (`max_recursion_depth`) is a `Relaxed` `AtomicUsize` cache that is
+    refreshed by `world::set_max_recursion_depth()` (i.e. by
+    `sys.setrecursionlimit`). `world::reset()` seeds it; an embedder that
+    never calls `world::reset()` still starts at the default 1000, so no
+    path can accidentally get "unlimited" from the API.
+  - Tag = 2 (bail) is the safety valve for anything the JIT cannot prove:
+    the whole proto frame re-runs on pristine arguments in the interpreter,
+    producing byte-identical output — which is why "correct everywhere" is
+    verifiable with a differential gate instead of per-opcode proofs.
+  - `class_layouts` is keyed by class name, appended-deduplicated, never
+    reordered; a second same-named class with a different field order
+    silently degrades JIT to interpreter speed (the name-checked intrinsic
+    still bails correctly — speed, not correctness; TD-51).
+  - Wholesale native memory is only ever reclaimed at process exit. Any
+    future hot-reload/module-unload story must keep the arena/id namespace
+    coherent across `clear()` boundaries; today nothing unloads a module
+    at runtime.
 
 ## 6. Native modules
 

@@ -1293,3 +1293,41 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   module rebinds veto the whole program to the interpreter (verified both
   directly and through a `m = math` alias); a math-free class with a
   `self.sin` attribute still JIT-compiles.
+
+---
+
+## 2026-11-18 - Pass 23 follow-up: Float strict canary
+
+- `test/jit/strict_float.un` 신설: `test/jit/strict.un`(Int 전용)과 같은 형태로
+  Float math intrinsic 계열을 커레이트한 proto들만으로 구성. `math.un`/`floatmath.un`의
+  커널 모양(Int 누산 승격, Float 누산)과 sqrt/log/sin/trunc/sign/hypot/pow(mixed Float)
+  사례를 담고, `close()` 헬퍼로 Float 근접 비교를 직접 구현한다(전부 JIT 적격).
+- `.github/workflows/build.yml`에 `JIT Float strict canary (UV_JIT=2)` 스텝 추가.
+- bring-up에서 실측으로 얻은 사실: **unary `Op::Neg`(Float 상수 부정)은 JIT 미지원.**
+  `math.sign(-0.5)`를 `0.0 - 0.5`(fsub)로 바꾸면 통과한다. 남은 JIT 갭으로 기록.
+- 검증: 양 lane + `UV_JIT=2` 모두 `jit-float-strict canary OK`, exit 0.
+  (의도적으로 `sign(-0.5)`를 쓴 초안은 `UV_JIT=2`에서 `1/6 candidate(s) failed JIT codegen: 4:sign_sum`로 죽는 것을 확인 — canary가 작동한다.)
+
+---
+
+## 2026-11-19 - Pass 23 follow-ups 2: strict canary verified, debt sync, iter_values unified
+
+- Float strict canary (see previous entry) re-verified green in all three
+  lanes (default / UV_JIT=0 / UV_JIT=2). `.github/workflows/build.yml`
+  gained the `JIT Float strict canary (UV_JIT=2)` step; AGENTS.md synced.
+- `TD-45` evidence refreshed (hypot fixed earlier via f64::hypot — entry now
+  says so). New `TD-53`: the Int-JIT never lowers unary `Op::Neg` — any proto
+  with an unary minus is rejected and interpreted; `0.0 - x` (fsub) is the
+  documented workaround.
+- `iter_values` unified: both `native::iter::iter_values` (iter.* global
+  functions) and `native::members::iter_values` (method twins) were merged
+  into `runtime::iters::into_values`. Plain-list fast path now benefits both
+  call sites; error strings preserved exactly ("expected 'iterable' argument
+  to be of type 'iter'" vs "counter is infinite"). Verified:
+  iter-heavy paths (test_suite, algorithms.un) and all gates
+  (Positive 1493, differential 88/0, unbc-roundtrip, cargo test 205).
+- `docs/ARCHITECTURE.md` gained the "Resource lifecycle" section: arenas are
+  process-lifetime and grow monotonically, only `jit_cache::clear()` releases
+  (incl. why `unsafe impl Send for JitEntry` is sound today), PLAN_CACHE
+  (TD-03) bounds, recursion-depth atomic + cached bound, tag=2 bail as the
+  safety valve, class-layout reordering note (TD-51).
