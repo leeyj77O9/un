@@ -53,7 +53,7 @@ recover qsort either: it is still 0x9 via `claims_intlist`.
   benchmarks ~16ms, results correct, `assert.summary()` 5/5 green.
 - `mergesort1000`: **JIT-rejected** (0x9). Same as qsort.
 - The full test suite / differential remain green:
-  - `scripts/test.ps1`: Positive **46 files / 1479 passed / 0 failed / 0 crashed**;
+  - `scripts/test.ps1`: Positive **46 files / 1482 passed / 0 failed / 0 crashed**;
     Negative 41 matched / 0 mismatched; Known 0; exit 0.
   - `scripts/differential.ps1`: **87 files, 0 differences**.
 

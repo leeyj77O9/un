@@ -19,7 +19,7 @@
   `docs/audit/AUDIT_ITEM1.md`에 상세 기록.
 - **부작용**: bench 기준 `fib24`는 JIT 유지(1.3–1.9ms). `qsort500`/`mergesort1000`은
   인터프리터 속도(17ms/11ms) — 결과는 정확함.
-- **검증**: `scripts/test.ps1` Positive **1479 passed / 0 failed / 0 crashed**,
+- **검증**: `scripts/test.ps1` Positive **1482 passed / 0 failed / 0 crashed**,
   `scripts/differential.ps1` **87 files, 0 differences**.
 - **측정**: 14개 벤치마크 중 수치는 AUDIT_FINAL.md §4 갱신 참조 예정.
 
@@ -62,5 +62,5 @@ TD-47에 "`io.open("rw")`가 `r`처럼 동작한다"고 잘못 적었을 가능�
 ## 종합
 
 세 항목은 "현재 상태가 적절한 이유"가 근거로 확인되고, item 1만 수정이 적용되었다.
-변경 내용은 `git diff`(사용자 미커밋 변경 보존), 검증은 `scripts/test.ps1` (1479/0),
+변경 내용은 `git diff`(사용자 미커밋 변경 보존), 검증은 `scripts/test.ps1` (1482/0),
 `scripts/differential.ps1` (87/0)로 확인했다.

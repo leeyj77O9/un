@@ -32,7 +32,7 @@ Severity:
 | TD-38 | low | `http` `*_async` members are byte-identical aliases of the sync versions; there is no async anywhere (D-054/D-012) | `rust/src/native/http.rs:224-275` |
 | TD-41 | low | `date.add_days` / `date.add_hours` / `time.from_epoch` / `time.from_epoch_ms` silently wrap i64 on huge inputs; `add_years` clamps Feb 29 correctly (D-068) but no test pins it | `rust/src/native/date_members.rs`, `rust/src/native/time.rs:89-104` |
 | TD-43 | low | `stopwatch.elapsed` returns a `date` holding the monotonic duration (not a timestamp); `start()` resets the timer instead of resuming | `rust/src/native/stopwatch.rs:174-180, 80-89` |
-| TD-44 | low | `sys.version`/`os.version` return a fabricated `"Microsoft Windows NT 10.0.0"` regardless of the host | `rust/src/native/sys.rs:127-133`, `rust/src/native/os.rs:231-238` |
+| TD-44 | low | `sys.version`/`os.version` return a fabricated `"Microsoft Windows NT 10.0.0"` regardless of the host | `rust/src/native/sys.rs:127-133`, `rust/src/native/os.rs:231-238` | **Resolved (2026-11-19)**: `sys.version()` now returns `"Un <crate version>"` (like `sys.version`), and `os.version()` returns `"<OS family> (Un <version>)"` — honest host self-report, no fabricated OS identity. |
 | TD-45 | low | `math.pow` saturates to `i64::MAX` on overflow for integer args; `math.wrap`/`abs` round-trip through f64; `trunc` always returns `int` (saturates); `round(1e30)` saturates; `hypot(1e200, 1e200)` → inf instead of using `f64::hypot`; `lcm` can overflow silently; `log`/`asin`/`acos` accept any base/domain | `rust/src/native/math.rs` |
 | TD-47 | low | `os.rs` and `sys.rs` are near-verbatim copies (env/pid/name/arch/version/cpuCount/is64bit/hostname/username/args/sep/pathsep/linesep/tickCount) that will drift; `io.write`/`io.read` declare unusable `stream`/`input`/`output` stub params | `rust/src/native/os.rs`, `rust/src/native/sys.rs`, `rust/src/native/io.rs` |
 | TD-48 | low | `dict.add` on a duplicate key panics with the .NET `ArgumentException` — the message is byte-identical parity (D-024) and has no test | `rust/src/native/members.rs:1362-1370` |
@@ -42,10 +42,9 @@ Severity:
 
 ## Resolved in 2026-11
 
-Closed during the audit/refactor passes (see `docs/REFACTOR_LOG.md` for the
 evidence and `docs/DECISIONS.md` for the semantics decisions):
 TD-01, TD-02, TD-04, TD-06, TD-07, TD-12, TD-13, TD-14, TD-15, TD-19, TD-23,
-TD-25, TD-28, TD-29, TD-30, TD-32, TD-33, TD-34, TD-35, TD-36, TD-37, TD-42, TD-46.
+TD-25, TD-28, TD-29, TD-30, TD-32, TD-33, TD-34, TD-35, TD-36, TD-37, TD-42, TD-44, TD-46.
 
 Closed-out notes: TD-37 kept the deliberate API shape (4xx/5xx responses
 return the body, matching the .NET reference — the Un http client does not

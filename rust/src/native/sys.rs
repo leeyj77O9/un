@@ -125,11 +125,8 @@ fn arch_impl(_scope: &Scope) -> Obj {
     }
 }
 fn version_impl(_scope: &Scope) -> Obj {
-    obj::str(&format!(
-        "{} {}",
-        if cfg!(target_os = "windows") { "Microsoft Windows NT" } else { "Unix" },
-        "10.0.0"
-    ))
+    // Truthful self-report: the Un runtime version, like Python's sys.version.
+    obj::str(&format!("Un {}", env!("CARGO_PKG_VERSION")))
 }
 fn cpu_count_impl(_scope: &Scope) -> Obj {
     obj::int(std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(1))

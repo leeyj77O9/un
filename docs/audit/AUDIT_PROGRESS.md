@@ -126,7 +126,7 @@
 
 ### 문서 (P3)
 
-- **C5**: `docs/TEST_GUIDE.md`의 1391/1415 수치를 1454→1479 이후 현재값으로,
+- **C5**: `docs/TEST_GUIDE.md`의 1391/1415 수치를 1454→1482 이후 현재값으로,
   `docs/REFACTOR_SUMMARY.md`·`docs/PROJECT_AUDIT.md`의 D-001…D-072 → D-001…D-077.
 - **C6**: `docs/DECISIONS.md`의 D-012 상태를 Accepted로(살아있는 동작은 D-054/D-063 참조),
   D-065의 `cargo test 199 passed` → `205 passed`.

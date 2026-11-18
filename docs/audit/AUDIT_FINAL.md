@@ -15,9 +15,9 @@
 | 항목 | 평가 |
 | --- | --- |
 | 아키텍처 | 파이프라인(`lex → parse → optimize → compile → unbc → validate → register VM / Cranelift JIT`)이 잘 분리돼 있다. `Op`의 `#[repr(u8)]` 계약, `.unbc` 왕복 검증, differential 러너 등 검증 체계가 강하다. |
-| 구현 완성도 | 언어 전반부(클래스/상속/enum/match/예외/이터레이터)까지 동작하는 유례없는 초기 단계 언어치고 완성도가 높다. Rust 205 unit tests + 46 `.un` suite 파일(1479 assertions) + differential + unbc byte-compare. |
+| 구현 완성도 | 언어 전반부(클래스/상속/enum/match/예외/이터레이터)까지 동작하는 유례없는 초기 단계 언어치고 완성도가 높다. Rust 205 unit tests + 46 `.un` suite 파일(1482 assertions) + differential + unbc byte-compare. |
 | 코드 품질 | 일관된 Rust 스타일, `RefCell` 소유권 승인, Error는 언어 error object로 통일 (`LangError`). Clippy 경고는 대부분 pedantic하고, 오류는 0개. |
-| 안정성 | 감사 전에는 실 입력에서 프로세스 abort/UB에 이르는 결함 다수 (아래 §2). 수정 후에는 `cargo test` 210/210, suite 1479/1479, differential 87/87, 비정상 종료 0건. |
+| 안정성 | 감사 전에는 실 입력에서 프로세스 abort/UB에 이르는 결함 다수 (아래 §2). 수정 후에는 `cargo test` 210/210, suite 1482/1482, differential 87/87, 비정상 종료 0건. |
 | 성능 | Int-JIT은 동질 Int 반환 proto에서 잘 작동한다(`call200000` 0.7ms vs 이전 인터프리터 ~211ms; fib24 ~1.9ms JIT 유지). 이종 반환 proto(qsort500/mergesort1000)는 태그 계약 유지 조건상 인터프리터로 fallback한다 — 정확성 우선, 결과값은 정확함. 대부분의 Int/Float 계산 벤치는 개선되거나 동일하다. 나머지 회귀는 사용자의 JIT 개선(dual-tag)으로 되돌릴 수 있다. |
 | 확장성 | JIT 범위가 Int/Float 부분집합으로 한정돼 있어 가장 큰 체계적 위험(tag 계약)이 드러났다. 타입 확장은 별도 프로젝트. |
 > **핵심 리스크(감사 후)**: JIT는 이제 정확하지만, 이종(heterogeneous) 반환 proto는
@@ -90,7 +90,7 @@ ID는 `AUDIT_FINDINGS.md`와 동일. **심각도**는 P0(크래시/UB/손상) / 
   알려진 문제만 처리"한 결과다.
 - **`cargo test`가 녹색이었어도 언어 semantics는 깨져 있었다**: `enum` 접근 공개 API가
   동작하지 않았고, `fs.move(dir, existing-file)`이 데이터를 잃고 성공을 보고하고,
-  `str({"k": Boom()})`이 프로세스를 abort했다. 46개 suite 파일, 1479 assertions가
+  `str({"k": Boom()})`이 프로세스를 abort했다. 46개 suite 파일, 1482 assertions가
   이 보호망을 감지하지 못했다.
 - **differential runner는 JIT를 증명하지 못한다**: "87 files, 0 differences"는 둘 중
   어느 쪽도 semantic miscompile이 없었음을 의미할 뿐, "JIT가 컴파일되는 코드가 실제로
@@ -171,7 +171,7 @@ ID는 `AUDIT_FINDINGS.md`와 동일. **심각도**는 P0(크래시/UB/손상) / 
 |---|---|---|
 | `cargo build --release` | exit 0, rustc 경고 0 | GNU toolchain |
 | `cargo test --release --workspace` | **210 passed, 0 failed** | unvm 205 + playground 5 |
-| `scripts/test.ps1` (전체) | **Positive 46 files / 1479 passed / 0 failed / 0 crashed; Negative 41 matched / 0 mismatched / 0 divergences; Known 0; exit 0** | 신규 회귀 6파일 포함 |
+| `scripts/test.ps1` (전체) | **Positive 46 files / 1482 passed / 0 failed / 0 crashed; Negative 41 matched / 0 mismatched / 0 divergences; Known 0; exit 0** | 신규 회귀 6파일 포함 |
 | `scripts/differential.ps1` | **87 files, 0 differences** | 신규 파일 포함 |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **46/46 identical**; Negative 34 identical, 7 skipped(compile-rejected, 의도된) | |
 | WASM playground build | exit 0 | |
@@ -269,7 +269,7 @@ ID는 `AUDIT_FINDINGS.md`와 동일. **심각도**는 P0(크래시/UB/손상) / 
 - **Item 4 — `io.open("rw")`**: 이미 올바른 read/write 모드로 구현돼 있고 `io.un` 테스트가
   검증함. 수정 없음 — 이전 감사 기술 파생 오해였다.
 
-**최종 검증**: `cargo test --release --workspace` 210/210, `scripts/test.ps1` **1479 passed / 0 failed / 0 crashed**,
+**최종 검증**: `cargo test --release --workspace` 210/210, `scripts/test.ps1` **1482 passed / 0 failed / 0 crashed**,
 `scripts/differential.ps1` **87 files, 0 differences**, `scripts/unbc-roundtrip.ps1 -IncludeNegative`
 **46/46 identical** (positive), negative 34 identical.
 
