@@ -249,7 +249,13 @@ fn run_worklist(
         while ip < proto.code.len() {
             if let Some(seen) = depths[ip] {
                 if seen != depth {
-                    let dump = (744..=796)
+                    // Dump a bounded neighbourhood around the offending ip;
+                    // the mismatch is always local to it. (The previous
+                    // 744..=796 literal was stale for most protos and could
+                    // even index out of bounds.)
+                    let lo = ip.saturating_sub(32);
+                    let hi = proto.code.len().min(ip.saturating_add(32));
+                    let dump = (lo..hi)
                         .map(|i| format!("{i}:{:?}", depths[i].map(|d| d.to_string()).unwrap_or_else(|| "?".into())))
                         .collect::<Vec<_>>()
                         .join(" ");
