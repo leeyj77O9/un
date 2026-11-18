@@ -235,6 +235,12 @@ pub fn read(bytes: &[u8]) -> Result<Program, String> {
         root: 0,
         id: crate::bytecode::next_program_id(),
     };
+    if reader.remaining() != 0 {
+        return Err(format!(
+            "trailing garbage in .unbc: {} byte(s) after the last proto",
+            reader.remaining()
+        ));
+    }
     program.validate()?;
     Ok(program)
 }
@@ -459,7 +465,10 @@ mod tests {
     fn sample() -> Program {
         let mut program = Program {
             source_path: "test.un".to_string(),
-            source: Some("x = 1\n".to_string()),
+            // Spans in the synthetic program refer to indices up to 12;
+            // the embedded source must be long enough for validate()'s
+            // bounds check to pass.
+            source: Some("x = 1 + 2\nmore source text here".to_string()),
             names: vec!["<module>".to_string(), "io".to_string(), "x".to_string()],
             consts: vec![
                 Constant::Int(1),

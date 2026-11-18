@@ -38,8 +38,13 @@ impl Source {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default()
     }
+    /// Span lookup must stay total: a crafted `.unbc` can carry spans that
+    /// were checked against the embedded source but not against this exact
+    /// `Source` instance, and a miss must never panic the VM.
     pub fn span(&self, start: usize, length: usize) -> String {
-        self.code[start..start + length].iter().collect()
+        let start = start.min(self.code.len());
+        let end = start.saturating_add(length).min(self.code.len());
+        self.code[start..end].iter().collect()
     }
     pub fn get_line(&self, position: usize) -> usize {
         let position = position.min(self.code.len());

@@ -170,6 +170,20 @@ impl Program {
             if proto.name >= self.names.len() {
                 return Err(format!("{label}: name index {} out of range", proto.name));
             }
+            if let Some(text) = &self.source {
+                let char_len = text.chars().count();
+                for ip in 0..proto.source_map.len() {
+                    let (start, length) = proto.source_map[ip];
+                    let end = start.checked_add(length).ok_or_else(|| {
+                        format!("{label}: source_map span at ip {ip} overflows")
+                    })?;
+                    if end > char_len {
+                        return Err(format!(
+                            "{label}: source_map span at ip {ip} [{start}..{end}) out of embedded source ({char_len} chars)"
+                        ));
+                    }
+                }
+            }
             if proto.source_map.len() != proto.code.len() {
                 return Err(format!(
                     "{label}: source_map len {} != code len {}",
@@ -308,15 +322,40 @@ fn check_indices(
         Op::LoadConst => index_range(label, "constant", operand, proto.consts.len()),
         Op::LoadName => index_range(label, "name", operand, proto.names.len()),
 
-        Op::BuildTupleNamed => index_range(label, "names", flags as usize, proto.names.len()),
         Op::GetAttr
         | Op::SetAttr
         | Op::ArgKw
-        | Op::MakeClass
         | Op::LoadBaseClass
         | Op::RegisterClass
         | Op::MakeEnum
         | Op::AddMember => index_range(label, "name", operand, proto.names.len()),
+        Op::ArgBegin => {
+            // The operand is only used as an allocation hint; a hostile
+            // .unbc must not force a multi-GB reservation.
+            if operand > 256 {
+                return Err(format!("{label}: argument count {operand} exceeds 256"));
+            }
+            Ok(())
+        }
+        Op::MakeClass => {
+            index_range(label, "name", operand, proto.names.len())?;
+            let fields = (flags >> 8) as usize;
+            if operand + 1 + fields > proto.names.len() {
+                return Err(format!("{label}: class field name slot out of range"));
+            }
+            Ok(())
+        }
+        Op::BuildTupleNamed => {
+            let first = flags as usize;
+            index_range(label, "names", first, proto.names.len())?;
+            if operand > 256 {
+                return Err(format!("{label}: tuple name count {operand} exceeds 256"));
+            }
+            if first + operand > proto.names.len() {
+                return Err(format!("{label}: tuple name slot out of range"));
+            }
+            Ok(())
+        }
         Op::LoadLocal | Op::StoreLocal => {
             index_range(label, "slot", operand, proto.locals.len())
         }
