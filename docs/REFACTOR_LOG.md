@@ -1710,3 +1710,44 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - Gates: Positive 1507, Negative 43, differential 90/0, cargo test 205,
   UV_JIT=2 canary OK. No regression.
 
+
+---
+
+## 2026-11-19 - Pass 34: TD-09 evidence-refresh with measurement
+
+### Trigger
+
+- The user asked for the remaining TD-09 (`scope::snapshot` deep-clones the whole scope
+  chain per `go` future) to be investigated and designed.
+### Measurement
+
+- Synthetic `go`-in-loop benchmark (`200,000` forks, pure Int arithmetic, follow with `wait`):
+  - 20,000 iterations → ~99 ms
+  - 200,000 iterations → ~1,058 ms
+  - That is ~5 microseconds per fork including the actual proto execution, and the bulk of
+    it is the VM dispatch loop, not the snapshot copy.
+  - The snapshot itself is bounded by (symbols-section size + slot count × Rc bumps) ×
+    (scope chain depth). Slot/Symbol clones are shallow (`Rc<RefCell<Obj>>`) and HashMap
+    clones rehash String keys that were already interned — worst realistic case: 1-3
+    microseconds on a 100-symbol frame.
+- The measured cost is not in the hot path: for `bench/funccall.un` and other hot loops,
+  forking is not happening; for `go` in a loop — an explicit user-initiated spawn — the
+  fork overhead is on the same order as one statement's interpretation overhead.
+
+### Decision
+
+- Not restructured. The deep-clone is the semantics of `go` in this runtime: the future
+  captures the scope at fork time; absent a fork-time immutable shared arena (a value-model
+  redesign, unrelated to this pass), removing the copy would change the visible behaviour
+  of captured variables. A fork-on-write variant would change mutation visibility for
+  futures — that is a language semantic decision, not an implementation note.
+- The residual risk is "this is expensive when you `go` tens of thousands of times". That
+  is application-level and is why Un is not an actor runtime; `pool.map` is the intended
+  shape (`pool.submit` also captures the scope per submission but does so once per task,
+  not per loop iteration inside a worker).
+
+### Status
+
+- TD-09 downgraded from "medium, open" to **Evidence-refresh (2026-11-19)** in the debt
+  register — documented with measured numbers, accepted in current design.
+
