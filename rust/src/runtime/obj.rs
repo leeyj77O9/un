@@ -152,20 +152,21 @@ impl PartialEq for Payload {
 }
 pub struct ObjData {
     pub type_name: Rc<str>,
-    pub declared: Rc<str>,
-    pub types: Types,
     pub self_: Option<Obj>,
     pub super_: Option<Obj>,
     pub parents: Vec<Obj>,
     pub members: Vec<(String, Obj)>,
     pub annotations: Vec<(String, Obj)>,
     pub payload: Payload,
+    /// Lazily computed union of `obj` (the metatype) and this object's own
+    /// type name. `None` until first read — objects that never participate
+    /// in `x is T` checks (the overwhelming majority) never pay for the
+    /// `Types` allocation.
+    pub(crate) types: std::cell::RefCell<Option<Types>>,
 }
 impl ObjData {
-    fn new(type_name: Rc<str>, obj_type: Rc<str>, payload: Payload) -> Self {
+    fn new(type_name: Rc<str>, payload: Payload) -> Self {
         Self {
-            types: Types::create(&[Types::Single(obj_type), Types::Single(type_name.clone())]),
-            declared: type_name.clone(),
             type_name,
             self_: None,
             super_: None,
@@ -173,27 +174,47 @@ impl ObjData {
             members: Vec::new(),
             annotations: Vec::new(),
             payload,
+            types: std::cell::RefCell::new(None),
         }
+    }
+    /// The eager union of this object's own type name and the `obj` metatype.
+    /// Computed on first read, then cached.
+    pub(crate) fn types(&self) -> Types {
+        if self.types.borrow().is_none() {
+            let t = Types::create(&[
+                Types::Single(crate::runtime::world::obj_type()),
+                Types::Single(self.type_name.clone()),
+            ]);
+            *self.types.borrow_mut() = Some(t);
+        }
+        self.types
+            .borrow()
+            .as_ref()
+            .expect("types lazily filled on read")
+            .clone()
+    }
+    /// Overwrite the cached union (used when a class adds a base to its metatype).
+    pub(crate) fn set_types(&self, types: Types) {
+        *self.types.borrow_mut() = Some(types);
     }
 }
 pub fn obj_new(type_name: &str, payload: Payload) -> Obj {
     Rc::new(RefCell::new(ObjData::new(
         world::intern_type(type_name),
-        world::obj_type(),
         payload,
     )))
 }
-pub fn plain(type_name: Rc<str>, obj_type: Rc<str>) -> Obj {
-    Rc::new(RefCell::new(ObjData::new(type_name, obj_type, Payload::Plain)))
+pub fn plain(type_name: Rc<str>) -> Obj {
+    Rc::new(RefCell::new(ObjData::new(type_name, Payload::Plain)))
 }
-pub fn int_obj(value: i64, type_name: Rc<str>, obj_type: Rc<str>) -> Obj {
-    Rc::new(RefCell::new(ObjData::new(type_name, obj_type, Payload::Int(value))))
+pub fn int_obj(value: i64, type_name: Rc<str>) -> Obj {
+    Rc::new(RefCell::new(ObjData::new(type_name, Payload::Int(value))))
 }
-pub fn str_obj(value: Rc<str>, type_name: Rc<str>, obj_type: Rc<str>) -> Obj {
-    Rc::new(RefCell::new(ObjData::new(type_name, obj_type, Payload::Str(value))))
+pub fn str_obj(value: Rc<str>, type_name: Rc<str>) -> Obj {
+    Rc::new(RefCell::new(ObjData::new(type_name, Payload::Str(value))))
 }
-pub fn bool_obj_new(value: bool, type_name: Rc<str>, obj_type: Rc<str>) -> Obj {
-    Rc::new(RefCell::new(ObjData::new(type_name, obj_type, Payload::Bool(value))))
+pub fn bool_obj_new(value: bool, type_name: Rc<str>) -> Obj {
+    Rc::new(RefCell::new(ObjData::new(type_name, Payload::Bool(value))))
 }
 pub fn none() -> Obj {
     world::none_obj()
@@ -353,7 +374,7 @@ fn combine_hash(seed: u64, value: u64) -> u64 {
     seed.rotate_left(13) ^ value
 }
 pub fn types_of(o: &Obj) -> Types {
-    o.borrow().types.clone()
+    o.borrow().types()
 }
 pub fn key_not_found(name: &str) -> Obj {
     panic(
@@ -964,7 +985,7 @@ pub fn obj_is(o: &Obj, other: &Obj) -> Obj {
     if let Payload::TObj(t) = payload(o) {
         return collections::tobj_is(&t, other);
     }
-    let types = o.borrow().types.clone();
+    let types = o.borrow().types();
     let other_type = Types::Single(type_name(other));
     if types.contains(&other_type) {
         return boolean(true);
@@ -1046,7 +1067,7 @@ pub fn clone_obj(o: &Obj) -> Obj {
         Payload::Int(v) => return int(v),
         Payload::Float(v) => return float(v),
         Payload::Bool(b) => return boolean(b),
-        Payload::Str(s) => return str_obj(s, world::str_type(), world::obj_type()),
+        Payload::Str(s) => return str_obj(s, world::str_type()),
         Payload::Date(t) => return date_obj(t),
         Payload::List(v) => return collections::list_clone(&v),
         Payload::Dict(km) => return collections::dict_clone(&km),
@@ -1076,7 +1097,7 @@ pub fn clone_obj(o: &Obj) -> Obj {
         let d = o.borrow();
         (
             d.type_name.clone(),
-            d.types.clone(),
+            d.types(),
             d.members.clone(),
             d.annotations.clone(),
             d.self_.clone(),
@@ -1084,8 +1105,8 @@ pub fn clone_obj(o: &Obj) -> Obj {
             d.super_.clone(),
         )
     };
-    let mut created = ObjData::new(type_name, world::obj_type(), Payload::Plain);
-    created.types = types;
+    let mut created = ObjData::new(type_name, Payload::Plain);
+    created.set_types(types);
     created.members = members;
     created.annotations = annotations;
     created.self_ = self_;
@@ -1105,7 +1126,7 @@ pub fn copy_obj(o: &Obj) -> Obj {
         Payload::Int(v) => int(v),
         Payload::Float(v) => float(v),
         Payload::Bool(b) => boolean(b),
-        Payload::Str(s) => str_obj(s, world::str_type(), world::obj_type()),
+        Payload::Str(s) => str_obj(s, world::str_type()),
         Payload::Date(t) => date_obj(t),
         Payload::Tup(vals, names) => collections::tup_copy(&vals, &names),
         Payload::Stru(_) => collections::stru_copy(o),
@@ -1267,7 +1288,7 @@ pub fn to_str(o: &Obj) -> Obj {
         return to_str(&s);
     }
     match payload(o) {
-        Payload::Str(s) => str_obj(s, world::str_type(), world::obj_type()),
+        Payload::Str(s) => str_obj(s, world::str_type()),
         Payload::Int(v) => str(&v.to_string()),
         Payload::Float(v) => str(&prims::fmt_double(v)),
         Payload::Bool(b) => str(if b { "true" } else { "false" }),

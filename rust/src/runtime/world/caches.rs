@@ -1,4 +1,4 @@
-//! Interned type names and the scalar object caches (`int`, `str`, `bool`,
+﻿//! Interned type names and the scalar object caches (`int`, `str`, `bool`,
 //! `none`, `null`, `__uninitialized__`).
 //!
 //! Scalars are interned so that identity-based comparisons stay fast and the
@@ -49,7 +49,7 @@ pub fn none_obj() -> Obj {
         if let Some(n) = &w.none {
             return n.clone();
         }
-        let o = plain(w.type_cache["none"].clone(), w.type_cache["obj"].clone());
+        let o = plain(w.type_cache["none"].clone());
         w.none = Some(o.clone());
         o
     })
@@ -60,7 +60,7 @@ pub fn null_obj() -> Obj {
         if let Some(n) = &w.null {
             return n.clone();
         }
-        let o = plain(w.type_cache["null"].clone(), w.type_cache["obj"].clone());
+        let o = plain(w.type_cache["null"].clone());
         w.null = Some(o.clone());
         o
     })
@@ -71,10 +71,7 @@ pub fn uninitialized_obj() -> Obj {
         if let Some(u) = &w.uninitialized {
             return u.clone();
         }
-        let o = plain(
-            w.type_cache["__uninitialized__"].clone(),
-            w.type_cache["obj"].clone(),
-        );
+        let o = plain(w.type_cache["__uninitialized__"].clone());
         w.uninitialized = Some(o.clone());
         o
     })
@@ -91,7 +88,7 @@ pub fn bool_obj(value: bool) -> Obj {
         if let Some(b) = slot {
             return b.clone();
         }
-        let o = crate::runtime::obj::bool_obj_new(value, names.0, names.1);
+        let o = crate::runtime::obj::bool_obj_new(value, names.0);
         *slot = Some(o.clone());
         o
     })
@@ -101,16 +98,15 @@ pub fn int_cached(value: i64) -> Obj {
     const LOW: i64 = -1024;
     const HIGH: i64 = 100000;
     if value < LOW || value > HIGH {
-        return int_obj(value, int_type(), obj_type());
+        return int_obj(value, int_type());
     }
     WORLD.with(|w| {
         let mut w = w.borrow_mut();
         if w.int_cache.is_empty() {
             let int_name = w.type_cache["int"].clone();
-            let obj_name = w.type_cache["obj"].clone();
             for i in LOW..=HIGH {
                 w.int_cache
-                    .push(int_obj(i, int_name.clone(), obj_name.clone()));
+                    .push(int_obj(i, int_name.clone()));
             }
         }
         w.int_cache[(value - LOW) as usize].clone()
@@ -119,7 +115,7 @@ pub fn int_cached(value: i64) -> Obj {
 
 pub fn str_pooled(value: &str) -> Obj {
     if value.encode_utf16().count() > MAX_POOLED_LEN {
-        return str_obj(std::rc::Rc::from(value), str_type(), obj_type());
+        return str_obj(std::rc::Rc::from(value), str_type());
     }
     WORLD.with(|w| {
         let mut w = w.borrow_mut();
@@ -134,7 +130,6 @@ pub fn str_pooled(value: &str) -> Obj {
         let o = str_obj(
             key.clone(),
             w.type_cache["str"].clone(),
-            w.type_cache["obj"].clone(),
         );
         w.str_pool.insert(key, o.clone());
         w.str_pool_size += 1;

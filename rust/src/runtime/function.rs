@@ -582,7 +582,7 @@ pub fn fn_to_str(f: &Obj) -> String {
 }
 pub fn fn_clone(f: &Obj) -> Obj {
     let Some(cell) = fn_cell(f) else {
-        return obj::plain(obj::type_name(f), world::obj_type());
+        return obj::plain(obj::type_name(f));
     };
     let data = {
         let c = cell.borrow();
@@ -602,13 +602,12 @@ pub fn fn_clone(f: &Obj) -> Obj {
     let src = f.borrow();
     let created = ObjData {
         type_name: src.type_name.clone(),
-        declared: src.declared.clone(),
-        types: src.types.clone(),
         self_: src.self_.clone(),
         super_: src.super_.clone(),
         parents: src.parents.clone(),
         members: src.members.clone(),
         annotations: src.annotations.clone(),
+        types: std::cell::RefCell::new(None),
         payload: Payload::Func(Rc::new(RefCell::new(data))),
     };
     Rc::new(RefCell::new(created))

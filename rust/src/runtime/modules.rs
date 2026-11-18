@@ -15,7 +15,7 @@ pub fn init_classes() {
         ("set", collections::set(vec![])),
         ("dict", collections::dict(vec![])),
         ("iter", iters::seq(vec![])),
-        ("template", obj::plain(world::intern_type("template"), world::obj_type())),
+        ("template", obj::plain(world::intern_type("template"))),
     ];
     for (name, instance) in instances {
         world::register_original_class(name, Vec::new());
@@ -23,7 +23,7 @@ pub fn init_classes() {
     }
 }
 pub fn module_object(members: Vec<(String, Obj)>) -> Obj {
-    let module = obj::plain(world::intern_type("module"), world::obj_type());
+    let module = obj::plain(world::intern_type("module"));
     for (name, value) in members {
         obj::member_set(&module, &name, &value);
     }
@@ -64,7 +64,7 @@ pub fn import_map(
         if let Some(alias) = module_alias {
             if scope::contains_key(&scope, &alias) {
 
-                let existing = obj::plain(world::intern_type(&alias), world::obj_type());
+                let existing = obj::plain(world::intern_type(&alias));
                 for (name, import_alias) in imports {
                     if name == WILDCARD {
                         for (k, v) in map {
@@ -78,7 +78,7 @@ pub fn import_map(
                 scope::set(&scope, &alias, existing);
                 return Ok(());
             }
-            let module = obj::plain(world::intern_type("module"), world::obj_type());
+            let module = obj::plain(world::intern_type("module"));
             for (name, import_alias) in imports {
                 if name == WILDCARD {
                     for (k, v) in map {

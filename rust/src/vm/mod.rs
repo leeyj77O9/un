@@ -1186,9 +1186,9 @@ impl VM {
                         created.borrow_mut().super_ = Some(base.clone());
                     }
                     created.borrow_mut().parents.push(base.clone());
-                    let base_types = base.borrow().types.clone();
-                    let merged = Types::create(&[created.borrow().types.clone(), base_types]);
-                    created.borrow_mut().types = merged;
+                    let base_types = base.borrow().types();
+                    let merged = Types::create(&[created.borrow().types(), base_types]);
+                    created.borrow_mut().set_types(merged);
                 }
             }
             Op::AddMember | Op::AddMethod => {

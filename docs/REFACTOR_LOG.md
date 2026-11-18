@@ -1565,3 +1565,41 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   (TD-49's astral `ascii` UTF-16 behavior is kept as parity; `inspect.delattr`
   own-instance scope pinned-accepted).
 
+
+---
+
+## 2026-11-19 - Pass 29: TD-10/TD-18 Phase 1+2, stdlib batch; bench re-pin
+
+### Trigger
+
+- Stdlib correctness: date/epoch paths wrapped i64 silently on
+  enormous arguments; `exit("x")` exited 0; `ord("ab")` returned the
+  first codepoint; `dict.add` duplicate-key ArgumentException was
+  untracked by any test. Entire class of silent corruption
+  (`date.add_days`, `time.from_epoch`).
+- TD-10: `set_attr_from`'s "clones up to three times per assignment"
+  was evaluated; each clone is a refcount bump (Obj = Rc), no deep copy,
+  restructuring not worth it — debt downgraded to evidence-refresh.
+
+### Changes
+
+- Pass 28 (`e5a7086`): checked arithmetic on all date/epoch add paths
+  (`add_days/hours/minutes/seconds/ms`, `add_years`, `add_months`,
+  `time.from_epoch[_ms]`), `exit()` non-int error, `ord` single-char
+  error, `dict.add` & `ord` negative fixtures. Negative manifest 41 -> 43,
+  Positive 1493 -> 1504. Closes TD-41/TD-48/TD-49.
+- Pass 29 (this): TD-18 Phase 1+2 (`7f37439` docs / Pass 29):
+  `ObjData::declared` deleted (dead field, no reader); `ObjData::types`
+  converted from eager union on every construction to lazily computed +
+  cached (None until first `x is T` read). `x is T` consumers unchanged;
+  gate: Positive 1504 / differential 90 files 0 differences / unbc-roundtrip
+  47/47+36/36 / cargo test 205 / test_suite 109 / UV_JIT=2 strict canary OK.
+  Design doc: docs/REFACTOR_TYPES.md (Proposed).
+
+### Result
+
+- BENCHMARK.md re-pinned to `7f37439` (geomean JIT/Python 7.353x);
+  math10000 ~0.093ms, sin20000 ~0.57ms (see the committed BENCHMARK.md).
+- TD-18 marked In progress; TD-10 marked Evidence-refresh.
+- High-severity debt: none.
+
