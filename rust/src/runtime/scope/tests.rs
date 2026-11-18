@@ -115,3 +115,5 @@ fn assignment_uses_the_slot_index_after_repeated_sets() {
     assert_eq!(obj::display(&slot(&s, "a")), "2");
     assert_eq!(obj::display(&slot(&s, "b")), "3");
     assert_eq!(slot_count(&s), 2);
+}
+
