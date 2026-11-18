@@ -123,6 +123,11 @@ pub fn register_eligible(program: &Program, program_id: u64) {
     }));
 }
 fn register_eligible_inner(program: &Program, program_id: u64) {
+    let strict = crate::jit_cache::jit_strict();
+    // Per-candidate compile failures land here; a `UV_JIT=2` canary below
+    // turns a whole-program fallback into a loud exit instead of a silent
+    // interpreter world.
+    let mut failed: Vec<(usize, String)> = Vec::new();
     if program_has_intrinsic_rebind(program) {
         return; // interpreter only ??hostile module binding
     }
@@ -138,13 +143,28 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     }
     let native = match native_builder() {
         Ok(n) => n,
-        Err(_) => return,
+        Err(_) => {
+            // Not reached by the canary: an env/backend failure here means
+            // the JIT is entirely unavailable, which is observably the same
+            // as `UV_JIT=0`. Still noisy under strict mode.
+            if strict != 0 {
+                eprintln!("JITSTRICT: native backend unavailable; refusing to run without the JIT");
+                std::process::exit(2);
+            }
+            return;
+        }
     };
     let mut flag_builder = settings::builder();
     let _ = flag_builder.set("is_pic", "false");
     let isa = match native.finish(settings::Flags::new(flag_builder)) {
         Ok(isa) => isa,
-        Err(_) => return,
+        Err(_) => {
+            if strict != 0 {
+                eprintln!("JITSTRICT: failed to build the ISA; refusing to run without the JIT");
+                std::process::exit(2);
+            }
+            return;
+        }
     };
     let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
     builder.symbol("un_jit_depth_enter", crate::jit_cache::un_jit_depth_enter as *const u8);
@@ -429,7 +449,14 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
             Ok(func_id) => {
                 decls.insert(idx, func_id);
             }
-            Err(_) => return,
+            Err(_) => {
+                if strict != 0 {
+                    let name = program.names.get(program.protos[idx].name).cloned().unwrap_or_else(|| "?".into());
+                    eprintln!("JITSTRICT: declaring JIT function for proto {idx} ({name}) failed");
+                    std::process::exit(2);
+                }
+                return;
+            }
         }
     }
     if decls.is_empty() {
@@ -499,12 +526,12 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
                 None
             }
         };
-        if result.is_none()
-        {
+        if result.is_none() {
+            let name = program.names.get(program.protos[idx].name).cloned().unwrap_or_else(|| "?".into());
             if std::env::var_os("UV_JIT_DEBUG").is_some() {
-                let name = program.names.get(program.protos[idx].name).cloned().unwrap_or_else(|| "?".into());
                 eprintln!("JITREJECT proto[{idx}] {name} (panic in JIT codegen, fallback stub)");
             }
+            failed.push((idx, name));
             if verbose {
                 let name = program.names.get(program.protos[idx].name).cloned().unwrap_or_default();
                 eprintln!("JITDBG STUB proto[{idx}] {name} (fallback stub ??will tag=2 bail)");
@@ -519,7 +546,22 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
             eprintln!("JITDBG OK    proto[{idx}] {name}");
         }
     }
+    // Strict-mode canary: `UV_JIT=2` makes any candidate compile failure a
+    // hard process exit instead of a silent fallback stub.
+    // `std::process::exit` bypasses the `catch_unwind` in
+    // `register_eligible` on purpose: this is a hard failure by operator
+    // request, not an error to absorb.
+    if strict != 0 && !failed.is_empty() {
+        let names: Vec<String> = failed.iter().map(|&(i, ref n)| format!("{i}:{n}")).collect();
+        eprintln!("JITSTRICT: {}/{} candidate(s) failed JIT codegen: {}", failed.len(), candidates.len(), names.join(", "));
+        eprintln!("JITSTRICT: curate the workload or unset UV_JIT (0 = interpreter, 1/default = JIT with fallback)");
+        std::process::exit(2);
+    }
     if module.finalize_definitions().is_err() {
+        if strict != 0 {
+            eprintln!("JITSTRICT: finalizing the JIT module failed");
+            std::process::exit(2);
+        }
         return;
     }
     for &idx in &candidates {
@@ -551,6 +593,14 @@ struct Tr<'a> {
     plan: &'a ProtoPlan,
     arena: Vec<String>,
     param_pos: HashMap<String, usize>,
+    /// Frame-local slot for every declared local (proto.locals order). The
+    /// binding index `name -> slot`. When a local and a parameter share a
+    /// name (e.g. `fn f(n) -> ... n = n - 1 ...`), the VM merges both names
+    /// onto the one local slot at bind time, and `LoadName` resolves there
+    /// — never to the ABI parameter. Reading via `param_pos` instead would
+    /// see the stale FFI argument register on every iteration (the JIT looped
+    /// forever). LoadName must consult this map first.
+    local_name_to_slot: HashMap<String, usize>,
     patches: HashMap<usize, RangePatch>,
     arity: usize,
     // Registers whose value is (still) one of the function's raw argument
@@ -1285,6 +1335,65 @@ impl<'a> Tr<'a> {
         self.f64_vars[self.arity + self.locals_len + reg]
     }
 
+    /// The shared body of `Op::LoadLocal` and the frame-local arm of
+    /// `Op::LoadName`: seed the destination register from the slot's (typed)
+    /// variable with the full marker bookkeeping (ret_slot, intlist/intdict/
+    /// instance markers, borrowed params, class-method `self`).
+    fn emit_load_local(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        dst_reg: usize,
+        slot: usize,
+    ) -> Option<()> {
+        if slot >= self.locals_len {
+            return None;
+        }
+        if self.field_locals.contains(&slot) {
+            return None;
+        }
+        self.class_ctor_regs.remove(&dst_reg);
+        self.instance_regs.remove(&dst_reg);
+        self.method_regs.remove(&dst_reg);
+        self.intlist_regs.remove(&dst_reg);
+        self.len_regs.remove(&dst_reg);
+        if self.local_borrow_raw[slot] {
+            self.param_regs.insert(dst_reg);
+        } else {
+            self.param_regs.remove(&dst_reg);
+        }
+        let float_slot = self.local_float[slot];
+        if float_slot {
+            let v = builder.use_var(self.lv_f64(slot));
+            builder.def_var(self.rv_f64(dst_reg), v);
+            self.is_bool[dst_reg] = false;
+            self.is_none[dst_reg] = false;
+            self.is_float[dst_reg] = true;
+            self.ret_slot[dst_reg] = Some(slot);
+        } else {
+            let v = builder.use_var(self.lv_i64(slot));
+            builder.def_var(self.rv_i64(dst_reg), v);
+            self.is_bool[dst_reg] = self.local_is_bool[slot];
+            self.is_none[dst_reg] = self.local_is_none[slot];
+            self.is_float[dst_reg] = false;
+            if self.local_is_intdict[slot] {
+                self.int_dict_regs.insert(dst_reg);
+            }
+            if let Some(desc) = self.local_is_instance[slot] {
+                self.instance_regs.insert(dst_reg, desc);
+            }
+            if self.local_is_list[slot] != 0 {
+                self.intlist_regs.insert(dst_reg, self.local_is_list[slot]);
+            }
+            if self.is_class_method && slot == 0 {
+                // Local slot 0 is `self`; a register loaded straight
+                // from it holds the receiver pointer.
+                self.self_regs.insert(dst_reg);
+            }
+            self.ret_slot[dst_reg] = Some(slot);
+        }
+        Some(())
+    }
+
     fn emit_stream(&mut self, builder: &mut FunctionBuilder) -> Option<()> {
         let code = &self.plan.code;
         let mut ip = 0usize;
@@ -1597,6 +1706,14 @@ impl<'a> Tr<'a> {
             }
             Op::LoadName => {
                 let name = self.arena.get(ins.d as usize)?.clone();
+                // A name that shares a frame-local slot (declared locals,
+                // including a parameter re-declared by `n = ...`) is bound
+                // to that slot at run time by the frame's preseed merge —
+                // never to the ABI parameter. Route through the local slot
+                // or every iteration reads the stale call-time argument.
+                if let Some(&slot) = self.local_name_to_slot.get(&name) {
+                    return self.emit_load_local(builder, ins.a as usize, slot);
+                }
                 // NB: call_candidate_regs is populated by the match below
                 // (it knows the name's param/global identity).
                 self.call_candidate_regs.remove(&(ins.a as usize));
@@ -1968,53 +2085,7 @@ impl<'a> Tr<'a> {
                 self.ret_slot[ins.a as usize] = None;
                 Some(())
             }
-            Op::LoadLocal => {
-                let slot = ins.d as usize;
-                if slot >= self.locals_len || self.field_locals.contains(&slot) {
-                    return None;
-                }
-                self.class_ctor_regs.remove(&(ins.a as usize));
-                self.instance_regs.remove(&(ins.a as usize));
-                self.method_regs.remove(&(ins.a as usize));
-                self.intlist_regs.remove(&(ins.a as usize));
-                self.len_regs.remove(&(ins.a as usize));
-                if self.local_borrow_raw[slot] {
-                    self.param_regs.insert(ins.a as usize);
-                } else {
-                    self.param_regs.remove(&(ins.a as usize));
-                }
-                let float_slot = self.local_float[slot];
-                if float_slot {
-                    let v = builder.use_var(self.lv_f64(slot));
-                    builder.def_var(self.rv_f64(ins.a as usize), v);
-                    self.is_bool[ins.a as usize] = false;
-                    self.is_none[ins.a as usize] = false;
-                    self.is_float[ins.a as usize] = true;
-                    self.ret_slot[ins.a as usize] = Some(slot);
-                } else {
-                    let v = builder.use_var(self.lv_i64(slot));
-                    builder.def_var(self.rv_i64(ins.a as usize), v);
-                    self.is_bool[ins.a as usize] = self.local_is_bool[slot];
-                    self.is_none[ins.a as usize] = self.local_is_none[slot];
-                    self.is_float[ins.a as usize] = false;
-                    if self.local_is_intdict[slot] {
-                        self.int_dict_regs.insert(ins.a as usize);
-                    }
-                    if let Some(desc) = self.local_is_instance[slot] {
-                        self.instance_regs.insert(ins.a as usize, desc);
-                    }
-                    if self.local_is_list[slot] != 0 {
-                        self.intlist_regs.insert(ins.a as usize, self.local_is_list[slot]);
-                    }
-                    if self.is_class_method && slot == 0 {
-                        // Local slot 0 is `self`; a register loaded straight
-                        // from it holds the receiver pointer.
-                        self.self_regs.insert(ins.a as usize);
-                    }
-                    self.ret_slot[ins.a as usize] = Some(slot);
-                }
-                Some(())
-            }
+            Op::LoadLocal => self.emit_load_local(builder, ins.a as usize, ins.d as usize),
             Op::Add | Op::Sub | Op::Mul => {
                 if self.int_dict_seen(&[ins.b as usize, ins.c as usize]) {
                     return None;
@@ -3740,6 +3811,18 @@ pub fn emit_fn_in_module(
         .enumerate()
         .map(|(i, p)| (program.names[p.name].clone(), i + usize::from(is_class)))
         .collect();
+    let local_name_to_slot: HashMap<String, usize> = proto
+        .locals
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, &proto_ix)| {
+            proto
+                .names
+                .get(proto_ix)
+                .and_then(|&g| program.names.get(g).cloned())
+                .map(|n| (n, slot))
+        })
+        .collect();
 
     // ---------- pass 1: collect jump targets ----------
     let mut leaders: HashSet<usize> = HashSet::new();
@@ -3770,7 +3853,7 @@ pub fn emit_fn_in_module(
         }
     }
 
-    // ---------- pass 2c: Int??????????????????promotion fixpoint ----------
+    // ---------- pass 2c: Int-promotion fixpoint ----------
     let local_float = compute_local_float(code, proto, program);
     // If the function contains no user-call sites, there is no chance of
     // infinite recursion through the JIT, so skip the depth bookkeeping on
@@ -3839,6 +3922,28 @@ pub fn emit_fn_in_module(
             continue;
         }
         builder.def_var(vars[i], zero);
+    }
+    // A local sharing its name with a parameter is the SAME binding slot in
+    // the VM (the frame preseed merges param and local onto one slot), so its
+    // variable must start with the FFI argument, not zero — otherwise a loop
+    // whose carried variable is first written inside the body (e.g.
+    // `while n > 0` on a parameter Cranelift reads as uninitialised) reads
+    // Cranelift's undef/zero instead of the argument.
+    for (slot, &proto_ix) in proto.locals.iter().enumerate() {
+        let Some(name) = proto
+            .names
+            .get(proto_ix)
+            .and_then(|&g| program.names.get(g).cloned())
+        else {
+            continue;
+        };
+        let Some(&p) = param_pos.get(&name) else {
+            continue;
+        };
+        if p < vars.len() {
+            let src = builder.use_var(vars[p]);
+            builder.def_var(vars[arity + slot], src);
+        }
     }
     // all Float pairs start undefined; they are only read through `use_var`
     // after being defined by their defining instructions
@@ -3937,6 +4042,7 @@ pub fn emit_fn_in_module(
         plan,
         arena,
         param_pos,
+        local_name_to_slot,
         patches,
         f64_vars,
         arity,
