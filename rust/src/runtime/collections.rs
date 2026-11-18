@@ -304,9 +304,9 @@ pub fn list_get_item(v: &Rc<RefCell<Vec<Obj>>>, key: &Obj) -> Obj {
         Payload::Int(i) => {
             let count = v.borrow().len() as i64;
 
-            let idx = i as i32 as i64;
+            let idx = i;
             if out_of_range(idx, count) {
-                let wrapped = (i + count) as i32 as i64;
+                let wrapped = i.saturating_add(count);
                 if out_of_range(wrapped, count) {
                     return obj::err("list index out of range");
                 }
@@ -321,12 +321,12 @@ pub fn list_set_item(v: &Rc<RefCell<Vec<Obj>>>, key: &Obj, value: &Obj) -> Obj {
     match obj::payload(key) {
         Payload::Int(i) => {
             let count = v.borrow().len() as i64;
-            let idx = i as i32 as i64;
+            let idx = i;
             if !out_of_range(idx, count) {
                 v.borrow_mut()[idx as usize] = value.clone();
                 return value.clone();
             }
-            let wrapped = (i + count) as i32 as i64;
+            let wrapped = i.saturating_add(count);
             if !out_of_range(wrapped, count) {
                 v.borrow_mut()[wrapped as usize] = value.clone();
                 return value.clone();
@@ -338,7 +338,7 @@ pub fn list_set_item(v: &Rc<RefCell<Vec<Obj>>>, key: &Obj, value: &Obj) -> Obj {
 }
 pub fn list_insert(v: &Rc<RefCell<Vec<Obj>>>, value: &Obj, index: &Obj) -> Result<(), Obj> {
     let idx = match obj::payload(index) {
-        Payload::Int(i) => i as i32 as i64,
+        Payload::Int(i) => i,
         _ => return Err(obj::err("invalid arguments: index")),
     };
     let count = v.borrow().len() as i64;
@@ -361,7 +361,7 @@ pub fn list_insert(v: &Rc<RefCell<Vec<Obj>>>, value: &Obj, index: &Obj) -> Resul
 }
 pub fn list_remove_at(v: &Rc<RefCell<Vec<Obj>>>, index: &Obj) -> Result<(), Obj> {
     let idx = match obj::payload(index) {
-        Payload::Int(i) => i as i32 as i64,
+        Payload::Int(i) => i,
         _ => return Err(obj::err("invalid arguments: index")),
     };
     let mut data = v.borrow_mut();
@@ -611,7 +611,10 @@ pub fn list_init(o: &Obj, args: &[Obj]) -> Obj {
     }
 }
 pub fn dict_get_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
-    match km.borrow().get(key) {
+    // Bind first so the `Ref` drops before any user code (`display` may run
+    // user `__str__` on the missing key).
+    let found = km.borrow().get(key);
+    match found {
         Some(v) => v,
         None => obj::err(format!(
             "key '{}' not found in dictionary",
@@ -626,19 +629,46 @@ pub fn dict_set_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Obj {
 pub fn dict_in(o: &Obj, other: &Obj) -> Obj {
     match obj::payload(o) {
         Payload::Dict(km) => {
-            let mine = km.borrow();
+            // Snapshot both maps up front; every comparison below may call
+            // user `__eq__`, which may re-enter and mutate either dict.
+            let mine_pairs: Vec<(Obj, Obj)> = km
+                .borrow()
+                .iter_pairs()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             match obj::payload(other) {
-                Payload::Dict(km2) => obj::boolean(mine.overlap(&km2.borrow())),
-                _ => obj::boolean(mine.contains_key(other)),
+                Payload::Dict(km2) => {
+                    let other_pairs: Vec<(Obj, Obj)> = km2
+                        .borrow()
+                        .iter_pairs()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    let mine_map = KeyMap::new(mine_pairs);
+                    let ok = other_pairs.into_iter().all(|(k, v)| match mine_map.get(&k) {
+                        Some(mine) => obj::key_eq(&mine, &v),
+                        None => false,
+                    });
+                    obj::boolean(ok)
+                }
+                _ => {
+                    let mine_map = KeyMap::new(mine_pairs);
+                    obj::boolean(mine_map.contains_key(other))
+                }
             }
         }
         _ => obj::boolean(false),
     }
 }
 pub fn dict_to_str(km: &Rc<RefCell<KeyMap>>) -> String {
-    let snapshot: Vec<String> = km
+    // Snapshot before calling `display` — it can run user `__str__`, which
+    // may re-enter and mutate this dict.
+    let pairs: Vec<(Obj, Obj)> = km
         .borrow()
         .iter_pairs()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let snapshot: Vec<String> = pairs
+        .iter()
         .map(|(k, v)| format!("{}:{}", obj::display(k), obj::display(v)))
         .collect();
     format!("{{{}}}", snapshot.join(", "))
@@ -697,7 +727,10 @@ pub fn dict_init(o: &Obj, args: &[Obj]) -> Obj {
     }
 }
 pub fn set_get_item(s: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
-    match s.borrow().get_key(key) {
+    // Bind first so the `Ref` drops before any user code (`display` may run
+    // user `__str__` on the missing key).
+    let found = s.borrow().get_key(key);
+    match found {
         Some(item) => item,
         None => obj::err(format!("key {} not found in set", obj::display(key))),
     }
@@ -714,25 +747,37 @@ pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> 
                 _ => None,
             };
             let eq = match theirs {
-                Some(s2) => set_equals(&mine.borrow(), &s2.borrow()),
+                Some(s2) => set_equals(&mine, &s2),
                 None => false,
             };
             obj::boolean(if op == BinOp::Eq { eq } else { !eq })
         }
         BinOp::Add => match obj::payload(other) {
-            Payload::Set(s2) => set(union(&mine.borrow(), &s2.borrow())),
+            Payload::Set(s2) => {
+                let a = mine.borrow().keys();
+                let b = s2.borrow().keys();
+                set(union(&a, &b))
+            }
             _ => obj::err(format!(
                 "unsupported operand type(s) for +: 'set' and '{ot}'"
             )),
         },
         BinOp::Sub => match obj::payload(other) {
-            Payload::Set(s2) => set(except(&mine.borrow(), &s2.borrow())),
+            Payload::Set(s2) => {
+                let a = mine.borrow().keys();
+                let b = s2.borrow().keys();
+                set(except(&a, &b))
+            }
             _ => obj::err(format!(
                 "unsupported operand type(s) for -: 'set' and '{ot}'"
             )),
         },
         BinOp::BXor => match obj::payload(other) {
-            Payload::Set(s2) => set(intersect(&mine.borrow(), &s2.borrow())),
+            Payload::Set(s2) => {
+                let a = mine.borrow().keys();
+                let b = s2.borrow().keys();
+                set(intersect(&a, &b))
+            }
             _ => obj::err(format!(
                 "unsupported operand type(s) for ^: 'set' and '{ot}'"
             )),
@@ -742,20 +787,37 @@ pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> 
 }
 
 /// Two sets are equal when they hold the same elements, regardless of order.
-fn set_equals(mine: &KeyMap, other: &KeyMap) -> bool {
-    if mine.len() != other.len() {
+/// Both sides are snapshotted before any `key_eq` call — user `__eq__` may
+/// re-enter and mutate either set.
+fn set_equals(mine: &Rc<RefCell<KeyMap>>, other: &Rc<RefCell<KeyMap>>) -> bool {
+    let mine_keys = mine.borrow().keys();
+    let other_keys = other.borrow().keys();
+    if mine_keys.len() != other_keys.len() {
         return false;
     }
-    mine.iter_pairs().all(|(k, _)| other.contains_key(k))
+    let other_map = KeyMap::new(other_keys.into_iter().map(|k| (k, obj::none())).collect());
+    mine_keys.into_iter().all(|k| other_map.contains_key(&k))
 }
 
-/// Two dicts are equal when they hold the same entries.
-fn dict_equals(mine: &KeyMap, other: &KeyMap) -> bool {
-    if mine.len() != other.len() {
+/// Two dicts are equal when they hold the same entries. Both sides are
+/// snapshotted before any user code runs.
+fn dict_equals(mine: &Rc<RefCell<KeyMap>>, other: &Rc<RefCell<KeyMap>>) -> bool {
+    let mine_pairs: Vec<(Obj, Obj)> = mine
+        .borrow()
+        .iter_pairs()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let other_pairs: Vec<(Obj, Obj)> = other
+        .borrow()
+        .iter_pairs()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if mine_pairs.len() != other_pairs.len() {
         return false;
     }
-    mine.iter_pairs().all(|(k, v)| match other.get(k) {
-        Some(v2) => matches!(obj::payload(&obj::binop(v, BinOp::Eq, &v2)), Payload::Bool(true)),
+    let other_map = KeyMap::new(other_pairs);
+    mine_pairs.into_iter().all(|(k, v)| match other_map.get(&k) {
+        Some(v2) => matches!(obj::payload(&obj::binop(&v, BinOp::Eq, &v2)), Payload::Bool(true)),
         None => false,
     })
 }
@@ -773,32 +835,32 @@ pub fn dict_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) ->
             _ => None,
         };
         let eq = match theirs {
-            Some(t2) => dict_equals(&mine.borrow(), &t2.borrow()),
+            Some(t2) => dict_equals(&mine, &t2),
             None => false,
         };
         return obj::boolean(if op == BinOp::Eq { eq } else { !eq });
     }
     obj::base_binop(o, op, other, t, ot)
 }
-fn union(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
+fn union(a: &[Obj], b: &[Obj]) -> Vec<Obj> {
     let mut map = KeyMap::new(Vec::new());
-    for k in a.keys() {
-        map.try_insert(&k, obj::none());
-    }
-    for k in b.keys() {
-        map.try_insert(&k, obj::none());
+    for k in a.iter().chain(b.iter()) {
+        map.try_insert(k, obj::none());
     }
     map.keys()
 }
-fn except(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
-    a.keys().into_iter().filter(|k| !b.contains_key(k)).collect()
+fn except(a: &[Obj], b: &[Obj]) -> Vec<Obj> {
+    let bmap = KeyMap::new(b.iter().cloned().map(|k| (k, obj::none())).collect());
+    a.iter().filter(|k| !bmap.contains_key(k)).cloned().collect()
 }
-fn intersect(a: &KeyMap, b: &KeyMap) -> Vec<Obj> {
-
-    a.keys().into_iter().filter(|k| b.contains_key(k)).collect()
+fn intersect(a: &[Obj], b: &[Obj]) -> Vec<Obj> {
+    let bmap = KeyMap::new(b.iter().cloned().map(|k| (k, obj::none())).collect());
+    a.iter().filter(|k| bmap.contains_key(k)).cloned().collect()
 }
 pub fn set_to_str(s: &Rc<RefCell<KeyMap>>) -> String {
-    let parts: Vec<String> = s.borrow().keys().iter().map(|i| obj::display(i)).collect();
+    // Snapshot before calling `display` — it can run user `__str__`.
+    let keys = s.borrow().keys();
+    let parts: Vec<String> = keys.iter().map(|i| obj::display(i)).collect();
     format!("{{{}}}", parts.join(", "))
 }
 pub fn set_unop(s: &Rc<RefCell<KeyMap>>, op: UnOp, t: &Rc<str>) -> Obj {
@@ -821,9 +883,9 @@ pub fn tup_get_item(vals: &Rc<Vec<Obj>>, _names: &Rc<Vec<String>>, o: &Obj, key:
     match obj::payload(key) {
         Payload::Int(i) => {
             let count = vals.len() as i64;
-            let idx = i as i32 as i64;
+            let idx = i;
             if out_of_range(idx, count) {
-                let wrapped = (i + count) as i32 as i64;
+                let wrapped = i.saturating_add(count);
                 if out_of_range(wrapped, count) {
                     return obj::err("tuple index out of range");
                 }

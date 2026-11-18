@@ -1,0 +1,30 @@
+use io
+use test.assert as assert
+
+# Constant folding must match runtime (wrapping) semantics:
+#   * int overflow wraps instead of erroring at compile time
+#   * float `//` floor-divides into the i64 sentinel the runtime produces
+#   * int `//` and `%` wrap like their runtime counterparts
+
+big = 9223372036854775807
+assert.assert_eq(big * 2, -2, "const-folded int multiply wraps like runtime")
+assert.assert_eq(big + 1, 0 - 9223372036854775807 - 1, "const-folded int add wraps like runtime")
+assert.assert_eq(big * 2 * 3, -6, "chained const folding wraps consistently")
+
+m1 = 0 - 9223372036854775807 - 1
+assert.assert_eq(m1, 0 - 9223372036854775807 - 1, "runtime construction of INT_MIN wraps")
+assert.assert_eq(m1 - 1, 9223372036854775807, "const-folded int sub wraps like runtime")
+
+# negative zero and float folding
+assert.assert_eq(1e30 // 1.0, m1, "float // 1.0 matches runtime cast_long")
+assert.assert_eq(10 // 3, 3, "int // stays correct")
+assert.assert_eq(10 % 3, 1, "int % stays correct")
+
+# folding through comparisons is unaffected
+assert.assert_true(3 + 4 == 7, "const-folded comparison true")
+assert.assert_false(3 + 4 == 8, "const-folded comparison false")
+
+# folded negative pow declines to fold and errors at runtime
+assert.assert_err(fn() -> 2 ** -1, "negative int pow is a runtime error")
+
+assert.summary()

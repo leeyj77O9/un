@@ -193,6 +193,14 @@ impl Program {
                     return Err(format!("{label}: proto index {index} out of range"));
                 }
             }
+            for index in &proto.locals {
+                if *index >= proto.names.len() {
+                    return Err(format!("{label}: local name index {index} out of range"));
+                }
+            }
+            for pattern in &proto.patterns {
+                validate_pattern(&label, pattern, self, 0)?;
+            }
             for param in &proto.params {
                 if param.name >= self.names.len() {
                     return Err(format!("{label}: parameter name index {} out of range", param.name));
@@ -225,88 +233,43 @@ impl Program {
                 if entry.handler >= proto.code.len() {
                     return Err(format!("{label}: exception handler {} beyond code", entry.handler));
                 }
+                if let Some(slot) = entry.var_slot {
+                    if slot >= proto.names.len() {
+                        return Err(format!("{label}: exception var slot {slot} out of range"));
+                    }
+                }
             }
             for ip in 0..proto.code.len() {
                 let (op, flags, operand) = proto.instruction(ip).ok_or(format!(
                     "{label}: opcode {:#04x} is not defined",
                     proto.code[ip].op
                 ))?;
+                // Opcodes that the verifier understands but the register-VM
+                // translation does not implement. Reject here rather than
+                // letting `transfer::compile` fail downstream (which would
+                // otherwise panic in `plan_for`).
+                if matches!(
+                    op,
+                    Op::LoadUpv
+                        | Op::StoreUpv
+                        | Op::Dup2
+                        | Op::Rot
+                        | Op::PopN
+                        | Op::Tag
+                        | Op::FlushDefers
+                        | Op::FlushUsings
+                ) {
+                    return Err(format!("{label}: opcode {op:?} is not supported"));
+                }
                 check_indices(&label, proto, self, op, flags, operand)?;
             }
 
-            let mut depths: Vec<Option<i64>> = vec![None; proto.code.len() + 1];
-            let mut work = vec![0usize];
-            depths[0] = Some(0);
-            while let Some(ip) = work.pop() {
-                let mut depth = depths[ip].expect("queued depth");
-                let mut ip = ip;
-                while ip < proto.code.len() {
-                    if let Some(seen) = depths[ip] {
-                        if seen != depth {
-                            return Err(format!(
-                                "{label}: stack depth mismatch at ip {ip} ({seen} vs {depth})"
-                            ));
-                        }
-                    } else {
-                        depths[ip] = Some(depth);
-                    }
-                    let (op, flags, operand) = proto.instruction(ip).ok_or(format!(
-                        "{label}: opcode {:#04x} is not defined",
-                        proto.code[ip].op
-                    ))?;
-                    let effect = stack_effect(op, flags, operand);
-                    let next_depth = depth + effect;
-                    if next_depth < 0 {
-                        return Err(format!("{label}: stack depth {next_depth} at ip {ip}"));
-                    }
-                    if matches!(op, Op::Jmp | Op::JmpIf | Op::ForNext | Op::Break | Op::Skip) {
-                        let target = ip as i64 + 1 + operand as i64;
-                        if target < 0 || target > proto.code.len() as i64 {
-                            return Err(format!("{label}: jump target {target} out of range"));
-                        }
-                        let target = target as usize;
-                        let target_depth = if op == Op::ForNext { depth - 1 } else { next_depth };
-                        if target_depth < 0 {
-                            return Err(format!("{label}: stack depth {target_depth} at ip {ip}"));
-                        }
-                        match depths[target] {
-                            Some(seen) if seen != target_depth => {
-                                return Err(format!(
-                                    "{label}: jump to {target} expects depth {seen}, reached depth {target_depth}"
-                                ));
-                            }
-                            None => {
-                                depths[target] = Some(target_depth);
-                                work.push(target);
-                            }
-                            _ => {}
-                        }
-                        if matches!(op, Op::Jmp | Op::Break | Op::Skip) {
-                            break;
-                        }
-
-                        if op == Op::Return || op == Op::Raise {
-                            break;
-                        }
-                        depth = next_depth;
-                        ip += 1;
-                        continue;
-                    }
-                    depth = next_depth;
-                    ip += 1;
-                }
-                if ip == proto.code.len() {
-                    match depths[ip] {
-                        Some(seen) if seen != depth => {
-                            return Err(format!(
-                                "{label}: stack depth mismatch at end ({seen} vs {depth})"
-                            ));
-                        }
-                        None => depths[ip] = Some(depth),
-                        _ => {}
-                    }
-                }
-            }
+            // Stack-depth analysis is delegated to the register-VM translator
+            // (`transfer::analyze`), which is the single source of truth for
+            // handler seeding, dead code after `Return`/`Raise`, and jump-target
+            // checks. Delegating here prevents the verifier and the translator
+            // from drifting apart.
+            let depths = crate::vm::transfer::analyze(proto).map_err(|e| format!("{label}: {e}"))?;
             // Register-VM invariant: the loaded program must fit within the
             // 8-bit register file (locals + stack max depth + 1 <= 256).
             // Enforce it here so downstream code (`vm::transfer::compile`) does
@@ -407,6 +370,28 @@ fn index_range(label: &str, what: &str, index: usize, len: usize) -> Result<(), 
         return Err(format!("{label}: {what} index {index} out of range ({len})"));
     }
     Ok(())
+}
+/// Validate a match pattern tree: depth must stay small (a crafted file
+/// could otherwise nest `Pattern::Tuple` until the stack overflows during a
+/// later recursive pass), and every index it names must be in range. Pattern
+/// indices are resolved against the program-wide tables (`match_pattern`
+/// reads `self.program.consts` / `self.program.names`).
+fn validate_pattern(label: &str, pattern: &Pattern, program: &Program, depth: usize) -> Result<(), String> {
+    const MAX_PATTERN_DEPTH: usize = 64;
+    if depth > MAX_PATTERN_DEPTH {
+        return Err(format!("{label}: pattern nesting exceeds {MAX_PATTERN_DEPTH}"));
+    }
+    match pattern {
+        Pattern::Wildcard => Ok(()),
+        Pattern::Bind(index) => index_range(label, "pattern bind", *index, program.names.len()),
+        Pattern::Literal(index) => index_range(label, "pattern literal", *index, program.consts.len()),
+        Pattern::Tuple(items) => {
+            for item in items {
+                validate_pattern(label, item, program, depth + 1)?;
+            }
+            Ok(())
+        }
+    }
 }
 pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
     let count = operand as i64;
@@ -552,7 +537,7 @@ mod tests {
         let mut proto = Proto::new(0, PROTO_FUNCTION);
         proto.locals = (0..256).collect();
         proto.arity = 0;
-        proto.names = vec![];
+        proto.names = vec![0; 256];
         proto.consts = vec![0];
         proto.code.push(Instr::new(Op::LoadConst, 0));
         proto.code.push(Instr::new(Op::Return, 0));

@@ -1,4 +1,4 @@
-# Refactor Summary — 2026-11
+﻿# Refactor Summary — 2026-11
 
 One-page overview of the architecture audit, migration verification,
 redundancy removal and performance work done on the Un implementation in
@@ -104,7 +104,7 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | `docs/PROJECT_AUDIT.md` | Audit findings (S1/S2/S3) with fix mapping |
 | `docs/REFACTOR_LOG.md` | Per-pass verification records |
 | `docs/TECHNICAL_DEBT.md` | Debt register (open items + closed summary) |
-| `docs/DECISIONS.md` | D-001 … D-072, append-only |
+| `docs/DECISIONS.md` | D-001 … D-077, append-only |
 | `docs/BYTECODE.md` | `.unbc` format specification |
 | `docs/TEST_GUIDE.md` | Test authoring and runner guide |
 | `docs/BENCHMARK_GUIDE.md` | Benchmark methodology and caveats |

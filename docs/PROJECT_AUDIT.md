@@ -1,4 +1,4 @@
-# docs/PROJECT_AUDIT.md
+﻿# docs/PROJECT_AUDIT.md
 
 Audit of the Rust `unvm` implementation (branch `main`, base commit `958f9e2`).
 
@@ -14,7 +14,7 @@ Related documents:
 - `docs/REFACTOR_LOG.md` — dated log of the changes that were actually applied.
 - `docs/ARCHITECTURE.md` — how the implementation is put together.
 - `docs/TECHNICAL_DEBT.md` — the debt register (items deliberately left in place).
-- `docs/DECISIONS.md` — language/runtime decisions (D-001 … D-072).
+- `docs/DECISIONS.md` — language/runtime decisions (D-001 … D-077).
 
 ## 1. Scope and method
 

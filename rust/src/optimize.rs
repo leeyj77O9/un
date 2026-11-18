@@ -1,6 +1,16 @@
 use crate::ast::{Const, Node, NodeKind};
 use crate::error::Panic;
 use crate::token::TokenType;
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// A fresh synthetic identifier for desugaring temps. The leading control
+/// character can never appear in a source identifier (the lexer only accepts
+/// ASCII alphanumerics and `_`), so it cannot shadow a user variable. It
+/// carries its name in `value` because it has no source span to read.
+fn fresh_temp(node: &Node) -> Node {
+    let n = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Node::new(node.start, 0, NodeKind::Identifier)
+        .with_value(crate::ast::Const::Str(format!("\u{1}tmp{n}")))
+}
 /// A single bottom-up pass reaches the fixpoint: children are optimized
 /// before their parents, so every fold/elimination is applied to an
 /// already-final subtree. The counter only exists for diagnostics.
@@ -50,8 +60,95 @@ fn desugar_assign(node: &Node) -> Option<Node> {
     }
     let lhs = node.children[0].clone();
     let rhs = node.children[1].clone();
-    let binary = Node::with_op(node.start, node.length, NodeKind::Binary, op2, vec![lhs.clone(), rhs]);
-    Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![lhs, binary]))
+    // A plain-identifier target re-reads the slot — free and side-effect
+    // free, so inline the binary directly.
+    if lhs.kind == NodeKind::Identifier {
+        let binary = Node::with_op(node.start, node.length, NodeKind::Binary, op2, vec![lhs.clone(), rhs]);
+        return Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![lhs, binary]));
+    }
+    // Property/Index/Slice targets may have side effects in the receiver or
+    // subscript expressions (`make().v += 10`). Python evaluates the target
+    // once; we do the same by binding the receiver (and each subscript) to a
+    // synthetic temp, then writing through the temp.
+    let span = (node.start, node.length);
+    let start = node.start;
+    let mk_assign = |t: Node, v: Node| {
+        Node::with_children(span.0, span.1, NodeKind::Assign, None, vec![t, v])
+    };
+    let mk_binary = |l: Node| {
+        Node::with_op(span.0, span.1, NodeKind::Binary, op2, vec![l, rhs.clone()])
+    };
+    match lhs.kind {
+        NodeKind::Property if lhs.children.len() == 2 => {
+            let name = lhs.children[1].clone();
+            let tmp = fresh_temp(node);
+            let load = Node::with_children(start, 0, NodeKind::Property, None, vec![tmp.clone(), name.clone()]);
+            let store = Node::with_children(start, 0, NodeKind::Property, None, vec![tmp.clone(), name]);
+            Some(Node::with_children(
+                start,
+                span.1 - start,
+                NodeKind::Block,
+                None,
+                vec![
+                    mk_assign(tmp, lhs.children[0].clone()),
+                    mk_assign(store, mk_binary(load)),
+                ],
+            ))
+        }
+        NodeKind::Index if lhs.children.len() == 2 => {
+            let obj_tmp = fresh_temp(node);
+            let key_tmp = fresh_temp(node);
+            let load = Node::with_children(start, 0, NodeKind::Index, None, vec![obj_tmp.clone(), key_tmp.clone()]);
+            let store = Node::with_children(start, 0, NodeKind::Index, None, vec![obj_tmp.clone(), key_tmp.clone()]);
+            Some(Node::with_children(
+                start,
+                span.1 - start,
+                NodeKind::Block,
+                None,
+                vec![
+                    mk_assign(obj_tmp, lhs.children[0].clone()),
+                    mk_assign(key_tmp, lhs.children[1].clone()),
+                    mk_assign(store, mk_binary(load)),
+                ],
+            ))
+        }
+        NodeKind::Slice if lhs.children.len() > 1 && lhs.children.len() <= 4 => {
+            let obj_tmp = fresh_temp(node);
+            // A `Null` bound means "omitted" — keep the literal null child
+            // (the codegen skips null bounds) instead of routing it through
+            // a temp, which would turn it into a runtime value.
+            let bound_tmps: Vec<(bool, Node)> = lhs.children[1..]
+                .iter()
+                .map(|bound| {
+                    if bound.kind == NodeKind::Null {
+                        (false, bound.clone())
+                    } else {
+                        (true, fresh_temp(node))
+                    }
+                })
+                .collect();
+            let mut load_children = vec![obj_tmp.clone()];
+            let mut store_children = vec![obj_tmp.clone()];
+            load_children.extend(bound_tmps.iter().map(|(_, t)| t.clone()));
+            store_children.extend(bound_tmps.iter().map(|(_, t)| t.clone()));
+            let load = Node::with_children(start, 0, NodeKind::Slice, None, load_children);
+            let store = Node::with_children(start, 0, NodeKind::Slice, None, store_children);
+            let mut statements: Vec<Node> = Vec::with_capacity(lhs.children.len() + 1);
+            statements.push(mk_assign(obj_tmp, lhs.children[0].clone()));
+            for ((is_temp, tmp), bound) in bound_tmps.iter().zip(lhs.children[1..].iter()) {
+                if *is_temp {
+                    statements.push(mk_assign(tmp.clone(), bound.clone()));
+                }
+            }
+            statements.push(mk_assign(store, mk_binary(load)));
+            Some(Node::with_children(start, span.1 - start, NodeKind::Block, None, statements))
+        }
+        _ => {
+            // Unsupported target shape: keep the previous expansion.
+            let binary = Node::with_op(node.start, node.length, NodeKind::Binary, op2, vec![lhs.clone(), rhs]);
+            Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![lhs, binary]))
+        }
+    }
 }
 /// Rewrite `Branch`/`ElIf` arms into `IfCase` inside an `If` node. The
 /// `Else` arm is preserved; non-matching arms (absent here) follow through.
@@ -150,8 +247,6 @@ fn optimize_binary(node: &Node) -> Result<(Node, bool), Panic> {
     match eval(op, a, b) {
         Ok(value) => Ok((Node::konst(value, node.start, node.length), true)),
         Err(ConstError::Caught) => Ok((node.clone(), false)),
-
-        Err(ConstError::Uncaught(panic)) => Err(panic),
     }
 }
 fn optimize_ternary(node: &Node) -> (Node, bool) {
@@ -232,10 +327,7 @@ fn is_const(node: &Node) -> Option<Const> {
     }
 }
 enum ConstError {
-
     Caught,
-
-    Uncaught(Panic),
 }
 fn eval(op: TokenType, a: Const, b: Const) -> Result<Const, ConstError> {
     match (a, b) {
@@ -257,17 +349,11 @@ fn eval(op: TokenType, a: Const, b: Const) -> Result<Const, ConstError> {
         }
     }
 }
-fn overflow() -> ConstError {
-    ConstError::Uncaught(Panic::named(
-        "System.OverflowException",
-        "Arithmetic operation resulted in an overflow.",
-    ))
-}
 fn eval_long(op: TokenType, a: i64, b: i64) -> Result<Const, ConstError> {
     match op {
-        TokenType::Plus => a.checked_add(b).map(Const::Int).ok_or_else(overflow),
-        TokenType::Minus => a.checked_sub(b).map(Const::Int).ok_or_else(overflow),
-        TokenType::Asterisk => a.checked_mul(b).map(Const::Int).ok_or_else(overflow),
+        TokenType::Plus => Ok(Const::Int(a.wrapping_add(b))),
+        TokenType::Minus => Ok(Const::Int(a.wrapping_sub(b))),
+        TokenType::Asterisk => Ok(Const::Int(a.wrapping_mul(b))),
 
         TokenType::Slash => {
             if b == 0 {
@@ -279,13 +365,13 @@ fn eval_long(op: TokenType, a: i64, b: i64) -> Result<Const, ConstError> {
             if b == 0 {
                 return Err(ConstError::Caught);
             }
-            Ok(Const::Int(a / b))
+            Ok(Const::Int(a.wrapping_div(b)))
         }
         TokenType::Percent => {
             if b == 0 {
                 return Err(ConstError::Caught);
             }
-            Ok(Const::Int(a % b))
+            Ok(Const::Int(a.wrapping_rem(b)))
         }
         TokenType::DoubleAsterisk => eval_pow_long(a, b),
         TokenType::Equal => Ok(Const::Bool(a == b)),
@@ -318,7 +404,7 @@ fn eval_double(op: TokenType, a: f64, b: f64) -> Result<Const, ConstError> {
             if b == 0.0 {
                 return Err(ConstError::Caught);
             }
-            Ok(Const::Int((a / b) as i64))
+            Ok(Const::Int(crate::runtime::prims::cast_long(a / b)))
         }
         TokenType::Percent => {
             if b == 0.0 {

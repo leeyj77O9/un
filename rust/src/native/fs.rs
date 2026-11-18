@@ -311,13 +311,30 @@ fn move_or_copy(source: &Path, destination: &Path) -> Obj {
             }
             return obj::none();
         }
-        if let Err(e) = std::fs::remove_file(destination) {
-            return obj::err(&e.to_string());
-        }
+        // Source is not a regular file (e.g. a directory): removing the
+        // existing destination before the rename would destroy it even if
+        // the rename then failed (or silently replaced a file — Windows
+        // allows rename(dir, file)). Refuse instead.
+        return obj::err("destination exists");
     }
     match std::fs::rename(source, destination) {
         Ok(()) => obj::none(),
-        Err(e) => obj::err(&e.to_string()),
+        Err(e) => {
+            // rename(2) cannot move across filesystems (EXDEV). Fall back to
+            // a copy + remove for regular files, mirroring the move
+            // semantics. The destination is known to not exist here (that
+            // case is handled above), so the copy cannot clobber anything.
+            if source.is_file() {
+                if let Err(copy_err) = std::fs::copy(source, destination) {
+                    return obj::err(&copy_err.to_string());
+                }
+                if let Err(remove_err) = std::fs::remove_file(source) {
+                    return obj::err(&remove_err.to_string());
+                }
+                return obj::none();
+            }
+            obj::err(&e.to_string())
+        }
     }
 }
 fn rename_impl(scope: &Scope) -> Obj {

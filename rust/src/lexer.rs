@@ -99,6 +99,14 @@ impl<'a> Lexer<'a> {
                     self.line_start = true;
                     continue;
                 }
+                // Comment-only line: skip indent tracking entirely so a
+                // comment whose indentation doesn't match an existing level
+                // doesn't emit stray Indent/Dedent tokens (the comment text is
+                // skipped below and its newline still emits NewLine).
+                if self.peek_is('#') {
+                    self.line_start = false;
+                    continue;
+                }
                 let current = *self.indents.last().unwrap();
                 if indent > current {
                     self.indents.push(indent);

@@ -276,6 +276,11 @@ pub fn is_bool(o: &Obj) -> bool {
     matches!(payload(o), Payload::Bool(_))
 }
 pub fn key_eq(a: &Obj, b: &Obj) -> bool {
+    // Identity fast path — also covers cycles (a cyclic structure compared
+    // with itself is equal without unfolding).
+    if Rc::ptr_eq(a, b) {
+        return true;
+    }
     let pa = payload(a);
     let pb = payload(b);
     match (&pa, &pb) {
@@ -288,6 +293,14 @@ pub fn key_eq(a: &Obj, b: &Obj) -> bool {
     }
 }
 pub fn hash_code(o: &Obj) -> u64 {
+    hash_code_depth(o, 0)
+}
+fn hash_code_depth(o: &Obj, depth: u32) -> u64 {
+    // Cyclic values (`l = []; l.append(l)`) would recurse until the stack
+    // overflows. Give up and return 0 (a legal hash) past the limit.
+    if depth >= MAX_RECURSION_DEPTH {
+        return 0;
+    }
     // Fast scalar path — avoid cloning the payload just to inspect the tag.
     // The hot path (int/bool int identity hash) is essentially one borrow.
     let o_own_ref = std::cell::Ref::map(o.borrow(), |d| &d.payload);
@@ -299,9 +312,15 @@ pub fn hash_code(o: &Obj) -> u64 {
         Payload::Float(v) => {
             // `key_eq` compares floats with `==`, so `-0.0` and `0.0` are the
             // same key and must hash equal; `to_bits` does not. NaN never
-            // compares equal, so it needs no special case.
+            // compares equal, so it needs no special case. Integral floats
+            // in i64 range compare equal to the matching int under `key_eq`
+            // (binop promotes to f64), so they must hash identically too —
+            // otherwise `d[1]` and `d[1.0]` land in different buckets.
             if *v == 0.0 {
                 return 0;
+            }
+            if v.fract() == 0.0 && *v >= i64::MIN as f64 && *v <= i64::MAX as f64 {
+                return *v as i64 as u64;
             }
             return v.to_bits();
         }
@@ -315,18 +334,18 @@ pub fn hash_code(o: &Obj) -> u64 {
         Payload::List(v) => {
             let mut h = 0u64;
             for e in v.borrow().iter() {
-                h = combine_hash(h, hash_code(e));
+                h = combine_hash(h, hash_code_depth(e, depth + 1));
             }
             h
         }
         Payload::Tup(vals, _) => {
             let mut h = 0u64;
             for e in vals.iter() {
-                h = combine_hash(h, hash_code(e));
+                h = combine_hash(h, hash_code_depth(e, depth + 1));
             }
             h
         }
-        Payload::Json(inner) => hash_code(&inner),
+        Payload::Json(inner) => hash_code_depth(&inner, depth + 1),
         _ => prims::str_hash(&type_name(o)) as u64,
     }
 }
@@ -792,6 +811,18 @@ pub fn get_attr(o: &Obj, name: &str) -> Obj {
     get_attr_from(o, name, o)
 }
 fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
+    // A `Type` object (`Color`, `Point`, …) is a proxy for the registered
+    // class object — attribute lookups must reach the class's members
+    // (`Color.RED` before this, `Color.RED` raised "'type' object has no
+    // attribute"). Delegate to the class object; its members hold the
+    // class's fields/methods/enum values.
+    if let Payload::TObj(t) = payload(o) {
+        if let Some(class_name) = t.name() {
+            if let Some(class_obj) = world::get_class(&class_name) {
+                return get_attr_from(&class_obj, name, &class_obj);
+            }
+        }
+    }
     if let Some(m) = member(o, name) {
         if is_property(&m) {
             return property_get(&m, receiver);
@@ -954,7 +985,12 @@ pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
         Payload::List(..) => collections::list_in(o, other),
         Payload::Dict(..) => collections::dict_in(o, other),
 
-        Payload::Set(v) => boolean(v.borrow().contains_key(other)),
+        Payload::Set(v) => {
+            // Snapshot before any `key_eq` — it can call user `__eq__`,
+            // which may re-enter and mutate the set.
+            let keys = v.borrow().keys();
+            boolean(keys.iter().any(|k| key_eq(k, other)))
+        }
         Payload::Tup(vals, _) => collections::tup_in(&vals, other),
         Payload::TObj(t) => collections::tobj_in(&t, other),
         Payload::Iter(st) => iters::iter_in(o, &st, other),
@@ -1216,7 +1252,11 @@ pub fn to_tuple(o: &Obj) -> Obj {
     unary(o, UnOp::ToTuple)
 }
 pub fn to_str(o: &Obj) -> Obj {
-
+    // Guard against cyclic values (`l = []; l.append(l); str(l)`), which
+    // would recurse until the stack overflows and abort the process.
+    let Some(_guard) = DepthGuard::enter(&DISPLAY_DEPTH) else {
+        return str("[...]");
+    };
     if is_none(o) {
         return str("none");
     }
@@ -1580,7 +1620,46 @@ fn int_int_binop(a: i64, op: BinOp, b: i64) -> Obj {
     }
 }
 
+const MAX_RECURSION_DEPTH: u32 = 32;
+thread_local! {
+    static EQ_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static DISPLAY_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+/// RAII guard for the depth counters above. On overflow we return a
+/// degenerate-but-safe answer instead of aborting the process; the guard
+/// restores the previous depth even when unwinding through user code.
+struct DepthGuard {
+    cell: &'static std::thread::LocalKey<std::cell::Cell<u32>>,
+    previous: u32,
+}
+impl DepthGuard {
+    fn enter(cell: &'static std::thread::LocalKey<std::cell::Cell<u32>>) -> Option<DepthGuard> {
+        let depth = cell.with(|d| d.get());
+        if depth >= MAX_RECURSION_DEPTH {
+            return None;
+        }
+        cell.with(|d| d.set(depth + 1));
+        Some(DepthGuard { cell, previous: depth })
+    }
+}
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        self.cell.with(|d| d.set(self.previous));
+    }
+}
 pub fn binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
+    // Cyclic values (`l = []; l.append(l); l == l`) would recurse until the
+    // stack overflows and abort the process. Bail out with the identity
+    // answer for self-similar values instead.
+    if matches!(op, BinOp::Eq | BinOp::NEq) {
+        let Some(_guard) = DepthGuard::enter(&EQ_DEPTH) else {
+            return boolean(matches!(op, BinOp::Eq));
+        };
+        return binop_inner(o, op, other);
+    }
+    binop_inner(o, op, other)
+}
+fn binop_inner(o: &Obj, op: BinOp, other: &Obj) -> Obj {
     if let (Payload::Int(a), Payload::Int(b)) = (payload(o), payload(other)) {
         return int_int_binop(a, op, b);
     }
@@ -1850,6 +1929,7 @@ fn int_binop(a: i64, op: BinOp, other: &Obj, ot: &Rc<str>) -> Obj {
             match b {
                 Payload::Int(v) => boolean(a == v),
                 Payload::Float(v) => boolean(a as f64 == v),
+                Payload::Enu(v) => boolean(a == v),
                 _ => unsupported("==", "int", ot),
             }
         }
@@ -1860,6 +1940,7 @@ fn int_binop(a: i64, op: BinOp, other: &Obj, ot: &Rc<str>) -> Obj {
             match b {
                 Payload::Int(v) => boolean(a != v),
                 Payload::Float(v) => boolean(a as f64 != v),
+                Payload::Enu(v) => boolean(a != v),
                 _ => unsupported("!=", "int", ot),
             }
         }

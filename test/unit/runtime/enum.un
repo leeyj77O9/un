@@ -1,0 +1,34 @@
+use io
+use test.assert as assert
+
+# enum members auto-increment from 0 (docs: `Color.RED` -> 0, `GREEN` -> 1)
+enum Color
+    RED
+    GREEN
+    BLUE
+
+assert.assert_eq(Color.RED, 0, "RED is 0")
+assert.assert_eq(Color.GREEN, 1, "GREEN is 1")
+assert.assert_eq(Color.BLUE, 2, "BLUE is 2")
+
+# explicit overrides continue from there
+enum Level
+    LOW
+    HIGH = 5
+    ULTRA
+
+assert.assert_eq(Level.LOW, 0, "LOW is 0")
+assert.assert_eq(Level.HIGH, 5, "HIGH is 5")
+assert.assert_eq(Level.ULTRA, 6, "ULTRA continues from 5")
+
+# enum values compare equal to plain integers
+assert.assert_true(Color.GREEN == 1, "enum equals its integer")
+assert.assert_true(1 == Color.GREEN, "integer equals its enum")
+
+# enum members work as dict keys (hash of the integer value)
+d = {1: "int"}
+d[Color.GREEN] = "enum"
+assert.assert_eq(len(d), 1, "enum member is the same key as its integer")
+assert.assert_eq(d[Color.GREEN], "enum", "enum member read back")
+
+assert.summary()

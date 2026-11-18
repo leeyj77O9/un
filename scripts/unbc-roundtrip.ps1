@@ -63,7 +63,7 @@ if (-not (Test-Path $Exe)) {
 # .NET Process로 stdout/stderr를 바이트로 캡처한다. 두 스트림은 비동기로
 # 펌프하므로 파이프 버퍼가 차서 생기는 교착은 없다. 인코딩과 무관하게
 # 비교할 수 있다.
-function Invoke-Bytes([string]$arguments) {
+function Invoke-Bytes([string]$arguments, [int]$TimeoutMs = 120000) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
     $psi.Arguments = $arguments
@@ -76,8 +76,18 @@ function Invoke-Bytes([string]$arguments) {
     $errMs = New-Object System.IO.MemoryStream
     $tOut = $p.StandardOutput.BaseStream.CopyToAsync($outMs)
     $tErr = $p.StandardError.BaseStream.CopyToAsync($errMs)
+    if (-not $p.WaitForExit($TimeoutMs)) {
+        # Hang: kill and report a synthetic timeout code.
+        try { $p.Kill() } catch {}
+        $p.WaitForExit(5000) | Out-Null
+        [Threading.Tasks.Task]::WaitAll(@($tOut, $tErr), 5000) | Out-Null
+        return @{
+            code   = 124
+            stdout = $outMs.ToArray()
+            stderr = $errMs.ToArray()
+        }
+    }
     [Threading.Tasks.Task]::WaitAll(@($tOut, $tErr))
-    $p.WaitForExit()
     return @{
         code   = $p.ExitCode
         stdout = $outMs.ToArray()

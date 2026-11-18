@@ -1,0 +1,54 @@
+use io
+use test.assert as assert
+
+# dict/set keys must hash consistently with `==`:
+#   * Int(1) and Float(1.0) compare equal and must share a bucket
+#   * enum members hash as their integer values
+#   * -0.0 and 0.0 are the same key
+
+d = {1: "one"}
+d[1.0] = "float-one"
+assert.assert_eq(len(d), 1, "float 1.0 is the same key as int 1")
+assert.assert_eq(d[1], "float-one", "float key read via int")
+assert.assert_eq(d[1.0], "float-one", "int key read via float")
+
+e = {1.0: "float"}
+e[1] = "int"
+assert.assert_eq(len(e), 1, "int 1 is the same key as float 1.0")
+
+f = {-0.0: "negzero"}
+assert.assert_eq(f[0.0], "negzero", "-0.0 and 0.0 are the same key")
+
+# enum members as keys
+enum Color
+    RED
+    GREEN
+    BLUE
+
+m = {1: "int-one"}
+m[Color.GREEN] = "green"
+assert.assert_eq(len(m), 1, "enum member shares the key of its integer value")
+assert.assert_eq(m[1], "green", "enum member key read via int")
+
+# enum equality with integers
+assert.assert_true(Color.GREEN == 1, "enum member equals its integer value")
+assert.assert_true(1 == Color.GREEN, "integer equals its enum member")
+assert.assert_true(Color.RED == 0, "enum auto-increment starts at 0")
+assert.assert_true(Color.BLUE == 2, "enum third member is 2")
+
+# set membership with mixed numeric types
+s = set()
+s.add(1)
+assert.assert_true(1.0 in s, "float 1.0 is in a set containing int 1")
+assert.assert_true(s.contains(1.0), "contains works for float vs int")
+
+# non-integral floats remain distinct keys
+g = {1.5: "half", 1: "one"}
+assert.assert_eq(len(g), 2, "integral and fractional floats are distinct keys")
+
+# dict equality with mixed numeric keys
+a = {1: "x"}
+b = {1.0: "x"}
+assert.assert_true(a == b, "dict with int key equals dict with float key")
+
+assert.summary()

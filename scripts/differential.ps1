@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Differential runner: executes every test script twice — once with the JIT
     disabled (UV_JIT=0) and once with the default configuration — and requires
@@ -15,9 +15,17 @@
       is configuration-independent by construction — it is a language error
       message, not an engine error message).
 
+.PARAMETER TimeoutSec
+    Per-run timeout in seconds (default 120). A hung script fails the run instead
+    of blocking it indefinitely.
+
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 #>
+
+param(
+    [int]$TimeoutSec = 120
+)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -29,19 +37,40 @@ if (-not (Test-Path $Exe)) {
 }
 
 function Invoke-Un([string]$Path, [string]$JitMode) {
-    $env:UV_JIT = $JitMode
-    try {
-        $text = & $Exe run $Path 2>&1
-        $code = $LASTEXITCODE
-    } finally {
+    # "0" pins the JIT off; "" pins nothing (default configuration).
+    if ($JitMode -eq "") {
         Remove-Item Env:UV_JIT -ErrorAction SilentlyContinue
+    } else {
+        $env:UV_JIT = $JitMode
     }
-    return @{ code = $code; text = ($text -join "`n") }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = "run `"$Path`""
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.WorkingDirectory = $Root
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $outMs = New-Object System.IO.MemoryStream
+    $errMs = New-Object System.IO.MemoryStream
+    $tOut = $p.StandardOutput.BaseStream.CopyToAsync($outMs)
+    $tErr = $p.StandardError.BaseStream.CopyToAsync($errMs)
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+        try { $p.Kill() } catch {}
+        $p.WaitForExit(5000) | Out-Null
+        [Threading.Tasks.Task]::WaitAll(@($tOut, $tErr), 5000) | Out-Null
+        return @{ code = 124; text = "*** TIMEOUT after ${TimeoutSec}s ***" }
+    }
+    [Threading.Tasks.Task]::WaitAll(@($tOut, $tErr))
+    $stdout = [System.Text.Encoding]::UTF8.GetString($outMs.ToArray())
+    $stderr = [System.Text.Encoding]::UTF8.GetString($errMs.ToArray())
+    $text = (($stdout, $stderr) -join "`n") -replace "`r`n", "`n" -replace "(`n){3,}", "`n"
+    return @{ code = $p.ExitCode; text = $text }
 }
 
 function Compare-One([string]$Path) {
     $off = Invoke-Un $Path "0"
-    $on  = Invoke-Un $Path "1"
+    $on  = Invoke-Un $Path ""
     if ($off.code -ne $on.code) {
         return "[JIT-DIFF] $Path (UV_JIT=0 exit $($off.code) vs default exit $($on.code))"
     }

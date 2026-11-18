@@ -20,6 +20,11 @@ pub fn is_allowed(name: &str) -> bool {
         Some(set) => set.contains(name),
     })
 }
+/// True when a sandbox allow-list is installed (playground / sandboxed
+/// embeddings), even if the specific module passed the check.
+pub fn sandbox_active() -> bool {
+    WORLD.with(|w| w.borrow().allowed.is_some())
+}
 
 pub fn stdout() -> Rc<RefCell<String>> {
     WORLD.with(|w| w.borrow().stdout.clone())

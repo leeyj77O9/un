@@ -64,6 +64,9 @@ fn receive_impl(scope: &Scope) -> Obj {
     };
 
     let mut message = Vec::new();
+    // Cap the reassembled message — without it a misbehaving peer can grow
+    // it without bound, and a ping flood can keep the loop alive forever.
+    const MAX_MESSAGE: usize = 64 * 1024 * 1024;
     loop {
         let mut state = cell.borrow_mut();
         let Some(stream) = state.stream.as_mut() else {
@@ -92,6 +95,9 @@ fn receive_impl(scope: &Scope) -> Obj {
             }
             drop(state);
             continue;
+        }
+        if message.len() + payload.len() > MAX_MESSAGE {
+            return obj::err("websocket message exceeds the 64 MiB limit");
         }
         message.extend_from_slice(&payload);
         if fin {

@@ -379,6 +379,46 @@ mod tests {
     }
 
     #[test]
+    fn io_open_confines_to_sandbox_root() {
+        // `io` is in the default allow-list (println/input), but file access
+        // must not escape the sandbox root: absolute paths are refused.
+        let result = run(
+            "use io\nio.open(\"C:/Windows/System32/drivers/etc/hosts\", \"w\")",
+            "playground.un",
+            None,
+            "",
+            false,
+        );
+        assert_eq!(result.exit_code, 1);
+        assert!(
+            result
+                .error
+                .as_ref()
+                .is_some_and(|e| e.contains("escapes the sandbox")),
+            "expected a sandbox rejection, got: {:?}",
+            result.error
+        );
+
+        // A parent-dir chain that would climb out is refused too.
+        let result = run(
+            "use io\nio.open(\"../../escape.txt\", \"w\")",
+            "playground.un",
+            None,
+            "",
+            false,
+        );
+        assert_eq!(result.exit_code, 1);
+        assert!(
+            result
+                .error
+                .as_ref()
+                .is_some_and(|e| e.contains("escapes the sandbox")),
+            "expected a sandbox rejection, got: {:?}",
+            result.error
+        );
+    }
+
+    #[test]
     fn json_quotes_correctly() {
         let result = PlaygroundResult {
             stdout: "a\"b\\c\nd".to_string(),

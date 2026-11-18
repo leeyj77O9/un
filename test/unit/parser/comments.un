@@ -1,0 +1,42 @@
+use io
+use test.assert as assert
+
+# A comment indented deeper than the surrounding block must not emit
+# stray Indent/Dedent tokens (used to fail with `unexpected primary token Indent`).
+fn outer()
+    x = 1
+        # deeply indented comment
+    y = 2
+        # another deep comment
+        # stacked comments
+    -> x + y
+
+assert.assert_eq(outer(), 3, "comment with deeper indentation does not break the block")
+
+# comments at column 0 inside an indented block must not dedent the block
+fn col_zero_comment()
+    a = 10
+# column-zero comment
+    b = 20
+    -> a + b
+
+assert.assert_eq(col_zero_comment(), 30, "column-zero comment inside an indented block")
+
+# comments and blank lines mix freely in loops
+total = 0
+for i in 1..5
+    # loop comment
+    total += i
+    # trailing comment
+
+assert.assert_eq(total, 10, "comments and blank lines in loops")
+
+# comment before an annotation-free class body still works
+class Commented
+    # class body comment
+    v = 42
+
+c = Commented()
+assert.assert_eq(c.v, 42, "comment inside a class body")
+
+assert.summary()

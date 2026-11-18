@@ -45,6 +45,52 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
+/// Join `path` onto `base`, resolving `.` and `..` lexically. Returns
+/// `None` when the result would escape `base` (absolute path, drive/UNC
+/// prefix, or a `..` chain).
+fn normalize_under(base: &std::path::Path, path: &str) -> Option<String> {
+    use std::path::Component;
+    let mut out = base.to_path_buf();
+    for component in std::path::Path::new(path).components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                // Absolute path: outside the sandbox by definition.
+                return None;
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            Component::Normal(part) => out.push(part),
+        }
+    }
+    if starts_with_case_insensitive(&out, base) {
+        Some(out.display().to_string())
+    } else {
+        None
+    }
+}
+/// Component-wise prefix check, ASCII case-insensitive (Windows semantics).
+fn starts_with_case_insensitive(path: &std::path::Path, base: &std::path::Path) -> bool {
+    let mut path_components = path.components();
+    for base_component in base.components() {
+        match path_components.next() {
+            Some(component) => {
+                if !component
+                    .as_os_str()
+                    .eq_ignore_ascii_case(base_component.as_os_str())
+                {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+    true
+}
+
 fn open_impl(scope: &Scope) -> Obj {
     let path = scope::get(scope, "path");
     let mode = scope::get(scope, "mode");
@@ -65,8 +111,20 @@ fn open_impl(scope: &Scope) -> Obj {
     }
 
     let full = {
-        let base = std::path::Path::new(&world::path()).join(&path);
-        base.display().to_string()
+        let base = world::path();
+        let base_path = std::path::Path::new(&base);
+        // In a sandbox (an allow-list is installed), confine file access to
+        // the base directory: an absolute path would otherwise replace the
+        // base entirely and a `..` chain would escape it.
+        if world::sandbox_active() {
+            let normalized = normalize_under(base_path, &path);
+            match normalized {
+                Some(p) => p,
+                None => return obj::err("io.open: path escapes the sandbox root"),
+            }
+        } else {
+            base_path.join(&path).display().to_string()
+        }
     };
     if mode == "r" && !std::path::Path::new(&full).is_file() {
         return obj::err("file not found");

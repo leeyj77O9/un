@@ -1,4 +1,4 @@
-use crate::bytecode::instr::Instr;
+﻿use crate::bytecode::instr::Instr;
 use crate::bytecode::{Constant, ExcEntry, ExcKind, Param, Pattern, Program, Proto, MAGIC, VERSION};
 const NONE: u32 = u32::MAX;
 const CONST_INT: u8 = 0;
@@ -205,22 +205,22 @@ pub fn read(bytes: &[u8]) -> Result<Program, String> {
     } else {
         None
     };
-    let name_count = reader.u32()? as usize;
+    let name_count = reader.u32()? as usize; reader.guard(name_count)?;
     let mut names = Vec::with_capacity(name_count);
     for _ in 0..name_count {
         names.push(reader.string()?);
     }
-    let const_count = reader.u32()? as usize;
+    let const_count = reader.u32()? as usize; reader.guard(const_count)?;
     let mut consts = Vec::with_capacity(const_count);
     for _ in 0..const_count {
         consts.push(read_constant(&mut reader)?);
     }
-    let msg_count = reader.u32()? as usize;
+    let msg_count = reader.u32()? as usize; reader.guard(msg_count)?;
     let mut msgs = Vec::with_capacity(msg_count);
     for _ in 0..msg_count {
         msgs.push(reader.string()?);
     }
-    let proto_count = reader.u32()? as usize;
+    let proto_count = reader.u32()? as usize; reader.guard(proto_count)?;
     let mut protos = Vec::with_capacity(proto_count);
     for _ in 0..proto_count {
         protos.push(read_proto(&mut reader)?);
@@ -254,12 +254,12 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
     let name = reader.u32()? as usize;
     let arity = reader.u32()? as usize;
     let flags = reader.u16()?;
-    let local_count = reader.u32()? as usize;
+    let local_count = reader.u32()? as usize; reader.guard(local_count)?;
     let mut locals = Vec::with_capacity(local_count);
     for _ in 0..local_count {
         locals.push(reader.u32()? as usize);
     }
-    let param_count = reader.u32()? as usize;
+    let param_count = reader.u32()? as usize; reader.guard(param_count)?;
     let mut params = Vec::with_capacity(param_count);
     for _ in 0..param_count {
         let param_name = reader.u32()? as usize;
@@ -273,7 +273,7 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
             default,
         });
     }
-    let code_count = reader.u32()? as usize;
+    let code_count = reader.u32()? as usize; reader.guard(code_count)?;
     let mut code = Vec::with_capacity(code_count);
     for _ in 0..code_count {
         let mut bytes = [0u8; 7];
@@ -287,24 +287,25 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
     let consts = read_table(reader)?;
     let names = read_table(reader)?;
     let protos = read_table(reader)?;
-    let call_count = reader.u32()? as usize;
+    let call_count = reader.u32()? as usize; reader.guard(call_count)?;
     let mut call_names = Vec::with_capacity(call_count);
     for _ in 0..call_count {
         let count = reader.u32()? as usize;
+        reader.guard(count)?;
         let mut entries = Vec::with_capacity(count);
         for _ in 0..count {
             entries.push(reader.u32()? as i32);
         }
         call_names.push(entries);
     }
-    let map_count = reader.u32()? as usize;
+    let map_count = reader.u32()? as usize; reader.guard(map_count)?;
     let mut source_map = Vec::with_capacity(map_count);
     for _ in 0..map_count {
         let start = reader.u32()? as usize;
         let length = reader.u32()? as usize;
         source_map.push((start, length));
     }
-    let exc_count = reader.u32()? as usize;
+    let exc_count = reader.u32()? as usize; reader.guard(exc_count)?;
     let mut exc = Vec::with_capacity(exc_count);
     for _ in 0..exc_count {
         let kind = match reader.u8()? {
@@ -325,7 +326,7 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
             var_slot,
         });
     }
-    let pattern_count = reader.u32()? as usize;
+    let pattern_count = reader.u32()? as usize; reader.guard(pattern_count)?;
     let mut patterns = Vec::with_capacity(pattern_count);
     for _ in 0..pattern_count {
         patterns.push(read_pattern(reader)?);
@@ -349,6 +350,13 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
     })
 }
 fn read_pattern(reader: &mut Reader) -> Result<Pattern, String> {
+    read_pattern_depth(reader, 0)
+}
+fn read_pattern_depth(reader: &mut Reader, depth: usize) -> Result<Pattern, String> {
+    const MAX_PATTERN_DEPTH: usize = 64;
+    if depth > MAX_PATTERN_DEPTH {
+        return Err(format!("pattern nesting exceeds {MAX_PATTERN_DEPTH}"));
+    }
     let tag = reader.u8()?;
     Ok(match tag {
         PATTERN_WILDCARD => Pattern::Wildcard,
@@ -356,9 +364,10 @@ fn read_pattern(reader: &mut Reader) -> Result<Pattern, String> {
         PATTERN_LITERAL => Pattern::Literal(reader.u32()? as usize),
         PATTERN_TUPLE => {
             let count = reader.u32()? as usize;
+            reader.guard(count)?;
             let mut items = Vec::with_capacity(count);
             for _ in 0..count {
-                items.push(read_pattern(reader)?);
+                items.push(read_pattern_depth(reader, depth + 1)?);
             }
             Pattern::Tuple(items)
         }
@@ -367,6 +376,7 @@ fn read_pattern(reader: &mut Reader) -> Result<Pattern, String> {
 }
 fn read_table(reader: &mut Reader) -> Result<Vec<usize>, String> {
     let count = reader.u32()? as usize;
+    reader.guard(count)?;
     let mut table = Vec::with_capacity(count);
     for _ in 0..count {
         table.push(reader.u32()? as usize);
@@ -378,6 +388,23 @@ struct Reader<'a> {
     pos: usize,
 }
 impl<'a> Reader<'a> {
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.pos
+    }
+    /// Reject absurd element counts from a hostile file *before* reserving
+    /// capacity: every item costs at least one byte, so a count larger than
+    /// the remaining bytes can never be valid, and `Vec::with_capacity`
+    /// would abort the process on the reservation instead of returning an
+    /// error.
+    fn guard(&self, count: usize) -> Result<(), String> {
+        if count > self.remaining() {
+            return Err(format!(
+                "declared element count {count} exceeds the {} remaining bytes",
+                self.remaining()
+            ));
+        }
+        Ok(())
+    }
     fn take(&mut self, count: usize) -> Result<&'a [u8], String> {
         if self.pos + count > self.bytes.len() {
             return Err("unexpected end of the .unbc file".to_string());
@@ -449,7 +476,7 @@ mod tests {
         };
         let mut proto = Proto::new(0, 0);
         proto.arity = 1;
-        proto.locals = vec![2];
+        proto.locals = vec![1];
         proto.params = vec![Param {
             name: 2,
             type_name: Some(1),
@@ -472,7 +499,7 @@ mod tests {
             start: 0,
             end: 2,
             handler: 1,
-            var_slot: Some(2),
+            var_slot: Some(1),
         }];
         proto.patterns = vec![
             Pattern::Wildcard,

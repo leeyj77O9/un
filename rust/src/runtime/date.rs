@@ -143,6 +143,10 @@ pub fn parse(text: &str) -> Option<i64> {
         hour = fields.next()?.parse().ok()?;
         minute = fields.next().unwrap_or("0").parse().ok()?;
         second = fields.next().unwrap_or("0").parse().ok()?;
+        // Out-of-range fields must be rejected, not rolled into the next day.
+        if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) || !(0..=59).contains(&second) {
+            return None;
+        }
         if let Some(fraction) = fields.next() {
             let mut digits = fraction.chars();
             let mut value = 0i64;

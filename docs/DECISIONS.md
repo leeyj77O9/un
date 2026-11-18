@@ -80,11 +80,12 @@ Rust VM이 reference와 같은 동작(같은 실패)을 내면 통과로 간주�
 - `Int` intern(-5..256), `Str` intern pool(10000 entries / 1000 chars, 만료 시 전체 clear)는
   `is` identity를 관측하게 하므로 **explicit intern table**로 유지한다.
 
-## D-012 | `go`/`wait`는 single-threaded cooperative scheduler | Proposed
+## D-012 | `go`/`wait`는 single-threaded cooperative scheduler | Accepted (see D-054/D-063)
 
 C#는 `go`에서 **같은 `Context`**를 새 `Evaluator`에 넣어 다른 스레드에서 실행한다.
 `Scope`/`Obj`에 락이 없어 경쟁 조건이 가능하고, `test/negative/go_loop_var.un`(exit 1,
-`undefined variable 'i'`)는 루프 변수 가시성 semantics를 고정한다.
+`undefined variable 'i'`; 파일은 2026-11-16에 삭제되어 현재는 `test/unit/runtime/async.un`의
+go-in-a-loop assertions로 검증한다)를 루프 변수 가시성 semantics로 고정했다.
 - Rust Phase 16: **coroutine frame 목록**으로 cooperative scheduling. shared mutable scope를
   data race 없이 보존한다.
 - ** semantic 차이 보고 항목**: `go` 안에서 블로킹 네이티브(`time.sleep`)를 `wait` 없이 호출하면
@@ -676,7 +677,7 @@ compiler는 file module path를 항상 compile하고 `Op::Use`가 run time에
   복원하지 못하고 `goto(31)` OOB panic을 만들던 문제, `is_true_quantifier`의 끝자락
   OOB read(`a{2`에서 panic).
 - 검증: probes 25종 **25 PASS / 0 DIFF**(IO.write가 >0x7F를 `?`로 자르는 것까지 포함),
-  differential suite 37 PASS / 0 DIFF, `cargo test --release` 199 passed, cargo build 0/0.
+  differential suite 37 PASS / 0 DIFF, `cargo test --release` 205 passed, cargo build 0/0.
 - engine은 BMP+astral Unicode category table을 .NET numbering으로 병합해 쓴다.
 - **UTF-16 대신 Rust `char` 기반**이다: .NET은 pattern과 input을 UTF-16 code unit으로
   읽으므로 astral 문자가 surrogate 2개로 보이지만, Rust 엔진은 char 하나로 본다. 그래서
@@ -709,7 +710,7 @@ compiler는 file module path를 항상 compile하고 `Op::Use`가 run time에
 - error 메시지와 `type()` display의 타입 이름이 `http_client` / `web_socket`으로 바뀌었다
   (reference와 동일).
 - 검증: `scripts/differential.ps1` **108 checked / 0 unexpected DIFF / 4 known-divergent**,
-  `cargo test --release` 199 passed, `dotnet build -c Release` 오류 0 / 경고 0.
+  `cargo test --release` 205 passed, `dotnet build -c Release` 오류 0 / 경고 0.
 
 ## D-067 | 슬라이스/집합 비교/멤버십/`is`는 표준 semantics를 따른다 | Accepted
 

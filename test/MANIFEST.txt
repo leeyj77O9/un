@@ -15,6 +15,8 @@ unit|test/unit/lexer/literals.un
 # ---------- unit: parser ----------
 unit|test/unit/parser/precedence.un
 unit|test/unit/parser/structure.un
+unit|test/unit/parser/comments.un
+unit|test/unit/parser/const_fold.un
 
 # ---------- unit: runtime ----------
 unit|test/unit/runtime/operators.un
@@ -29,6 +31,10 @@ unit|test/unit/runtime/async.un
 unit|test/unit/runtime/errors.un
 unit|test/unit/runtime/date.un
 unit|test/unit/runtime/builtins.un
+unit|test/unit/runtime/dict_hash.un
+unit|test/unit/runtime/enum.un
+unit|test/unit/runtime/reentrant.un
+unit|test/unit/runtime/compound_assign.un
 
 # ---------- unit: native ----------
 unit|test/unit/native/str.un

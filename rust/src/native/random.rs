@@ -50,8 +50,12 @@ impl Rng {
             return min;
         }
         // `max - min + 1` can overflow i64 when the range spans the whole
-        // integer space; compute the span in 128 bits.
+        // integer space; compute the span in 128 bits. The full 2^64 span
+        // truncates to 0 in `as u64`, so handle it separately.
         let span = (max as i128) - (min as i128) + 1;
+        if span > u64::MAX as i128 {
+            return self.next_u64() as i64;
+        }
         min + self.below(span as u64) as i64
     }
 
@@ -285,6 +289,11 @@ fn bytes_impl(scope: &Scope) -> Obj {
     if length < 0 {
         return obj::err("'length' cannot be negative");
     }
+    // Bound the allocation — an unbounded `length` would exhaust memory.
+    const MAX_BYTES: i64 = 10 * 1024 * 1024;
+    if length > MAX_BYTES {
+        return obj::err("'length' exceeds the limit of 10 MiB");
+    }
     let values: Vec<Obj> = with_gen(scope, |rng| {
         (0..length).map(|_| obj::int((rng.next_u64() & 0xFF) as i64)).collect()
     });
@@ -336,6 +345,14 @@ fn choices_impl(scope: &Scope) -> Obj {
         Payload::Int(v) => v,
         _ => return obj::err("expected 'random.choices' argument 'count' is int"),
     };
+    if count < 0 {
+        return obj::err("'count' cannot be negative");
+    }
+    // Bound the output — an unbounded `count` would exhaust memory.
+    const MAX_CHOICES: i64 = 1_000_000;
+    if count > MAX_CHOICES {
+        return obj::err("'count' exceeds the limit of 1000000");
+    }
     let items = list.borrow().clone();
     if items.is_empty() {
         return obj::err("expected 'random.choices' argument 'obj' is list");
@@ -426,6 +443,11 @@ fn str_impl(scope: &Scope) -> Obj {
     if length < 0 {
         return obj::err("'length' cannot be negative");
     }
+    // Bound the allocation — an unbounded `length` would exhaust memory.
+    const MAX_STRING: i64 = 10 * 1024 * 1024;
+    if length > MAX_STRING {
+        return obj::err("'length' exceeds the limit of 10 MiB");
+    }
     let text: String = with_gen(scope, |rng| {
         (0..length)
             .map(|_| CHARS[rng.below(CHARS.len() as u64) as usize] as char)
@@ -492,9 +514,10 @@ fn range_impl(scope: &Scope) -> Obj {
         return obj::err("'start' cannot be greater than 'end'");
     }
     // The whole range is materialised, so refuse an insane length instead
-    // of building an uninterruptible vector.
-    let len = max - min + 1;
-    const MAX_RANGE: i64 = 1_000_000;
+    // of building an uninterruptible vector. Compute in 128 bits — `max -
+    // min + 1` overflows i64 when the range spans the whole integer space.
+    let len = (max as i128) - (min as i128) + 1;
+    const MAX_RANGE: i128 = 1_000_000;
     if len > MAX_RANGE {
         return obj::err("expected 'random.range' to cover at most 1000000 values");
     }

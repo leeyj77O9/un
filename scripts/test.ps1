@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Un 테스트 러너. C:\dev\un 에서 실행한다.
 
@@ -17,6 +17,10 @@
 .PARAMETER File
     특정 스크립트 하나만 실행 (MANIFEST 우회).
 
+.PARAMETER TimeoutSec
+    Per-script timeout in seconds (default 120). A hung script fails the run
+    instead of blocking the suite (synthetic exit code 124).
+
 .PARAMETER Rebuild
     cargo build --release를 먼저 수행한다.
 
@@ -28,6 +32,7 @@
 param(
     [string]$Group = "all",
     [string]$File = "",
+    [int]$TimeoutSec = 120,
     [switch]$Rebuild
 )
 
@@ -55,13 +60,36 @@ if (-not (Test-Path $Exe)) {
 
 function Invoke-Un([string]$path) {
     $prev = $ErrorActionPreference
-    # Un은 잡히지 않는 예외를 stderr에 쓴다. Stop을 유지하면 PowerShell이
-    # stderr를 예외로 바꿔 러너가 중단된다. 이 함수만 Continue로 실행한다.
+    # Un이 핸들링하지 않는 예외는 stderr로 온다. Stop이면 PowerShell이
+    # stderr를 예외로 바꿔 러너가 중단된다. 이 함수는 Continue로 실행한다.
     $ErrorActionPreference = "Continue"
-    $out = & $Exe run $path 2>&1
-    $code = $LASTEXITCODE
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = "run `"$path`""
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.WorkingDirectory = $Root
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $outMs = New-Object System.IO.MemoryStream
+    $errMs = New-Object System.IO.MemoryStream
+    $tOut = $p.StandardOutput.BaseStream.CopyToAsync($outMs)
+    $tErr = $p.StandardError.BaseStream.CopyToAsync($errMs)
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+        # Hang: kill the process tree and report a synthetic timeout code.
+        try { $p.Kill() } catch {}
+        $p.WaitForExit(5000) | Out-Null
+        [Threading.Tasks.Task]::WaitAll(@($tOut, $tErr), 5000) | Out-Null
+        $ErrorActionPreference = $prev
+        return @{ code = 124; text = "*** TIMEOUT after ${TimeoutSec}s ***" }
+    }
+    [Threading.Tasks.Task]::WaitAll(@($tOut, $tErr))
+    $stdout = [System.Text.Encoding]::UTF8.GetString($outMs.ToArray())
+    $stderr = [System.Text.Encoding]::UTF8.GetString($errMs.ToArray())
+    $text = (($stdout, $stderr) -join "`n") -replace "`r`n", "`n" -replace "(`n){3,}", "`n"
+    $code = $p.ExitCode
     $ErrorActionPreference = $prev
-    return @{ code = $code; text = ($out -join "`n") }
+    return @{ code = $code; text = $text }
 }
 
 function Parse-Result([string]$text) {
@@ -238,7 +266,7 @@ if ($Group -eq "all" -or $Group -eq "known") {
 
 $exit = 0
 if ($Group -eq "all" -or $Group -eq "unit" -or $Group -eq "integration" -or $Group -eq "regression" -or $Group -eq "suite") {
-    if ($pos.failed -gt 0 -or $pos.crashed -gt 0) { $exit = 1 }
+    if ($pos.failed -gt 0 -or $pos.crashed -gt 0 -or $pos.badFiles -gt 0) { $exit = 1 }
 }
 if ($neg -and $neg.mismatched -gt 0) { $exit = 1 }
 if ($known -and $known.fixed -gt 0) { $exit = 1 }

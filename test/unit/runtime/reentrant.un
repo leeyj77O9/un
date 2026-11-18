@@ -1,0 +1,42 @@
+use io
+use test.assert as assert
+
+# A class whose `__str__` mutates the very dict being printed must not
+# crash the process (RefCell double borrow). The dict serializer snapshots
+# before invoking user code.
+class ReentrantPrinter
+    d = none
+    fn __str__()
+        self.d["inner"] = 1
+        -> "injected"
+
+holder = {"k": 0}
+p = ReentrantPrinter()
+p.d = holder
+holder["obj"] = p
+
+s = str(holder)
+assert.assert_true(s.contains("injected"), "str of dict invokes member __str__")
+assert.assert_true(holder["inner"] == 1, "the __str__ side effect happened")
+
+# a dict containing a cycle renders with a depth cap instead of overflowing
+cyc = {"self": 1}
+cyc["self"] = cyc
+rendered = str(cyc)
+assert.assert_true(len(rendered) > 0, "cyclic dict renders with a depth cap")
+
+# a cyclic list renders with a depth cap instead of overflowing the stack
+l = list()
+l.add(l)
+rendered_l = str(l)
+assert.assert_true(len(rendered_l) > 0, "cyclic list renders with a depth cap")
+
+# equality of two cyclic lists must terminate
+la = list()
+la.add(la)
+lb = list()
+lb.add(lb)
+assert.assert_true(la == lb, "cyclic lists compare equal")
+assert.assert_true(la == la, "cyclic list equals itself")
+
+assert.summary()

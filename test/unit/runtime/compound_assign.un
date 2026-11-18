@@ -1,0 +1,40 @@
+use io
+use test.assert as assert
+
+# compound assignment re-evaluates the receiver or subscript
+# (`make().v += 10` used to call make() twice — once for the load, once for
+# the store — and the store landed on a throwaway object)
+
+counter = list()
+fn make()
+    counter.add(1)
+    -> Foo(1)
+
+class Foo(v)
+
+mk = make()
+mk.v += 10
+assert.assert_eq(mk.v, 11, "compound assignment stores through the same receiver")
+assert.assert_eq(len(counter), 1, "make() was called exactly once")
+
+# subscript case: a[g()] += n must evaluate g() once
+calls = list()
+fn key_of(n)
+    calls.add(n)
+    -> 0
+
+a = [1, 2, 3]
+a[key_of(1)] += 100
+assert.assert_eq(a[0], 101, "compound subscript addition works")
+assert.assert_eq(len(calls), 1, "the subscript was evaluated exactly once")
+
+# index compound with a nested expression (still evaluates the key once)
+a[0 + 0] *= 3
+assert.assert_eq(a[0], 303, "compound with expression index")
+
+# compound on a plain local variable (fast path, must stay correct)
+x = 7
+x *= 6
+assert.assert_eq(x, 42, "compound on a plain local")
+
+assert.summary()

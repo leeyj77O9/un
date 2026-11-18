@@ -448,11 +448,13 @@ impl Enumerator {
         Self { stage: build(def) }
     }
 
-    pub fn next(&mut self) -> Option<Obj> {
+    pub fn next(&mut self) -> Result<Option<Obj>, Obj> {
         match next(&self.stage) {
-            Step::Value(value) => Some(value),
-            Step::End => None,
-            Step::Panic(p) => Some(p),
+            Step::Value(value) => Ok(Some(value)),
+            Step::End => Ok(None),
+            // A predicate/mapper that threw must propagate the panic —
+            // never be delivered as an ordinary tuple/element value.
+            Step::Panic(p) => Err(p),
         }
     }
 }

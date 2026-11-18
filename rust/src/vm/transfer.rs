@@ -125,15 +125,27 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             Op::Slice => {
                 // result replaces the consumed [target] at depth+effect-1
                 let eff = crate::bytecode::stack_effect(op, flags, operand) as i64;
-                let dst = (scratch_base as i64 + depth as i64 + eff - 1) as u8;
-                emit(op, dst, dst, 0, operand, flags)
+                let dst = scratch_base as i64 + depth as i64 + eff - 1;
+                if dst < 0 || dst > 255 {
+                    return Err(format!(
+                        "{}: slice destination slot {dst} out of register range",
+                        proto_name(program, proto)
+                    ));
+                }
+                emit(op, dst as u8, dst as u8, 0, operand, flags)
             }
             Op::SetSlice => {
                 // [value][target][bounds...]: value is re-pushed at depth+effect-1
                 let eff = crate::bytecode::stack_effect(op, flags, operand) as i64;
-                let dst = (scratch_base as i64 + depth as i64 + eff - 1) as u8;
+                let dst = scratch_base as i64 + depth as i64 + eff - 1;
+                if dst < 0 || dst > 255 {
+                    return Err(format!(
+                        "{}: slice destination slot {dst} out of register range",
+                        proto_name(program, proto)
+                    ));
+                }
                 let bb = slice_bounds(flags) - 1;
-                emit(op, dst, s(depth - 1 - bb) as u8, 0, operand, flags)
+                emit(op, dst as u8, s(depth - 1 - bb) as u8, 0, operand, flags)
             }
 
             Op::ArgBegin => emit(op, 0, 0, 0, operand, flags),

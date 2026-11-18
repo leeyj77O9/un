@@ -79,6 +79,11 @@ pub fn parse_uri(text: &str) -> Result<Uri, String> {
     if text.is_empty() {
         return Err(EMPTY.to_owned());
     }
+    // A raw CR/LF would be written verbatim into the HTTP request line and
+    // headers — reject them outright (a legal URI percent-encodes them).
+    if text.contains('\r') || text.contains('\n') {
+        return Err(FORMAT.to_owned());
+    }
 
     let colon = match text.find(':') {
         Some(index) => index,

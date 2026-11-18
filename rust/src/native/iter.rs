@@ -421,11 +421,12 @@ fn zip_impl(scope: &Scope) -> Obj {
         let mut done = false;
         for enumerator in enumerators.iter_mut() {
             match enumerator.next() {
-                Some(value) => buffer.push(value),
-                None => {
+                Ok(Some(value)) => buffer.push(value),
+                Ok(None) => {
                     done = true;
                     break;
                 }
+                Err(panic) => return panic,
             }
         }
         if done {
