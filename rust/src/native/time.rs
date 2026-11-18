@@ -103,7 +103,13 @@ fn from_epoch_impl(scope: &Scope) -> Obj {
         Payload::Int(v) => v,
         _ => return obj::err("expected 'seconds' argument to be of type 'int'"),
     };
-    obj::date_obj(date::unix_epoch_ticks() + s * date::TICKS_PER_SEC)
+    match s
+        .checked_mul(crate::runtime::date::TICKS_PER_SEC)
+        .and_then(|t| crate::runtime::date::unix_epoch_ticks().checked_add(t))
+    {
+        Some(t) => obj::date_obj(t),
+        None => obj::err("date arithmetic overflowed"),
+    }
 }
 fn from_epoch_ms_impl(scope: &Scope) -> Obj {
     let milliseconds = scope::get(scope, "milliseconds");
@@ -111,7 +117,13 @@ fn from_epoch_ms_impl(scope: &Scope) -> Obj {
         Payload::Int(v) => v,
         _ => return obj::err("expected 'milliseconds' argument to be of type 'int'"),
     };
-    obj::date_obj(date::unix_epoch_ticks() + ms * date::TICKS_PER_MS)
+    match ms
+        .checked_mul(crate::runtime::date::TICKS_PER_MS)
+        .and_then(|t| crate::runtime::date::unix_epoch_ticks().checked_add(t))
+    {
+        Some(t) => obj::date_obj(t),
+        None => obj::err("date arithmetic overflowed"),
+    }
 }
 fn monotonic_impl(_scope: &Scope) -> Obj {
     obj::float(clock::monotonic_ms() as f64 / 1000.0)

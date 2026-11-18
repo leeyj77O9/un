@@ -91,4 +91,13 @@ time.sleep(20)
 assert.assert_true(sleeping.ms >= 20, "ms measures the elapsed time after a sleep")
 assert.assert_true(sleeping.seconds() >= 0.0, "seconds is a float elapsed time")
 
+# ---------- date arithmetic overflow ----------
+assert.assert_err(fn() -> dt.add_days(9223372036854775807), "add_days overflow")
+assert.assert_err(fn() -> dt.add_hours(9223372036854775807), "add_hours overflow")
+assert.assert_err(fn() -> dt.add_minutes(9223372036854775807), "add_minutes overflow")
+assert.assert_err(fn() -> dt.add_seconds(9223372036854775807), "add_seconds overflow")
+assert.assert_err(fn() -> dt.add_ms(9223372036854775807), "add_ms overflow")
+assert.assert_err(fn() -> dt.add_years(9223372036854775807), "add_years overflow")
+assert.assert_err(fn() -> dt.add_months(9223372036854775807), "add_months overflow")
+
 assert.summary()

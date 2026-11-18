@@ -1,0 +1,3 @@
+use io
+use codes
+io.write(str(codes.ord("ab")))

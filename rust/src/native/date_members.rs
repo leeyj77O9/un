@@ -189,6 +189,11 @@ fn amount(scope: &Scope, name: &str) -> Option<i64> {
         _ => None,
     }
 }
+/// Checked `ticks + amount * per_tick` — date member arithmetic
+/// used to wrap silently on huge inputs (TD-41). Returns None on overflow.
+fn checked_ticks(ticks: i64, amount: i64, per_tick: i64) -> Option<i64> {
+    ticks.checked_add(amount.checked_mul(per_tick)?)
+}
 fn add_years(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
         return obj::err("expected 'date' object");
@@ -197,7 +202,9 @@ fn add_years(scope: &Scope) -> Obj {
         return obj::err("expected 'years' argument to be of type 'int'");
     };
     let (year, month, day, hour, minute, second, ms) = crate::runtime::date::parts(ticks);
-    let new_year = year + years;
+    let Some(new_year) = year.checked_add(years) else {
+        return obj::err("date arithmetic overflowed");
+    };
     // February 29 in a leap year must clamp to February 28 in a non-leap
     // year (matching the add_months behaviour), not roll into March 1.
     let new_day = day.min(crate::runtime::date::days_in_month(new_year, month));
@@ -220,7 +227,13 @@ fn add_months(scope: &Scope) -> Obj {
         return obj::err("expected 'months' argument to be of type 'int'");
     };
     let (year, month, day, hour, minute, second, ms) = crate::runtime::date::parts(ticks);
-    let total = year * 12 + (month - 1) + months;
+    let Some(total) = year
+        .checked_mul(12)
+        .and_then(|y| y.checked_add(month - 1))
+        .and_then(|t| t.checked_add(months))
+    else {
+        return obj::err("date arithmetic overflowed");
+    };
     let new_year = total.div_euclid(12);
     let new_month = total.rem_euclid(12) + 1;
     let new_day = day.min(crate::runtime::date::days_in_month(new_year, new_month));
@@ -242,7 +255,10 @@ fn add_days(scope: &Scope) -> Obj {
     let Some(days) = amount(scope, "days") else {
         return obj::err("expected 'days' argument to be of type 'int'");
     };
-    obj::date_obj(ticks + days * crate::runtime::date::TICKS_PER_DAY)
+    match checked_ticks(ticks, days, crate::runtime::date::TICKS_PER_DAY) {
+        Some(t) => obj::date_obj(t),
+        None => obj::err("date arithmetic overflowed"),
+    }
 }
 fn add_hours(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
@@ -251,7 +267,10 @@ fn add_hours(scope: &Scope) -> Obj {
     let Some(hours) = amount(scope, "hours") else {
         return obj::err("expected 'hours' argument to be of type 'int'");
     };
-    obj::date_obj(ticks + hours * 36_000_000_000)
+    match checked_ticks(ticks, hours, 36_000_000_000) {
+        Some(t) => obj::date_obj(t),
+        None => obj::err("date arithmetic overflowed"),
+    }
 }
 fn add_minutes(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
@@ -260,7 +279,10 @@ fn add_minutes(scope: &Scope) -> Obj {
     let Some(minutes) = amount(scope, "minutes") else {
         return obj::err("expected 'minutes' argument to be of type 'int'");
     };
-    obj::date_obj(ticks + minutes * 600_000_000)
+    match checked_ticks(ticks, minutes, 600_000_000) {
+        Some(t) => obj::date_obj(t),
+        None => obj::err("date arithmetic overflowed"),
+    }
 }
 fn add_seconds(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
@@ -269,7 +291,10 @@ fn add_seconds(scope: &Scope) -> Obj {
     let Some(seconds) = amount(scope, "seconds") else {
         return obj::err("expected 'seconds' argument to be of type 'int'");
     };
-    obj::date_obj(ticks + seconds * 10_000_000)
+    match checked_ticks(ticks, seconds, 10_000_000) {
+        Some(t) => obj::date_obj(t),
+        None => obj::err("date arithmetic overflowed"),
+    }
 }
 fn add_ms(scope: &Scope) -> Obj {
     let Some(ticks) = date_self(scope) else {
@@ -278,7 +303,10 @@ fn add_ms(scope: &Scope) -> Obj {
     let Some(ms) = amount(scope, "milliseconds") else {
         return obj::err("expected 'milliseconds' argument to be of type 'int'");
     };
-    obj::date_obj(ticks + ms * 10_000)
+    match checked_ticks(ticks, ms, 10_000) {
+        Some(t) => obj::date_obj(t),
+        None => obj::err("date arithmetic overflowed"),
+    }
 }
 fn weekday(scope: &Scope) -> Obj {
     match date_self(scope) {

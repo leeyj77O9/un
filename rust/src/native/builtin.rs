@@ -50,7 +50,7 @@ fn exit_impl(scope: &Scope) -> Obj {
     let code = scope::get(scope, "code");
     let code = match obj::payload(&code) {
         Payload::Int(v) => v as i32,
-        _ => 0,
+        _ => return obj::err("exit() expects an 'int' code"),
     };
     if !world::allow_exit() {
 

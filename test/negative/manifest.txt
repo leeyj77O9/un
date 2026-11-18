@@ -47,3 +47,5 @@ test/negative/range_float.un|1|unsupported operand type(s) for ..: 'float' and '
 test/negative/range_str.un|1|unsupported operand type(s) for ..: 'str' and 'int'
 test/negative/empty_index.un|1|expected an index expression
 test/negative/regex_limit.un|1|regex backtracking limit exceeded
+test/negative/dict_add_duplicate.un|1|System.ArgumentException
+test/negative/ord_multiple_chars.un|1|ord: expected a single character, got multiple characters

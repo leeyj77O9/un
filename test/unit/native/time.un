@@ -63,4 +63,8 @@ catch assign_err2
     assert.assert_true(caught_ns.contains("read-only"), "ns is read-only")
 assert.assert_eq(type(sw), type(time.stopwatch()), "time.stopwatch returns stopwatch")
 
+# ---------- from_epoch overflow ----------
+assert.assert_err(fn() -> time.from_epoch(9223372036854775807), "from_epoch overflow")
+assert.assert_err(fn() -> time.from_epoch_ms(9223372036854775807), "from_epoch_ms overflow")
+
 assert.summary()

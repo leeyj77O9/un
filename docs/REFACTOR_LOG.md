@@ -1499,3 +1499,69 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - No high-severity debt items remain in `docs/TECHNICAL_DEBT.md`
   (TD-08 mitigated, TD-05 closed).
 
+
+---
+
+## 2026-11-19 - Pass 27 addendum: TD-10 evidence-refresh
+
+### Question
+
+- TD-10 claims `set_attr_from` clones the assigned value up to three times
+  per assignment.
+
+### Findings
+
+- `Obj = Rc<RefCell<ObjData>>`: every one of those "clones" is a
+  non-atomic refcount bump - no deep data copy happens anywhere on this
+  path. A member-set assignment costs, per call: one target Rc clone +
+  one value Rc clone (VM), one value Rc clone (slot push in member_set),
+  one value Rc clone (return for the stack slot). The handler path adds
+  one clone into the handler args.
+- The residual is inherent to the store needing its own Rc. Eliminating
+  the final return clone requires leaking path information across the
+  `set_attr` boundary; the win is ~1 refcount bump per assignment.
+- No bench kernel is attribute-write bound; the class workload (2 writes
+  + 2 reads per iteration) is dominated by the VM dispatch loop itself.
+
+### Verdict
+
+- Not restructured. TD-10 reclassified as evidence-refresh-only; the
+  residual is documented debt with measured impact below noise at the
+  kernels we track (see bench).
+
+
+---
+
+## 2026-11-19 - Pass 28: stdlib correctness (date overflow, exit/ord, dict pin)
+
+### Trigger
+
+- Stdlib correctness batch: date arithmetic silently wrapped i64 on
+  enormous arguments, `time.from_epoch` multiplied unbounded,
+  `exit("x")` silently returned 0, `ord("ab")` returned the first codepoint,
+  and `dict.add` on a duplicate key raised the .NET `ArgumentException`
+  with no test pinning that contract.
+
+### Changes
+
+- `native/date_members.rs`: `add_days/hours/minutes/seconds/ms`,
+  `add_years`, `add_months` now use checked arithmetic
+  (`checked_ticks` / `checked_add` / `checked_mul`). Overflow returns a
+  catchable `date arithmetic overflowed` error instead of a wrapped date.
+- `native/time.rs`: `from_epoch` / `from_epoch_ms` checked similarly.
+- `native/builtin.rs`: `exit()` with a non-Int code returns a catchable
+  `exit() expects an 'int' code` error (previously silent exit 0).
+- `native/codes.rs`: `ord()` requires exactly one Unicode scalar (else
+  `ord: expected a single character`).
+- Tests: new assert_err pins in `test/unit/runtime/date.un` (add_* overflow),
+  `test/unit/native/time.un` (from_epoch_ms), `test/unit/runtime/errors.un`
+  (exit non-int); `test/negative/dict_add_duplicate.un` and
+  `test/negative/ord_multiple_chars.un` pin `.NET ArgumentException` and the
+  ord single-char error for the negative manifest (41 -> 43 entries).
+- Full gates re-run: Positive **1504 passed** (was 1493, +11 new pins),
+  Negative **43 matched**, differential 88/0, unbc-roundtrip green,
+  cargo test 205.
+- AGENTS.md baseline counts synced; TD-41/TD-48/TD-49 marked resolved
+  (TD-49's astral `ascii` UTF-16 behavior is kept as parity; `inspect.delattr`
+  own-instance scope pinned-accepted).
+

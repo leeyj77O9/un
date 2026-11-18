@@ -129,4 +129,8 @@ assert.assert_eq((none)?.add, none, "safe attribute read on none is none")
 t = throw_if(false, "no")
 assert.assert_eq(t, none, "throw_if returns none when the condition is false")
 
+# ---------- exit with a non-int code is catchable ----------
+assert.assert_err(fn() -> exit("x"), "exit non-int code")
+assert.assert_err(fn() -> exit(none), "exit none code")
+
 assert.summary()

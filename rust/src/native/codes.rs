@@ -75,11 +75,15 @@ fn ord_impl(scope: &Scope) -> Obj {
         Payload::Str(s) => s,
         _ => return obj::err("ord: expected str"),
     };
-    if s.is_empty() {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
         return obj::err("ord: expected a single character, got empty string");
+    };
+    if chars.next().is_some() {
+        return obj::err("ord: expected a single character, got multiple characters");
     }
 
-    obj::int(s.chars().next().unwrap() as u32 as i64)
+    obj::int(first as u32 as i64)
 }
 fn ascii_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
