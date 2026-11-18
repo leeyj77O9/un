@@ -1655,3 +1655,30 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - Debt doc: TD-43, TD-50 marked Resolved.
 - BENCHMARK.md re-pinned to 22e3919 (geomean JIT/Python 7.667x).
 
+
+---
+
+## 2026-11-19 - Pass 32: math overflow fixes (TD-45 progress)
+
+### Trigger
+
+- `math.pow(2, 63)` saturated to i64::MAX silently (result was 9223372036854775807
+  instead of 9.223372036854776e18).
+- `math.lcm(9223372036854775807, 2)` silently wrapped to a negative i64.
+
+### Changes
+
+- `native/math.rs`: `pow` detects the both-Int/exact case with
+  `v as f64 == result` round-trip; saturation is impossible — the float
+  result is returned instead of a clamped fake integer.
+- `native/math.rs`: `lcm` checks the product with `u64` comparison to
+  `i64::MAX`; overflow returns a catchable `"integer overflow"` instead of
+  wrapping.
+- tests: `test/unit/native/math.un` covers `pow(2, 63)` ("pow overflow to
+  float, not saturate") and `lcm(i64::MAX, 2)` ("lcm overflow").
+
+### Result
+
+- Positive **1507 passed** (was 1504), Negative 43 matched, differential 90/0,
+  cargo test 205.
+

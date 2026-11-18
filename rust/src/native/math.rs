@@ -293,7 +293,14 @@ fn pow_impl(scope: &Scope) -> Obj {
     let both_int = matches!(obj::payload(&value), Payload::Int(_))
         && matches!(obj::payload(&exponent), Payload::Int(_));
     if both_int && e >= 0.0 && result.fract() == 0.0 && result.is_finite() {
-        obj::int(result as i64)
+        // `as` saturates at i64::MAX/MIN. Reject the float-losing case and
+        // return the float instead of inventing an integer that does not fit.
+        let v = result as i64;
+        if v as f64 == result {
+            obj::int(v)
+        } else {
+            obj::float(result)
+        }
     } else {
         obj::float(result)
     }
@@ -483,8 +490,8 @@ fn lcm_impl(scope: &Scope) -> Obj {
     if av == 0 || bv == 0 {
         return obj::int(0);
     }
-    let x = av.wrapping_abs();
-    let y = bv.wrapping_abs();
+    let x = av.unsigned_abs();
+    let y = bv.unsigned_abs();
     let mut gcd = x;
     let mut rem = y;
     while rem != 0 {
@@ -492,7 +499,11 @@ fn lcm_impl(scope: &Scope) -> Obj {
         gcd = rem;
         rem = t;
     }
-    obj::int(x / gcd * y)
+    // The product can overflow i64. Return a catchable error rather than wrap.
+    match (x / gcd).checked_mul(y) {
+        Some(v) if v <= i64::MAX as u64 => obj::int(v as i64),
+        _ => obj::err("integer overflow"),
+    }
 }
 fn is_nan_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
