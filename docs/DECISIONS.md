@@ -1,4 +1,4 @@
-# DECISIONS.md — 결정 로그
+﻿# DECISIONS.md — 결정 로그
 
 형식: `D-NNN | 제목 | 상태 | 결정 | 영향`
 - 상태: **Accepted** = 채택되어 코드에 반영, **Proposed** = 채택되었으나 코드 반영 전, **Pending** = 검증 필요
@@ -1045,3 +1045,15 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   strict_float canary 양 lane + UV_JIT=2 green, i64 경계값(9223372036854775807) JIT/인터프리터
   동일. `strict_float.un`은 `-0.5`/`-7`을 써서 Neg arm을 상시 CI 검증한다.
 - **잔여**: `Op::Pos`/`Op::Bnot`은 여전히 미지원(같은 클래스 — 필요할 때 D-0xx로).
+
+
+## D-080 | `go` fork-time scope snapshot 유지 (TD-09 closed by design)
+
+- **문제**: `scope::snapshot`이 `go` future 생성 시 상위 스코프 체인을 통째로 deep clone한다. 측정상 200,000 forks ≈ 1,058 ms(포크당 ≈ 5 µs)이고, snapshot 자체는 ~1–3 µs로 interpreter dispatch 아래 파묻혀 포크 수가 늘어날 때까지는 비측정역에 위치한다.
+- **결정**: 현재의 fork-time snapshot(SKIP하여 capture-by-value) 의미론을 유지한다. 대안은 전부 채택하지 않는다:
+  - fork-on-write — Scope 쓰기 경로 전체를 분기로 갈라야 한다. 의미론은 유지되지만 alias 판정 구현 난도가 크고, 호출 사이트마다 검사를 넣어야 한다. 측정 불가는 의미론적 리스크가 ROI보다 크다.
+  - slots만 얕게 복사하고 부모는 공유 — 캡처-by-value가 깨진다(부모 쓰기가 future로 누설) — reference Un과의 의미론 동일성을 깨는 계약 변경.
+  - 컴파일타임 capture-set 분석 — 이론상 가장 크지만 `go`는 interpreter에서 보통 한두 개의 값만 캡처하는 spawn 형태라 200k fork 기준 절약분은 < 5 ms. 구현 난도 대비 이득 불가.
+- **근거**: reference Un과의 의미론 동일성이 최우선 계약, 측정된 snapshot 비용이 pool/interpreter dispatch 밑에 파묻혀 측정이 안정적으로 분리되지 않는다.
+- **후속**: 필요 시 컴파일타임 capture-set 분석은 구현 가능하나 현 스케일에 맞지 않아 보류.
+- **검증**: 20,000 forks ≈ 99 ms / 200,000 forks ≈ 1,058 ms — 현재 구현에서 병목이 아님. TD-09 closed by evidence.
