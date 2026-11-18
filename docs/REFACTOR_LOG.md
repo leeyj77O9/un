@@ -1361,3 +1361,52 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   unbc-roundtrip 47/47+34/34, cargo test 205, strict_float canary green in
   all three lanes. i64 extremes (9223372036854775807 / negatives) identical
   on both lanes.
+
+---
+
+## 2026-11-19 - Pass 25: native-call panic boundary hardening (TD-16, TD-40)
+
+### Trigger
+
+- TD-40: "a Rust panic inside a native call kills the worker thread with a
+  raw Rust panic instead of an Un error." The entry said "largely capped
+  now"; the user asked for an honest audit of what escapes, to either close
+  the gap or close the debt. TD-16 (`plan_for`'s `.expect()` with the
+  invariant enforced only by callers) was the other suspect.
+
+### Audit
+
+- Step-level containment already exists and is the outer catch for engine
+  execution: `VM::run`'s dispatch loop wraps every `self.step(...)` in
+  `catch_unwind` and converts a payload into `Outcome::Panic`. Converted
+  panics surface in `main.rs` via `report()` with exit code 1.
+- Every Un-visible native call path (`fn_call` → `host(&scope)`, JIT calls,
+  builtins) rides on the same guard because it runs inside a step.
+- The surviving holes were plan acquisitions *before* the first step:
+  `VM::new`'s outer `plan_for(&program)` (its `.expect` fires before any
+  catch boundary), the proto-executor closure registered in `VM::new`, and
+  `VM::with_context` (the module loader path, which pre-validates and even
+  *documented* the invariant in a comment - but did not enforce it).
+- Playground (`unvm-playground`) and the CLI go through the same two
+  constructors, so they inherited the same gap.
+
+### Changes
+
+- `rust/src/vm/mod.rs`: VM::new wraps both plan acquisitions in
+  `catch_unwind`; on failure the VM returns `Result<_, String>` (outer) or
+  `function::Flow::Panic` (proto executor) carrying an "internal error
+  (please report): {message}" Un panic object. `VM::with_context` now
+  returns `Result<Self, String>` and shares the helper.
+- `rust/src/module.rs`: the module loader's single call site now maps
+  `Err` to `ModuleError::Panic`, matching its `validate()`-failure path.
+- Debt doc: TD-16 and TD-40 closed (table + resolved-in-2026-11 list).
+
+### Result
+
+- No known unprotected path remains: a Rust panic anywhere in engine code
+  now surfaces as an Un panic object that flows through `report()` with
+  exit 1, on all three front doors (CLI, module loader, playground).
+- Gates: Positive 1493, Negative 41 matched, differential 88/0,
+  unbc-roundtrip 47/47+34/34, cargo test 205, test_suite 109, algorithms.un
+  42. AGENTS.md scale counts synced (84 files / 38,265 lines).
+

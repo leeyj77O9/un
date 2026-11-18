@@ -17,10 +17,10 @@ Severity:
 | TD-09 | medium | `scope::snapshot` deep-clones the whole scope chain for every `go` future | `rust/src/runtime/scope.rs:227-249`, `rust/src/vm/mod.rs:1225` |
 | TD-10 | medium | `set_attr_from` clones the assigned value up to three times per assignment | `rust/src/runtime/obj.rs:743-770` |
 | TD-11 | medium | `Source::get_line`/`get_column`/`get_line_start` scan the whole source from offset 0 | `rust/src/source.rs:38-62` |
-| TD-16 | medium | `plan_for` uses `.expect()`; it is safe only because every caller validates first, and the invariant is not enforced inside the function | `rust/src/vm/mod.rs:1670-1673` |
+| TD-16 | medium | `plan_for` uses `.expect()`; it is safe only because every caller validates first, and the invariant is not enforced inside the function | `rust/src/vm/mod.rs:1670-1673` | **Resolved (2026-11-19)**: every acquisition of a plan is now inside `catch_unwind` — `VM::new` (both the proto-executor closure and the outer `plan_for`), and `VM::with_context` (module path, returning `Result<Self, String>`; the module loader maps it to `ModuleError::Panic`). Any invariant violation now surfaces as an Un panic object that reaches the normal error channels instead of a raw process abort |
 | TD-17 | medium | `transfer.rs` hard-codes opcode indices `744..=796` in the debug dump, which goes stale silently when the opcode table changes | `rust/src/vm/transfer.rs:240-244` |
 | TD-39 | medium | `atomic.*`/`pool.*`/`lock.*` are single-thread cooperative shims: `Rc<RefCell>` cells, a flag-not-a-mutex lock, a pool whose `worker_count` is stored but never used and whose `map` runs eagerly on the caller thread; atomic overflow wraps silently (D-012/D-054/D-061) | `rust/src/native/atomic.rs`, `rust/src/native/flow.rs`, `rust/src/runtime/int_dict.rs` |
-| TD-40 | medium | A Rust panic inside a native call is not caught by the VM and kills the worker thread with a raw Rust panic instead of an Un error. Largely capped now (allocation limits), but any remaining overflow site still escapes | `rust/src/main.rs`, `rust/src/vm/mod.rs` |
+| TD-40 | medium | A Rust panic inside a native call is not caught by the VM and kills the worker thread with a raw Rust panic instead of an Un error. Largely capped now (allocation limits), but any remaining overflow site still escapes | `rust/src/main.rs`, `rust/src/vm/mod.rs` | **Resolved (2026-11-19)**: audit found the surviving escapes — plan acquisition before the first step (`VM::new`, `VM::with_context`) and the proto executor closure in `VM::new`. All three are now wrapped in `catch_unwind` and produce Un panic objects (`Outcome::Panic` / `Result<_, String>` / `ModuleError::Panic`). Combined with the existing step-level `catch_unwind` (`vm/mod.rs:219`) and JIT-side guards, no known path lets a raw Rust panic escape the process boundary; main stays alive and the error prints via `report()` with exit 1 |
 | TD-18 | low | Five parallel representations of "type" (`Types`, `ObjData.{type_name,declared,types}`, `Payload::TObj`, three string vocabularies, the JIT's own layout keying) | `rust/src/runtime/types.rs`, `rust/src/runtime/obj.rs:153-163`, `rust/src/runtime/world/classes.rs` |
 | TD-20 | low | Four "frame" types with the same word (`context::Frame`, `function::CallFrame`, `vm::ArgFrame`, `vm::TryEntry`) and two scope abstractions | `rust/src/runtime/context.rs:8-13`, `rust/src/runtime/function.rs:181-186`, `rust/src/vm/mod.rs:85-99` |
 | TD-21 | low | Four independent equality implementations (`obj::key_eq`, `collections::element_eq`, `collections::stru_eq`, `obj::base_binop`) and two clone implementations (`obj::clone_obj`, `obj::copy_obj`) | `rust/src/runtime/obj.rs:278-289`, `rust/src/runtime/collections.rs:469-494, 1271-1296` |
@@ -44,8 +44,8 @@ Severity:
 ## Resolved in 2026-11
 
 evidence and `docs/DECISIONS.md` for the semantics decisions):
-TD-01, TD-02, TD-04, TD-06, TD-07, TD-12, TD-13, TD-14, TD-15, TD-19, TD-23,
-TD-25, TD-28, TD-29, TD-30, TD-32, TD-33, TD-34, TD-35, TD-36, TD-37, TD-42, TD-44, TD-46.
+TD-01, TD-02, TD-04, TD-06, TD-07, TD-12, TD-13, TD-14, TD-15, TD-16, TD-19, TD-23,
+TD-25, TD-28, TD-29, TD-30, TD-32, TD-33, TD-34, TD-35, TD-36, TD-37, TD-40, TD-42, TD-44, TD-46, TD-51, TD-53.
 
 - **TD-52** (JIT locals mis-resolution, fixed 2026-11-19): the Int-JIT resolved
   frame-local slots via the program's *global* name table indexed by
@@ -66,6 +66,12 @@ TD-25, TD-28, TD-29, TD-30, TD-32, TD-33, TD-34, TD-35, TD-36, TD-37, TD-42, TD-
 - **TD-53** (see table): `Op::Neg` now lowers to `ineg` (Int, wrapping) and
   `fneg` (Float); Bool/none/arena handles bail to the interpreter. The
   Float strict canary (`test/jit/strict_float.un`) keeps the arm CI-verified.
+
+- **TD-16 / TD-40** (see table): the only unprotected plan acquisition
+  before the first step was wrapped in `catch_unwind` (VM::new both sites,
+  VM::with_context, plus the module loader's `validate()`-first guard kept).
+  No known Rust panic escapes the process boundary; errors print through
+  `report()` and exit 1.
 
 Closed-out notes: TD-37 kept the deliberate API shape (4xx/5xx responses
 return the body, matching the .NET reference — the Un http client does not

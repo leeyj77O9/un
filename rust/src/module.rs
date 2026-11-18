@@ -141,7 +141,8 @@ fn load_file(path: &str) -> Result<Vec<(String, Obj)>, ModuleError> {
     if let Err(message) = program.validate() {
         return Err(ModuleError::Panic(obj::panic("panic", message)));
     }
-    let mut vm = VM::with_context(Rc::new(program), source.clone(), ctx);
+    let mut vm = VM::with_context(Rc::new(program), source.clone(), ctx)
+        .map_err(|message| ModuleError::Panic(obj::panic("panic", message)))?;
     let outcome = vm.run();
     match outcome {
         Outcome::Value(_) => {}

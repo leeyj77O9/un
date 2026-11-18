@@ -123,11 +123,26 @@ impl VM {
         program.validate()?;
         world::set_proto_executor(Some(Rc::new(
             |program: &Rc<Program>, ctx: &Context, proto_index: usize| {
-                let plan = plan_for(program);
+                let plan = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    plan_for(program)
+                })) {
+                    Ok(plan) => plan,
+                    Err(payload) => {
+                        let message = panic_payload_message(&payload);
+                        return function::Flow::Panic(obj::panic(
+                            "panic",
+                            format!("internal error (please report): {message}"),
+                        ));
+                    }
+                };
                 execute_proto(program, ctx, proto_index, plan)
             },
         )));
-        let plan = plan_for(&program);
+        let plan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plan_for(&program)))
+            .map_err(|payload| {
+                let message = panic_payload_message(&payload);
+                format!("internal error (please report): {message}")
+            })?;
         let root = program.root;
         let reg_count = plan.protos[root].reg_count;
         Ok(Self {
@@ -261,11 +276,19 @@ impl VM {
 }
 
 impl VM {
-    pub fn with_context(program: Rc<Program>, _source: Rc<Source>, ctx: Context) -> Self {
-        let plan = plan_for(&program);
+    pub fn with_context(
+        program: Rc<Program>,
+        _source: Rc<Source>,
+        ctx: Context,
+    ) -> Result<Self, String> {
+        let plan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plan_for(&program)))
+            .map_err(|payload| {
+                let message = panic_payload_message(&payload);
+                format!("internal error (please report): {message}")
+            })?;
         let root = program.root;
         let reg_count = plan.protos[root].reg_count;
-        Self {
+        Ok(Self {
             ctx,
             ip: 0,
             program,
@@ -279,7 +302,7 @@ impl VM {
             pending_finally_error: None,
             pending_return: None,
             pending_propagate: None,
-        }
+        })
     }
 
     fn handle(&mut self, outcome: &Outcome) -> bool {
