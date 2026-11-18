@@ -211,22 +211,7 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-fn iter_values(value: &Obj) -> Result<Vec<Obj>, Obj> {
-    // Fast path for plain lists: skip creating an Iter object and another
-    // materialised List copy just to take the borrowed slots out again.
-    if let crate::runtime::obj::Payload::List(cell) = crate::runtime::obj::payload(value) {
-        return Ok(cell.borrow().clone());
-    }
-    let iter = obj::unary(value, obj::UnOp::Iter);
-    if !matches!(obj::payload(&iter), Payload::Iter(_)) {
-        return Err(obj::err("expected 'iterable' argument to be of type 'iter'"));
-    }
-    let list = obj::unary(&iter, obj::UnOp::ToList);
-    match obj::payload(&list) {
-        Payload::List(values) => Ok(values.borrow().clone()),
-        _ => Err(obj::err("expected 'iterable' argument to be of type 'iter'")),
-    }
-}
+
 fn normalize_to_tuple(value: &Obj) -> Result<Vec<Obj>, Obj> {
     let raw = obj::to_tuple(value);
     let raw_values = match obj::payload(&raw) {
@@ -328,7 +313,7 @@ fn range_impl(scope: &Scope) -> Obj {
     let end = scope::get(scope, "end");
     let step = scope::get(scope, "step");
     // `end` is optional; when omitted, `start` acts as the stop:
-    // iter.range(n) ≡ iter.range(0, n). Python-style semantics otherwise:
+    // iter.range(n) ??iter.range(0, n). Python-style semantics otherwise:
     // range(5, 0) with a positive step is empty (no bounds swapping).
     let start = match to_int(&start) {
         Ok(v) => v,
@@ -354,7 +339,7 @@ fn range_impl(scope: &Scope) -> Obj {
         return obj::err("step argument must not be zero");
     }
     // The stage machine already implements the standard semantics
-    // (`step > 0` → `v < stop`, else `v > stop`).
+    // (`step > 0` ??`v < stop`, else `v > stop`).
     iters::range_new(start, end, step)
 }
 fn counter_impl(scope: &Scope) -> Obj {
@@ -371,7 +356,7 @@ fn counter_impl(scope: &Scope) -> Obj {
 }
 fn reverse_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "obj");
-    let values = match iter_values(&value) {
+    let values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -381,7 +366,7 @@ fn reverse_impl(scope: &Scope) -> Obj {
 fn repeat_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "obj");
     let count = scope::get(scope, "count");
-    let values = match iter_values(&value) {
+    let values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -397,7 +382,7 @@ fn repeat_impl(scope: &Scope) -> Obj {
 }
 fn zip_impl(scope: &Scope) -> Obj {
     let iterables = scope::get(scope, "iterables");
-    let arrays = match iter_values(&iterables) {
+    let arrays = match iters::into_values(&iterables) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -438,7 +423,7 @@ fn zip_impl(scope: &Scope) -> Obj {
 }
 fn enumerate_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "iterable");
-    let values = match iter_values(&value) {
+    let values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -475,7 +460,7 @@ fn sum_list(value: &Obj) -> Option<Obj> {
 
 fn sum_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "iterable");
-    // Fast path: summing a plain list — avoid the generic normalize_to_tuple,
+    // Fast path: summing a plain list ??avoid the generic normalize_to_tuple,
     // which builds a tuple, re-wraps a nested list in another tuple (three
     // whole-list shallow clones + a names vector per tuple), only to clone
     // it back out again to the same items.
@@ -554,7 +539,7 @@ fn min_impl(scope: &Scope) -> Obj {
 fn filter_impl(scope: &Scope) -> Obj {
     let predicate = scope::get(scope, "predicate");
     let value = scope::get(scope, "iterable");
-    let values = match iter_values(&value) {
+    let values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -579,7 +564,7 @@ fn map_impl(scope: &Scope) -> Obj {
         return obj::err("invalid argument: 'transform'");
     }
     let wants_index = function::arg_count(&transform) >= 2;
-    let values = match iter_values(&value) {
+    let values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -643,13 +628,13 @@ fn skip_impl(scope: &Scope) -> Obj {
 }
 fn chain_impl(scope: &Scope) -> Obj {
     let iterables = scope::get(scope, "iterables");
-    let arrays = match iter_values(&iterables) {
+    let arrays = match iters::into_values(&iterables) {
         Ok(values) => values,
         Err(e) => return e,
     };
     let mut list: Vec<Obj> = Vec::new();
     for array in &arrays {
-        match iter_values(array) {
+        match iters::into_values(array) {
             Ok(values) => list.extend(values),
             Err(e) => return e,
         }
@@ -658,7 +643,7 @@ fn chain_impl(scope: &Scope) -> Obj {
 }
 fn flatten_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "iterable");
-    let values = match iter_values(&value) {
+    let values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -679,7 +664,7 @@ fn flatten_impl(scope: &Scope) -> Obj {
 fn all_impl(scope: &Scope) -> Obj {
     let predicate = scope::get(scope, "predicate");
     let value = scope::get(scope, "iterable");
-    let values = match iter_values(&value) {
+    let values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -699,7 +684,7 @@ fn all_impl(scope: &Scope) -> Obj {
 fn any_impl(scope: &Scope) -> Obj {
     let predicate = scope::get(scope, "predicate");
     let value = scope::get(scope, "iterable");
-    let values = match iter_values(&value) {
+    let values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -719,7 +704,7 @@ fn any_impl(scope: &Scope) -> Obj {
 fn count_impl(scope: &Scope) -> Obj {
     let predicate = scope::get(scope, "predicate");
     let value = scope::get(scope, "iterable");
-    let values = match iter_values(&value) {
+    let values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -739,7 +724,7 @@ fn count_impl(scope: &Scope) -> Obj {
 }
 fn sorted_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "iterable");
-    let mut values = match iter_values(&value) {
+    let mut values = match iters::into_values(&value) {
         Ok(values) => values,
         Err(e) => return e,
     };

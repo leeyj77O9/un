@@ -90,13 +90,7 @@ fn iter_self(scope: &Scope) -> Option<iters::IterCell> {
         _ => None,
     }
 }
-fn iter_values(value: &Obj) -> Result<Vec<Obj>, Obj> {
-    let list = obj::unary(value, obj::UnOp::ToList);
-    match obj::payload(&list) {
-        Payload::List(values) => Ok(values.borrow().clone()),
-        _ => Err(obj::err("counter is infinite")),
-    }
-}
+
 fn iter_take(scope: &Scope) -> Obj {
     let Some(st) = iter_self(scope) else {
         return obj::err("expected 'iter' object");
@@ -174,7 +168,7 @@ fn iter_any(scope: &Scope) -> Obj {
     if !function::is_func(&func) {
         return obj::err("invalid argument: 'fn'");
     }
-    let values = match iter_values(&scope::get(scope, "self")) {
+    let values = match iters::into_values(&scope::get(scope, "self")) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -194,7 +188,7 @@ fn iter_all(scope: &Scope) -> Obj {
     if !function::is_func(&func) {
         return obj::err("invalid argument: 'fn'");
     }
-    let values = match iter_values(&scope::get(scope, "self")) {
+    let values = match iters::into_values(&scope::get(scope, "self")) {
         Ok(values) => values,
         Err(e) => return e,
     };
@@ -210,7 +204,7 @@ fn iter_sum(scope: &Scope) -> Obj {
     let Some(_st) = iter_self(scope) else {
         return obj::err("expected 'iter' object");
     };
-    let values = match iter_values(&scope::get(scope, "self")) {
+    let values = match iters::into_values(&scope::get(scope, "self")) {
         Ok(values) => values,
         Err(e) => return e,
     };

@@ -728,5 +728,26 @@ fn collect_items(def: &Rc<StageDef>) -> Result<Vec<Obj>, Obj> {
 pub fn count_of(st: &IterCell) -> Obj {
     count(&st.borrow().head.clone())
 }
+
+/// Materialise the values of an iterable. Fast path for plain lists (no
+/// iter object round-trip, no extra clone of an already-materialised list).
+/// Error contract shared by both the `iter.*` global functions and the
+/// `iter` method twins: a non-iter receiver is
+/// "expected 'iterable' argument to be of type 'iter'", and a failing
+/// to-list (e.g. an infinite range) is "counter is infinite".
+pub(crate) fn into_values(value: &Obj) -> Result<Vec<Obj>, Obj> {
+    if let Payload::List(cell) = obj::payload(value) {
+        return Ok(cell.borrow().clone());
+    }
+    let iter = obj::unary(value, UnOp::Iter);
+    if !matches!(obj::payload(&iter), Payload::Iter(_)) {
+        return Err(obj::err("expected 'iterable' argument to be of type 'iter'"));
+    }
+    let list = obj::unary(&iter, UnOp::ToList);
+    match obj::payload(&list) {
+        Payload::List(values) => Ok(values.borrow().clone()),
+        _ => Err(obj::err("counter is infinite")),
+    }
+}
 #[cfg(test)]
 mod tests;
