@@ -232,10 +232,18 @@ manifest unchanged.
    loaded-machine artifact, superseded by the clean re-measure. The clean
    run's advisory check flags `qsort500 unjit +12.9%` vs the previous saved
    run (same code, 0.83 → 0.94 ms) — noise-level; re-check if it persists.
-2. Design a general Float-math intrinsic tier (sqrt/floor/sin/cos/… for
-   Float args, with the interpreter's error behaviour preserved) to recover
-   `math10000`/`sin20000`-class workloads without benchmark-specific
-   matching. Verify with differential + roundtrip gates before merging.
+2. ~~Design a general Float-math intrinsic tier (sqrt/floor/sin/cos/… for
+   Float args, with proper error semantics) to recover `math10000`/`sin20000`-class
+   workloads without benchmark-specific matching.~~ **Done** (Pass 23,
+   `docs/JIT_FLOAT_MATH_INTRINSIC.md`, D-078).
+   `math`의 19개 함수를 이름 텍스트(`LoadName "math"` + `GetAttr <fn>` + `Call`)로
+   인식해 f64 FFI로 lowering한다. sqrt/log의 정의역 위반은 emitted `fcmp` 가드가
+   tag=2 whole-frame bail → interpreter가 정확한 Un 오류를 다시 발생시킨다(오류
+   메시지·NaN 비트·pow Int 의미론 byte-identical). `pow`의 both-Int 인자는
+   bail(interpreter 소유). rebind guard를 확장(math store 무조건 veto, 같은 이름의
+   member `SetAttr`는 math 사용 프로그램에서만 veto). gates: Positive 1493,
+   differential 88/0, unbc-roundtrip 47/47, cargo test 205, UV_JIT=2 OK.
+   `math.un` JIT 0.053ms(3/3), `floatmath.un` JIT 0.54ms(2/2) vs 22/27ms interpreter.
 3. Decide the handle-namespace question for JIT-produced large Ints
    (reserved tag bit vs. runtime range check at handle-probes).
 4. ~~Implement the `UV_JIT=2` strict canary (TD-51) so a silently-dead JIT is

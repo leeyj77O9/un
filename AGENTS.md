@@ -8,8 +8,8 @@
 - **Un**: 들여쓰기 기반 문법, 패턴 매칭, `go`/`wait` 비동기 실행을 제공하는 동적 타입 스크립팅 언어.
 - **구현**: Rust 바이트코드 컴파일러 + 레지스터 기반 VM (`unvm`, 라이브러리 이름 `unvm`).
 - **파이프라인**: `Source -> Lexer -> Parser -> Optimizer (desugar+fold) -> Bytecode Compiler -> Register VM`
-- **규모**: Rust 84개 파일 / 37,627줄(wc 기준), `test/` 아래 `.un` 스크립트 96개.
-- **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을 읽을 때 Int 부분집합(i64 파라미터·지역변수, `iter.range` 루프, 정수 산술과 비트연산 `&` `|` `^`, `FusedIntMulAdd`)과 IntDict/IntVec/class intrinsic에 속하는 proto를 native로 컴파일하고 `jit_cache`에 등록한다. 결과는 hidden pointer로 (value, tag)를 기록하는데 tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2는 런타임 bail(엔진 오류가 아니라 의미론 보존을 위한 인터프리터 fallback)이다. 나머지는 전부 인터프리터로 fallback. **클래스 메서드는 JIT 대상이다**: receiver는 hidden pointer 형태의 raw `Rc<ObjData>` 포인터로 전달되고, 클래스 메서드는 receiver를 local slot 0에 바인딩한다. `self.<Int필드>`의 직접 read/write는 layout 인덱스와 `[이름 == 필드이름, payload == Int]`를 **호출 시점에 name-checked**하는 intrinsic으로 수행하고, 검증 실패 시 bail → 인터프리터로 fallback한다. `UV_JIT=0`으로 런타임에 opt-out. `UV_JIT=2`는 strict canary로, JIT 후보가 하나라도 fallback stub이 되면 exit code 2로 즉시 죽는다(`.github/workflows/build.yml`의 `JIT strict canary` 스텝이 `test/jit/strict.un`으로 검증).
+- **규모**: Rust 84개 파일 / 38,205줄(wc 기준), `test/` 아래 `.un` 스크립트 96개.
+- **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을 읽을 때 Int 부분집합(i64 파라미터·지역변수, `iter.range` 루프, 정수 산술과 비트연산 `&` `|` `^`, `FusedIntMulAdd`)과 IntDict/IntVec/class intrinsic와 math Float intrinsic에 속하는 proto를 native로 컴파일하고 `jit_cache`에 등록한다. 결과는 hidden pointer로 (value, tag)를 기록하는데 tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2는 런타임 bail(엔진 오류가 아니라 의미론 보존을 위한 인터프리터 fallback)이다. 나머지는 전부 인터프리터로 fallback. **클래스 메서드는 JIT 대상이다**: receiver는 hidden pointer 형태의 raw `Rc<ObjData>` 포인터로 전달되고, 클래스 메서드는 receiver를 local slot 0에 바인딩한다. `self.<Int필드>`의 직접 read/write는 layout 인덱스와 `[이름 == 필드이름, payload == Int]`를 **호출 시점에 name-checked**하는 intrinsic으로 수행하고, 검증 실패 시 bail → 인터프리터로 fallback한다. `UV_JIT=0`으로 런타임에 opt-out. `UV_JIT=2`는 strict canary로, JIT 후보가 하나라도 fallback stub이 되면 exit code 2로 즉시 죽는다(`.github/workflows/build.yml`의 `JIT strict canary` 스텝이 `test/jit/strict.un`으로 검증).
 - **기준 문서**: `docs/REFACTOR_SUMMARY.md`(전체 요약), `docs/PROJECT_AUDIT.md`(감사 결과), `docs/REFACTOR_LOG.md`(변경 이력), `docs/ARCHITECTURE.md`(구조), `docs/TECHNICAL_DEBT.md`(부채 목록)가 현재 상태의 기준 문서다.
 - **이전 역사**: 원래 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었다. Rust 포트가
   differential 검증으로 C# 구현과 byte-identical임을 확인한 뒤 대체했고, C# 소스는
@@ -31,7 +31,7 @@ C:\dev\un/
 │  │  ├─ lexer.rs / parser.rs / optimize.rs / compiler.rs / module.rs
 │  │  ├─ vm/                 # 단일 실행 모듈: register VM (mod.rs) + stack→register 번역(transfer.rs)
 │  │  ├─ jit_cache.rs        # JIT 컴파일된 함수 전역 캐시/등록
-│  │  ├─ jit_bc.rs         # .unbc가 1:1 대응되는 Cranelift JIT (Int 부분집합 + IntVec/IntDict/class intrinsic, Float poly-tag 반환)
+│  │  ├─ jit_bc.rs         # .unbc가 1:1 대응되는 Cranelift JIT (Int 부분집합 + IntVec/IntDict/class intrinsic + math Float intrinsic, Float poly-tag 반환)
 │  │  ├─ runtime/            # obj, collections, iters, function, world/(모듈 분할), scope, date, ...
 │  │  ├─ native/             # io, fs, re, math, iter, ... (`native::init`에서 명시적 등록)
 │  │  └─ playground/         # WASM 진입점 (PlaygroundRunner.RunCode 대응)

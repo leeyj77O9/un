@@ -1,4 +1,4 @@
-# docs/REFACTOR_LOG.md
+﻿# docs/REFACTOR_LOG.md
 
 Dated log of the changes applied to the Rust implementation, with the
 commands used to verify them and the numbers they produced. Only verified
@@ -1233,3 +1233,63 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   the same machine.
 - Correctness re-verified: Positive 1415/41/0, differential 81/0,
   cargo test 205 (release+debug), unbc-roundtrip 40/40+34/34, suite 109.
+
+---
+
+## 2026-11-18 - Pass 23: math Float intrinsic (JIT parity for numeric kernels)
+
+### Starting state
+
+- After the normalization pass removed the benchmark-shaped intrinsics
+  (`match_floor_sqrt`, `match_math_sin`), every proto containing a
+  `math.*` call was rejected at candidacy (`LoadName "math"` had no
+  marker, so the whole proto was interpreted). `math_work` and `sin_sum`
+  ran at interpreter speed: math10000 JIT ~22ms, sin20000 JIT ~27ms.
+- Removing user-hostile special cases was correct; but numeric programs
+  (the whole point of the Int-JIT value model) lost all JIT benefit.
+
+### Analysis / design
+
+- The removed intrinsics were rejected for *matching call-sequence shapes
+  by name text*. The replacement must be a general, always-honest lowering:
+  any Float argument, any call site, no input-value-dependent decisions.
+- Design doc: `docs/JIT_FLOAT_MATH_INTRINSIC.md` (Accepted after review;
+  open questions resolved: `pow` = both-Int args bail (Int semantics owned
+  by the interpreter - nameless registers cannot express Int|Float poly
+  tagging); `log` keeps base with `un_math_log(v, b) = v.ln() / b.ln()`;
+  `UV_JIT=2` canary unchanged (the differential gate is the accuracy
+  backstop); the rebind guard rule 2 (math-use + member-name rebind) is
+  documented bluntness).
+- Implementation reuses the existing marker machinery (`len` / class-method
+  precedent): `LoadName "math"` sets a marker; `GetAttr <fn>` binds the
+  member marker; `Op::Call` lowers to an f64 FFI call (`un_math_*` in
+  `native/math.rs`). Domain violations (sqrt(x<0), log(x<=0)) are
+  pre-checked by emitted `fcmp` guards that tag=2 bail the frame - the
+  interpreter re-runs and raises the exact Un error, so error text and
+  bytes are preserved.
+- `compute_local_float` had to learn the intrinsics: the static poly-tag
+  analysis previously knew only LoadConst Float / Float arithmetic / Dup;
+  without math-call arms the promoted-local slot of `total` was never
+  flagged and the loop returned 0. Fixed by teaching the analysis the
+  math-call result kinds (Float-always for transcendentals / ln / log /
+  hypot; identity-preserving for floor/ceil/trunc; arg-kind for abs;
+  Sign always Int).
+- Rebind guard: `math` store vetoes unconditionally; `SetAttr` of a
+  math-fn name vetoes only when the program also reads the `math` global
+  (alias `m = math` counts through the source LoadName). Math-free
+  programs with `self.sin = 3` are unaffected.
+
+### Result
+
+- `math.un` and `floatmath.un` JIT lanes are byte-identical to `UV_JIT=0`
+  and fast again: math10000 JIT ~0.05ms, sin20000 JIT ~0.54ms
+  (interpreter lanes ~22 / 27ms).
+- Gates: Positive **1493 passed / 0 failed** (47 files), Negative **41 matched**,
+  differential **88 files, 0 differences**, unbc-roundtrip **47/47 identical**
+  (negative 34/34, 7 compile-rejected skips), cargo test --release **205 passed**,
+  `UV_JIT=2` canary OK, test/unit/native/math.un 47 passed.
+- Ad-hoc verification matrix: sqrt/log domain errors byte-identical between
+  lanes; Int-identity floor/trunc verified; `math = 5` and `math.sin = spy`
+  module rebinds veto the whole program to the interpreter (verified both
+  directly and through a `m = math` alias); a math-free class with a
+  `self.sin` attribute still JIT-compiles.

@@ -19,17 +19,26 @@
 //!   - `//` and `%` only with a non-zero integer constant divisor loaded into
 //!     the right operand register by a preceding `LoadConst`
 //!   - `< <= > >= == !=` producing Int 0/1 booleans for Int operands; Float
-//!     comparisons are rejected
+//!     operands are compared by `fcmp` (NaN compares the way IEEE says it
+//!     compares) and the same 0/1 shape is produced
 //!   - `if` / `while` via `JmpIf` (jump when the condition is falsy) and `Jmp`
 //!   - `for i in iter.range(lo, hi)` loops over Int bounds
 //!   - `FusedIntMulAdd` (the optimizer's accumulator shape)
+//!   - user calls to other JIT-eligible protos of the same program (direct
+//!     native calls; class constructors and Int-field methods lower to
+//!     `un_class_make_<N>` / name-checked member intrinsics)
+//!   - IntDict / IntVec intrinsics on known handles
+//!   - `math.<fn>` Float intrinsics: sin/cos/tan/asin/acos/atan/sqrt/cbrt/exp/
+//!     ln/log2/log10/log(base)/floor/ceil/trunc/sign/pow(mixed Float only)/
+//!     hypot/abs(Float only), lowered to f64 FFI calls with domain guards
+//!     (sqrt of a negative number / log of a non-positive number bail the
+//!     frame to the interpreter, which raises the exact Un error)
 //!   - `return expr`, either Int, or Int/Float promoted locals with per-path
 //!     tagging
 //!
-//! Rejected (the whole function routes to the interpreter): user function
-//! calls, string/object/list ops, spread/varargs, exceptions, enums, pattern
-//! matching, `go`/`wait`, mutable global reads, mixed-type returns that are
-//! not routed through a promoted local.
+//! Rejected (the whole function routes to the interpreter): spread/varargs,
+//! enums, pattern matching, `go`/`wait`, mutable global reads, heterogeneous
+//! union returns routed through anything other than a promoted local.
 //!
 //! Compiled functions follow the Un fast-call ABI: positional Int arguments
 //! are passed as raw i64 values; results are returned as tagged raw i64
@@ -56,23 +65,82 @@ use crate::vm::{Ins, ProtoPlan};
 
 pub const MAX_ARITY: usize = 8;
 
+/// The `math` module functions the Int-JIT can lower to f64 FFI calls.
+/// Recognition is purely textual at the bytecode level
+/// (`LoadName "math"` / `GetAttr <fn>` / `Call`), the same mechanism the
+/// `len` marker and class-method markers use. The interpreter's error
+/// semantics are preserved by bailing the whole frame to the interpreter
+/// (tag=2) on any domain violation or type mismatch.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum MathFn {
+    Sin, Cos, Tan, Asin, Acos, Atan,
+    Sqrt, Cbrt, Exp,
+    Log,   // `math.log(v)` or `math.log(v, base)`
+    Log2, Log10,
+    Floor, Ceil, Trunc, Sign,
+    Pow, Hypot, Abs,
+}
+
+/// The `extern "C"` symbols registered for the math intrinsics (see
+/// `native/math.rs`). `Log` is resolved at the call site by argc:
+/// argc==1 → `un_math_ln`, argc==2 → `un_math_log` (base).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum MathFfi {
+    Sin, Cos, Tan, Asin, Acos, Atan,
+    Sqrt, Cbrt, Exp, Ln, Log2, Log10,
+    Floor, Ceil, Abs,
+    LogB, Hypot, Powf,
+    Trunc, Sign,
+}
+
+impl MathFn {
+    fn from_name(name: &str) -> Option<MathFn> {
+        Some(match name {
+            "sin" => MathFn::Sin, "cos" => MathFn::Cos, "tan" => MathFn::Tan,
+            "asin" => MathFn::Asin, "acos" => MathFn::Acos, "atan" => MathFn::Atan,
+            "sqrt" => MathFn::Sqrt, "cbrt" => MathFn::Cbrt, "exp" => MathFn::Exp,
+            "log" => MathFn::Log, "log2" => MathFn::Log2, "log10" => MathFn::Log10,
+            "floor" => MathFn::Floor, "ceil" => MathFn::Ceil, "trunc" => MathFn::Trunc,
+            "sign" => MathFn::Sign,
+            "pow" => MathFn::Pow, "hypot" => MathFn::Hypot, "abs" => MathFn::Abs,
+            _ => return None,
+        })
+    }
+}
+
+/// Exact-match list used by the rebind guard (`SetAttr` of a math module
+/// member re-binds the shared module object at load time).
+const MATH_FNS: &[&str] = &[
+    "sin", "cos", "tan", "asin", "acos", "atan",
+    "sqrt", "cbrt", "exp", "log", "log2", "log10",
+    "floor", "ceil", "trunc", "sign",
+    "pow", "hypot", "abs",
+];
+
 /// Translate the eligible protos of `program` into the JIT cache keyed by
 /// `program_ptr`. Called once per program when the VM first plans it.
 /// Registry entry for the pre-JIT compile guard: disables the entire
 /// program's JIT path when a global binding is re-bound.
-/// Names used by the JIT translation (`iter`/`range`, the loop fast path,
-/// and `len`, the IntVec `len(xs)` marker) could be re-bound
+/// Names used by the JIT translation could be re-bound at module-load time
 /// (`iter.range = …`, `len = …`), which a compile-time decision made
-/// once per program could never reconcile. Any such rebind disqualifies the
-/// entire program from the JIT (exact interpreter semantics are preserved).
+/// once per program could never reconcile. Rules:
+///  * a store/definition of the bare name `math` vetoes unconditionally;
+///  * a `SetAttr` whose attr name is one of the lowered `math` functions
+///    vetoes only when the program also reads the `math` global somewhere
+///    (`LoadName "math"`) — instance code that uses `math` elsewhere pays
+///    for it, math-free programs never do.
+/// Any violation disqualifies the entire program from the JIT
+/// (exact interpreter semantics are preserved).
 fn program_has_intrinsic_rebind(program: &Program) -> bool {
+    let mut has_math_use = false;
+    let mut math_member_rebind = false;
     for proto in &program.protos {
         for ins in &proto.code {
             let Some(op) = ins.op_code() else { continue };
             if ins.operand < 0 {
                 continue;
             }
-            if op != Op::StoreName && op != Op::SetAttr && op != Op::MakeFunc {
+            if op != Op::StoreName && op != Op::SetAttr && op != Op::MakeFunc && op != Op::LoadName {
                 continue;
             }
             if op == Op::MakeFunc {
@@ -84,7 +152,7 @@ fn program_has_intrinsic_rebind(program: &Program) -> bool {
                     // operand is the proto-slot index, not name index
                     if let Some(fn_proto) = program.protos.get(slot_of) {
                         if let Some(pname) = program.names.get(fn_proto.name) {
-                            if matches!(pname.as_str(), "iter" | "range" | "len") {
+                            if matches!(pname.as_str(), "iter" | "range" | "len" | "math") {
                                 return true;
                             }
                         }
@@ -101,10 +169,22 @@ fn program_has_intrinsic_rebind(program: &Program) -> bool {
                 Some(s) => s.as_str(),
                 None => continue,
             };
-            if matches!(name, "iter" | "range" | "len") {
+            if op == Op::LoadName {
+                if name == "math" {
+                    has_math_use = true;
+                }
+                continue;
+            }
+            if name == "math" || matches!(name, "iter" | "range" | "len") {
                 return true;
             }
+            if op == Op::SetAttr && MATH_FNS.contains(&name) {
+                math_member_rebind = true;
+            }
         }
+    }
+    if has_math_use && math_member_rebind {
+        return true;
     }
     false
 }
@@ -199,6 +279,31 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     builder.symbol("un_list_int_iter_has_next", crate::runtime::int_list::un_list_int_iter_has_next as *const u8);
     builder.symbol("un_list_int_iter_next", crate::runtime::int_list::un_list_int_iter_next as *const u8);
     builder.symbol("un_list_int_iter_free", crate::runtime::int_list::un_list_int_iter_free as *const u8);
+    let math_entries: &[(MathFfi, &str, *const u8, u8)] = &[
+        (MathFfi::Sin, "un_math_sin", crate::native::math::un_math_sin as *const u8, 0),
+        (MathFfi::Cos, "un_math_cos", crate::native::math::un_math_cos as *const u8, 0),
+        (MathFfi::Tan, "un_math_tan", crate::native::math::un_math_tan as *const u8, 0),
+        (MathFfi::Asin, "un_math_asin", crate::native::math::un_math_asin as *const u8, 0),
+        (MathFfi::Acos, "un_math_acos", crate::native::math::un_math_acos as *const u8, 0),
+        (MathFfi::Atan, "un_math_atan", crate::native::math::un_math_atan as *const u8, 0),
+        (MathFfi::Sqrt, "un_math_sqrt", crate::native::math::un_math_sqrt as *const u8, 0),
+        (MathFfi::Cbrt, "un_math_cbrt", crate::native::math::un_math_cbrt as *const u8, 0),
+        (MathFfi::Exp, "un_math_exp", crate::native::math::un_math_exp as *const u8, 0),
+        (MathFfi::Ln, "un_math_ln", crate::native::math::un_math_ln as *const u8, 0),
+        (MathFfi::Log2, "un_math_log2", crate::native::math::un_math_log2 as *const u8, 0),
+        (MathFfi::Log10, "un_math_log10", crate::native::math::un_math_log10 as *const u8, 0),
+        (MathFfi::Floor, "un_math_floor", crate::native::math::un_math_floor as *const u8, 0),
+        (MathFfi::Ceil, "un_math_ceil", crate::native::math::un_math_ceil as *const u8, 0),
+        (MathFfi::Abs, "un_math_abs", crate::native::math::un_math_abs as *const u8, 0),
+        (MathFfi::LogB, "un_math_log", crate::native::math::un_math_log as *const u8, 1),
+        (MathFfi::Hypot, "un_math_hypot", crate::native::math::un_math_hypot as *const u8, 1),
+        (MathFfi::Powf, "un_math_powf", crate::native::math::un_math_powf as *const u8, 1),
+        (MathFfi::Trunc, "un_math_trunc_i64", crate::native::math::un_math_trunc_i64 as *const u8, 2),
+        (MathFfi::Sign, "un_math_sign", crate::native::math::un_math_sign as *const u8, 2),
+    ];
+    for &(_, sym, ptr, _) in math_entries {
+        builder.symbol(sym, ptr);
+    }
     let mut module = JITModule::new(builder);
 
     // Declare the depth helpers so the JIT can call into them.
@@ -422,6 +527,34 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         }
     }
 
+    // math Float intrinsics (sqrt/sin/floor/…): three shared signatures.
+    // Every shim is a total, side-effect-free Rust `f64` op; the JIT emits
+    // guard branches for domain checks before calling, and a guard miss
+    // bails the frame before the shim is reached.
+    let mut sig_f64_un = module.make_signature();
+    sig_f64_un.params.push(AbiParam::new(types::F64));
+    sig_f64_un.returns.push(AbiParam::new(types::F64));
+    let mut sig_f64_bin = module.make_signature();
+    sig_f64_bin.params.push(AbiParam::new(types::F64));
+    sig_f64_bin.params.push(AbiParam::new(types::F64));
+    sig_f64_bin.returns.push(AbiParam::new(types::F64));
+    let mut sig_f64_to_i64 = module.make_signature();
+    sig_f64_to_i64.params.push(AbiParam::new(types::F64));
+    sig_f64_to_i64.returns.push(AbiParam::new(types::I64));
+
+    let mut fid_math: HashMap<MathFfi, cranelift_module::FuncId> = HashMap::with_capacity(math_entries.len());
+    for &(mfn, sym, _, sig_kind) in math_entries {
+        let fid = match sig_kind {
+            0 => module.declare_function(sym, Linkage::Import, &sig_f64_un),
+            1 => module.declare_function(sym, Linkage::Import, &sig_f64_bin),
+            _ => module.declare_function(sym, Linkage::Import, &sig_f64_to_i64),
+        };
+        match fid {
+            Ok(f) => { fid_math.insert(mfn, f); }
+            Err(_) => return,
+        }
+    }
+
     // Pass 1: declare every candidate so they are all callable from each other
     let mut decls: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
     let mut sigs: HashMap<usize, cranelift_codegen::ir::Signature> = HashMap::new();
@@ -507,6 +640,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
                 fid_list_iter_next,
                 fid_list_iter_free,
                 &fid_class_make,
+                &fid_math,
                 &ret_kinds,
             )
         }));
@@ -694,6 +828,14 @@ struct Tr<'a> {
     local_is_list: Vec<u8>,
     // Register marked as a bound call to the global `len` (LoadName "len").
     len_regs: HashSet<usize>,
+    // Register marked as the global `math` module (LoadName "math"); the
+    // bound intrinsic is resolved one instruction later at `GetAttr`.
+    math_regs: HashSet<usize>,
+    // Register holding a math-module member marker (`GetAttr` on a math
+    // marker): `math.<fn>(...)` call sites lower to f64 FFI calls.
+    mathfn_regs: HashMap<usize, MathFn>,
+    // math Float intrinsic FuncIds keyed by shim identity.
+    fid_math: HashMap<MathFfi, cranelift_module::FuncId>,
     // Register marked as a pending `IntVec.add(v)` call whose receiver is
     // recorded (`dst marker -> receiver register`).
     list_add_regs: HashMap<usize, usize>,
@@ -1257,6 +1399,265 @@ impl<'a> Tr<'a> {
         self.emit_int_cleanup(builder, false);
     }
 
+    /// Marker cleanup shared by every math-intrinsic arm: consume the
+    /// callee marker and mark the destination register's kind.
+    fn finish_math_call(&mut self, ins: Ins, callee_reg: usize, dst_is_float: bool) {
+        let dst = ins.a as usize;
+        self.is_bool[dst] = false;
+        self.is_none[dst] = false;
+        self.is_float[dst] = dst_is_float;
+        self.ret_slot[dst] = None;
+        self.mathfn_regs.remove(&callee_reg);
+        self.mathfn_regs.remove(&dst);
+    }
+
+    /// An argument read as f64: Float registers pass through, Int registers
+    /// are promoted (`fcvt_from_sint`), mirroring `Int + Float` promotion in
+    /// the arithmetic arms. `self.is_none`/`is_bool` are checked by the
+    /// caller before this is used.
+    fn emit_f64_arg(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        idx: usize,
+    ) -> cranelift_codegen::ir::Value {
+        if self.is_float[idx] {
+            builder.use_var(self.rv_f64(idx))
+        } else {
+            let i = builder.use_var(self.rv_i64(idx));
+            builder.ins().fcvt_from_sint(types::F64, i)
+        }
+    }
+
+    /// Emit the guard for `sqrt` (`x < 0`) / `ln`/`log2`/`log10`/`log`
+    /// (`x <= 0`). A miss bails the whole frame to the interpreter, which
+    /// re-runs the proto and raises the exact Un domain error.
+    fn emit_math_domain_bail(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        x: cranelift_codegen::ir::Value,
+        less_equal_zero: bool,
+    ) {
+        let zero_f64 = builder.ins().f64const(0.0);
+        let bad = builder.ins().fcmp(
+            if less_equal_zero {
+                cranelift_codegen::ir::condcodes::FloatCC::LessThanOrEqual
+            } else {
+                cranelift_codegen::ir::condcodes::FloatCC::LessThan
+            },
+            x,
+            zero_f64,
+        );
+        let bail_blk = builder.create_block();
+        let cont_blk = builder.create_block();
+        builder.ins().brif(bad, bail_blk, &[], cont_blk, &[]);
+        self.terminated = true;
+        builder.seal_block(bail_blk);
+        builder.seal_block(cont_blk);
+        self.goto(builder, bail_blk);
+        self.emit_bail_exit(builder);
+        self.goto(builder, cont_blk);
+    }
+
+    /// Emit `math.<fn>(args...)` as an f64 FFI call. `callee_reg` holds the
+    /// member marker from the preceding `GetAttr`; the arguments sit in
+    /// consecutive registers after it (`callee_reg + 1`, `+2`), and `ins.d`
+    /// is argc.
+    ///
+    /// Domain violations and tag/type mismatches never surface inside the
+    /// FFI: either the guard fires (tag=2 bail, the interpreter re-runs the
+    /// frame and raises the exact Un error) or the proto is declined up
+    /// front (`None`, an all-bail stub, and the interpreter runs everything).
+    fn emit_math_call(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        ins: Ins,
+        argc: usize,
+        callee_reg: usize,
+        mfn: MathFn,
+    ) -> Option<()> {
+        let dst = ins.a as usize;
+        let argc_ok = match mfn {
+            MathFn::Log => argc == 1 || argc == 2,
+            MathFn::Pow | MathFn::Hypot => argc == 2,
+            _ => argc == 1,
+        };
+        if !argc_ok {
+            return None;
+        }
+        let a0 = callee_reg + 1;
+        // Bool / none payloads are never f64 numbers; bail to the
+        // interpreter, which raises the exact type error.
+        if self.is_bool[a0] || self.is_none[a0] {
+            return None;
+        }
+        match mfn {
+            MathFn::Floor | MathFn::Ceil => {
+                if !self.is_float[a0] {
+                    // Int in → identity Int (the interpreter returns the Obj untouched).
+                    let v = builder.use_var(self.rv_i64(a0));
+                    builder.def_var(self.rv_i64(dst), v);
+                    self.finish_math_call(ins, callee_reg, false);
+                    return Some(());
+                }
+                let x = builder.use_var(self.rv_f64(a0));
+                let fid = self.fid_math[&(if mfn == MathFn::Floor {
+                    MathFfi::Floor
+                } else {
+                    MathFfi::Ceil
+                })];
+                let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(f_ref, &[x]);
+                let res = builder.inst_results(call)[0];
+                builder.def_var(self.rv_f64(dst), res);
+                self.finish_math_call(ins, callee_reg, true);
+                Some(())
+            }
+            MathFn::Trunc => {
+                if !self.is_float[a0] {
+                    let v = builder.use_var(self.rv_i64(a0));
+                    builder.def_var(self.rv_i64(dst), v);
+                    self.finish_math_call(ins, callee_reg, false);
+                    return Some(());
+                }
+                let x = builder.use_var(self.rv_f64(a0));
+                let fid = self.fid_math[&MathFfi::Trunc];
+                let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(f_ref, &[x]);
+                let res = builder.inst_results(call)[0];
+                // `obj::int(v.trunc() as i64)` in the interpreter also saturates.
+                builder.def_var(self.rv_i64(dst), res);
+                self.finish_math_call(ins, callee_reg, false);
+                Some(())
+            }
+            MathFn::Sign => {
+                let x = self.emit_f64_arg(builder, a0);
+                let fid = self.fid_math[&MathFfi::Sign];
+                let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(f_ref, &[x]);
+                let res = builder.inst_results(call)[0];
+                // sign is always an Int, NaN collapses to 0 — matching the interpreter.
+                builder.def_var(self.rv_i64(dst), res);
+                self.finish_math_call(ins, callee_reg, false);
+                Some(())
+            }
+            MathFn::Pow => {
+                let a1 = callee_reg + 2;
+                if self.is_bool[a1] || self.is_none[a1] {
+                    return None;
+                }
+                if !self.is_float[a0] && !self.is_float[a1] {
+                    // Both-Int: the interpreter owns the exact Int semantics
+                    // (integral integral, finite, saturating i64 cast). No
+                    // dynamic tag can be expressed for a nameless register, so
+                    // the whole proto declines to the interpreter.
+                    return None;
+                }
+                let x = self.emit_f64_arg(builder, a0);
+                let e = self.emit_f64_arg(builder, a1);
+                let fid = self.fid_math[&MathFfi::Powf];
+                let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(f_ref, &[x, e]);
+                let res = builder.inst_results(call)[0];
+                builder.def_var(self.rv_f64(dst), res);
+                self.finish_math_call(ins, callee_reg, true);
+                Some(())
+            }
+            MathFn::Hypot => {
+                let a1 = callee_reg + 2;
+                if self.is_bool[a1] || self.is_none[a1] {
+                    return None;
+                }
+                let x = self.emit_f64_arg(builder, a0);
+                let y = self.emit_f64_arg(builder, a1);
+                let fid = self.fid_math[&MathFfi::Hypot];
+                let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(f_ref, &[x, y]);
+                let res = builder.inst_results(call)[0];
+                builder.def_var(self.rv_f64(dst), res);
+                self.finish_math_call(ins, callee_reg, true);
+                Some(())
+            }
+            MathFn::Abs => {
+                // Int args could reach i64::MIN, which the interpreter would
+                // wrap (release) or panic (debug); keep the interpreter's path.
+                if !self.is_float[a0] {
+                    return None;
+                }
+                let x = builder.use_var(self.rv_f64(a0));
+                let fid = self.fid_math[&MathFfi::Abs];
+                let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(f_ref, &[x]);
+                let res = builder.inst_results(call)[0];
+                builder.def_var(self.rv_f64(dst), res);
+                self.finish_math_call(ins, callee_reg, true);
+                Some(())
+            }
+            MathFn::Sqrt => {
+                let x = self.emit_f64_arg(builder, a0);
+                self.emit_math_domain_bail(builder, x, false);
+                let fid = self.fid_math[&MathFfi::Sqrt];
+                let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(f_ref, &[x]);
+                let res = builder.inst_results(call)[0];
+                builder.def_var(self.rv_f64(dst), res);
+                self.finish_math_call(ins, callee_reg, true);
+                Some(())
+            }
+            MathFn::Log | MathFn::Log2 | MathFn::Log10 => {
+                let x = self.emit_f64_arg(builder, a0);
+                self.emit_math_domain_bail(builder, x, true);
+                if mfn == MathFn::Log && argc == 2 {
+                    let b = callee_reg + 2;
+                    if self.is_bool[b] || self.is_none[b] {
+                        return None;
+                    }
+                    let b_f = self.emit_f64_arg(builder, b);
+                    let fid = self.fid_math[&MathFfi::LogB];
+                    let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                    let call = builder.ins().call(f_ref, &[x, b_f]);
+                    let res = builder.inst_results(call)[0];
+                    builder.def_var(self.rv_f64(dst), res);
+                    self.finish_math_call(ins, callee_reg, true);
+                    return Some(());
+                }
+                let fid = self.fid_math[&(match mfn {
+                    MathFn::Log => MathFfi::Ln,
+                    MathFn::Log2 => MathFfi::Log2,
+                    _ => MathFfi::Log10,
+                })];
+                let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(f_ref, &[x]);
+                let res = builder.inst_results(call)[0];
+                builder.def_var(self.rv_f64(dst), res);
+                self.finish_math_call(ins, callee_reg, true);
+                Some(())
+            }
+            // Transcendentals have no domain check in the interpreter
+            // (NaN passes through); the same Rust f64 methods run in FFI.
+            _ => {
+                let x = self.emit_f64_arg(builder, a0);
+                let mffi = match mfn {
+                    MathFn::Sin => MathFfi::Sin,
+                    MathFn::Cos => MathFfi::Cos,
+                    MathFn::Tan => MathFfi::Tan,
+                    MathFn::Asin => MathFfi::Asin,
+                    MathFn::Acos => MathFfi::Acos,
+                    MathFn::Atan => MathFfi::Atan,
+                    MathFn::Cbrt => MathFfi::Cbrt,
+                    MathFn::Exp => MathFfi::Exp,
+                    _ => return None,
+                };
+                let fid = self.fid_math[&mffi];
+                let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(f_ref, &[x]);
+                let res = builder.inst_results(call)[0];
+                builder.def_var(self.rv_f64(dst), res);
+                self.finish_math_call(ins, callee_reg, true);
+                Some(())
+            }
+        }
+    }
+
     /// Store `(0, TAG_BAIL)` through the hidden pointer and return ??the
     /// interpreter re-runs the frame exactly once. Every bail exit must take
     /// the depth-exit path too, or the depth counter leaks and every future
@@ -1628,6 +2029,8 @@ impl<'a> Tr<'a> {
             self.method_regs.remove(&(ins.a as usize));
             self.intlist_regs.remove(&(ins.a as usize));
             self.len_regs.remove(&(ins.a as usize));
+            self.math_regs.remove(&(ins.a as usize));
+            self.mathfn_regs.remove(&(ins.a as usize));
             self.list_add_regs.remove(&(ins.a as usize));
             self.intlist_iter_regs.remove(&(ins.a as usize));
             self.param_regs.remove(&(ins.a as usize));
@@ -1758,6 +2161,21 @@ impl<'a> Tr<'a> {
                         Some(())
                     }
                     None => {
+                        // The global `math` module lowers to a bare marker
+                        // (a param named `math` never reaches this arm).
+                        // `GetAttr <fn>` binds the member intrinsic marker,
+                        // and `Op::Call` lowers the call to an f64 FFI.
+                        // Values for it never materialise at the FFI boundary.
+                        if name == "math" {
+                            self.math_regs.insert(ins.a as usize);
+                            let v = builder.ins().iconst(types::I64, 0);
+                            builder.def_var(self.rv_i64(ins.a as usize), v);
+                            self.is_bool[ins.a as usize] = false;
+                            self.is_none[ins.a as usize] = false;
+                            self.is_float[ins.a as usize] = false;
+                            self.ret_slot[ins.a as usize] = None;
+                            return Some(());
+                        }
                         // Program-declared class constructor: emit a
                         // compile-time constructor token. `Op::Call` on
                         // this register lowers to `un_class_make_<N>`.
@@ -1820,6 +2238,16 @@ impl<'a> Tr<'a> {
                     self.len_regs.insert(ins.a as usize);
                 } else {
                     self.len_regs.remove(&(ins.a as usize));
+                }
+                if self.math_regs.contains(&(ins.b as usize)) {
+                    self.math_regs.insert(ins.a as usize);
+                } else {
+                    self.math_regs.remove(&(ins.a as usize));
+                }
+                if let Some(&k) = self.mathfn_regs.get(&(ins.b as usize)) {
+                    self.mathfn_regs.insert(ins.a as usize, k);
+                } else {
+                    self.mathfn_regs.remove(&(ins.a as usize));
                 }
                 if let Some(&k) = self.intlist_regs.get(&(ins.b as usize)) {
                     self.intlist_regs.insert(ins.a as usize, k);
@@ -1886,6 +2314,31 @@ impl<'a> Tr<'a> {
                 Some(())
             }
             Op::GetAttr => {
+                // math intrinsic: `math.<fn>` on the `math` marker binds the
+                // callee marker that `Op::Call` lowers to an f64 FFI call.
+                // The receiver must be exactly the `math` module marker from
+                // `LoadName "math"`; anything else falls through to the
+                // class/method paths below.
+                if self.math_regs.contains(&(ins.b as usize)) {
+                    let field_name = self.arena.get(ins.d as usize).cloned();
+                    match field_name.as_deref().and_then(MathFn::from_name) {
+                        Some(mfn) => {
+                            self.mathfn_regs.insert(ins.a as usize, mfn);
+                            let v = builder.ins().iconst(types::I64, 0);
+                            builder.def_var(self.rv_i64(ins.a as usize), v);
+                            self.is_bool[ins.a as usize] = false;
+                            self.is_none[ins.a as usize] = false;
+                            self.is_float[ins.a as usize] = false;
+                            self.ret_slot[ins.a as usize] = None;
+                            return Some(());
+                        }
+                        // `math.<unknown>` - never matches the Call arm's
+                        // math branch, and never falls through to the
+                        // class-field path (receiver isn't a class self).
+                        // The only safe outcome is interpreter.
+                        None => return None,
+                    }
+                }
                 // The destination is rebound here: stale identities are
                 // dropped before any branch re-marks it. Capture the
                 // receiver marker first ??`q = p.norm()` keeps `p`'s
@@ -2182,6 +2635,8 @@ impl<'a> Tr<'a> {
                     self.method_regs.remove(&dst);
                     self.intlist_regs.remove(&dst);
                     self.len_regs.remove(&dst);
+                    self.math_regs.remove(&dst);
+                    self.mathfn_regs.remove(&dst);
                     self.list_add_regs.remove(&dst);
                     self.intlist_iter_regs.remove(&dst);
                     self.param_regs.remove(&dst);
@@ -2227,6 +2682,10 @@ impl<'a> Tr<'a> {
                     self.ret_slot[ins.a as usize] = None;
                     self.len_regs.remove(&(ins.a as usize));
                     return Some(());
+                }
+                // math intrinsic: `math.<fn>(...)` on the member marker.
+                if let Some(&mfn) = self.mathfn_regs.get(&callee_reg) {
+                    return self.emit_math_call(builder, ins, argc, callee_reg, mfn);
                 }
                 // `xs.add(v)` marker from a preceding GetAttr.
                 if let Some(&recv) = self.list_add_regs.get(&callee_reg) {
@@ -3613,6 +4072,8 @@ fn compute_local_float(
     let n_regs = code.iter().map(|i| i.a as usize).max().unwrap_or(0) + 1;
     let n_locals = proto.locals.len();
     let mut local_float = vec![false; n_locals];
+    let mut math_regs: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut mathfn_regs: std::collections::HashMap<usize, MathFn> = std::collections::HashMap::new();
     loop {
         let mut changed = false;
         let mut reg_float = vec![false; n_regs];
@@ -3627,23 +4088,97 @@ fn compute_local_float(
                         Some(Constant::Float(_))
                     );
                     reg_float[ins.a as usize] = is_f;
+                    math_regs.remove(&(ins.a as usize));
+                    mathfn_regs.remove(&(ins.a as usize));
                 }
                 Op::LoadTrue | Op::LoadFalse | Op::LoadNone | Op::LoadNull | Op::LoadName => {
                     reg_float[ins.a as usize] = false;
+                    // Track the `math` module marker; the math call lowering is
+                    // typed in the arms below. A param named `math` compiles to
+                    // a param path at emission and the proto is rejected there,
+                    // so over-marking here only widens the poly window — safe.
+                    if ins.op == Op::LoadName
+                        && proto
+                            .names
+                            .get(ins.d as usize)
+                            .and_then(|&i| program.names.get(i))
+                            .map(|s| s.as_str() == "math")
+                            .unwrap_or(false)
+                    {
+                        math_regs.insert(ins.a as usize);
+                    } else {
+                        math_regs.remove(&(ins.a as usize));
+                    }
+                    mathfn_regs.remove(&(ins.a as usize));
                 }
                 Op::LoadLocal => {
                     let slot = ins.d as usize;
                     reg_float[ins.a as usize] = slot < n_locals && local_float[slot];
+                    math_regs.remove(&(ins.a as usize));
+                    mathfn_regs.remove(&(ins.a as usize));
                 }
                 Op::Add | Op::Sub | Op::Mul => {
                     reg_float[ins.a as usize] =
                         reg_float[ins.b as usize] || reg_float[ins.c as usize];
+                    math_regs.remove(&(ins.a as usize));
+                    mathfn_regs.remove(&(ins.a as usize));
                 }
                 Op::Dup => {
                     reg_float[ins.a as usize] = reg_float[ins.b as usize];
+                    if mathfn_regs.contains_key(&(ins.b as usize)) {
+                        mathfn_regs.insert(ins.a as usize, mathfn_regs[&(ins.b as usize)]);
+                    } else {
+                        mathfn_regs.remove(&(ins.a as usize));
+                    }
+                    if math_regs.contains(&(ins.b as usize)) {
+                        math_regs.insert(ins.a as usize);
+                    } else {
+                        math_regs.remove(&(ins.a as usize));
+                    }
                 }
                 Op::Unwrap => {
                     // Register move with unchanged float-kind; nothing to track.
+                }
+                Op::GetAttr => {
+                    reg_float[ins.a as usize] = false;
+                    if math_regs.contains(&(ins.b as usize))
+                        && proto
+                            .names
+                            .get(ins.d as usize)
+                            .and_then(|&i| program.names.get(i))
+                            .and_then(|n| MathFn::from_name(n))
+                            .is_some()
+                    {
+                        let mfn = proto
+                            .names
+                            .get(ins.d as usize)
+                            .and_then(|&i| program.names.get(i))
+                            .and_then(|n| MathFn::from_name(n))
+                            .unwrap();
+                        mathfn_regs.insert(ins.a as usize, mfn);
+                    } else {
+                        mathfn_regs.remove(&(ins.a as usize));
+                    }
+                }
+                Op::Call => {
+                    let dst = ins.a as usize;
+                    let callee = ins.b as usize;
+                    reg_float[dst] = match mathfn_regs.get(&callee).copied() {
+                        // Int-preserving for Int args, and the Int path is
+                        // identity; Float args produce Float.
+                        Some(MathFn::Floor | MathFn::Ceil | MathFn::Trunc) => reg_float[callee + 1],
+                        // Int in → bail at emission time, so whatever is emitted
+                        // stays Float *or* the proto is declined (caption needed
+                        // nowhere else); sign is always Int.
+                        Some(MathFn::Abs) => reg_float[callee + 1],
+                        Some(MathFn::Sign) => false,
+                        // sin/cos/tan/asin/acos/atan/sqrt/cbrt/exp/ln/log2/log10/log/hypot: always Float.
+                        // pow: both-Int declines at emission (proto rejected), else Float.
+                        Some(_) => true,
+                        None => false,
+                    };
+                    mathfn_regs.remove(&dst);
+                    mathfn_regs.remove(&callee);
                 }
                 Op::StoreLocal => {
                     let slot = ins.d as usize;
@@ -3757,7 +4292,7 @@ pub fn emit_fallback_stub_in_module(
     }
 }
 
-pub fn emit_fn_in_module(
+fn emit_fn_in_module(
     program: &Program,
     proto_index: usize,
     module: &mut JITModule,
@@ -3787,6 +4322,7 @@ pub fn emit_fn_in_module(
     fid_list_iter_next: cranelift_module::FuncId,
     fid_list_iter_free: cranelift_module::FuncId,
     fid_class_make: &[cranelift_module::FuncId],
+    fid_math: &HashMap<MathFfi, cranelift_module::FuncId>,
     ret_kinds: &HashMap<usize, u8>,
 ) -> Option<()> {
     let proto = program.protos.get(proto_index)?;
@@ -4097,6 +4633,7 @@ pub fn emit_fn_in_module(
         fid_list_iter_next,
         fid_list_iter_free,
         fid_class_make: fid_class_make.to_vec(),
+        fid_math: fid_math.clone(),
         class_ctor_regs: HashMap::new(),
         instance_regs: HashMap::new(),
         method_regs: HashMap::new(),
@@ -4107,6 +4644,8 @@ pub fn emit_fn_in_module(
         param_regs: HashSet::new(),
         local_borrow_raw: vec![false; locals_len],
         len_regs: HashSet::new(),
+        math_regs: HashSet::new(),
+        mathfn_regs: HashMap::new(),
         list_add_regs: HashMap::new(),
         intlist_iter_regs: HashSet::new(),
         class_layouts: {

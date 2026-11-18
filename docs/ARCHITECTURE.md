@@ -97,10 +97,13 @@ bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
 
 `rust/src/jit_bc.rs`, `rust/src/jit_cache.rs`, `rust/src/jit_fast.rs`
 
-- The JIT translates the **register plan** of a proto into Cranelift IR. It
-  supports the Int subset: parameters, locals, `iter.range` loops, integer
-  arithmetic (with constant divisors for `//` and `%`), comparisons,
-  `FusedIntMulAdd`.
+- The JIT translates the **register plan** of a proto into Cranelift IR.
+  It supports the Int subset: parameters, locals, `iter.range` loops,
+  integer arithmetic (with constant divisors for `//` and `%`), comparisons,
+  `FusedIntMulAdd`, plus the IntVec/IntDict and class-method intrinsics and
+  the `math.<fn>` Float intrinsics (sin/sqrt/floor/… — sqrt of a negative
+  number and log of a non-positive number bail to the interpreter, which
+  raises the exact Un error).
 - Values are tagged: `0` = Int, `1` = Float (IEEE-754 bits), `2` = runtime
   bail (the interpreter takes over), `3` = Bool. The tag is written through a
   hidden pointer to a `(value, tag)` pair.

@@ -1000,3 +1000,34 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **결과**: fib24 3.39ms → **1.32ms** (Python 3.13ms의 **0.4x**, Python 대비 2.4배 빠름).
   정확성/게이트는 동일: Positive 1415, Negative 41, differential 81/0,
   cargo test 205, unbc-roundtrip 40/40+34/34.
+
+
+## D-078 | math Float intrinsic: f64 FFI lowering, domain violations bail | Accepted
+
+- **문제**: 정규화 패스에서 벤치마크 모양 intrinsic을 제거한 뒤, `math.*` 호출이 포함된
+  proto는 load 시점에 candidacy가 떨어져 전부 interpreter로 실행됐다(math10000 JIT ≈ 22ms,
+  sin20000 JIT ≈ 27ms). semantics 위반은 아니지만 수치 루프를 쓰는 실제 프로그램까지
+  같은 JIT 손실을 입었다.
+- **결정**: `math` 모듈의 19개 함수(sin/cos/tan/asin/acos/atan/sqrt/cbrt/exp/log/log2/log10/
+  floor/ceil/trunc/sign/pow/hypot/abs)를 일반 Float intrinsic으로 낮춘다. 인식은 이름
+  텍스트(`LoadName "math"` + `GetAttr <fn>` + `Call`) — `iter.range` peephole와 `len`
+  마커의 확장 방식. FFI는 total, side-effect-free Rust `f64` shim(`native/math.rs`의
+  `un_math_*`). 반환 태그는 interpreter 그대로다(floor/ceil/trunc의 Int identity, trunc의
+  Float→포화 Int, sign 항상 Int, pow는 Float 포함일 때만 FFI — **both-Int는 bail**: nameless
+  레지스터에는 Int/Float 구분을 담을 수 없고 poly-tag는 promoted local 전용).
+- **정확성 계약**: sqrt(x<0) / log(x<=0) 등 정의역 위반은 JIT이 `fcmp` 가드로 tag=2
+  whole-frame bail → pristine 인자로 interpreter가 재실행 → 정확한 Un 오류를 그대로 발생.
+  오류 메시지·NaN 비트·pow Int 의미론이 모두 동일. `program_has_intrinsic_rebind`를
+  확장해 `math` store는 무조건 프로그램 전체 JIT veto, math 함수와 같은 이름의 member
+  `SetAttr`은 **프로그램이 math global을 읽을 때만** veto(수학을 안 쓰는 `self.sin = 3`류는
+  영향 없음).
+- **검증**: Positive **1493 passed**(47 files), Negative **41 matched**, differential
+  **88 files 0 differences**, unbc-roundtrip **47/47+34/34 identical**, cargo test
+  --release **205 passed**, `UV_JIT=2` canary OK, bench/math.un JIT 0.053ms(3/3 assert),
+  bench/floatmath.un JIT 0.54ms(2/2 assert). `test/unit/native/math.un` 47 passed(오류
+  경로 포함 양 lane 동일).
+- **Trade-off**: `use math` + member rebind(`math.sin = spy`, `m = math; m.sin = spy`
+  포함)은 정확성 우선으로 프로그램 전체 JIT veto. `self.pow = 3`처럼 math와 무관한 instance
+  속성을 math 사용 프로그램에서 재정의하면 JIT가 꺼진다(interpreter가 정확). 런타임 probe
+  정밀화는 plan 타임에 program global scope에 접근이 필요해 별도 엔진 설계.
+- **상세**: `docs/JIT_FLOAT_MATH_INTRINSIC.md`(설계 문서).
