@@ -191,7 +191,10 @@ impl<'a> Compiler<'a> {
 
         let mut new_code: Vec<Instr> = Vec::with_capacity(original_code.len());
         let mut new_map: Vec<(usize, usize)> = Vec::with_capacity(original_code.len());
-        let mut original_to_new: Vec<usize> = vec![0; original_code.len()];
+        // Original instruction index -> new index. Skipped slots inside a
+        // fused 9-instruction run map to the fused instruction's new index
+        // (no valid jump ever targets inside a fused region).
+        let mut original_to_new: Vec<usize> = vec![0; original_code.len() + 1];
 
         let mut i = 0usize;
         while i < original_code.len() {
@@ -230,7 +233,9 @@ impl<'a> Compiler<'a> {
                     let store_dst = original_code[i + 8].operand as u32;
                     if dst == store_dst && sx <= 0x3FF && sy <= 0x3FF && dst <= 0x3FF {
                         let fused = ((dst << 20) | (sx << 10) | sy) as i32;
-                        original_to_new[i] = new_code.len();
+                        for offset in 0..=8 {
+                            original_to_new[i + offset] = new_code.len();
+                        }
                         new_code.push(Instr::new(Op::FusedIntMulAdd, fused));
                         new_map.push(original_map[i]);
                         i += 9;
@@ -244,6 +249,9 @@ impl<'a> Compiler<'a> {
             i += 1;
         }
 
+        // Sentinel: a jump targeting the instruction after the last one
+        // (legal for `break` to the end of a loop) maps to new_code.len().
+        original_to_new[original_code.len()] = new_code.len();
         for ip in 0..new_code.len() {
             let op = match new_code[ip].op_code() {
                 Some(o) => o,
@@ -256,7 +264,12 @@ impl<'a> Compiler<'a> {
             // locate the original instruction that became new_code[ip]
             let original_ip = (0..original_code.len())
                 .find(|&o| original_to_new[o] == ip)
-                .expect("original ip not found for jump");
+                .unwrap_or_else(|| {
+                    panic!(
+                        "fuse_int_mul_add: no original instruction maps to ip {ip} (new len {})",
+                        new_code.len()
+                    )
+                });
             let original_target = original_ip + 1 + new_code[ip].operand as usize;
             let new_target = original_to_new[original_target];
             let operand = new_target as i32 - ip as i32 - 1;
@@ -347,15 +360,22 @@ impl<'a> Compiler<'a> {
         self.program.msgs.len() - 1
     }
 
-    fn call_names_index(&mut self, entries: Vec<i32>) -> usize {
+    fn call_names_index(&mut self, entries: Vec<i32>) -> Result<usize, Panic> {
         let p = self.current();
         for (i, e) in self.program.protos[p].call_names.iter().enumerate() {
             if e == &entries {
-                return i;
+                return Ok(i);
             }
         }
         self.program.protos[p].call_names.push(entries);
-        self.program.protos[p].call_names.len() - 1
+        let len = self.program.protos[p].call_names.len();
+        if len > 0xFFFF {
+            return Err(Panic::named(
+                "error",
+                "function has more than 65535 call sites",
+            ));
+        }
+        Ok(len - 1)
     }
 
     fn emit(&mut self, op: Op, flags: u16, operand: i32, span: (usize, usize)) {
@@ -756,9 +776,15 @@ impl<'a> Compiler<'a> {
         for child in node.children.iter().skip(1) {
             match child.kind {
                 NodeKind::Catch => {
-                    if catch.is_none() {
-                        catch = Some(child);
+                    if catch.is_some() {
+                        // Never silently discard user code: a second catch
+                        // would have been dead code with no diagnostic.
+                        return Err(Panic::named(
+                            "error",
+                            "multiple 'catch' clauses are not supported; use a single catch and discriminate inside it",
+                        ));
                     }
+                    catch = Some(child);
                 }
                 NodeKind::Finally => finally_block = Some(&child.children[0]),
                 _ => {}
@@ -1045,6 +1071,12 @@ impl<'a> Compiler<'a> {
         flags: u16,
     ) -> Result<(), Panic> {
         let defaults = self.compile_defaults(params)?;
+        if defaults > 255 {
+            return Err(Panic::named(
+                "error",
+                "function has more than 255 default parameters",
+            ));
+        }
 
         let saved_raises = self.raises;
         let saved_groups = std::mem::take(&mut self.groups);
@@ -1135,11 +1167,8 @@ impl<'a> Compiler<'a> {
         if index < node.children.len() && node.children[index].kind == NodeKind::Tuple {
             let parameters = &node.children[index];
             for param in &parameters.children {
-                let value = &param.children[0];
-                let name = match value.kind {
-                    NodeKind::Identifier => self.text(value),
-                    NodeKind::Typed => self.text(&value.children[0]),
-                    _ => return Err(Panic::named("internal", "invalid initializer")),
+                let Some(name) = self.member_target_name(&param.children[0]) else {
+                    return Err(Panic::named("internal", "invalid initializer"));
                 };
                 fields.push(name);
             }
@@ -1153,6 +1182,13 @@ impl<'a> Compiler<'a> {
             index += 1;
         }
         let body = &node.children[index];
+
+        if fields.len() > 255 {
+            return Err(Panic::named(
+                "error",
+                format!("class '{class_name}' has more than 255 fields"),
+            ));
+        }
 
         let name_slot = self.push_name_raw(&class_name);
         for field in &fields {
@@ -1246,13 +1282,30 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::AddMethod, 0, slot as i32, span);
                 }
                 NodeKind::Assign => {
-                    let member_name = self.text(&member.children[0]);
+                    let Some(member_name) = self.member_target_name(&member.children[0]) else {
+                        self.error_node(member, "invalid field name");
+                        continue;
+                    };
 
                     if accessor_names.iter().any(|n| *n == member_name) {
                         continue;
                     }
                     let slot = self.name_index(&member_name);
                     self.code(&member.children[1])?;
+                    self.emit(Op::AddMember, 0, slot as i32, span);
+                }
+                NodeKind::Typed => {
+                    // Annotation-only member: `x: float`
+                    let Some(member_name) = self.member_target_name(&member.children[0]) else {
+                        self.error_node(member, "invalid field name");
+                        continue;
+                    };
+
+                    if accessor_names.iter().any(|n| *n == member_name) {
+                        continue;
+                    }
+                    let slot = self.name_index(&member_name);
+                    self.emit(Op::LoadNone, 0, 0, span);
                     self.emit(Op::AddMember, 0, slot as i32, span);
                 }
                 _ => {}
@@ -1265,8 +1318,12 @@ impl<'a> Compiler<'a> {
 
             let mut default = None;
             for member in &body.children {
-                if member.kind == NodeKind::Assign && self.text(&member.children[0]) == *name {
-                    default = Some(&member.children[1]);
+                if member.kind == NodeKind::Assign || member.kind == NodeKind::Typed {
+                    if let Some(found) = self.member_target_name(&member.children[0]) {
+                        if found == *name && member.kind == NodeKind::Assign {
+                            default = member.children.get(1);
+                        }
+                    }
                 }
             }
             match default {
@@ -1309,6 +1366,30 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Static integer value of an enum member initializer. Accepts plain
+    /// `Const::Int`, `+`/`-`/`~` unary arithmetic on static integers and
+    /// `Typed`-wrapped static integers — everything else is a user error,
+    /// not an internal one.
+    fn const_int_value(node: &Node) -> Option<i64> {
+        match node.kind {
+            NodeKind::Typed => Self::const_int_value(node.children.first()?),
+            NodeKind::Unary => {
+                let inner = Self::const_int_value(node.children.first()?)?;
+                match node.op? {
+                    TokenType::Minus => inner.checked_neg(),
+                    TokenType::Plus => Some(inner),
+                    TokenType::BNot => Some(!inner),
+                    _ => None,
+                }
+            }
+            _ => match &node.value {
+                Some(Const::Int(v)) => Some(*v),
+                _ => None,
+            },
+        }
+    }
+    /// Static float value of a constant (`math.pi()`-style members are not
+    /// supported; enum values are integers by declaration).
     fn code_enum(&mut self, node: &Node) -> Result<(), Panic> {
         let span = (node.start, node.length);
         let enum_name = self.text(&node.children[0]);
@@ -1322,11 +1403,19 @@ impl<'a> Compiler<'a> {
             let (member_name, value) = match member.kind {
                 NodeKind::Assign => {
                     let name = self.text(&member.children[0]);
-                    let value = match member.children[1].value.as_ref() {
-                        Some(Const::Int(v)) => *v,
-                        _ => return Err(Panic::named("internal", "invalid enum value")),
+                    let value = match Self::const_int_value(&member.children[1]) {
+                        Some(v) => v,
+                        None => {
+                            return Err(Panic::named(
+                                "error",
+                                &format!(
+                                    "enum member '{}' must be an integer literal",
+                                    name
+                                ),
+                            ))
+                        }
                     };
-                    index = value + 1;
+                    index = value.wrapping_add(1);
                     (name, value)
                 }
                 _ => {
@@ -1614,7 +1703,7 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
-        let names_idx = self.call_names_index(entries);
+        let names_idx = self.call_names_index(entries)?;
         self.emit(Op::Call, names_idx as u16, count as i32, span);
         Ok(())
     }
@@ -1688,10 +1777,22 @@ impl<'a> Compiler<'a> {
 
     fn code_use(&mut self, node: &Node) -> Result<(), Panic> {
         let span = (node.start, node.length);
-        let path = self.text(&node.children[0]);
+        // `use a.*` is sugar for `use a { * }` (wildcard import). The parser
+        // emits `Unary(Wildcard, [a])` for the path; without this arm the
+        // raw source span ("a.*") would become a bogus module path.
+        let path_node = &node.children[0];
+        let (path, inline_wildcard) =
+            if path_node.kind == NodeKind::Unary && path_node.op == Some(TokenType::Wildcard) {
+                (self.text(&path_node.children[0]), true)
+            } else {
+                (self.text(path_node), false)
+            };
 
         let mut alias: Option<String> = None;
         let mut imports: Vec<(String, String)> = Vec::new();
+        if inline_wildcard {
+            imports.push(("*".to_owned(), "*".to_owned()));
+        }
         for child in node.children.iter().skip(1) {
             match child.kind {
                 NodeKind::Tuple => {
@@ -1721,6 +1822,12 @@ impl<'a> Compiler<'a> {
             flags |= 1;
         }
         if !imports.is_empty() {
+            if imports.len() > 255 {
+                return Err(Panic::named(
+                    "error",
+                    "a use statement cannot import more than 255 names",
+                ));
+            }
             flags |= 2;
             flags |= (imports.len() as u16) << 8;
             for (name, alias) in &imports {
@@ -1738,6 +1845,22 @@ impl<'a> Compiler<'a> {
         match node.value.as_ref() {
             Some(Const::Str(v)) => v.clone(),
             _ => self.source.span(node.start, node.length),
+        }
+    }
+    /// The bare field name for a class member target. Accepts an optional
+    /// type annotation and an optional default:
+    ///   `x`             -> `Some("x")`
+    ///   `x: int`        -> `Some("x")`
+    ///   `x: int = 5`    -> `Some("x")`
+    /// Anything else yields None (caller falls back to its own error path).
+    fn member_target_name(&self, target: &Node) -> Option<String> {
+        let mut t = target;
+        loop {
+            match t.kind {
+                NodeKind::Identifier => return Some(self.text(t)),
+                NodeKind::Typed | NodeKind::Assign => t = t.children.first()?,
+                _ => return None,
+            }
         }
     }
 }

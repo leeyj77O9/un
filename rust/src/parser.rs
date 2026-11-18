@@ -165,8 +165,33 @@ impl Parser {
                 }
             }
         };
-        if !self.is_end_of_statement() && !self.is_statement_start(self.current().typ) {
+        if !self.is_end_of_statement() {
             let token = self.current();
+            if self.is_statement_start(token.typ) {
+                // Compare with the last *significant* token (zero-width
+                // Dedent/Indent markers sit at the next line's offset and
+                // would always compare equal).
+                let prev_end = self.tokens[..self.position]
+                    .iter()
+                    .rev()
+                    .find(|t| !matches!(t.typ, TokenType::NewLine | TokenType::Dedent | TokenType::Indent))
+                    .map(|t| t.start + t.length);
+                if let Some(prev_end) = prev_end {
+                    if self.source.get_line(prev_end) == self.source.get_line(token.start) {
+                        return Err(LangError::new(
+                            token.start,
+                            token.length,
+                            format!(
+                                "expected a newline after the previous statement (got `{}`)",
+                                token.typ
+                            ),
+                        ));
+                    }
+                }
+                // Fresh line after a block statement (the lexer emits no
+                // NewLine between a Dedent and the next statement) — legal.
+                return Ok(statement);
+            }
             return Err(LangError::new(
                 token.start,
                 token.length,
@@ -822,7 +847,15 @@ impl Parser {
                 }
                 op = self.next();
             }
-            let right = self.parse_binary(precedence)?;
+            // Right-associative operators (`**`) parse their right side
+            // with the same precedence minus one, making `2 ** 3 ** 2`
+            // parse as `2 ** (3 ** 2)`.
+            let rhs_precedence = if op.typ == TokenType::DoubleAsterisk {
+                precedence.saturating_sub(1)
+            } else {
+                precedence
+            };
+            let right = self.parse_binary(rhs_precedence)?;
             let start = left.start;
             let length = right.start + right.length - left.start;
             left = Node::with_children(start, length, NodeKind::Binary, Some(op.typ), vec![left, right]);
@@ -1580,8 +1613,12 @@ fn unescape(s: &str) -> String {
             Some('\\') => out.push('\\'),
             Some('"') => out.push('"'),
             Some('\'') => out.push('\''),
-            Some(c) => out.push(c),
-            None => break,
+            // Python parity: unknown escapes keep the backslash.
+            Some(c) => {
+                out.push('\\');
+                out.push(c);
+            }
+            None => out.push('\\'),
         }
     }
     out

@@ -75,7 +75,7 @@ fn phase_8_encodings_validate_and_keep_the_stack_balanced() {
         "use io\nx = (1, 2, 3)",
         "use io\nx = [1, 2]",
         "use io\nx = {\"a\": 1}",
-        "use io\nx = a isnot b",
+        "use io\nx = a is not b",
         "use io\nx = a in b",
     ];
     for text in programs {

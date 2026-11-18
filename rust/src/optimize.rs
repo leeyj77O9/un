@@ -1,4 +1,4 @@
-use crate::ast::{Const, Node, NodeKind};
+﻿use crate::ast::{Const, Node, NodeKind};
 use crate::error::Panic;
 use crate::token::TokenType;
 static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -58,13 +58,38 @@ fn desugar_assign(node: &Node) -> Option<Node> {
     if node.children.len() != 2 {
         return None;
     }
-    let lhs = node.children[0].clone();
+    // A typed compound assignment (`x: int += 1`) carries a `Typed` node on
+    // the LHS. Unwrap it for the *load* side and re-wrap the *store* target;
+    // otherwise the annotation reaches code generation as a value expression
+    // (unsupported node kind Typed) or breaks the stack discipline.
+    let typed_ann: Option<Node> = if node.children[0].kind == NodeKind::Typed {
+        Some(node.children[0].children[1].clone())
+    } else {
+        None
+    };
+    let lhs = if node.children[0].kind == NodeKind::Typed {
+        node.children[0].children[0].clone()
+    } else {
+        node.children[0].clone()
+    };
     let rhs = node.children[1].clone();
+    let wrap_typed = |target: Node| -> Node {
+        match &typed_ann {
+            Some(ann) => Node::with_children(
+                target.start,
+                ann.start + ann.length - target.start,
+                NodeKind::Typed,
+                None,
+                vec![target, ann.clone()],
+            ),
+            None => target,
+        }
+    };
     // A plain-identifier target re-reads the slot — free and side-effect
     // free, so inline the binary directly.
     if lhs.kind == NodeKind::Identifier {
         let binary = Node::with_op(node.start, node.length, NodeKind::Binary, op2, vec![lhs.clone(), rhs]);
-        return Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![lhs, binary]));
+        return Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![wrap_typed(lhs), binary]));
     }
     // Property/Index/Slice targets may have side effects in the receiver or
     // subscript expressions (`make().v += 10`). Python evaluates the target
@@ -83,10 +108,10 @@ fn desugar_assign(node: &Node) -> Option<Node> {
             let name = lhs.children[1].clone();
             let tmp = fresh_temp(node);
             let load = Node::with_children(start, 0, NodeKind::Property, None, vec![tmp.clone(), name.clone()]);
-            let store = Node::with_children(start, 0, NodeKind::Property, None, vec![tmp.clone(), name]);
+            let store = wrap_typed(Node::with_children(start, 0, NodeKind::Property, None, vec![tmp.clone(), name]));
             Some(Node::with_children(
                 start,
-                span.1 - start,
+                span.1,
                 NodeKind::Block,
                 None,
                 vec![
@@ -99,10 +124,10 @@ fn desugar_assign(node: &Node) -> Option<Node> {
             let obj_tmp = fresh_temp(node);
             let key_tmp = fresh_temp(node);
             let load = Node::with_children(start, 0, NodeKind::Index, None, vec![obj_tmp.clone(), key_tmp.clone()]);
-            let store = Node::with_children(start, 0, NodeKind::Index, None, vec![obj_tmp.clone(), key_tmp.clone()]);
+            let store = wrap_typed(Node::with_children(start, 0, NodeKind::Index, None, vec![obj_tmp.clone(), key_tmp.clone()]));
             Some(Node::with_children(
                 start,
-                span.1 - start,
+                span.1,
                 NodeKind::Block,
                 None,
                 vec![
@@ -132,7 +157,7 @@ fn desugar_assign(node: &Node) -> Option<Node> {
             load_children.extend(bound_tmps.iter().map(|(_, t)| t.clone()));
             store_children.extend(bound_tmps.iter().map(|(_, t)| t.clone()));
             let load = Node::with_children(start, 0, NodeKind::Slice, None, load_children);
-            let store = Node::with_children(start, 0, NodeKind::Slice, None, store_children);
+            let store = wrap_typed(Node::with_children(start, 0, NodeKind::Slice, None, store_children));
             let mut statements: Vec<Node> = Vec::with_capacity(lhs.children.len() + 1);
             statements.push(mk_assign(obj_tmp, lhs.children[0].clone()));
             for ((is_temp, tmp), bound) in bound_tmps.iter().zip(lhs.children[1..].iter()) {
@@ -141,12 +166,12 @@ fn desugar_assign(node: &Node) -> Option<Node> {
                 }
             }
             statements.push(mk_assign(store, mk_binary(load)));
-            Some(Node::with_children(start, span.1 - start, NodeKind::Block, None, statements))
+            Some(Node::with_children(start, span.1, NodeKind::Block, None, statements))
         }
         _ => {
             // Unsupported target shape: keep the previous expansion.
             let binary = Node::with_op(node.start, node.length, NodeKind::Binary, op2, vec![lhs.clone(), rhs]);
-            Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![lhs, binary]))
+            Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![wrap_typed(lhs), binary]))
         }
     }
 }
