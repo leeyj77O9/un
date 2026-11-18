@@ -35,6 +35,7 @@ unit|test/unit/runtime/dict_hash.un
 unit|test/unit/runtime/enum.un
 unit|test/unit/runtime/reentrant.un
 unit|test/unit/runtime/compound_assign.un
+unit|test/unit/runtime/union_calls.un
 
 # ---------- unit: native ----------
 unit|test/unit/native/str.un

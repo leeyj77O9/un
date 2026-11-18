@@ -1,4 +1,4 @@
-﻿//! `.unbc` -> native translation for functions that stay inside the typed
+//! `.unbc` -> native translation for functions that stay inside the typed
 //! numeric subset.
 //!
 //! Works directly on the validated stack bytecode that the register VM
@@ -775,16 +775,20 @@ impl<'a> Tr<'a> {
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
         builder.ins().call(func_ref, &arg_vals);
         let pure_kind = callee_kind & (RET_INT | RET_FLOAT | RET_BOOL | RET_INTLIST);
+        let int_or_vec = pure_kind == RET_INT | RET_INTLIST;
         let expected_tag = match pure_kind {
             RET_INT => 0i64,
             RET_FLOAT => 1i64,
             RET_BOOL => 3i64,
             RET_INTLIST => 6i64,
-            // Heterogeneous return kinds (Int|Float, Int|IntList,
-            // Bool|numeric…) cannot be typed statically at this call
-            // site. Bail at compile time; the interpreter handles them
-            // correctly.
-            _ => {
+            // Heterogeneous Int lane: the callee's Return emission probes
+            // the actual register at run time and tags Int (0) vs IntVec
+            // (6) accordingly. Accept either; a plain Int >= ID_BASE could
+            // alias a live arena handle, so it falls into the bail arm.
+            k if k == RET_INT | RET_INTLIST => 6i64,
+            // Holed Float|Int, Bool|numeric and friends cannot be bound at
+            // this site; leave those to the interpreter.
+            _k => {
                 if crate::jit_cache::jit_debug() {
                     eprintln!("JITREJECT emit_user_call callee_kind={callee_kind:#x} (heterogeneous)");
                 }
@@ -798,8 +802,20 @@ impl<'a> Tr<'a> {
         // other value (including an unexpected tag from a mis-analysed
         // callee) bails the frame to the interpreter, which is always
         // correct.
-        let expected_v = builder.ins().iconst(types::I64, expected_tag);
-        let is_expected = builder.ins().icmp(IntCC::Equal, tag, expected_v);
+        let is_expected = if int_or_vec {
+            let zero_v = builder.ins().iconst(types::I64, 0);
+            let six_v = builder.ins().iconst(types::I64, 6);
+            let id_base_v = builder.ins().iconst(types::I64, crate::runtime::int_list::id_base());
+            let is_int = builder.ins().icmp(IntCC::Equal, tag, zero_v);
+            let is_list = builder.ins().icmp(IntCC::Equal, tag, six_v);
+            // A plain Int >= ID_BASE could alias a live arena handle.
+            let vint = builder.ins().icmp(IntCC::SignedLessThan, val, id_base_v);
+            let int_ok = builder.ins().band(is_int, vint);
+            builder.ins().bor(int_ok, is_list)
+        } else {
+            let expected_v = builder.ins().iconst(types::I64, expected_tag);
+            builder.ins().icmp(IntCC::Equal, tag, expected_v)
+        };
         let bail_blk = builder.create_block();
         let cont_blk = builder.create_block();
         builder.ins().brif(is_expected, cont_blk, &[], bail_blk, &[]);
@@ -823,6 +839,19 @@ impl<'a> Tr<'a> {
         self.intlist_regs.remove(&(ins.a as usize));
         self.len_regs.remove(&(ins.a as usize));
         match pure_kind {
+            k if k == RET_INT | RET_INTLIST => {
+                // Runtime value already validated as Int < ID_BASE or an
+                // IntVec handle. Every IntVec intrinsic probes the arena id
+                // at run time, so both arms run the same code; Int-consuming
+                // ops reject the register via int_dict_seen. Marked UNION
+                // (not owned 7) so Return re-tags by probing instead of
+                // unconditionally emitting TAG_INTLIST.
+                self.intlist_regs.insert(ins.a as usize, INTLIST_UNION);
+                self.is_bool[ins.a as usize] = false;
+                self.is_none[ins.a as usize] = false;
+                self.is_float[ins.a as usize] = false;
+                Some(())
+            }
             RET_INTLIST => {
                 self.intlist_regs.insert(ins.a as usize, 7);
                 self.is_bool[ins.a as usize] = false;
@@ -972,16 +1001,20 @@ impl<'a> Tr<'a> {
         }
         builder.ins().call(func_ref, &arg_vals);
         let pure_kind = callee_kind & (RET_INT | RET_FLOAT | RET_BOOL | RET_INTLIST);
+        let int_or_vec = pure_kind == RET_INT | RET_INTLIST;
         let expected_tag = match pure_kind {
             RET_INT => 0i64,
             RET_FLOAT => 1i64,
             RET_BOOL => 3i64,
             RET_INTLIST => 6i64,
-            // Heterogeneous return kinds (Int|Float, Int|IntList,
-            // Bool|numeric…) cannot be typed statically at this call
-            // site. Bail at compile time; the interpreter handles them
-            // correctly.
-            _ => {
+            // Heterogeneous Int lane: the callee's Return emission probes
+            // the actual register at run time and tags Int (0) vs IntVec
+            // (6) accordingly. Accept either; a plain Int >= ID_BASE could
+            // alias a live arena handle, so it falls into the bail arm.
+            k if k == RET_INT | RET_INTLIST => 6i64,
+            // Holed Float|Int, Bool|numeric and friends cannot be bound at
+            // this site; leave those to the interpreter.
+            _k => {
                 if crate::jit_cache::jit_debug() {
                     eprintln!("JITREJECT emit_user_call callee_kind={callee_kind:#x} (heterogeneous)");
                 }
@@ -994,8 +1027,20 @@ impl<'a> Tr<'a> {
         // other value (including an unexpected tag from a mis-analysed
         // callee) bails the frame to the interpreter, which is always
         // correct.
-        let expected_v = builder.ins().iconst(types::I64, expected_tag);
-        let is_expected = builder.ins().icmp(IntCC::Equal, tag, expected_v);
+        let is_expected = if int_or_vec {
+            let zero_v = builder.ins().iconst(types::I64, 0);
+            let six_v = builder.ins().iconst(types::I64, 6);
+            let id_base_v = builder.ins().iconst(types::I64, crate::runtime::int_list::id_base());
+            let is_int = builder.ins().icmp(IntCC::Equal, tag, zero_v);
+            let is_list = builder.ins().icmp(IntCC::Equal, tag, six_v);
+            // A plain Int >= ID_BASE could alias a live arena handle.
+            let vint = builder.ins().icmp(IntCC::SignedLessThan, val, id_base_v);
+            let int_ok = builder.ins().band(is_int, vint);
+            builder.ins().bor(int_ok, is_list)
+        } else {
+            let expected_v = builder.ins().iconst(types::I64, expected_tag);
+            builder.ins().icmp(IntCC::Equal, tag, expected_v)
+        };
         let bail_blk = builder.create_block();
         let cont_blk = builder.create_block();
         builder.ins().brif(is_expected, cont_blk, &[], bail_blk, &[]);
@@ -1016,6 +1061,19 @@ impl<'a> Tr<'a> {
         self.intlist_regs.remove(&(ins.a as usize));
         self.len_regs.remove(&(ins.a as usize));
         match pure_kind {
+            k if k == RET_INT | RET_INTLIST => {
+                // Runtime value already validated as Int < ID_BASE or an
+                // IntVec handle. Every IntVec intrinsic probes the arena id
+                // at run time, so both arms run the same code; Int-consuming
+                // ops reject the register via int_dict_seen. Marked UNION
+                // (not owned 7) so Return re-tags by probing instead of
+                // unconditionally emitting TAG_INTLIST.
+                self.intlist_regs.insert(ins.a as usize, INTLIST_UNION);
+                self.is_bool[ins.a as usize] = false;
+                self.is_none[ins.a as usize] = false;
+                self.is_float[ins.a as usize] = false;
+                Some(())
+            }
             RET_INTLIST => {
                 self.intlist_regs.insert(ins.a as usize, 7);
                 self.is_bool[ins.a as usize] = false;
@@ -1057,7 +1115,9 @@ impl<'a> Tr<'a> {
         builder: &mut FunctionBuilder,
         target_reg: usize,
     ) -> Option<Value> {
-        if self.intlist_regs.contains_key(&target_reg) {
+        if self.intlist_regs.contains_key(&target_reg)
+            && self.intlist_regs.get(&target_reg).copied() != Some(INTLIST_UNION)
+        {
             return Some(builder.use_var(self.rv_i64(target_reg)));
         }
         let fid = self.fid_list_is_handle;
@@ -2713,6 +2773,12 @@ impl<'a> Tr<'a> {
                     self.emit_return_pair(builder, zero, five);
                     return Some(());
                 }
+                // A union INT|INTLIST register has no static arm: strip the
+                // UNION marker so the runtime probe below re-tags the value
+                // (Int < ID_BASE stays tag=0, an arena handle emits TAG_INTLIST).
+                if self.intlist_regs.get(&(ins.a as usize)).copied() == Some(INTLIST_UNION) {
+                    self.intlist_regs.remove(&(ins.a as usize));
+                }
                 // An IntVec handle returned as a list ??the caller
                 // materialises it back into an `Obj::List`.
                 if self.intlist_regs.contains_key(&(ins.a as usize)) {
@@ -2929,6 +2995,11 @@ const RET_BOOL: u8 = 0x4;
 /// frees it there). Owned arena handles are marker `7`; marker `8` is the
 /// same handle seen through an argument.
 const INTLIST_BORROWED: u8 = 8;
+/// A heterogeneous `Int | IntVec handle` register (union call result).
+/// Every intrinsic still probes the arena id at run time (see
+/// `emit_intlist_target`), and `Return` re-tags the value by probing the
+/// register instead of blindly emitting `TAG_INTLIST`.
+const INTLIST_UNION: u8 = 9;
 
 /// Return-kind analysis for every function-proto in `program` ??which tag
 /// kinds each one may produce at `Return`. Program-wide fixpoint because

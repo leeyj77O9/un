@@ -1,0 +1,56 @@
+use io
+use test.assert as assert
+
+# ============================================================
+# 이종 반환(union) 함수 - 같은 프로토가 Int 또는 리스트를 반환할 때
+# JIT 호출 경로가 두 경우 모두를 받아내고, 인터프리터와 동일한
+# 결과를 내는지 검증한다 (UV_JIT=0 과 기본 JIT 모두에서 실행됨).
+# 실행: unvm run test/unit/runtime/union_calls.un  (C:\dev\un 에서)
+# ============================================================
+
+fn pick(x)
+    if x > 100
+        -> [1, 2, 3]
+    else
+        -> x
+
+fn forward(x)
+    -> pick(x)
+
+fn try_add(x)
+    r = forward(x)
+    r.add(4)
+    -> r
+
+# ---------- Int 런타임 arm ----------
+assert.assert_eq(forward(42), 42, "toplevel Int arm")
+assert.assert_eq(forward(0), 0, "toplevel Int arm at boundary")
+
+# ---------- 리스트 런타임 arm ----------
+b = forward(1000)
+assert.assert_eq(len(b), 3, "toplevel list arm")
+assert.assert_eq(b[2], 3, "toplevel list arm contents")
+
+# ---------- 프록시(호출자-through) 경로 ----------
+# 호출자가 이종 값을 받아 다시 Return 하는 경우
+assert.assert_eq(forward(7) + 10, 17, "Int arm through double forward")
+c = forward(500)
+assert.assert_eq(c[1], 2, "list arm through double forward")
+
+# ---------- 이종 소비: IntVec intrinsics ----------
+# 리스트 arm 에서는 add 가 동작해야 한다
+a = try_add(300)
+assert.assert_eq(len(a), 4, "add on the list arm")
+assert.assert_eq(a[3], 4, "appended value")
+
+# ---------- 이종 소비: 산술 ----------
+# Int arm 은 정상, 리스트 arm 은 Un 의 일반 오류 규칙을 따른다
+fn mix(x)
+    y = forward(x)
+    -> y + 1
+
+assert.assert_eq(mix(41), 42, "Int arm feeds Int arithmetic")
+assert.assert_eq(mix(100), 101, "Int arm at the boundary feeds Int arithmetic")
+assert.assert_err(fn() -> mix(500), "unsupported operand type(s)")
+
+assert.summary()
