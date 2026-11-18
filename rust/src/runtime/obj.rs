@@ -276,8 +276,27 @@ pub fn type_name(o: &Obj) -> Rc<str> {
 pub fn payload(o: &Obj) -> Payload {
     o.borrow().payload.clone()
 }
+/// Compare two object type names by interned identity. Every object
+/// construction interns its name via `world::intern_type`, so equal names
+/// share an allocation and `Rc::ptr_eq` answers in O(1). The string compare
+/// is kept as a fallback for values that bypassed the intern path (unlikely
+/// at runtime but defensive).
+pub fn type_name_eq(a: &Obj, b: &Obj) -> bool {
+    if Rc::ptr_eq(&type_name(a), &type_name(b)) {
+        return true;
+    }
+    type_name(a) == type_name(b)
+}
+/// Interned-type check: `Rc::ptr_eq` against the registry, with a string
+/// fallback if the name was never interned.
+fn is_type(o: &Obj, name: &str) -> bool {
+    match world::try_intern_type(name) {
+        Some(interned) => Rc::ptr_eq(&o.borrow().type_name, &interned),
+        None => &*type_name(o) == name,
+    }
+}
 pub fn is_none(o: &Obj) -> bool {
-    &*type_name(o) == "none"
+    is_type(o, "none")
 }
 
 /// Return a non-cloning `Ref<'_, Payload>` view of an object's payload.

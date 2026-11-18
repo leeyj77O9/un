@@ -16,6 +16,9 @@ pub(crate) const REGISTERED_TYPES: &[&str] = &[
     "break", "__uninitialized__",
 ];
 
+pub(crate) fn try_intern_type(name: &str) -> Option<std::rc::Rc<str>> {
+    WORLD.with(|w| w.borrow().type_cache.get(name).cloned())
+}
 pub fn intern_type(name: &str) -> std::rc::Rc<str> {
     WORLD.with(|w| {
         let mut w = w.borrow_mut();

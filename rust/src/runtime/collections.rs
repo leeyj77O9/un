@@ -1394,7 +1394,7 @@ pub fn stru_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) ->
     }
 }
 pub fn stru_eq(o: &Obj, other: &Obj) -> Obj {
-    if obj::type_name(o) != obj::type_name(other) {
+    if !obj::type_name_eq(o, other) {
         return obj::boolean(false);
     }
     for name in all_names(o) {
@@ -1452,12 +1452,12 @@ pub fn enu_binop(o: &Obj, n: i64, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<s
     match op {
         BinOp::Eq => match obj::payload(other) {
             Payload::Int(i) => obj::boolean(n == i),
-            Payload::Enu(e) => obj::boolean(obj::type_name(o) == obj::type_name(other) && n == e),
+            Payload::Enu(e) => obj::boolean(obj::type_name_eq(o, other) && n == e),
             _ => obj::base_binop(o, op, other, t, ot),
         },
         BinOp::Lt => match obj::payload(other) {
             Payload::Int(i) => obj::boolean(n < i),
-            Payload::Enu(e) => obj::boolean(obj::type_name(o) == obj::type_name(other) && n < e),
+            Payload::Enu(e) => obj::boolean(obj::type_name_eq(o, other) && n < e),
             _ => obj::base_binop(o, op, other, t, ot),
         },
         _ => obj::base_binop(o, op, other, t, ot),

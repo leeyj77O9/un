@@ -1603,3 +1603,35 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - TD-18 marked In progress; TD-10 marked Evidence-refresh.
 - High-severity debt: none.
 
+
+---
+
+## 2026-11-19 - Pass 30: interned type-name identity (TD-18, Phase 3)
+
+### Trigger
+
+- Close TD-18: type-name comparisons on runtime objects were string compares
+  even though every object construction interns its type_name through
+  `world::intern_type` (REGISTERED_TYPES are pre-seeded in `world::new`;
+  `world::reset` rebuilds the cache — so pointer identity is a valid
+  equality check for any live object).
+
+### Changes
+
+- `world::caches::try_intern_type` added (cache-lookup without insertion).
+- `obj::type_name_eq(a, b)` added — O(1) pointer comparison of two interned
+  `Rc<str>` type names with string fallback (`type_name_eq`) so objects that
+  bypassed intern paths (none in practice) cannot silently compare wrong.
+- `obj::is_type` private helper; `is_none` is now `is_type(o, "none")`
+  (one interned lookup per borrow instead of one string scan).
+- `collections.rs`: `strueq` StruEq comparison and `Enu` Lt/Eq arms plus the
+  Stru `!==` arm route through `type_name_eq`.
+- Debt doc: TD-18 closed (design reference: docs/REFACTOR_TYPES.md).
+
+### Result
+
+- Gates: Positive 1504, Negative 43 matched, differential 90/0,
+  unbc-roundtrip 47/47+36/36, cargo test 205, test_suite 109,
+  UV_JIT=2 strict canary OK.
+- High-severity and medium debt: none touching the hot path.
+
