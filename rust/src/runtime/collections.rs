@@ -176,7 +176,7 @@ impl KeyMap {
                 "System.ArgumentException",
                 format!(
                     "An item with the same key has already been added. Key: {}",
-                    clr_to_string(key)
+                    obj_to_string(key)
                 ),
             );
         }
@@ -1522,17 +1522,17 @@ pub fn tobj_call(t: &Types, args: &[Obj]) -> Obj {
         None => obj::err(format!("class '{name}' not found")),
     }
 }
-pub fn clr_to_string(o: &Obj) -> String {
+pub fn obj_to_string(o: &Obj) -> String {
     match obj::payload(o) {
         Payload::Str(s) => s.to_string(),
         Payload::Int(v) => v.to_string(),
         Payload::Float(v) => prims::fmt_double(v),
         Payload::Bool(v) => if v { "True".to_owned() } else { "False".to_owned() },
         Payload::Plain if obj::is_none(o) => "None".to_owned(),
-        _ => clr_type_name(&obj::type_name(o)),
+        _ => obj_type_name(&obj::type_name(o)),
     }
 }
-fn clr_type_name(t: &str) -> String {
+fn obj_type_name(t: &str) -> String {
     match t {
         "obj" | "none" | "null" => "Un.Object.Obj".to_owned(),
         "error" => "Un.Object.Err".to_owned(),

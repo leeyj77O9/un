@@ -565,7 +565,7 @@ work()    # start done
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
 | `time` | `sleep` (int=ms, float=s)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` (with read-only `ms`/`ns` properties) |
 | `flow` | `spawn` (pool handle, cooperative single-thread: inline execution) and `lock` |
-| `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options` and their `_async` variants, `ws.connect().send`/`receive`/`close`/`is_open` |
+| `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options`, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
 
 Collection methods include `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, and string methods such as `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with`.

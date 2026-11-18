@@ -1,4 +1,4 @@
-use io
+﻿use io
 use http
 use test.assert as assert
 
@@ -20,9 +20,7 @@ assert.assert_true(true, "clear_headers accepts no arguments")
 
 # ---------- 인자 검증 경로 ----------
 assert.assert_err_eq(fn() -> client.get(1), "error: expected url is string", "get validates url type")
-assert.assert_err_eq(fn() -> client.get_async(1), "error: expected url is string", "get_async validates url type")
 assert.assert_err_eq(fn() -> client.post(1, "x"), "error: expected url is string", "post validates url type")
-assert.assert_err_eq(fn() -> client.post_async(1, "x"), "error: expected url is string", "post_async validates url type")
 assert.assert_err_eq(fn() -> client.put(1, "x"), "error: expected url is string", "put validates url type")
 assert.assert_err_eq(fn() -> client.patch(1, "x"), "error: expected url is string", "patch validates url type")
 assert.assert_err_eq(fn() -> client.head(1), "error: expected url is string", "head validates url type")
@@ -32,7 +30,6 @@ assert.assert_err_eq(fn() -> client.set_header(1, "x"), "error: expected key is 
 
 # ---------- 연결 거부 포트 ----------
 assert.assert_err(fn() -> client.get("http://127.0.0.1:1/"), "connection refused returns an error")
-assert.assert_err(fn() -> client.get_async("http://127.0.0.1:1/"), "get_async refused returns an error")
 assert.assert_err(fn() -> client.head("http://127.0.0.1:1/"), "head refused returns an error")
 
 assert.summary()

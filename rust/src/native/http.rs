@@ -235,56 +235,28 @@ pub fn client_members(closure: &Context) -> Vec<(String, Obj)> {
             native(closure, "get", one(), get_impl),
         ),
         (
-            "get_async".to_owned(),
-            native(closure, "get_async", one(), get_impl),
-        ),
-        (
             "delete".to_owned(),
             native(closure, "delete", one(), delete_impl),
-        ),
-        (
-            "delete_async".to_owned(),
-            native(closure, "delete_async", one(), delete_impl),
         ),
         (
             "post".to_owned(),
             native(closure, "post", two(), post_impl),
         ),
         (
-            "post_async".to_owned(),
-            native(closure, "post_async", two(), post_impl),
-        ),
-        (
             "put".to_owned(),
             native(closure, "put", two(), put_impl),
-        ),
-        (
-            "put_async".to_owned(),
-            native(closure, "put_async", two(), put_impl),
         ),
         (
             "patch".to_owned(),
             native(closure, "patch", two(), patch_impl),
         ),
         (
-            "patch_async".to_owned(),
-            native(closure, "patch_async", two(), patch_impl),
-        ),
-        (
             "head".to_owned(),
             native(closure, "head", one(), head_impl),
         ),
         (
-            "head_async".to_owned(),
-            native(closure, "head_async", one(), head_impl),
-        ),
-        (
             "options".to_owned(),
             native(closure, "options", one(), options_impl),
-        ),
-        (
-            "options_async".to_owned(),
-            native(closure, "options_async", one(), options_impl),
         ),
     ]
 }

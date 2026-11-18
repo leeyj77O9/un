@@ -1751,3 +1751,24 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - TD-09 downgraded from "medium, open" to **Evidence-refresh (2026-11-19)** in the debt
   register — documented with measured numbers, accepted in current design.
 
+
+---
+
+## 2026-11-19 - Pass 35: TD-24, TD-26, TD-38 closure
+
+### Trigger
+
+- Close remaining low/medium debt rows.
+
+### Changes
+
+- `cases.rs`: `clr_to_string` -> `obj_to_string`, `clr_type_name` -> `obj_type_name`;
+  updated the dict.key-hash error message formatter to match. Renames only;
+  behaviour unchanged, differential 90/0.
+- `native/http.rs`: `*_async` members removed (were byte-identical aliases of the
+  sync versions — Un is cooperative), HTTP module docs synced;
+  `test/unit/native/http.un` updated.
+- Debt doc: TD-24 (already removed), TD-26, TD-38 marked Resolved. TD-27 documented.
+- Full gates re-run: Positive 1504, Negative 43, differential 90/0, unbc-roundtrip
+  47/47 identical + 36/36, cargo test 205, strict canary Int+Float OK.
+
