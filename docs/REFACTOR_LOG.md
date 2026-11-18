@@ -1410,3 +1410,92 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   unbc-roundtrip 47/47+34/34, cargo test 205, test_suite 109, algorithms.un
   42. AGENTS.md scale counts synced (84 files / 38,265 lines).
 
+
+---
+
+## 2026-11-19 - Pass 26: perf/compliance sweep (TD-08, TD-17, TD-31, TD-03, TD-11)
+
+### Trigger
+
+- Small, verified wins between the TD-40/TD-16 closure (Pass 25) and the
+  remaining structural debt. Selection: TD-08 (call-path allocation), TD-17
+  (debug-dump magic), TD-31 (vendor licence compliance), TD-03
+  (PLAN_CACHE bound), TD-11 (Source lookup cost).
+
+### Changes
+
+- `runtime/function.rs`: `Args::positional` now allocates a single empty
+  `names` Vec; `Args::named` unchanged; positional consumers use `.get(i)`
+  and treat a missing name as positional. Per-argument `String::new()`
+  calls and the names Vec of size n are gone. Local-A/B on
+  `bench/funccall.un`: no measurable delta (522/548/549ms vs stashed
+  baseline 478/498/533ms - within run-to-run noise); allocation count per
+  call dropped by n+1.
+- `vendor/`: LICENSE (Apache-2.0 + LLVM exception, verbatim from the
+  bytecodealliance repo) shipped for `cranelift-jit` and
+  `icache-coherence`; `vendor/README.md` and `vendor/THIRD_PARTY.md`
+  updated. TD-31 closed.
+- `vm/transfer.rs`: the depth-mismatch debug dump prints a clamped
+  ±32-instruction neighbourhood of the failing ip instead of the magic
+  `744..=796` window (which was also able to panic out-of-bounds on short
+  protos). TD-17 closed.
+- `vm/mod.rs`: `PLAN_CACHE` is bounded at 64 entries with first-insertion
+  FIFO eviction; insertion beyond the limit evicts the oldest. A hit just
+  recompiles from the program passed to `plan_for`. TD-03 closed.
+- `source.rs`: line-start index built once at construction (after CRLF
+  normalisation); `get_line`/`get_column`/`get_line_start` are O(log lines)
+  via binary search. TD-11 closed.
+
+### Result
+
+- Gates: Positive 1493, Negative 41 matched, differential 88/0,
+  unbc-roundtrip 47/47+34/34, cargo test 205. Suite 109, algorithms 42.
+- Debt doc: TD-03, TD-11, TD-17 closed; TD-08 mitigated (residual
+  `to_vec` clone is API-breaking to remove and stays as documented debt).
+- AGENTS.md scale counts synced (84 files / 38,299 lines).
+
+
+---
+
+## 2026-11-19 - Pass 27: JIT native code release at process boundaries (TD-05)
+
+### Trigger
+
+- TD-05 (the only remaining high-severity debt item): native code emitted
+  by the JIT is never freed during a normal run — the vendored
+  Cranelift backend deliberately `mem::forget`s every allocation so function
+  pointers extracted at registration stay valid for the process lifetime.
+- The pragmatic fix is not "free in Drop" (that would unmap code pages that
+  live function pointers still reference — use-after-free); it is wiring a
+  boundary where freeing is provably safe.
+
+### Changes
+
+- `rust/src/main.rs`: the CLI worker calls `jit_cache::clear()` on the
+  success path after `worker.join()` returns, and `report()` calls it on
+  every error/panic exit path before printing. In both places no JIT'd code
+  runs afterwards; when JIT is disabled (`UV_JIT=0`) or nothing was
+  compiled, clear() is a cheap no-op (it still drops the IntDict/IntList/
+  class arenas and the JIT registry).
+- `rust/playground/src/lib.rs`: the WASM playground calls
+  `unvm::jit_cache::clear()` at the end of every run — each run compiles a
+  fresh `Program` with a fresh id, so its JIT entries can never be reused
+  and would otherwise accumulate in WASM linear memory across user edits.
+- Vendored backend unchanged: `Memory::drop` stays `mem::forget` on purpose —
+  that *is* the safety argument for `jit_cache.rs`'s `unsafe impl Send for
+  JitEntry`. The in-flight-unfreeable window is documented in
+  `jit_cache.rs`'s module docs and in the ARCHITECTURE "Resource lifecycle"
+  section; it is not observable as correctness failure because the leak
+  lives until process exit by construction.
+
+### Result
+
+- CLI processes now release JIT-native memory at exit on both boundary
+  classes; the WASM playground frees per user run. What remains is the
+  structural in-flight window only.
+- Gates: Positive 1493, Negative 41 matched, differential 88/0,
+  unbc-roundtrip 47/47+34/34, cargo test 205, test_suite 109.
+  WASM target (`-p unvm-playground`) builds clean.
+- No high-severity debt items remain in `docs/TECHNICAL_DEBT.md`
+  (TD-08 mitigated, TD-05 closed).
+
