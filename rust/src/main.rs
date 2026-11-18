@@ -20,7 +20,10 @@ fn main() {
         .spawn(dispatch)
         .expect("failed to spawn the worker thread");
     match worker.join() {
-        Ok(()) => exit(0),
+        Ok(()) => {
+            unvm::jit_cache::clear();
+            exit(0)
+        }
         Err(_) => exit(1),
     }
 }
@@ -397,6 +400,7 @@ fn run_bytecode(path: &str) {
 }
 fn report(ctx: &context::Context, text: String) {
     world::flush_stdout();
+    unvm::jit_cache::clear();
     print!("{text}{}", nl());
     let (lines, truncated) = context::trace_lines(ctx);
     if lines.is_empty() {

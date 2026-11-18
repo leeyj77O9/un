@@ -165,6 +165,10 @@ pub fn run(
     }
 
     let stdout = world::log_text();
+    // Each playground run compiles a fresh program with a fresh id, so the
+    // JIT entries this run created can never be reused by a later run; they
+    // are dead weight in the WASM linear memory until it is discarded.
+    unvm::jit_cache::clear();
     world::reset();
 
     PlaygroundResult {
