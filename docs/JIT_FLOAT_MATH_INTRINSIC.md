@@ -1,7 +1,8 @@
 # JIT Float 수학 intrinsic 설계
 
-상태: **Accepted (2026-11-18)** — 구현 진행. 열린 질문은 §7에 Decided로 확정됨.
-관련: `docs/CODE_NORMALIZATION_REPORT.md` §6·§7 (item 2), `docs/DECISIONS.md` D-073,
+상태: **Accepted** (2026-11-18 구현 완료, 커밋 `4ba4f14`). 상세는 §7 결정 목록과
+`docs/DECISIONS.md` D-078·`docs/REFACTOR_LOG.md` Pass 23 참고.
+관련: `docs/CODE_NORMALIZATION_REPORT.md` §6·§7 (item 2, Done), `docs/DECISIONS.md` D-078,
 `docs/TECHNICAL_DEBT.md` TD-51, `test/jit/strict.un`
 
 ## 0. 요약
@@ -312,16 +313,20 @@ tag=2 bail은 interpreter 재실행이다. 같은 입력에 대해 동일 결과
 | JIT strict canary(`UV_JIT=2`) | 검토 필요 | math intrinsic은 f64 전용이라 `test/jit/strict.un`의 Int 부분집합 검사에는 포함시키지 않음. 단 math intrinsic이 컴파일 실패하면 candidate가 stub이 되므로 strict canary 범위 확장 여부는 별도 결정 |
 | 기존 JITREJECT 덤프 노이즈 | 낮음 | `emit_ins ... op=Call` 거부 로그가 math call 발견 후에는 사라지는지 확인 (정상 동작) |
 
-## 6. 구현 순서
+## 6. 구현 결과 (2026-11-18)
 
-1. 이 문서를 `Proposed → Accepted`로 바꾸고 `docs/DECISIONS.md`에 D-073 등록.
-2. FFI shims + declare 코드 추가 (호출 없음, 빌드/테스트 green 확인).
+1. ~~이 문서를 `Proposed → Accepted`로 바꾸고~~ 완료, `docs/DECISIONS.md` D-078 등록.
+2. FFI shims + declare 코드 추가 (호출 없음, 빌드 green).
 3. LoadName/GetAttr/Call arm + `MathFn` enum + identity 분기(태그 규칙) 구현.
-4. rebind guard 확장 (규칙 1: StoreName math → 무조건 veto, 규칙 2: math 사용 프로그램의
-   SetAttr∈MATH_FNS → veto).
-5. 게이트 1~6 통과.
-6. `bench/math.un`·`bench/floatmath.un` 측정 전/후 기록을 `docs/CODE_NORMALIZATION_REPORT.md`의
-   §7 item 2에 완료 표시.
+4. `compute_local_float`에 math intrinsic result kinds 학습 — 이게 없으면 promoted
+   Float local이 태깅되지 않아 루프가 0을 반환했다(구현 중 실측으로 발견·수정).
+5. rebind guard 확장 (규칙 1: StoreName math → 무조건 veto, 규칙 2: math 사용 프로그램의
+   SetAttr∈MATH_FNS → veto). `self.sin` 등 math 비사용 프로그램에는 영향 없음을 실측 확인.
+6. 게이트 전부 통과: differential 88/0, test.ps1 1493/0·Negative 41, unbc-roundtrip
+   47/47+34/34, cargo test 205, `UV_JIT=2` OK.
+7. `bench/math.un` JIT 0.053ms(3/3), `bench/floatmath.un` JIT 0.54ms(2/2)
+   (interpreter lane ≈22/27ms). `BENCHMARK.md`는 커밋된 트리에서 재측정 후 별도 docs
+   커밋으로 갱신.
 
 ## 7. 결정 (2026-11-18, Reviewer 위임 하에 확정)
 
@@ -344,4 +349,4 @@ tag=2 bail은 interpreter 재실행이다. 같은 입력에 대해 동일 결과
    하나로 넘긴다 — 선언/심볼 등록/발화 모두 일관된 단일 경로, 리뷰 용이.
 6. `jit_bc.rs`의 낡은 모듈 주석("user function calls rejected", "Float comparisons rejected")을
    구현과 함께 현행화한다.
-7. Accepted 후 `docs/DECISIONS.md`에 **D-073**으로 이 문서를 요약한다.
+7. ~~Accepted 후 `docs/DECISIONS.md`에 D-07x로 이 문서를 요약한다.~~ **Done** — D-078로 등록.
