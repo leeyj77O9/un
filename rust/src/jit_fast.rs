@@ -51,6 +51,9 @@ pub(crate) fn try_call_jit(
     };
     let entry = entry?;
     let mut ints = Vec::with_capacity(args.values.len() + if is_class_method { 1 } else { 0 });
+    // Bit p of the JIT's hidden `param_tags` argument: argument p (in
+    // `ints` order) is a borrowed IntVec arena handle, not a plain Int.
+    let mut param_tags: i64 = 0;
     // Argument lists are materialised into the JIT's IntVec arena because the
     // interpreter cannot pass Obj references through Cranelift. The arena is
     // a copy, so any mutation the callee makes would be lost — unless we
@@ -72,6 +75,7 @@ pub(crate) fn try_call_jit(
         ints.push(Rc::as_ptr(&receiver) as i64);
     }
     for arg in &args.values {
+        let pos = ints.len();
         match obj::payload(arg) {
             crate::runtime::obj::Payload::Int(v) => {
                 // Ints >= ID_BASE could alias a live arena handle; seeing one
@@ -89,11 +93,13 @@ pub(crate) fn try_call_jit(
                 // declines and the caller runs the interpreter.
                 match crate::runtime::int_list::materialize_nested(arg) {
                     Some(handle) => {
+                        param_tags |= 1i64 << pos;
                         list_args.push((arg.clone(), handle));
                         ints.push(handle);
                     }
                     None => match crate::runtime::int_list::materialize(arg) {
                         Some(handle) => {
+                            param_tags |= 1i64 << pos;
                             list_args.push((arg.clone(), handle));
                             ints.push(handle);
                         }
@@ -115,7 +121,7 @@ pub(crate) fn try_call_jit(
         return None;
     }
 
-    let res = crate::vm::jit_call(entry, &ints);
+    let res = crate::vm::jit_call(entry, &ints, param_tags);
     // Copy mutated arena lists back into the caller's Un list objects — but
     // only when the JIT actually produced a value. On a runtime bail the
     // interpreter re-runs the function from scratch against the untouched

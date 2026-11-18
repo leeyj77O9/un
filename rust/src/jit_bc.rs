@@ -270,8 +270,10 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     builder.symbol("un_class_make_8", crate::runtime::int_class::un_class_make_8 as *const u8);
     builder.symbol("un_list_int_empty", crate::runtime::int_list::un_list_int_empty as *const u8);
     builder.symbol("un_list_int_push", crate::runtime::int_list::un_list_int_push as *const u8);
+    builder.symbol("un_list_int_push_scalar", crate::runtime::int_list::un_list_int_push_scalar as *const u8);
     builder.symbol("un_list_int_get", crate::runtime::int_list::un_list_int_get as *const u8);
     builder.symbol("un_list_int_set", crate::runtime::int_list::un_list_int_set as *const u8);
+    builder.symbol("un_list_int_set_scalar", crate::runtime::int_list::un_list_int_set_scalar as *const u8);
     builder.symbol("un_list_int_len", crate::runtime::int_list::un_list_int_len as *const u8);
     builder.symbol("un_list_int_slice", crate::runtime::int_list::un_list_int_slice as *const u8);
     builder.symbol("un_list_int_free", crate::runtime::int_list::un_list_int_free as *const u8);
@@ -418,6 +420,12 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         Ok(fid) => fid,
         Err(_) => return,
     };
+    let fid_list_push_scalar = match module
+        .declare_function("un_list_int_push_scalar", Linkage::Import, &sig_l_push)
+    {
+        Ok(fid) => fid,
+        Err(_) => return,
+    };
     let mut sig_l_get = module.make_signature();
     sig_l_get.params.push(AbiParam::new(types::I64));
     sig_l_get.params.push(AbiParam::new(types::I64));
@@ -435,6 +443,12 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     sig_l_set.returns.push(AbiParam::new(types::I64));
     let fid_list_set = match module
         .declare_function("un_list_int_set", Linkage::Import, &sig_l_set)
+    {
+        Ok(fid) => fid,
+        Err(_) => return,
+    };
+    let fid_list_set_scalar = match module
+        .declare_function("un_list_int_set_scalar", Linkage::Import, &sig_l_set)
     {
         Ok(fid) => fid,
         Err(_) => return,
@@ -571,6 +585,9 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         let mut sig = module.make_signature();
         // Hidden result pointer: the JIT writes the (value, tag) pair through it.
         sig.params.push(AbiParam::new(types::I64));
+        // Hidden argument-tag bitmap: bit p marks argument p as a borrowed
+        // IntVec arena handle (not a plain Int).
+        sig.params.push(AbiParam::new(types::I64));
         for _ in 0..arity {
             sig.params.push(AbiParam::new(types::I64));
         }
@@ -630,8 +647,10 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
                 fid_int_set_name,
                 fid_list_empty,
                 fid_list_push,
+                fid_list_push_scalar,
                 fid_list_get,
                 fid_list_set,
+                fid_list_set_scalar,
                 fid_list_len,
                 fid_list_slice,
                 fid_list_free,
@@ -745,6 +764,12 @@ struct Tr<'a> {
     // object after the call returns. Best-effort: a miss degrades to a
     // skipped free at worst, never to a wrong result.
     param_regs: HashSet<usize>,
+    /// Register -> the parameter position (0-based, in the FFI argument
+    /// order) this register is (still) a raw parameter derived from.
+    param_idx: HashMap<usize, usize>,
+    /// Local slot -> parameter position, for locals that received a raw
+    /// parameter store (`let a = n`).
+    local_param_pos: Vec<Option<usize>>,
     // `local_borrow_raw[slot]` — the slot currently holds an (unprobed) raw
     // argument value. Kept so `LoadLocal` can restore the register-level
     // provenance on the way back out.
@@ -802,8 +827,10 @@ struct Tr<'a> {
     // IntVec intrinsics (`un_list_int_*`).
     fid_list_empty: cranelift_module::FuncId,
     fid_list_push: cranelift_module::FuncId,
+    fid_list_push_scalar: cranelift_module::FuncId,
     fid_list_get: cranelift_module::FuncId,
     fid_list_set: cranelift_module::FuncId,
+    fid_list_set_scalar: cranelift_module::FuncId,
     fid_list_len: cranelift_module::FuncId,
     fid_list_slice: cranelift_module::FuncId,
     fid_list_free: cranelift_module::FuncId,
@@ -903,6 +930,21 @@ impl<'a> Tr<'a> {
     /// values the interpreter can observe (a handle returned as a tag=0 Int
     /// would masquerade as a number, and leaked handles would corrupt scope
     /// or callee arguments).
+    /// A handle that is NOT an IntVec handle. IntVec intrinsics (e.g.
+    /// `xs.add(v)` / `xs[i] = v`) fully understand list handles (the row
+    /// path), so the generic `int_dict_seen` check would defeat the row
+    /// mechanism; anything else (dict ids, class instances, methods, iters)
+    /// cannot be stored/passed and must bail to the interpreter.
+    fn int_list_foreign_seen(&self, regs: &[usize]) -> bool {
+        regs.iter().any(|&r| {
+            self.int_dict_regs.contains(&r)
+                || self.instance_regs.contains_key(&r)
+                || self.class_ctor_regs.contains_key(&r)
+                || self.method_regs.contains_key(&r)
+                || self.len_regs.contains(&r)
+                || self.intlist_iter_regs.contains(&r)
+        })
+    }
     fn int_dict_seen(&self, regs: &[usize]) -> bool {
         regs.iter().any(|&r| {
             self.int_dict_regs.contains(&r)
@@ -946,9 +988,13 @@ impl<'a> Tr<'a> {
                 }
                 return None;
             }
-            if self.int_dict_seen(&[r]) {
+            // List handles are allowed: the callee prologue guards its own
+            // params (unsafe_param_mask), so a list arg that would be read
+            // as an Int bails to the interpreter there — the caller never
+            // needs an Int ABI violation to reach the callee.
+            if self.int_list_foreign_seen(&[r]) {
                 if crate::jit_cache::jit_debug() {
-                    eprintln!("JITREJECT emit_user_call arg{k}=={r} in int_dict_seen");
+                    eprintln!("JITREJECT emit_user_call arg{k}=={r} foreign handle");
                 }
                 return None;
             }
@@ -957,8 +1003,21 @@ impl<'a> Tr<'a> {
             return None;
         }
         let hp = builder.use_var(self.hp_var);
-        let mut arg_vals: Vec<Value> = Vec::with_capacity(argc + 1);
+        // Compute the callee's `param_tags` bitmap from the staged
+        // argument registers: a bit per argument that is currently marked
+        // as an (un)tracked arena handle. Bits are static; the runtime
+        // value is read by the callee's entry guard and intrinsics.
+        let mut tags = builder.ins().iconst(types::I64, 0);
+        for k in 0..argc {
+            let r = callee_reg + 1 + k;
+            if self.intlist_regs.contains_key(&r) || self.param_idx.contains_key(&r) {
+                let bit = builder.ins().iconst(types::I64, 1i64 << k);
+                tags = builder.ins().bor(tags, bit);
+            }
+        }
+        let mut arg_vals: Vec<Value> = Vec::with_capacity(argc + 2);
         arg_vals.push(hp);
+        arg_vals.push(tags);
         for k in 0..argc {
             let r = callee_reg + 1 + k;
             arg_vals.push(builder.use_var(self.rv_i64(r)));
@@ -1763,6 +1822,14 @@ impl<'a> Tr<'a> {
         } else {
             self.param_regs.remove(&dst_reg);
         }
+        match self.local_param_pos[slot] {
+            Some(p) => {
+                self.param_idx.insert(dst_reg, p);
+            }
+            None => {
+                self.param_idx.remove(&dst_reg);
+            }
+        }
         let float_slot = self.local_float[slot];
         if float_slot {
             let v = builder.use_var(self.lv_f64(slot));
@@ -1840,6 +1907,12 @@ impl<'a> Tr<'a> {
             // did not terminate (every compilable proto ends in Return).
             // Bail through the hidden pointer so the interpreter re-runs
             // the frame instead of the caller reading an uninitialised pair.
+            // Must still release the depth guard, like every other bail exit.
+            if self.needs_depth {
+                let exit_ref = self.module.declare_func_in_func(self.fid_exit, builder.func);
+                builder.ins().call(exit_ref, &[]);
+            }
+            self.emit_int_dict_cleanup(builder);
             let hp = builder.use_var(self.hp_var);
             let zero = builder.ins().iconst(types::I64, 0);
             let two = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
@@ -2018,7 +2091,21 @@ impl<'a> Tr<'a> {
         let is_load_local = ins.op == Op::LoadLocal;
         let preserve = matches!(
             ins.op,
-            Op::LoadLocal | Op::Dup | Op::Unwrap | Op::LoadName | Op::GetAttr | Op::Call | Op::BuildList | Op::Slice | Op::PrepIter
+            Op::LoadLocal
+                | Op::Dup
+                | Op::Unwrap
+                | Op::LoadName
+                | Op::GetAttr
+                | Op::Call
+                | Op::BuildList
+                | Op::Slice
+                | Op::PrepIter
+                // Pure argument-framing markers: `No register effect in the
+                // JIT` (see the ArgPos/ArgKw arm). Flushing `ins.a` here
+                // strips the marker off the staged argument.
+                | Op::ArgBegin
+                | Op::ArgPos
+                | Op::ArgKw
         );
         let r = self.emit_ins_body(builder, code, ip, ins);
         if !is_load_local {
@@ -2029,6 +2116,7 @@ impl<'a> Tr<'a> {
             self.instance_regs.remove(&(ins.a as usize));
             self.method_regs.remove(&(ins.a as usize));
             self.intlist_regs.remove(&(ins.a as usize));
+            self.param_idx.remove(&(ins.a as usize));
             self.len_regs.remove(&(ins.a as usize));
             self.math_regs.remove(&(ins.a as usize));
             self.mathfn_regs.remove(&(ins.a as usize));
@@ -2145,6 +2233,7 @@ impl<'a> Tr<'a> {
                     Some(&pos) => {
                         let v = builder.use_var(self.vars[pos]);
                         self.param_regs.insert(ins.a as usize);
+                        self.param_idx.insert(ins.a as usize, pos);
                         // A list-typed argument arrives as a raw arena
                         // handle, but its runtime identity is unknown at
                         // compile time. The list intrinsics probe the
@@ -2260,6 +2349,11 @@ impl<'a> Tr<'a> {
                 } else {
                     self.param_regs.remove(&(ins.a as usize));
                 }
+                if let Some(&p) = self.param_idx.get(&(ins.b as usize)) {
+                    self.param_idx.insert(ins.a as usize, p);
+                } else {
+                    self.param_idx.remove(&(ins.a as usize));
+                }
                 if let Some(&desc) = self.instance_regs.get(&(ins.b as usize)) {
                     self.instance_regs.insert(ins.a as usize, desc);
                 } else {
@@ -2310,6 +2404,7 @@ impl<'a> Tr<'a> {
                 self.local_borrow_raw[slot] = self.param_regs.contains(&(ins.a as usize));
                 self.local_is_instance[slot] = self.instance_regs.get(&(ins.a as usize)).copied();
                 self.local_is_list[slot] = self.intlist_regs.get(&(ins.a as usize)).copied().unwrap_or(0);
+                self.local_param_pos[slot] = self.param_idx.get(&(ins.a as usize)).copied();
                 self.local_is_bool[slot] = self.is_bool[ins.a as usize];
                 self.local_is_none[slot] = self.is_none[ins.a as usize];
                 Some(())
@@ -2697,14 +2792,20 @@ impl<'a> Tr<'a> {
                     if self.is_float[arg_reg] || self.is_none[arg_reg] {
                         return None;
                     }
-                    if self.int_dict_seen(&[arg_reg]) {
+                    if self.int_list_foreign_seen(&[arg_reg]) {
                         return None;
                     }
                     let Some(d_i) = self.emit_intlist_target(builder, recv) else {
                         return None;
                     };
                     let is_bool = self.is_bool[arg_reg];
-                    let fid = self.fid_list_push;
+                    let fid = if self.intlist_regs.contains_key(&arg_reg) {
+                        self.fid_list_push
+                    } else {
+                        // Plain Int: never let a user Int >= ID_BASE alias an
+                        // arena handle and trigger the outer-row promotion.
+                        self.fid_list_push_scalar
+                    };
                     let f_ref = self.module.declare_func_in_func(fid, builder.func);
                     let v_i = builder.use_var(self.rv_i64(arg_reg));
                     let is_bool_v = builder.ins().iconst(types::I64, is_bool as i64);
@@ -3049,11 +3150,17 @@ impl<'a> Tr<'a> {
                     if self.is_float[value] || self.is_none[value] || self.is_float[key] || self.is_none[key] || self.is_bool[key] {
                         return None;
                     }
-                    if self.int_dict_seen(&[value, key]) {
+                    if self.int_list_foreign_seen(&[value]) || self.int_dict_seen(&[key]) {
                         return None;
                     }
                     let fid_len = self.fid_list_len;
-                    let fid_set = self.fid_list_set;
+                    let fid_set = if self.intlist_regs.contains_key(&value) {
+                        self.fid_list_set
+                    } else {
+                        // Plain Int: never let a user Int >= ID_BASE alias an
+                        // arena handle and trigger the outer-row promotion.
+                        self.fid_list_set_scalar
+                    };
                     let f_len = self.module.declare_func_in_func(fid_len, builder.func);
                     let f_set = self.module.declare_func_in_func(fid_set, builder.func);
                     let k_i = builder.use_var(self.rv_i64(key));
@@ -3345,7 +3452,9 @@ impl<'a> Tr<'a> {
                 // A union INT|INTLIST register has no static arm: strip the
                 // UNION marker so the runtime probe below re-tags the value
                 // (Int < ID_BASE stays tag=0, an arena handle emits TAG_INTLIST).
-                if self.intlist_regs.get(&(ins.a as usize)).copied() == Some(INTLIST_UNION) {
+                let was_union =
+                    self.intlist_regs.get(&(ins.a as usize)).copied() == Some(INTLIST_UNION);
+                if was_union {
                     self.intlist_regs.remove(&(ins.a as usize));
                 }
                 // An IntVec handle returned as a list ??the caller
@@ -3356,9 +3465,14 @@ impl<'a> Tr<'a> {
                     self.emit_return_pair_keep(builder, bits, six, true);
                     return Some(());
                 }
-                // The plan-time analysis is a hint, not a sentence: the
-                // runtime tag probe decides Int vs IntVec.
-                if true
+                // The runtime tag probe decides Int vs IntVec. Only ever run
+                // it for registers that carry the INT|INTLIST UNION marker
+                // from a nested union call, or for a raw parameter register
+                // (a borrowed handle re-passed unchanged): every other
+                // register is a plain Int (or Float/Bool/none) and a user
+                // Int >= ID_BASE must not masquerade as an arena handle.
+                let was_param = self.param_idx.contains_key(&(ins.a as usize));
+                if (was_union || was_param)
                     && !self.is_none[ins.a as usize]
                     && !self.is_float[ins.a as usize]
                     && !self.is_bool[ins.a as usize]
@@ -3639,6 +3753,147 @@ pub fn analyze_return_kinds(program: &Program) -> HashMap<usize, u8> {
         }
     }
     tags
+}
+
+/// Bitmask of parameter positions whose values can reach an operation that
+/// reads them as plain Ints (arithmetic, bitwise, compare, string
+/// materialisation, error propagation, unary negation ...). A value in one
+/// of those positions that was actually passed as a borrowed IntVec arena
+/// handle (see the hidden `param_tags` slot) must bail the frame to the
+/// interpreter; everything else is genuinely Int-safe.
+///
+/// This is a simple forwards flow over the register file (locals first,
+/// then scratch slots); it does not model control flow exactly, but it is
+/// monotone and free of false negatives relative to that walk. False
+/// positives only cost one extra interpreter frame.
+/// `param_mask_by_d` maps `LoadName` name indices (as they appear in
+/// `ins.d`) to the parameter position they stage; built once per proto by
+/// the caller.
+fn unsafe_param_mask(code: &[Ins], param_mask_by_d: &HashMap<usize, usize>) -> u64 {
+    let mut reg_taint: Vec<u64> = vec![0; 256];
+    let mut local_taint: Vec<u64> = vec![0; 256];
+    let mut mask: u64 = 0;
+    for ins in code {
+        let a = ins.a as usize;
+        let b = ins.b as usize;
+        let c = ins.c as usize;
+        match ins.op {
+            Op::LoadName => {
+                // The param staging arms of the JIT lower `LoadName <param>`
+                // by reading the FFI argument variable; the position is
+                // carried in `param_mask_by_d`.
+                reg_taint[a] = param_mask_by_d
+                    .get(&(ins.d as usize))
+                    .map(|&pos| 1u64 << pos)
+                    .unwrap_or(0);
+            }
+            Op::LoadLocal => {
+                reg_taint[a] = local_taint[ins.d as usize];
+            }
+            Op::StoreLocal => {
+                local_taint[ins.d as usize] = reg_taint[a];
+            }
+            Op::Dup | Op::Unwrap => {
+                reg_taint[a] = reg_taint[b];
+            }
+            Op::Swap => {
+                let t = reg_taint[a];
+                reg_taint[a] |= reg_taint[b];
+                reg_taint[b] |= t;
+            }
+            Op::Rot => {
+                let t = reg_taint[a];
+                reg_taint[a] |= reg_taint[b];
+                reg_taint[b] |= reg_taint[c];
+                reg_taint[c] = t;
+            }
+            Op::Pop | Op::PopN => {}
+            Op::Call => {
+                // The callee is an argument-naked name; the arguments
+                // follow it in consecutive registers (b+1..b+d).
+                let mut m = 0u64;
+                for k in 0..ins.d.max(0) as usize {
+                    if b + 1 + k < 256 {
+                        m |= reg_taint[b + 1 + k];
+                    }
+                }
+                reg_taint[a] = m;
+            }
+            Op::GetItem | Op::Slice | Op::GetAttr => {
+                // Elements of a *flat* IntVec are plain Ints; outer lists
+                // are out of the Int-JIT's supported shape and bail at the
+                // intrinsic probes themselves.
+                reg_taint[a] = 0;
+            }
+            Op::LoadUpv => {
+                // Upvalues may capture anything outside this ABI; be strict
+                // and mark them so downstream arithmetic bails.
+                reg_taint[a] = u64::MAX;
+            }
+            _ => {
+                // Potentially Int-consuming operation: if a parameter-derived
+                // value reaches it, this frame must not run natively on a
+                // handle.
+                let reads_a = matches!(
+                    ins.op,
+                    Op::SetItem | Op::SetSlice | Op::Await | Op::Raise | Op::In | Op::Xor
+                );
+                let involved =
+                    reg_taint[b] | reg_taint[c] | if reads_a { reg_taint[a] } else { 0 };
+                if involved != 0 && is_unsafe_consumer(ins.op) {
+                    mask |= involved;
+                }
+                reg_taint[a] = 0;
+            }
+        }
+    }
+    mask
+}
+
+/// Every operation that *reads a register as an Int* (arithmetic, bitwise,
+/// compare, conversions, string materialisation, error propagation). Anything
+/// not in `unsafe_param_mask`'s explicit-match arms above is conservative by
+/// default here, but note the explicitly listed intrinsic-shaped arms are
+/// free of Int assumptions (they probe the arena at run time).
+fn is_unsafe_consumer(op: Op) -> bool {
+    matches!(
+        op,
+        Op::Add
+            | Op::Sub
+            | Op::Mul
+            | Op::Div
+            | Op::Idiv
+            | Op::Mod
+            | Op::Pow
+            | Op::Band
+            | Op::Bor
+            | Op::Bxor
+            | Op::Lsh
+            | Op::Rsh
+            | Op::Range
+            | Op::Eq
+            | Op::Ne
+            | Op::Lt
+            | Op::Gt
+            | Op::Le
+            | Op::Ge
+            | Op::Is
+            | Op::IsNot
+            | Op::In
+            | Op::Xor
+            | Op::Not
+            | Op::Pos
+            | Op::Neg
+            | Op::Bnot
+            | Op::ToStr
+            | Op::FString
+            | Op::Propagate
+            | Op::FusedIntMulAdd
+            | Op::SetItem
+            | Op::SetSlice
+            | Op::Await
+            | Op::Raise
+    )
 }
 
 fn analyze_one_proto(
@@ -4350,8 +4605,10 @@ fn emit_fn_in_module(
     fid_int_set_name: cranelift_module::FuncId,
     fid_list_empty: cranelift_module::FuncId,
     fid_list_push: cranelift_module::FuncId,
+    fid_list_push_scalar: cranelift_module::FuncId,
     fid_list_get: cranelift_module::FuncId,
     fid_list_set: cranelift_module::FuncId,
+    fid_list_set_scalar: cranelift_module::FuncId,
     fid_list_len: cranelift_module::FuncId,
     fid_list_slice: cranelift_module::FuncId,
     fid_list_free: cranelift_module::FuncId,
@@ -4469,10 +4726,30 @@ fn emit_fn_in_module(
         f64_vars.push(builder.declare_var(types::F64));
     }
 
+    // Build the per-proto unsafe-param mask (compile time only): parameter
+    // positions that can reach an Int-consuming operation must bail the
+    // frame when the caller passed a borrowed IntVec handle there.
+    let param_mask_by_d: HashMap<usize, usize> = {
+        let mut m = HashMap::new();
+        // Map the proto-local name indices used as LoadName operands onto
+        // the parameter positions. LoadName staging uses the same names as
+        // the FFI argument order, so the pos values line up directly.
+        for (name, pos) in param_pos.iter() {
+            for (local_idx, &global_idx) in proto.names.iter().enumerate() {
+                if program.names.get(global_idx).is_some_and(|n| n == name) {
+                    m.insert(local_idx, *pos);
+                }
+            }
+        }
+        m
+    };
+    let unsafe_param_mask = unsafe_param_mask(&code, &param_mask_by_d);
+
     let prologue = builder.create_block();
-    builder.append_block_params_for_function_params(prologue); // hidden result ptr, args...
+    builder.append_block_params_for_function_params(prologue); // hidden result ptr, tags, args...
     let incoming = builder.block_params(prologue).to_vec();
     let hidden_ptr = incoming[0];
+    let incoming_tags = incoming[1];
     // Cranelift's layout entry block (the one in position 0) must carry the
     // function signature's parameters, so the prologue is that block. The
     // body starts at `entry`, an empty parameterless block; the prologue
@@ -4486,14 +4763,40 @@ fn emit_fn_in_module(
     // keep the hidden pointer in a dedicated variable so returns can store
     let hp_var = builder.declare_var(types::I64);
     builder.def_var(hp_var, hidden_ptr);
-    for (i, v) in incoming.iter().enumerate().skip(1) {
-        builder.def_var(vars[i - 1], *v);
+    let tags_var = builder.declare_var(types::I64);
+    builder.def_var(tags_var, incoming_tags);
+    for (i, v) in incoming.iter().enumerate().skip(2) {
+        builder.def_var(vars[i - 2], *v);
+    }
+    // If any parameter position that can reach an Int-consuming operation
+    // was passed a borrowed IntVec handle, bail the whole frame to the
+    // interpreter. A single runtime check per call; zero cost for Int FFI.
+    if unsafe_param_mask != 0 {
+        let t = builder.use_var(tags_var);
+        let m = builder.ins().iconst(types::I64, unsafe_param_mask as i64);
+        let r = builder.ins().band(t, m);
+        let zero = builder.ins().iconst(types::I64, 0);
+        let any = builder.ins().icmp(IntCC::NotEqual, r, zero);
+        let bail_blk = builder.create_block();
+        let cont_blk = builder.create_block();
+        builder.ins().brif(any, bail_blk, &[], cont_blk, &[]);
+        builder.seal_block(bail_blk);
+        builder.seal_block(cont_blk);
+        // bail path: tag the hidden pair and return (the interpreter
+        // re-runs the frame from scratch).
+        builder.switch_to_block(bail_blk);
+        let zero2 = builder.ins().iconst(types::I64, 0);
+        let two = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero2, hidden_ptr, 0);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hidden_ptr, 8);
+        builder.ins().return_(&[]);
+        builder.switch_to_block(cont_blk);
     }
     let zero = builder.ins().iconst(types::I64, 0);
     for i in arity..vars.len() {
         // Class-method local slot 0 is `self`; pin it to the receiver.
         if is_class && i == arity {
-            builder.def_var(vars[i], incoming[1]);
+            builder.def_var(vars[i], incoming[2]);
             continue;
         }
         builder.def_var(vars[i], zero);
@@ -4630,6 +4933,8 @@ fn emit_fn_in_module(
         local_is_bool: vec![false; locals_len],
         local_is_none: vec![false; locals_len],
         local_float,
+        local_param_pos: vec![None; locals_len],
+        param_idx: HashMap::new(),
         ret_slot: vec![None; plan.reg_count],
         blocks,
         loop_inc,
@@ -4661,8 +4966,10 @@ fn emit_fn_in_module(
         fid_int_set_name,
         fid_list_empty,
         fid_list_push,
+        fid_list_push_scalar,
         fid_list_get,
         fid_list_set,
+        fid_list_set_scalar,
         fid_list_len,
         fid_list_slice,
         fid_list_free,

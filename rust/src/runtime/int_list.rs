@@ -416,20 +416,17 @@ fn live_handle_idx(slots: &IntListArena, v: i64) -> Option<usize> {
 }
 
 /// Push `value` onto the back of the IntVec, returning the value itself.
-/// A `KIND_OUTER` receiver pushes a row handle: if the receiver is a virgin
-/// (empty, kind == 0) flat slot, it is promoted to `KIND_OUTER` on the
-/// first row push. A row push into an already scalar-populated flat slot,
-/// or a scalar push into an outer list, poisons the receiver so the whole
-/// call falls back to the interpreter. `is_bool` is nonzero when the
-/// payload is a Bool (0/1), not an Int; ignored for outer pushes.
-#[no_mangle]
-pub extern "C" fn un_list_int_push(v: i64, value: i64, is_bool: i64) -> i64 {
+/// `value_may_be_row` distinguishes a possible row handle (an IntVec the
+/// caller produced) from a plain Int: a plain Int >= ID_BASE aliases a
+/// handle and must never trigger the outer-row promotion logic.
+fn push_impl(v: i64, value: i64, is_bool: i64, value_may_be_row: bool) -> i64 {
     let mut slots = arena();
     let Some(v_idx) = live_handle_idx(&slots, v) else {
         return 0;
     };
     // Is `value` a live handle (a row)? Only if it doesn't alias `v`.
-    let value_is_row = live_handle_idx(&slots, value).map(|ci| ci != v_idx).unwrap_or(false);
+    let value_is_row = value_may_be_row
+        && live_handle_idx(&slots, value).map(|ci| ci != v_idx).unwrap_or(false);
     let v_kind = slots.slots[v_idx].as_ref().map(|l| l.kind).unwrap_or(3);
     if value_is_row {
         match v_kind {
@@ -465,6 +462,26 @@ pub extern "C" fn un_list_int_push(v: i64, value: i64, is_bool: i64) -> i64 {
             }
         }
     }
+}
+
+/// Scalar-aware entry point. `value_may_be_row = false` when the caller
+/// proves the pushed value is a plain Int (never a row handle): a user Int
+/// >= ID_BASE aliases a handle and must not trigger the row machinery.
+/// A `KIND_OUTER` receiver pushes a row handle: if the receiver is a virgin
+/// (empty, kind == 0) flat slot, it is promoted to `KIND_OUTER` on the
+/// first row push. A row push into an already scalar-populated flat slot,
+/// or a scalar push into an outer list, poisons the receiver so the whole
+/// call falls back to the interpreter. `is_bool` is nonzero when the
+/// payload is a Bool (0/1), not an Int; ignored for outer pushes.
+#[no_mangle]
+pub extern "C" fn un_list_int_push(v: i64, value: i64, is_bool: i64) -> i64 {
+    push_impl(v, value, is_bool, true)
+}
+
+/// See [`un_list_int_push`]; for call sites that know `value` is a plain Int.
+#[no_mangle]
+pub extern "C" fn un_list_int_push_scalar(v: i64, value: i64, is_bool: i64) -> i64 {
+    push_impl(v, value, is_bool, false)
 }
 
 /// Copy `items[start..end]` into a fresh list; returns its handle (0 on
@@ -716,8 +733,10 @@ pub extern "C" fn un_list_int_get(v: i64, idx: i64) -> i64 {
 /// Write `items[idx] = value` (0-indexed; out-of-range is a no-op returning
 /// the "unwritten" sentinel). A `KIND_OUTER` receiver swaps row handles,
 /// releasing the old row reference and taking one on the new one.
-#[no_mangle]
-pub extern "C" fn un_list_int_set(v: i64, idx: i64, value: i64, is_bool: i64) -> i64 {
+/// `value_may_be_row = false` when the caller proves `value` is a plain
+/// Int: a user Int >= ID_BASE aliases a handle and must be rejected by the
+/// outer path (poison), never swapped in as a row.
+fn set_impl(v: i64, idx: i64, value: i64, is_bool: i64, value_may_be_row: bool) -> i64 {
     let mut slots = arena();
     if idx < 0 {
         return 1 << 62;
@@ -729,7 +748,7 @@ pub extern "C" fn un_list_int_set(v: i64, idx: i64, value: i64, is_bool: i64) ->
         return 1 << 62;
     };
     if v_kind == KIND_OUTER {
-        let value_idx = match live_handle_idx(&slots, value) {
+        let value_idx = match value_may_be_row.then(|| live_handle_idx(&slots, value)).flatten() {
             Some(i) if i != v_idx => i,
             _ => {
                 slots.slots[v_idx].as_mut().unwrap().kind = 3;
@@ -764,6 +783,19 @@ pub extern "C" fn un_list_int_set(v: i64, idx: i64, value: i64, is_bool: i64) ->
         }
         None => 1 << 62,
     }
+}
+
+/// See [`un_list_int_set`]; call sites that know `value` is a plain Int pass
+/// `value_may_be_row = false` so user Ints >= ID_BASE never alias a row.
+#[no_mangle]
+pub extern "C" fn un_list_int_set(v: i64, idx: i64, value: i64, is_bool: i64) -> i64 {
+    set_impl(v, idx, value, is_bool, true)
+}
+
+/// See [`un_list_int_set`]; for call sites that know `value` is a plain Int.
+#[no_mangle]
+pub extern "C" fn un_list_int_set_scalar(v: i64, idx: i64, value: i64, is_bool: i64) -> i64 {
+    set_impl(v, idx, value, is_bool, false)
 }
 
 /// Return the length of the IntVec; `-1` when `v` is not a live handle (the
