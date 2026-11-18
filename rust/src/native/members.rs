@@ -668,7 +668,7 @@ fn set_add(scope: &Scope) -> Obj {
         return obj::err("expected 'set' object");
     };
     let value = scope::get(scope, "value");
-    let added = set.borrow_mut().try_insert(&value, obj::none());
+    let added = collections::dict_add_item(&set, &value, &obj::none()).unwrap_or(false);
     obj::boolean(added)
 }
 fn set_remove(scope: &Scope) -> Obj {
@@ -676,7 +676,7 @@ fn set_remove(scope: &Scope) -> Obj {
         return obj::err("expected 'set' object");
     };
     let value = scope::get(scope, "value");
-    let removed = set.borrow_mut().remove(&value);
+    let removed = collections::map_remove_item(&set, &value).unwrap_or(false);
     obj::boolean(removed)
 }
 fn set_contains(scope: &Scope) -> Obj {
@@ -684,7 +684,7 @@ fn set_contains(scope: &Scope) -> Obj {
         return obj::err("expected 'set' object");
     };
     let value = scope::get(scope, "value");
-    let found = set.borrow().contains_key(&value);
+    let found = collections::map_contains(&set, &value).unwrap_or(false);
     obj::boolean(found)
 }
 fn set_clear(scope: &Scope) -> Obj {
@@ -1382,24 +1382,24 @@ fn dict_add(scope: &Scope) -> Obj {
     let key = scope::get(scope, "key");
     let value = scope::get(scope, "value");
 
-    if km.borrow().contains_key(&key) {
-        return obj::panic(
+    match collections::dict_add_item(&km, &key, &value) {
+        Ok(true) => obj::none(),
+        Ok(false) => obj::panic(
             "System.ArgumentException",
             format!(
                 "An item with the same key has already been added. Key: {}",
                 obj::display(&key)
             ),
-        );
+        ),
+        Err(e) => e,
     }
-    km.borrow_mut().set(&key, &value);
-    obj::none()
 }
 fn dict_remove(scope: &Scope) -> Obj {
     let Some(km) = dict_self(scope) else {
         return obj::err("expected 'dict' object");
     };
     let key = scope::get(scope, "key");
-    let removed = km.borrow_mut().remove(&key);
+    let removed = collections::map_remove_item(&km, &key).unwrap_or(false);
     world::bool_obj(removed)
 }
 fn dict_get(scope: &Scope) -> Obj {
@@ -1408,16 +1408,17 @@ fn dict_get(scope: &Scope) -> Obj {
     };
     let key = scope::get(scope, "key");
     let default = scope::get(scope, "default_value");
-    let found = km.borrow().get(&key);
+    let found = collections::dict_get_default(&km, &key);
     match found {
-        Some(value) => value,
-        None => {
+        Some(Some(value)) => value,
+        Some(None) => {
             if obj::is_none(&default) {
                 obj::none()
             } else {
                 default
             }
         }
+        None => obj::err("dictionary mutated during key comparison"),
     }
 }
 fn dict_contains_key(scope: &Scope) -> Obj {
@@ -1425,7 +1426,7 @@ fn dict_contains_key(scope: &Scope) -> Obj {
         return obj::err("expected 'dict' object");
     };
     let key = scope::get(scope, "key");
-    let found = km.borrow().contains_key(&key);
+    let found = collections::map_contains(&km, &key).unwrap_or(false);
     world::bool_obj(found)
 }
 fn dict_contains_value(scope: &Scope) -> Obj {

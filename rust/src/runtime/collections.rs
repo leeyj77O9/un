@@ -15,6 +15,10 @@ pub struct KeyMap {
     next: Vec<usize>,
     free_head: usize,
     live: usize,
+    /// Bumps on every structural change (insert/remove/clear/grow). Used by
+    /// the snapshot drivers to detect that re-entrant user code (`__eq__` /
+    /// `__hash__` touching the same map) invalidated a lookup in flight.
+    gen: u64,
 }
 struct Entry {
     hash: u64,
@@ -32,6 +36,7 @@ impl KeyMap {
             next: Vec::new(),
             free_head: NONE,
             live: 0,
+            gen: 0,
         };
         for (k, v) in entries {
             map.set(&k, &v);
@@ -43,6 +48,96 @@ impl KeyMap {
     }
     pub fn len(&self) -> usize {
         self.live
+    }
+    pub fn generation(&self) -> u64 {
+        self.gen
+    }
+    fn bump_gen(&mut self) {
+        self.gen = self.gen.wrapping_add(1);
+    }
+    /// All used entries whose hash equals `h`, as (index, cloned key) pairs.
+    /// Cloning is cheap (Obj is an Rc) and lets user `__eq__` run without
+    /// holding any borrow of the map.
+    pub fn candidates(&self, h: u64) -> Vec<(usize, Obj)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.used && e.hash == h)
+            .map(|(i, e)| (i, e.key.clone()))
+            .collect()
+    }
+    /// Remove the entry at `idx` without re-checking anything. Callers must
+    /// already hold a generation-verified critical section.
+    pub fn remove_index(&mut self, idx: usize) -> bool {
+        self.remove_at_unchecked(idx)
+    }
+    /// The value at `idx`, but only if the map has not changed since `gen`.
+    pub fn value_at(&self, gen: u64, idx: usize) -> Option<Obj> {
+        if self.gen != gen {
+            return None;
+        }
+        self.entries
+            .get(idx)
+            .filter(|e| e.used)
+            .map(|e| e.value.clone())
+    }
+    /// The key at `idx`, but only if the map has not changed since `gen`.
+    pub fn key_at(&self, gen: u64, idx: usize) -> Option<Obj> {
+        if self.gen != gen {
+            return None;
+        }
+        self.entries.get(idx).filter(|e| e.used).map(|e| e.key.clone())
+    }
+    /// Overwrite the value at `idx`, but only if the map has not changed
+    /// since `gen`. Value-only assignments do not invalidate snapshots.
+    pub fn assign_value_at(&mut self, gen: u64, idx: usize, value: Obj) -> bool {
+        if self.gen != gen {
+            return false;
+        }
+        match self.entries.get_mut(idx) {
+            Some(entry) if entry.used => {
+                entry.value = value;
+                true
+            }
+            _ => false,
+        }
+    }
+    /// Insert a fresh entry, but only if the map has not changed since `gen`.
+    pub fn insert_new_entry_if_unchanged(
+        &mut self,
+        gen: u64,
+        hash: u64,
+        key: Obj,
+        value: Obj,
+    ) -> bool {
+        if self.gen != gen {
+            return false;
+        }
+        self.insert_new_entry(hash, key, value);
+        true
+    }
+    /// Remove the entry at `idx`, but only if the map has not changed since
+    /// `gen`.
+    pub fn remove_at(&mut self, gen: u64, idx: usize) -> Option<bool> {
+        if self.gen != gen {
+            return None;
+        }
+        Some(self.remove_at_unchecked(idx))
+    }
+    fn remove_at_unchecked(&mut self, idx: usize) -> bool {
+        let Some(entry) = self.entries.get(idx) else {
+            return false;
+        };
+        if !entry.used {
+            return false;
+        }
+        self.unlink_from_bucket(idx);
+        self.entries[idx].used = false;
+        self.next[idx] = self.free_head;
+        self.free_head = idx;
+        self.live -= 1;
+        self.bump_gen();
+        true
     }
     pub fn is_empty(&self) -> bool {
         self.live == 0
@@ -106,6 +201,7 @@ impl KeyMap {
         }
     }
     fn insert_new_entry(&mut self, hash: u64, key: Obj, value: Obj) -> usize {
+        self.bump_gen();
         if self.live >= self.buckets.len() {
             self.grow();
         }
@@ -185,18 +281,12 @@ impl KeyMap {
     }
     pub fn remove(&mut self, key: &Obj) -> bool {
         match self.find(key) {
-            Some(i) => {
-                self.unlink_from_bucket(i);
-                self.entries[i].used = false;
-                self.next[i] = self.free_head;
-                self.free_head = i;
-                self.live -= 1;
-                true
-            }
+            Some(i) => self.remove_at_unchecked(i),
             None => false,
         }
     }
     pub fn clear(&mut self) {
+        self.bump_gen();
         self.entries.clear();
         self.next.clear();
         self.buckets.fill(NONE);
@@ -610,21 +700,152 @@ pub fn list_init(o: &Obj, args: &[Obj]) -> Obj {
         _ => list(args.to_vec()),
     }
 }
+/// As [`find_index`] but also hands back the generation at the time of the
+/// scan so the caller can re-apply its mutation under one critical section.
+/// `None` means the retry budget was exhausted (the map structurally
+/// changed during comparison too many times in a row).
+pub(crate) fn find_index(
+    km: &Rc<RefCell<KeyMap>>,
+    key: &Obj,
+) -> Option<(Option<usize>, u64)> {
+    let h = obj::hash_code(key);
+    for _ in 0..64 {
+        let (candidates, gen) = {
+            let b = km.borrow();
+            (b.candidates(h), b.generation())
+        };
+        // No borrow held while user code runs.
+        let target = candidates
+            .iter()
+            .filter(|(_, k)| obj::key_eq(k, key))
+            .map(|(i, _)| *i)
+            .min();
+        if km.borrow().generation() != gen {
+            continue;
+        }
+        return Some((target, gen));
+    }
+    None
+}
 pub fn dict_get_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
-    // Bind first so the `Ref` drops before any user code (`display` may run
-    // user `__str__` on the missing key).
-    let found = km.borrow().get(key);
+    // Bind first: the error path's `display` may run user `__str__`.
+    let found = find_index(km, key).and_then(|(target, gen)| {
+        target.map(|idx| km.borrow().value_at(gen, idx))
+    });
     match found {
-        Some(v) => v,
-        None => obj::err(format!(
+        Some(Some(v)) => v,
+        _ => obj::err(format!(
             "key '{}' not found in dictionary",
             obj::display(key)
         )),
     }
 }
+/// Duplicate-checking insert used by `dict.add`. Returns `Ok(true)` when the
+/// entry was inserted, `Ok(false)` for a duplicate key, `Err` on race
+/// exhaustion. No map borrow is held while user `__eq__` runs.
+pub fn dict_add_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Result<bool, Obj> {
+    let h = obj::hash_code(key);
+    for _ in 0..64 {
+        let (candidates, gen) = {
+            let b = km.borrow();
+            (b.candidates(h), b.generation())
+        };
+        let target = candidates
+            .iter()
+            .filter(|(_, k)| obj::key_eq(k, key))
+            .map(|(i, _)| *i)
+            .min();
+        let mut b = km.borrow_mut();
+        if b.generation() != gen {
+            continue;
+        }
+        return Ok(match target {
+            Some(_) => false,
+            None => {
+                b.insert_new_entry(h, key.clone(), value.clone());
+                true
+            }
+        });
+    }
+    Err(obj::err("dictionary mutated during key comparison"))
+}
+/// Removal used by `dict.remove` / `set.remove`. `None` means the retry
+/// budget was exhausted (the map changed during comparison too often).
+pub fn map_remove_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Option<bool> {
+    let h = obj::hash_code(key);
+    for _ in 0..64 {
+        let (candidates, gen) = {
+            let b = km.borrow();
+            (b.candidates(h), b.generation())
+        };
+        let target = candidates
+            .iter()
+            .filter(|(_, k)| obj::key_eq(k, key))
+            .map(|(i, _)| *i)
+            .min();
+        let mut b = km.borrow_mut();
+        if b.generation() != gen {
+            continue;
+        }
+        return Some(match target {
+            Some(idx) => b.remove_index(idx),
+            None => false,
+        });
+    }
+    None
+}
+/// Re-entrant-safe membership test. `None` means the retry budget was
+/// exhausted.
+pub fn map_contains(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Option<bool> {
+    find_index(km, key).map(|(target, _)| target.is_some())
+}
+/// Re-entrant-safe get-with-default used by `dict.get`. Outer `None` means
+/// the retry budget was exhausted (map kept changing during comparison);
+/// `Some(None)` means absent; `Some(Some(v))` means found.
+pub fn dict_get_default(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Option<Option<Obj>> {
+    for _ in 0..64 {
+        let (target, gen) = find_index(km, key)?;
+        match target {
+            Some(idx) => {
+                let b = km.borrow();
+                if b.generation() != gen {
+                    continue;
+                }
+                return Some(b.value_at(gen, idx));
+            }
+            None => return Some(None),
+        }
+    }
+    None
+}
 pub fn dict_set_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Obj {
-    km.borrow_mut().set(key, value);
-    value.clone()
+    let h = obj::hash_code(key);
+    for _ in 0..64 {
+        let (candidates, gen) = {
+            let b = km.borrow();
+            (b.candidates(h), b.generation())
+        };
+        // No borrow held while user code runs.
+        let target = candidates
+            .iter()
+            .filter(|(_, k)| obj::key_eq(k, key))
+            .map(|(i, _)| *i)
+            .min();
+        let mut b = km.borrow_mut();
+        if b.generation() != gen {
+            continue;
+        }
+        match target {
+            Some(idx) => {
+                b.assign_value_at(gen, idx, value.clone());
+            }
+            None => {
+                b.insert_new_entry(h, key.clone(), value.clone());
+            }
+        }
+        return value.clone();
+    }
+    obj::err("dictionary mutated during key comparison")
 }
 pub fn dict_in(o: &Obj, other: &Obj) -> Obj {
     match obj::payload(o) {
@@ -727,12 +948,13 @@ pub fn dict_init(o: &Obj, args: &[Obj]) -> Obj {
     }
 }
 pub fn set_get_item(s: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
-    // Bind first so the `Ref` drops before any user code (`display` may run
-    // user `__str__` on the missing key).
-    let found = s.borrow().get_key(key);
+    // Bind first: the error path's `display` may run user `__str__`.
+    let found = find_index(s, key).and_then(|(target, gen)| {
+        target.map(|idx| s.borrow().key_at(gen, idx))
+    });
     match found {
-        Some(item) => item,
-        None => obj::err(format!("key {} not found in set", obj::display(key))),
+        Some(Some(item)) => item,
+        _ => obj::err(format!("key {} not found in set", obj::display(key))),
     }
 }
 pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {

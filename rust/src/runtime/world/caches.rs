@@ -16,9 +16,23 @@ pub(crate) const REGISTERED_TYPES: &[&str] = &[
     "break", "__uninitialized__",
 ];
 
-pub(crate) fn try_intern_type(name: &str) -> Option<std::rc::Rc<str>> {
-    WORLD.with(|w| w.borrow().type_cache.get(name).cloned())
+/// Call `f` with the interned `Rc<str>` for `name` (or None for an
+/// unregistered type name) without cloning the Rc. Used on hot paths that
+/// only need a pointer comparison.
+pub(crate) fn with_intern_type<R>(
+    name: &str,
+    f: impl FnOnce(Option<&std::rc::Rc<str>>) -> R,
+) -> R {
+    WORLD.with(|w| {
+        let w = w.borrow();
+        match w.type_cache.get(name) {
+            Some(t) => f(Some(t)),
+            None => f(None),
+        }
+    })
 }
+
+
 pub fn intern_type(name: &str) -> std::rc::Rc<str> {
     WORLD.with(|w| {
         let mut w = w.borrow_mut();

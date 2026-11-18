@@ -290,10 +290,10 @@ pub fn type_name_eq(a: &Obj, b: &Obj) -> bool {
 /// Interned-type check: `Rc::ptr_eq` against the registry, with a string
 /// fallback if the name was never interned.
 fn is_type(o: &Obj, name: &str) -> bool {
-    match world::try_intern_type(name) {
-        Some(interned) => Rc::ptr_eq(&o.borrow().type_name, &interned),
+    world::with_intern_type(name, |interned| match interned {
+        Some(t) => Rc::ptr_eq(&o.borrow().type_name, t),
         None => &*type_name(o) == name,
-    }
+    })
 }
 pub fn is_none(o: &Obj) -> bool {
     is_type(o, "none")
