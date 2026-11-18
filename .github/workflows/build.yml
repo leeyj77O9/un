@@ -50,3 +50,13 @@ jobs:
         shell: powershell
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\unbc-roundtrip.ps1 -IncludeNegative
+
+      - name: JIT strict canary (UV_JIT=2)
+        shell: powershell
+        env:
+          UV_JIT: "2"
+        run: |
+          $out = & .\rust\target\release\unvm.exe run test\jit\strict.un
+          $out
+          if ($LASTEXITCODE -ne 0) { throw "strict canary exited with $LASTEXITCODE" }
+          if ($out -notmatch 'jit-strict canary OK') { throw "strict canary marker not found (a value was computed wrong)" }

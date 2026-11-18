@@ -1,0 +1,55 @@
+use io
+use iter
+
+# ============================================================
+# JIT strict-mode canary (UV_JIT=2)
+# Every proto in this module must compile into the Int-JIT.
+# If any one falls back to an interpreter stub, `UV_JIT=2`
+# aborts the process with exit code 2. If a value is computed
+# wrong (a JIT miscompilation), the marker on the last line
+# is not printed. Self-contained: no project modules needed.
+# 실행: UV_JIT=2 unvm.exe run test/jit/strict.un
+# ============================================================
+
+fn fib(n)
+    if n < 2
+        -> n
+    -> fib(n - 1) + fib(n - 2)
+
+fn sum_range(n)
+    t = 0
+    for i in iter.range(0, n)
+        t += i
+    -> t
+
+fn sum_digits(x)
+    s = 0
+    while x > 0
+        s += x % 10
+        x = x // 10
+    -> s
+
+fn collatz_steps(n)
+    steps = 0
+    while n != 1
+        if n % 2 == 0
+            n = n // 2
+        else
+            n = 3 * n + 1
+        steps += 1
+    -> steps
+
+checks = 0
+if fib(20) == 6765
+    checks += 1
+if sum_range(1000) == 499500
+    checks += 1
+if sum_digits(123456) == 21
+    checks += 1
+if collatz_steps(27) == 111
+    checks += 1
+
+if checks == 4
+    io.write("jit-strict canary OK")
+else
+    io.write("jit-strict canary MISMATCH")

@@ -128,6 +128,29 @@ pub fn jit_enabled() -> bool {
     *JIT_ENABLED
 }
 
+/// Strict JIT mode for canaries. Set `UV_JIT=2` (or `UV_JIT=strict`) to make
+/// any JIT candidate that fails to compile abort the process with exit code
+/// 2 instead of silently replacing it with a tag=2 fallback stub — the
+/// failure class that once disabled the whole JIT while `scripts/test.ps1`
+/// stayed green (TD-51). The mode is for curated corpora: any program whose
+/// functions legitimately leave the Int subset (strings, IO, floats-with-
+/// trig, nested-call args) will trip it, which is exactly what makes it a
+/// detection canary rather than a compatibility flag. Use `UV_JIT=0` to run
+/// without the JIT instead. Ignored on targets without the JIT (e.g. WASM),
+/// like `UV_JIT=0` is.
+pub fn jit_strict() -> u8 {
+    static STRICT: LazyLock<u8> = LazyLock::new(|| {
+        std::env::var("UV_JIT")
+            .map(|v| match v.trim() {
+                "2" => 2,
+                v if v.eq_ignore_ascii_case("strict") => 2,
+                _ => 0,
+            })
+            .unwrap_or(0)
+    });
+    *STRICT
+}
+
 /// Whether the JIT emits diagnostic output (`UV_JIT_DEBUG` is set).
 ///
 /// The flag is read once per process: the emitters ask for it per emitted
