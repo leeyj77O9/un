@@ -194,6 +194,13 @@ fn abs_impl(scope: &Scope) -> Obj {
         Ok(v) => v,
         Err(e) => return e,
     };
+    if let Payload::Int(i) = obj::payload(&value) {
+        // i64::MIN has no positive Int; return the exact float like pow/lcm.
+        if i == i64::MIN {
+            return obj::float(9223372036854775808.0);
+        }
+        return obj::int(i.unsigned_abs() as i64);
+    }
     wrap(&value, v.abs())
 }
 fn ceil_impl(scope: &Scope) -> Obj {
@@ -292,15 +299,12 @@ fn pow_impl(scope: &Scope) -> Obj {
     let result = v.powf(e);
     let both_int = matches!(obj::payload(&value), Payload::Int(_))
         && matches!(obj::payload(&exponent), Payload::Int(_));
-    if both_int && e >= 0.0 && result.fract() == 0.0 && result.is_finite() {
-        // `as` saturates at i64::MAX/MIN. Reject the float-losing case and
-        // return the float instead of inventing an integer that does not fit.
-        let v = result as i64;
-        if v as f64 == result {
-            obj::int(v)
-        } else {
-            obj::float(result)
-        }
+    if both_int && e >= 0.0 && result.fract() == 0.0 && result.is_finite()
+        // `as` saturates at i64::MAX/MIN. The exact boundary 2^63 is not
+        // representable as an Int; return the float instead of inventing one.
+        && result >= -9223372036854775808.0 && result < 9223372036854775808.0
+    {
+        obj::int(result as i64)
     } else {
         obj::float(result)
     }
@@ -467,14 +471,19 @@ fn gcd_impl(scope: &Scope) -> Obj {
         Ok(v) => v,
         Err(e) => return e,
     };
-    let mut x = av.wrapping_abs();
-    let mut y = bv.wrapping_abs();
+    let mut x = av.unsigned_abs();
+    let mut y = bv.unsigned_abs();
     while y != 0 {
         let t = x % y;
         x = y;
         y = t;
     }
-    obj::int(x)
+    // gcd can be exactly 2^63 (e.g. gcd(MIN, MIN)); that is not a positive i64.
+    if x > i64::MAX as u64 {
+        obj::float(x as f64)
+    } else {
+        obj::int(x as i64)
+    }
 }
 fn lcm_impl(scope: &Scope) -> Obj {
     let a = scope::get(scope, "a");

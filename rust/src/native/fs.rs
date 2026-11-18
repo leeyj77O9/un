@@ -527,14 +527,24 @@ fn size_impl(scope: &Scope) -> Obj {
         Err(e) => obj::err(&e.to_string()),
     }
 }
+/// Format a SystemTime as an ISO-8601 Z string. Pre-1970 timestamps must not
+/// silently clamp to the epoch; compute their tick distance from the UNIX
+/// epoch with negative arithmetic instead.
 fn time_string(time: std::time::SystemTime) -> String {
-    let duration = time
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    use std::time::UNIX_EPOCH;
+    let unix_ticks: i64 = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => (duration.as_nanos() / 100).min(i64::MAX as u128) as i64,
+        Err(before) => {
+            let back = (before.duration().as_nanos() / 100).min(i64::MAX as u128) as i64;
+            back.checked_neg().unwrap_or(i64::MIN)
+        }
+    };
     // The runtime calendar works in .NET 100-ns ticks since 0001-01-01;
     // add the UNIX epoch offset so `parts` can decode it.
-    let unix_ticks = (duration.as_nanos() / 100) as i64;
-    let total = unix_ticks + crate::runtime::date::unix_epoch_ticks();
+    let total = unix_ticks.checked_add(crate::runtime::date::unix_epoch_ticks());
+    let Some(total) = total else {
+        return "0001-01-01T00:00:00.000Z".to_owned();
+    };
     let (y, m, d, hh, mm, ss, ms) = crate::runtime::date::parts(total);
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{ms:03}Z")
 }

@@ -1,4 +1,4 @@
-use std::io::Read;
+﻿use std::io::Read;
 use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
@@ -44,6 +44,7 @@ fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, String> {
     }
     Err(CONNECT.to_owned())
 }
+#[derive(Clone)]
 pub struct Uri {
     pub scheme: String,
     pub host: String,
@@ -173,9 +174,11 @@ pub fn parse_uri(text: &str) -> Result<Uri, String> {
         path,
     })
 }
+#[derive(Debug)]
 pub struct HttpState {
     pub headers: Vec<(String, String)>,
 }
+#[derive(Debug)]
 pub struct Response {
     pub code: u16,
     pub reason: String,
@@ -242,7 +245,7 @@ fn decode_chunked(data: &[u8]) -> Result<String, String> {
         }
     }
 }
-fn parse_response(data: &[u8]) -> Result<Response, String> {
+fn parse_response(method: &str, data: &[u8]) -> Result<Response, String> {
     let split = match head_end(data) {
         Some(index) => index,
         None => return Err(CONNECT.to_owned()),
@@ -270,10 +273,19 @@ fn parse_response(data: &[u8]) -> Result<Response, String> {
     } else {
         // If the peer declared a Content-Length, the body must be exactly that
         // long — a shorter read means a truncated response, never a success.
-        let declared = headers
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case("Content-Length"))
-            .and_then(|(_, value)| value.trim().parse::<u64>().ok());
+        // 1xx, 204 and 304 responses never carry a body, and a HEAD response
+        // declares the Content-Length of the *would-be* body without sending
+        // it — the strict equality check must not fire for those.
+        let bodyless = (100..200).contains(&code) || code == 204 || code == 304
+            || method.eq_ignore_ascii_case("HEAD");
+        let declared = if bodyless {
+            None
+        } else {
+            headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("Content-Length"))
+                .and_then(|(_, value)| value.trim().parse::<u64>().ok())
+        };
         let body_bytes = &data[split + 4..];
         if let Some(expected) = declared {
             if body_bytes.len() as u64 != expected {
@@ -289,16 +301,14 @@ fn parse_response(data: &[u8]) -> Result<Response, String> {
         body,
     })
 }
-pub fn request(state: &HttpState, method: &str, uri: &Uri) -> Result<Response, String> {
-    request_body(state, method, uri, None)
-}
-pub fn request_body(
+/// Send exactly one request/response round-trip. Redirect handling lives in
+/// `request_body`, never here.
+fn send_once(
     state: &HttpState,
     method: &str,
     uri: &Uri,
     body: Option<&str>,
 ) -> Result<Response, String> {
-
     if uri.scheme != "http" {
         return Err(SCHEME_HTTP.to_owned());
     }
@@ -315,7 +325,136 @@ pub fn request_body(
     if data.len() as u64 > MAX_HTTP_RESPONSE {
         return Err("http response too large".to_string());
     }
-    parse_response(&data)
+    parse_response(method, &data)
+}
+
+/// Resolve an RFC-7231 Location header value against the base URI.
+fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, String> {
+    let location = location.trim();
+    let lower = location.to_ascii_lowercase();
+    if lower.starts_with("http://") {
+        return parse_uri(location);
+    }
+    if lower.starts_with("https://") {
+        return Err(SCHEME_HTTP.to_owned());
+    }
+    if let Some(rest) = location.strip_prefix("//") {
+        return parse_uri(&format!("http://{rest}"));
+    }
+    if location.starts_with('/') {
+        return Ok(Uri {
+            scheme: base.scheme.clone(),
+            host: base.host.clone(),
+            port: base.port,
+            path: normalize_path(location),
+        });
+    }
+    if let Some(query) = location.strip_prefix('?') {
+        let mut path = base.path.clone();
+        if let Some(q) = path.find('?') {
+            path.truncate(q);
+        }
+        path.push('?');
+        path.push_str(query);
+        return Ok(Uri {
+            scheme: base.scheme.clone(),
+            host: base.host.clone(),
+            port: base.port,
+            path,
+        });
+    }
+    if location.starts_with('#') {
+        // Same resource, fragment changed — represent as the same path.
+        return Ok(base.clone());
+    }
+    let mut base_path = base.path.clone();
+    if let Some(q) = base_path.find('?') {
+        base_path.truncate(q);
+    }
+    let dir_end = base_path.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let merged = format!("{}{}", &base_path[..dir_end], location);
+    Ok(Uri {
+        scheme: base.scheme.clone(),
+        host: base.host.clone(),
+        port: base.port,
+        path: normalize_path(&merged),
+    })
+}
+
+/// Resolve `.`/`..` segments and collapse duplicate slashes in the path part.
+fn normalize_path(path: &str) -> String {
+    let (path_part, query) = match path.find('?') {
+        Some(i) => (&path[..i], Some(&path[i..])),
+        None => (path, None),
+    };
+    let absolute = path_part.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path_part.split('/') {
+        match seg {
+            "" => {}
+            "." => {}
+            ".." => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    let mut joined = out.join("/");
+    if absolute {
+        if !joined.starts_with('/') {
+            joined.insert(0, '/');
+        }
+    }
+    match query {
+        Some(q) => format!("{joined}{q}"),
+        None => joined,
+    }
+}
+
+/// Follow HTTP 301/302/303/307/308 redirects up to 8 hops.
+/// 301/302/303 rewrite the method to GET and drop the body (.NET
+/// HttpClient behaviour); 307/308 preserve method and body.
+pub fn request(state: &HttpState, method: &str, uri: &Uri) -> Result<Response, String> {
+    request_body(state, method, uri, None)
+}
+pub fn request_body(
+    state: &HttpState,
+    method: &str,
+    uri: &Uri,
+    body: Option<&str>,
+) -> Result<Response, String> {
+    let mut method = method.to_string();
+    let mut uri = uri.clone();
+    let mut body = body.map(String::from);
+    const MAX_REDIRECTS: usize = 8;
+    for hop in 0..=MAX_REDIRECTS {
+        let response = send_once(state, &method, &uri, body.as_deref())?;
+        let redirect = matches!(response.code, 301 | 302 | 303 | 307 | 308);
+        if !redirect {
+            return Ok(response);
+        }
+        let location = match response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("Location"))
+            .map(|(_, value)| value.trim().to_string())
+        {
+            Some(value) if !value.is_empty() => value,
+            _ => return Ok(response),
+        };
+        if hop == MAX_REDIRECTS {
+            return Err("http redirect limit exceeded".to_string());
+        }
+        let next = resolve_redirect(&uri, &location)?;
+        let keep_method = matches!(response.code, 307 | 308)
+            || matches!(method.as_str(), "GET" | "HEAD");
+        if !keep_method {
+            method = "GET".to_string();
+            body = None;
+        }
+        uri = next;
+    }
+    unreachable!()
 }
 pub struct WsState {
     pub stream: Option<TcpStream>,
@@ -542,4 +681,241 @@ pub fn write_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> Result
         out.push(byte ^ mask[index % 4]);
     }
     stream.write_all(&out).map_err(|_| CONNECT.to_owned())
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    //! In-process HTTP server exercising the redirect follower. Each test
+    //! binds 127.0.0.1:0, speaks exactly the subset of HTTP/1.1 the client
+    //! emits, and asserts on the recorded requests.
+    use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc::{channel, Receiver};
+    use std::thread;
+
+    struct RecordedRequest {
+        method: String,
+        path: String,
+        body: String,
+    }
+
+    fn http_server(
+        script: Vec<(u16, Option<&'static str>, &'static str)>,
+    ) -> (String, Receiver<RecordedRequest>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = channel::<RecordedRequest>();
+        thread::spawn(move || {
+            let mut remaining = script;
+            while let Some((code, location, body)) = remaining.first().copied() {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                let (method, path, body_read) = read_request(&mut stream);
+                let _ = tx.send(RecordedRequest {
+                    method,
+                    path,
+                    body: body_read,
+                });
+                let head = match location {
+                    Some(loc) => format!(
+                        "HTTP/1.1 {code} Redirect\r\nLocation: {loc}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    ),
+                    None => format!(
+                        "HTTP/1.1 {code} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    ),
+                };
+                let _ = stream.write_all(head.as_bytes());
+                remaining.remove(0);
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), rx)
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> (String, String, String) {
+        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("request line");
+        let mut parts = line.split_whitespace();
+        let method = parts.next().unwrap_or("?").to_string();
+        let path = parts.next().unwrap_or("/").to_string();
+        let mut headers = Vec::new();
+        loop {
+            let mut h = String::new();
+            reader.read_line(&mut h).expect("header");
+            let h = h.trim_end();
+            if h.is_empty() {
+                break;
+            }
+            headers.push(h.to_string());
+        }
+        let content_length: usize = headers
+            .iter()
+            .find_map(|h| {
+                h.split_once(':')
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("Content-Length"))
+                    .and_then(|(_, v)| v.trim().parse().ok())
+            })
+            .unwrap_or(0);
+        let mut body = String::new();
+        if content_length > 0 {
+            let mut buf = vec![0u8; content_length];
+            reader.read_exact(&mut buf).expect("body");
+            body = String::from_utf8_lossy(&buf).to_string();
+        }
+        (method, path, body)
+    }
+
+    fn drain(rx: &Receiver<RecordedRequest>) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        while let Ok(req) = rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            out.push((req.method, req.path, req.body));
+        }
+        out
+    }
+
+    #[test]
+    fn follows_301_and_302_chain_to_final_200() {
+        let (base, rx) = http_server(vec![
+            (302, Some("/middle"), "redirecting"),
+            (301, Some("/final"), "redirecting again"),
+            (200, None, "final-body"),
+        ]);
+        let uri = parse_uri(&format!("{base}/start")).expect("uri");
+        let response = request_body(&HttpState { headers: Vec::new() }, "GET", &uri, None)
+            .expect("ok");
+        assert_eq!(response.code, 200);
+        assert_eq!(response.body, "final-body");
+        assert_eq!(
+            drain(&rx),
+            vec![
+                ("GET".to_string(), "/start".to_string(), String::new()),
+                ("GET".to_string(), "/middle".to_string(), String::new()),
+                ("GET".to_string(), "/final".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn post_becomes_get_on_301() {
+        let (base, rx) = http_server(vec![(301, Some("/echo"), "move"), (200, None, "ok")]);
+        let uri = parse_uri(&format!("{base}/submit")).expect("uri");
+        let response = request_body(
+            &HttpState { headers: Vec::new() },
+            "POST",
+            &uri,
+            Some("payload"),
+        )
+        .expect("ok");
+        assert_eq!(response.code, 200);
+        assert_eq!(
+            drain(&rx),
+            vec![
+                ("POST".to_string(), "/submit".to_string(), "payload".to_string()),
+                ("GET".to_string(), "/echo".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn head_is_preserved_on_301() {
+        let (base, rx) = http_server(vec![(301, Some("/h1"), "move"), (200, None, "")]);
+        let uri = parse_uri(&format!("{base}/h0")).expect("uri");
+        let response =
+            request_body(&HttpState { headers: Vec::new() }, "HEAD", &uri, None).expect("ok");
+        assert_eq!(response.code, 200);
+        assert_eq!(
+            drain(&rx),
+            vec![
+                ("HEAD".to_string(), "/h0".to_string(), String::new()),
+                ("HEAD".to_string(), "/h1".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn put_body_and_method_preserved_on_307() {
+        let (base, rx) = http_server(vec![(307, Some("/p-next"), "temp"), (200, None, "ok")]);
+        let uri = parse_uri(&format!("{base}/p-orig")).expect("uri");
+        let response =
+            request_body(&HttpState { headers: Vec::new() }, "PUT", &uri, Some("stuff"))
+                .expect("ok");
+        assert_eq!(response.code, 200);
+        assert_eq!(
+            drain(&rx),
+            vec![
+                ("PUT".to_string(), "/p-orig".to_string(), "stuff".to_string()),
+                ("PUT".to_string(), "/p-next".to_string(), "stuff".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn absolute_location_header_is_followed() {
+        let (base, _rx) = http_server(vec![(200, None, "unreachable")]);
+        let uri = parse_uri(&format!("{base}/absolute")).expect("uri");
+        let resolved = resolve_redirect(&uri, &format!("{base}/elsewhere")).expect("resolve");
+        assert_eq!(resolved.path, "/elsewhere");
+        assert_eq!(
+            format!("http://{}:{}", resolved.host, resolved.port),
+            base
+        );
+    }
+
+    #[test]
+    fn relative_location_header_is_resolved() {
+        let uri = parse_uri("http://example.com:8080/a/b/c?x=1").expect("uri");
+        let resolved = resolve_redirect(&uri, "../sibling?y=2").expect("resolve");
+        assert_eq!(resolved.path, "/a/sibling?y=2");
+        let resolved = resolve_redirect(&uri, "/top").expect("resolve");
+        assert_eq!(resolved.path, "/top");
+        let resolved = resolve_redirect(&uri, "query-only?z=3").expect("resolve");
+        assert_eq!(resolved.path, "/a/b/query-only?z=3");
+        let resolved = resolve_redirect(&uri, "?onlyquery=1").expect("resolve");
+        assert_eq!(resolved.path, "/a/b/c?onlyquery=1");
+        let resolved = resolve_redirect(&uri, "plain-segment").expect("resolve");
+        assert_eq!(resolved.path, "/a/b/plain-segment");
+        let resolved = resolve_redirect(&uri, "..").expect("resolve");
+        assert_eq!(resolved.path, "/a");
+        let resolved = resolve_redirect(&uri, ".").expect("resolve");
+        assert_eq!(resolved.path, "/a/b");
+    }
+
+    #[test]
+    fn excess_redirects_error() {
+        let (base, _rx) = http_server(vec![
+            (301, Some("/loop"), "a"),
+            (301, Some("/loop"), "b"),
+            (301, Some("/loop"), "c"),
+            (301, Some("/loop"), "d"),
+            (301, Some("/loop"), "e"),
+            (301, Some("/loop"), "f"),
+            (301, Some("/loop"), "g"),
+            (301, Some("/loop"), "h"),
+            (301, Some("/loop"), "i"),
+        ]);
+        let uri = parse_uri(&format!("{base}/loop")).expect("uri");
+        let response = request_body(&HttpState { headers: Vec::new() }, "GET", &uri, None);
+        assert!(response.is_err());
+        assert!(response.unwrap_err().contains("redirect"));
+    }
+
+    #[test]
+    fn redirect_without_location_returns_response() {
+        let (base, rx) = http_server(vec![(301, None, "body")]);
+        let uri = parse_uri(&format!("{base}/nowhere")).expect("uri");
+        let response = request_body(&HttpState { headers: Vec::new() }, "GET", &uri, None)
+            .expect("ok");
+        assert_eq!(response.code, 301);
+        let req = rx
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .expect("one request");
+        assert_eq!(req.path, "/nowhere");
+    }
 }
