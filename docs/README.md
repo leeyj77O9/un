@@ -53,6 +53,7 @@ Design goals:
 ### Type system (experimental)
 
 - Optional type annotations: `x: int`, `a: list[int]`, `dict[str, int]`, `int | str`
+  parameter types and return types (`fn add(a: int, b: int) -> int`)
 - Annotations are currently used for readability and gradual checking; strict runtime enforcement is being strengthened
 
 ### Concurrency (stable)
@@ -711,7 +712,7 @@ More examples are available in `test/test_suite.un`, `test/integration/algorithm
 Implemented:
 
 - Bytecode compiler and register-based VM (lexer, parser, desugarer, optimizer, compiler, vm)
-- Hot-path Int Cranelift JIT with `math.floor(math.sqrt(n))` and `math.sin(x)` intrinsics (disable with `UV_JIT=0`). Includes Int-only IntDict intrinsics for `d[k] = v` / `d[k]` patterns and Bool returns.
+- Hot-path Int Cranelift JIT (Int loops, arithmetic and bit ops, `iter.range`, FusedIntMulAdd, class methods over Int fields, IntVec/IntDict intrinsics) (disable with `UV_JIT=0`). Includes Int-only IntDict intrinsics for `d[k] = v` / `d[k]` patterns and Bool returns.
 - Runtime object model and type system
 - Standard library modules
 - Asynchronous execution and worker pools

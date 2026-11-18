@@ -53,6 +53,7 @@ Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(�
 ### 타입 시스템 (실험적)
 
 - 선택적 타입 어노테이션: `x: int`, `a: list[int]`, `dict[str, int]`, `int | str`
+  파라미터와 반환타입 (`fn add(a: int, b: int) -> int`)
 - 어노테이션은 현재 가독성과 점진적 검사를 위한 용도이며, 엄격한 런타임 검사는 강화 중이다
 
 ### 동시성 (안정)
@@ -698,7 +699,7 @@ class Heap
 구현 완료:
 
 - 바이트코드 컴파일러와 레지스터 기반 VM (lexer, parser, desugarer, optimizer, compiler, vm)
-- 핫 패스 Int 부분집합과 `math.floor(math.sqrt(n))`, `math.sin(x)` 인트리식을 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화 가능, 클래스 메서드는 JIT 대상 아님). Int-Int 전용 `d[k] = v` / `d[k]` IntDict intrinsic과 Bool 반환도 포함.
+- 핫 패스 Int 부분집합(loops, 산술, 비트연산, iter.range, FusedIntMulAdd, IntVec/IntDict intrinsic, Int 필드 위주 클래스 메서드)을 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화 가능). Int-Int 전용 `d[k] = v` / `d[k]` IntDict intrinsic과 Bool 반환도 포함.
 - 런타임 객체 모델과 타입 시스템
 - 표준 라이브러리 모듈
 - 비동기 실행과 워커 풀
