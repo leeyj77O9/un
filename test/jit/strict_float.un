@@ -1,0 +1,93 @@
+use io
+use iter
+use math
+
+# ============================================================
+# JIT strict-mode canary (UV_JIT=2) for the Float-math intrinsic tier
+# Every proto in this module must compile into the Int-JIT with the
+# f64 FFI intrinsics. If any one falls back to an interpreter stub,
+# `UV_JIT=2` aborts the process with exit code 2. If a value is
+# computed wrong (a JIT miscompilation), the marker on the last line
+# is not printed.
+# Self-contained: no project modules needed.
+# Run: UV_JIT=2 unvm.exe run test/jit/strict_float.un
+# ============================================================
+
+fn sin_sum(n)
+    total = 0.0
+    for i in iter.range(1, n + 1)
+        total += math.sin(i)
+    -> total
+
+# math_work shape: Float accumulation over an Int accumulator (promoted local).
+fn floor_sum(n)
+    total = 0
+    for i in iter.range(1, n + 1)
+        total += math.floor(math.sqrt(i))
+    -> total
+
+fn trunc_sum(n)
+    total = 0
+    for i in iter.range(1, n + 1)
+        total += math.trunc(1.9 * i)
+    -> total
+
+fn sign_sum(n)
+    total = 0
+    for i in iter.range(1, n + 1)
+        if i % 3 == 0
+            total += math.sign(0.5)
+        else
+            total += math.sign(0.0 - 0.5)
+    -> total
+
+fn hypot_sum(n)
+    total = 0.0
+    for i in iter.range(1, n + 1)
+        total += math.hypot(3.0, 4.0)
+    -> total
+
+fn close(a, b)
+    d = a - b
+    if d < 0.0
+        d = 0.0 - d
+    -> d < 1e-9
+
+checks = 0
+if close(sin_sum(20000), 0.461960217373362)
+    checks += 1
+if floor_sum(100) == 625
+    checks += 1
+if trunc_sum(10) == 100
+    checks += 1
+if sign_sum(10) == -4
+    checks += 1
+if close(hypot_sum(10), 50.0)
+    checks += 1
+if math.trunc(3.9) == 3
+    checks += 1
+if math.trunc(-3.9) == -3
+    checks += 1
+if math.floor(3) == 3
+    checks += 1
+if close(math.log(8, 2), 3.0)
+    checks += 1
+if close(math.log2(8), 3.0)
+    checks += 1
+if close(math.log10(1000), 3.0)
+    checks += 1
+if close(math.cbrt(27), 3.0)
+    checks += 1
+if close(math.hypot(3.0, 4.0), 5.0)
+    checks += 1
+if close(math.pow(2.0, 10.0), 1024.0)
+    checks += 1
+if math.sign(2.5) == 1
+    checks += 1
+if math.sign(-2.5) == -1
+    checks += 1
+
+if checks == 16
+    io.write("jit-float-strict canary OK")
+else
+    io.write("jit-float-strict canary MISMATCH")
