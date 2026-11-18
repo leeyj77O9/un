@@ -50,6 +50,17 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
 /// prefix, or a `..` chain).
 fn normalize_under(base: &std::path::Path, path: &str) -> Option<String> {
     use std::path::Component;
+    // A Windows-style drive/UNC prefix is an absolute path on Windows;
+    // `Component::Prefix` only fires there, so reject it textually too.
+    // The sandbox confinement must hold identically on every host.
+    let trimmed = path.trim_start();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return None; // C:/… or C:… (drive-absolute / drive-relative)
+    }
+    if trimmed.starts_with("\\\\") {
+        return None; // \\server\share (UNC), even textually on a unix host
+    }
     let mut out = base.to_path_buf();
     for component in std::path::Path::new(path).components() {
         match component {
