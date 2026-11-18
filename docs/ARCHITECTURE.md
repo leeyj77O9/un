@@ -100,8 +100,7 @@ bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
 - The JIT translates the **register plan** of a proto into Cranelift IR. It
   supports the Int subset: parameters, locals, `iter.range` loops, integer
   arithmetic (with constant divisors for `//` and `%`), comparisons,
-  `FusedIntMulAdd`, and two intrinsics (`math.floor(math.sqrt(x))`,
-  `math.sin(x)`).
+  `FusedIntMulAdd`.
 - Values are tagged: `0` = Int, `1` = Float (IEEE-754 bits), `2` = runtime
   bail (the interpreter takes over), `3` = Bool. The tag is written through a
   hidden pointer to a `(value, tag)` pair.
@@ -150,7 +149,7 @@ them.
 | `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (81 files) |
 | `scripts/unbc-roundtrip.ps1` | `.unbc` round-trip byte comparison for Positive and compilable Negative files |
 | `scripts/bench.ps1` | warm-up + repetitions + statistics (min/median/mean/max/stddev/ops) |
-| `cargo test --release` | 204 Rust unit tests (lexer, parser, compiler, runtime, VM, native) |
+| `cargo test --release` | 205 Rust unit tests (lexer, parser, compiler, runtime, VM, native) |
 
 The build is release-only and requires the GNU toolchain:
 
