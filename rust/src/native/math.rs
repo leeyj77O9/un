@@ -419,7 +419,7 @@ fn hypot_impl(scope: &Scope) -> Obj {
         Ok(v) => v,
         Err(e) => return e,
     };
-    obj::float((xv * xv + yv * yv).sqrt())
+    obj::float(xv.hypot(yv))
 }
 fn clamp_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "value");
@@ -526,10 +526,4 @@ fn e_impl(_scope: &Scope) -> Obj {
 }
 fn tau_impl(_scope: &Scope) -> Obj {
     obj::float(std::f64::consts::TAU)
-}
-/// Extern entry point used by the JIT's `math.sin` intrinsic. Plain f64 in,
-/// plain f64 out — semantics match `sin_impl` exactly.
-#[no_mangle]
-pub extern "C" fn un_math_sin(x: f64) -> f64 {
-    x.sin()
 }

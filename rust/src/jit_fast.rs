@@ -51,6 +51,20 @@ pub(crate) fn try_call_jit(
     };
     let entry = entry?;
     let mut ints = Vec::with_capacity(args.values.len() + if is_class_method { 1 } else { 0 });
+    // Argument lists are materialised into the JIT's IntVec arena because the
+    // interpreter cannot pass Obj references through Cranelift. The arena is
+    // a copy, so any mutation the callee makes would be lost — unless we
+    // copy the contents back into the caller's list objects after the call.
+    // `list_args` records (original Un list object, arena handle) pairs.
+    let mut list_args: Vec<(Obj, i64)> = Vec::new();
+    // Helper for the early-decline paths below: free whatever was already
+    // materialised so the arena stays flat. The arena never reuses ids, so
+    // this is only about bounded growth, not correctness.
+    fn drain(list_args: Vec<(Obj, i64)>) {
+        for (_, handle) in list_args {
+            crate::runtime::int_list::un_list_int_free(handle);
+        }
+    }
     if is_class_method {
         let Some(receiver) = bound_receiver else {
             return None;
@@ -59,28 +73,86 @@ pub(crate) fn try_call_jit(
     }
     for arg in &args.values {
         match obj::payload(arg) {
-            crate::runtime::obj::Payload::Int(v) => ints.push(v),
+            crate::runtime::obj::Payload::Int(v) => {
+                // Ints >= ID_BASE could alias a live arena handle; seeing one
+                // means the caller cannot tell JIT a list handle from a
+                // user-constructed Int, so the JIT must not run.
+                if v >= crate::runtime::int_list::id_base() {
+                    return None;
+                }
+                ints.push(v);
+            }
             crate::runtime::obj::Payload::List(_) => {
                 // Nested homogeneous lists ([[1,2],[3,4],...]) enter the
                 // Int-JIT as a KIND_OUTER arena handle; flat homogeneous
                 // Int/Bool lists keep the flat path. Anything else
                 // declines and the caller runs the interpreter.
                 match crate::runtime::int_list::materialize_nested(arg) {
-                    Some(handle) => ints.push(handle),
+                    Some(handle) => {
+                        list_args.push((arg.clone(), handle));
+                        ints.push(handle);
+                    }
                     None => match crate::runtime::int_list::materialize(arg) {
-                        Some(handle) => ints.push(handle),
-                        None => return None,
+                        Some(handle) => {
+                            list_args.push((arg.clone(), handle));
+                            ints.push(handle);
+                        }
+                        None => {
+                            drain(list_args);
+                            return None;
+                        }
                     },
                 }
             }
-            _ => return None,
+            _ => {
+                drain(list_args);
+                return None;
+            }
         }
     }
     if ints.len() != entry.arity as usize {
+        drain(list_args);
         return None;
     }
 
     let res = crate::vm::jit_call(entry, &ints);
+    // Copy mutated arena lists back into the caller's Un list objects — but
+    // only when the JIT actually produced a value. On a runtime bail the
+    // interpreter re-runs the function from scratch against the untouched
+    // originals, so back-syncing would leak partial mutations into it.
+    //
+    // If the callee returned an argument list handle itself (`-> xs`), the
+    // identity of the result IS the original object; remember it so the
+    // TAG_INTLIST arm does not rebuild it from a dead handle (which would
+    // fall back to the interpreter and double-apply the mutations).
+    //
+    // Two phases: first validate every arena tree, then write everything
+    // back. A poisoned or dead subtree in ANY argument list abandons the
+    // whole call — the interpreter re-runs it on the pristine originals, so
+    // semantics stay exactly the interpreter's.
+    let mut returned_arg_identity: Option<Obj> = None;
+    if res.tag != crate::jit_cache::TAG_BAIL && !list_args.is_empty() {
+        let all_ok = list_args
+            .iter()
+            .all(|(_, handle)| crate::runtime::int_list::snapshot(*handle).is_some());
+        if !all_ok {
+            drain(list_args);
+            return None; // the interpreter re-runs the function
+        }
+        for (original, handle) in list_args {
+            let returned = res.tag == crate::jit_cache::TAG_INTLIST && res.value == handle;
+            // The whole tree was validated above; write-back is infallible
+            // from here on. (Belt and braces: ignore the result rather than
+            // panic inside the VM.)
+            let _ = crate::runtime::int_list::sync_into(&original, handle);
+            if returned {
+                returned_arg_identity = Some(original.clone());
+            }
+            crate::runtime::int_list::un_list_int_free(handle);
+        }
+    } else {
+        drain(list_args);
+    }
     match res.tag {
         crate::jit_cache::TAG_INT => Some(obj::int(res.value)),
         crate::jit_cache::TAG_FLOAT => Some(obj::float(f64::from_bits(res.value as u64))),
@@ -91,6 +163,12 @@ pub(crate) fn try_call_jit(
         // Un list and drop the handle. If the handle vanished or turned
         // poisoned meanwhile, bail (interpreter re-runs).
         crate::jit_cache::TAG_INTLIST => {
+            if let Some(identity) = returned_arg_identity {
+                // The callee returned the argument list itself; the back-sync
+                // above already copied its final contents into the original
+                // object, and the interpreter would return the same identity.
+                return Some(identity);
+            }
             let items = crate::runtime::int_list::snapshot(res.value)?;
             crate::runtime::int_list::un_list_int_free(res.value);
             Some(crate::runtime::collections::list(items))

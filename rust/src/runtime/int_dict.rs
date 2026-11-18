@@ -119,8 +119,10 @@ pub extern "C" fn un_dict_int_set(d: i64, key: i64, value: i64) -> i64 {
 }
 
 /// Look up `key` in `d`; if found return the value (sentinel `-1` for
-/// "missing"). JIT ABI must accept the Int-typed key without sentinel
-/// confusion because callers opt in to sentinel reporting.
+/// "missing"). JIT callers never see the sentinel as a result: the
+/// IntDict `GetItem` fast path probes `un_dict_int_has` first and bails to
+/// the interpreter on a miss (the interpreter raises `key not found`).
+/// The sentinel stays for dead ids and defensive use.
 #[no_mangle]
 pub extern "C" fn un_dict_int_get(d: i64, key: i64) -> i64 {
     let slots = arena();
@@ -131,6 +133,18 @@ pub extern "C" fn un_dict_int_get(d: i64, key: i64) -> i64 {
         }
     } else {
         -1
+    }
+}
+
+/// 1 when `key` is present in `d`, 0 otherwise. The JIT uses this to bail
+/// to the interpreter on a missing key — the interpreter raises the
+/// language's `key not found` error, which the JIT cannot raise itself.
+#[no_mangle]
+pub extern "C" fn un_dict_int_has(d: i64, key: i64) -> i64 {
+    let slots = arena();
+    match slots.get(d) {
+        Some(dict) => i64::from(dict.map.contains_key(&key)),
+        None => 0,
     }
 }
 

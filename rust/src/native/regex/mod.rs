@@ -283,7 +283,9 @@ impl FastRegex {
                     out.push(Match {
                         start: pos,
                         end,
-                        captures: vec![vec![(pos, end.saturating_sub(pos))]],
+                        // Captures are (start, absolute end) everywhere else in
+                        // this module; keep slot 0 in the same shape.
+                        captures: vec![vec![(pos, end)]],
                         capcount: vec![1],
                         matched: vec![true],
                     });

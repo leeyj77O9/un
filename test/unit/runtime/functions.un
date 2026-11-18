@@ -1,30 +1,30 @@
-use io
+﻿use io
 use test.assert as assert
 
 # ============================================================
-# 함수 - 기본인자, 키워드 인자, 가변 인자, 람다, 재귀, 장식, 전파
-# 실행: Un.exe run test/unit/runtime/functions.un  (C:\dev\un 에서)
+# ?⑥닔 - 湲곕낯?몄옄, ?ㅼ썙???몄옄, 媛蹂 ?몄옄, ?뚮떎, ?ш?, ?μ떇, ?꾪뙆
+# ?ㅽ뻾: Un.exe run test/unit/runtime/functions.un  (C:\dev\un ?먯꽌)
 # ============================================================
 
-# ---------- 기본값 ----------
+# ---------- 湲곕낯媛?----------
 fn defaults(a, b = 10)
     -> a + b
 assert.assert_eq(defaults(1), 11, "default argument is used when omitted")
 assert.assert_eq(defaults(1, 20), 21, "explicit argument overrides the default")
 assert.assert_eq(defaults(1, b = 30), 31, "keyword argument binds by name")
 
-# ---------- 가변 인자 ----------
+# ---------- 媛蹂 ?몄옄 ----------
 fn varargs_fn(a, *rest)
     -> len(rest)
 assert.assert_eq(varargs_fn(1, 2, 3), 2, "varargs collects the extra arguments")
 assert.assert_eq(varargs_fn(1), 0, "varargs is empty when no extra arguments")
 
-# ---------- 람다 ----------
+# ---------- ?뚮떎 ----------
 lam2 = fn(a, b) -> a - b
 assert.assert_eq(lam2(5, 2), 3, "assigned lambda is callable")
 assert.assert_eq((fn(x) -> x * 2)(4), 8, "inline lambda is callable")
 
-# ---------- 재귀 ----------
+# ---------- ?ш? ----------
 fn factorial(n)
     if n <= 1
         -> 1
@@ -39,11 +39,11 @@ fn fib(n)
     -> fib(n - 1) + fib(n - 2)
 assert.assert_eq(fib(10), 55, "double recursion")
 
-# ---------- 깊은 재귀 ----------
-# 재귀 깊이가 한도를 넘으면 프로세스가 스택 오버플로로 죽는다.
-# test/negative/stack_overflow.un이 종료 코드로 검증하므로 여기서는 하지 않는다.
+# ---------- 源딆? ?ш? ----------
+# ?ш? 源딆씠媛 ?쒕룄瑜??섏쑝硫??꾨줈?몄뒪媛 ?ㅽ깮 ?ㅻ쾭?뚮줈濡?二쎈뒗??
+# test/negative/stack_overflow.un??醫낅즺 肄붾뱶濡?寃利앺븯誘濡??ш린?쒕뒗 ?섏? ?딅뒗??
 
-# ---------- 클로저 ----------
+# ---------- ?대줈? ----------
 fn make_adder(n)
     fn add(x)
         -> x + n
@@ -51,7 +51,7 @@ fn make_adder(n)
 add5 = make_adder(5)
 assert.assert_eq(add5(10), 15, "closure captures the parameter")
 
-# ---------- 장식 ----------
+# ---------- ?μ떇 ----------
 fn double(x)
     -> x * 2
 fn deco(target)
@@ -63,7 +63,7 @@ fn decorated(x)
     -> x + 1
 assert.assert_eq(decorated(5), 18, "decorator wraps the function")
 
-# ---------- 예외 전파 ----------
+# ---------- ?덉쇅 ?꾪뙆 ----------
 fn may_fail(x)
     if x < 0
         -> throw("negative")
@@ -75,16 +75,51 @@ v = none
 assert.assert_eq(v?.value, none, "safe member access on none is none")
 assert.assert_eq(v?.len(), none, "safe call on none is none")
 
-# ---------- throw 계열 ----------
+# ---------- throw 怨꾩뿴 ----------
 assert.assert_err(fn() -> throw("boom"), "boom")
 assert.assert_err(fn() -> throw_if(true, "cond hit"), "cond hit")
 assert.assert_eq(throw_if(false, "no"), none, "throw_if does nothing when the condition is false")
 assert.assert_err(fn() -> throw_unless(false, "cond miss"), "cond miss")
 assert.assert_eq(throw_unless(true, "no"), none, "throw_unless does nothing when the condition is true")
 
-# ---------- 반환값이 없는 함수 ----------
+# ---------- 諛섑솚媛믪씠 ?녿뒗 ?⑥닔 ----------
 fn no_return()
     unused = 1
 assert.assert_eq(no_return(), none, "function without a return yields none")
 
+fn none_annotated() -> none
+    unused = 2
+assert.assert_eq(none_annotated(), none, "none return type annotation parses")
+
+
+fn ident_list(xs)
+    -> xs
+assert.assert_eq(len(ident_list([7, 8, 9])), 3, 'identity list round-trips')
+
+
+fn add(a: int, b: int) -> int
+    -> a + b
+assert.assert_eq(add(1, 2), 3, "typed return with int params runs")
+
+# ---------- function return type annotations ----------
+fn typed_identity(xs) -> list[int]
+    -> xs
+assert.assert_eq(len(typed_identity([1, 2, 3])), 3, 'fn parameter list typed annotation parses')
+fn typed_count(n: int) -> int
+    if n <= 0
+        -> 0
+    -> n + typed_count(n - 1)
+assert.assert_eq(typed_count(3), 6, 'typed return function runs')
+fn typed_pair(a: int, b: int) -> tuple[int, str]
+    -> (a, 'b')
+assert.assert_eq(typed_pair(1, 2)[1], 'b', 'typed return with tuple')
+fn bool_fix() -> bool
+    -> true
+assert.assert_eq(bool_fix(), true, 'bool return type annotation')
+fn union_pick(x: int) -> int | str
+    if x < 0
+        -> x
+    -> 'pos'
+assert.assert_eq(union_pick(-5), -5, 'union return type accepts int')
+assert.assert_eq(union_pick(5), 'pos', 'union return type accepts str')
 assert.summary()

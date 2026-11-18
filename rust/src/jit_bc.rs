@@ -1,4 +1,4 @@
-//! `.unbc` -> native translation for functions that stay inside the typed
+﻿//! `.unbc` -> native translation for functions that stay inside the typed
 //! numeric subset.
 //!
 //! Works directly on the validated stack bytecode that the register VM
@@ -18,8 +18,6 @@
 //!     when any operand is Float (Un promotes Int+Float to Float)
 //!   - `//` and `%` only with a non-zero integer constant divisor loaded into
 //!     the right operand register by a preceding `LoadConst`
-//!   - Float intrinsics: `sqrt`/`floor` recognized inline for the exact call
-//!     sequence `math.floor(math.sqrt(expr))` where `expr` is an Int argument
 //!   - `< <= > >= == !=` producing Int 0/1 booleans for Int operands; Float
 //!     comparisons are rejected
 //!   - `if` / `while` via `JmpIf` (jump when the condition is falsy) and `Jmp`
@@ -62,11 +60,11 @@ pub const MAX_ARITY: usize = 8;
 /// `program_ptr`. Called once per program when the VM first plans it.
 /// Registry entry for the pre-JIT compile guard: disables the entire
 /// program's JIT path when a global binding is re-bound.
-/// In a hostile module, names used by the JIT translation (`math`/`floor`/
-/// `sqrt`/`iter`/`range`) could be re-bound (`math.sqrt = ??), which a
-/// name-text-based intrinsic decision made once at compile time could never
-/// reconcile. Any such rebind disqualifies the entire program from the
-/// JIT (exact interpreter semantics are preserved).
+/// Names used by the JIT translation (`iter`/`range`, the loop fast path,
+/// and `len`, the IntVec `len(xs)` marker) could be re-bound
+/// (`iter.range = …`, `len = …`), which a compile-time decision made
+/// once per program could never reconcile. Any such rebind disqualifies the
+/// entire program from the JIT (exact interpreter semantics are preserved).
 fn program_has_intrinsic_rebind(program: &Program) -> bool {
     for proto in &program.protos {
         for ins in &proto.code {
@@ -86,7 +84,7 @@ fn program_has_intrinsic_rebind(program: &Program) -> bool {
                     // operand is the proto-slot index, not name index
                     if let Some(fn_proto) = program.protos.get(slot_of) {
                         if let Some(pname) = program.names.get(fn_proto.name) {
-                            if matches!(pname.as_str(), "math" | "floor" | "sqrt" | "iter" | "range") {
+                            if matches!(pname.as_str(), "iter" | "range" | "len") {
                                 return true;
                             }
                         }
@@ -103,7 +101,7 @@ fn program_has_intrinsic_rebind(program: &Program) -> bool {
                 Some(s) => s.as_str(),
                 None => continue,
             };
-            if matches!(name, "math" | "floor" | "sqrt" | "iter" | "range") {
+            if matches!(name, "iter" | "range" | "len") {
                 return true;
             }
         }
@@ -151,10 +149,10 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
     builder.symbol("un_jit_depth_enter", crate::jit_cache::un_jit_depth_enter as *const u8);
     builder.symbol("un_jit_depth_exit", crate::jit_cache::un_jit_depth_exit as *const u8);
-    builder.symbol("un_math_sin", crate::native::math::un_math_sin as *const u8);
     builder.symbol("un_dict_int_empty", crate::runtime::int_dict::un_dict_int_empty as *const u8);
     builder.symbol("un_dict_int_set", crate::runtime::int_dict::un_dict_int_set as *const u8);
     builder.symbol("un_dict_int_get", crate::runtime::int_dict::un_dict_int_get as *const u8);
+    builder.symbol("un_dict_int_has", crate::runtime::int_dict::un_dict_int_has as *const u8);
     builder.symbol("un_dict_int_free", crate::runtime::int_dict::un_dict_int_free as *const u8);
     builder.symbol("un_instance_int_get", crate::runtime::obj::un_instance_int_get as *const u8);
     builder.symbol("un_instance_int_ok", crate::runtime::obj::un_instance_int_ok as *const u8);
@@ -229,18 +227,17 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         Ok(fid) => fid,
         Err(_) => return,
     };
+    let fid_dict_has = match module
+        .declare_function("un_dict_int_has", Linkage::Import, &sig_get)
+    {
+        Ok(fid) => fid,
+        Err(_) => return,
+    };
     let mut sig_free = module.make_signature();
     sig_free.params.push(AbiParam::new(types::I64));
     let fid_dict_free = match module
         .declare_function("un_dict_int_free", Linkage::Import, &sig_free)
     {
-        Ok(fid) => fid,
-        Err(_) => return,
-    };
-    let mut sig_sin = module.make_signature();
-    sig_sin.params.push(AbiParam::new(types::F64));
-    sig_sin.returns.push(AbiParam::new(types::F64));
-    let fid_sin = match module.declare_function("un_math_sin", Linkage::Import, &sig_sin) {
         Ok(fid) => fid,
         Err(_) => return,
     };
@@ -465,8 +462,8 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
                 fid_dict_empty,
                 fid_dict_set,
                 fid_dict_get,
+                fid_dict_has,
                 fid_dict_free,
-                fid_sin,
                 fid_int_get,
                 fid_int_ok_name,
                 fid_int_set_name,
@@ -555,9 +552,18 @@ struct Tr<'a> {
     arena: Vec<String>,
     param_pos: HashMap<String, usize>,
     patches: HashMap<usize, RangePatch>,
-    intrinsics: HashMap<usize, UnaryFloatPatch>,
-    skip_ips: HashSet<usize>,
     arity: usize,
+    // Registers whose value is (still) one of the function's raw argument
+    // values. Used by the list-handle probe to mark argument handles as
+    // borrowed: the callee never frees a borrowed handle, because the caller
+    // (jit_fast) owns it and copies its contents back into the caller's Un
+    // object after the call returns. Best-effort: a miss degrades to a
+    // skipped free at worst, never to a wrong result.
+    param_regs: HashSet<usize>,
+    // `local_borrow_raw[slot]` — the slot currently holds an (unprobed) raw
+    // argument value. Kept so `LoadLocal` can restore the register-level
+    // provenance on the way back out.
+    local_borrow_raw: Vec<bool>,
     locals_len: usize,
     // Slots whose local name is `field`; those bindings hold the Un
     // `FieldRef` written by `accessor_bind` (property accessors). The JIT
@@ -600,8 +606,8 @@ struct Tr<'a> {
     fid_dict_empty: cranelift_module::FuncId,
     fid_dict_set: cranelift_module::FuncId,
     fid_dict_get: cranelift_module::FuncId,
+    fid_dict_has: cranelift_module::FuncId,
     fid_dict_free: cranelift_module::FuncId,
-    fid_sin: cranelift_module::FuncId,
     fid_int_get: cranelift_module::FuncId,
     fid_int_ok_name: cranelift_module::FuncId,
     fid_int_set_name: cranelift_module::FuncId,
@@ -728,17 +734,29 @@ impl<'a> Tr<'a> {
         // ABI does not carry them). Bool == Int 1/0 in our Cranelift IR, so
         // Bool would *seem* safe; reject anything unknown anyway.
         if self.is_none[callee_reg] || self.is_float[callee_reg] || self.is_bool[callee_reg] {
+            if crate::jit_cache::jit_debug() {
+                eprintln!("JITREJECT emit_user_call callee_reg={callee_reg} is_none={} is_float={} is_bool={}", self.is_none[callee_reg], self.is_float[callee_reg], self.is_bool[callee_reg]);
+            }
             return None;
         }
         if self.int_dict_seen(&[callee_reg]) {
+            if crate::jit_cache::jit_debug() {
+                eprintln!("JITREJECT emit_user_call callee_reg={callee_reg} in int_dict_seen");
+            }
             return None;
         }
         for k in 0..argc {
             let r = callee_reg + 1 + k;
             if self.is_none[r] || self.is_float[r] || self.is_bool[r] {
+                if crate::jit_cache::jit_debug() {
+                    eprintln!("JITREJECT emit_user_call arg{k}=={r} is_none={} is_float={} is_bool={}", self.is_none[r], self.is_float[r], self.is_bool[r]);
+                }
                 return None;
             }
             if self.int_dict_seen(&[r]) {
+                if crate::jit_cache::jit_debug() {
+                    eprintln!("JITREJECT emit_user_call arg{k}=={r} in int_dict_seen");
+                }
                 return None;
             }
         }
@@ -757,34 +775,41 @@ impl<'a> Tr<'a> {
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
         builder.ins().call(func_ref, &arg_vals);
         let pure_kind = callee_kind & (RET_INT | RET_FLOAT | RET_BOOL | RET_INTLIST);
-        let has_bool = (pure_kind & RET_BOOL) != 0;
-        let has_numeric = (pure_kind & (RET_INT | RET_FLOAT)) != 0;
-        if has_bool && has_numeric {
-            // Mix of Bool-with-Int paths ??outer can't know statically
-            // which is it. Refuse JIT for the outer to remain correct.
-            return None;
-        }
-        if pure_kind == 0 {
-            return None;
-        }
+        let expected_tag = match pure_kind {
+            RET_INT => 0i64,
+            RET_FLOAT => 1i64,
+            RET_BOOL => 3i64,
+            RET_INTLIST => 6i64,
+            // Heterogeneous return kinds (Int|Float, Int|IntList,
+            // Bool|numeric…) cannot be typed statically at this call
+            // site. Bail at compile time; the interpreter handles them
+            // correctly.
+            _ => {
+                if crate::jit_cache::jit_debug() {
+                    eprintln!("JITREJECT emit_user_call callee_kind={callee_kind:#x} (heterogeneous)");
+                }
+                return None;
+            }
+        };
         // Load (value, tag) out of the shared hidden slot
         let val = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 0);
         let tag = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 8);
-        // Tag values:
-        //   0: Int | 1: Float | 2: bail | 3: Bool
-        // Callee may only produce one of these for this call site ??the
-        // outer kind was checked above. Reject others.
-        let two_v = builder.ins().iconst(types::I64, 2);
-        let is_bail = builder.ins().icmp(IntCC::Equal, tag, two_v);
+        // The callee may only produce `expected_tag` for this call site ??any
+        // other value (including an unexpected tag from a mis-analysed
+        // callee) bails the frame to the interpreter, which is always
+        // correct.
+        let expected_v = builder.ins().iconst(types::I64, expected_tag);
+        let is_expected = builder.ins().icmp(IntCC::Equal, tag, expected_v);
         let bail_blk = builder.create_block();
         let cont_blk = builder.create_block();
-        builder.ins().brif(is_bail, bail_blk, &[], cont_blk, &[]);
+        builder.ins().brif(is_expected, cont_blk, &[], bail_blk, &[]);
          self.terminated = true;
         builder.seal_block(bail_blk);
         builder.seal_block(cont_blk);
         self.goto(builder, bail_blk);
         let zero = builder.ins().iconst(types::I64, 0);
-        self.emit_return_pair(builder, zero, two_v);
+        let bail_tag = builder.ins().iconst(types::I64, 2);
+        self.emit_return_pair(builder, zero, bail_tag);
         self.goto(builder, cont_blk);
         // The register now holds the callee's return value. If the callee
         // was inferred `RET_INTLIST` at plan time (see
@@ -798,7 +823,7 @@ impl<'a> Tr<'a> {
         self.intlist_regs.remove(&(ins.a as usize));
         self.len_regs.remove(&(ins.a as usize));
         match pure_kind {
-            k if (k & RET_INTLIST) != 0 => {
+            RET_INTLIST => {
                 self.intlist_regs.insert(ins.a as usize, 7);
                 self.is_bool[ins.a as usize] = false;
                 self.is_none[ins.a as usize] = false;
@@ -819,26 +844,13 @@ impl<'a> Tr<'a> {
                 self.is_float[ins.a as usize] = true;
                 Some(())
             }
-            k if k == RET_INT | RET_FLOAT => {
-                // Heterogeneous Int/Float path ??either is legal, the
-                // runtime tag check differentiates callers. We accept the
-                // call site but can't pick is_float/is_bool statically,
-                // so keep Int and let the final Return's tag selection
-                // handle both paths correctly (as with `total`).
-                self.is_bool[ins.a as usize] = false;
-                self.is_none[ins.a as usize] = false;
-                self.is_float[ins.a as usize] = false;
-                Some(())
-            }
             RET_BOOL => {
                 self.is_bool[ins.a as usize] = true;
                 self.is_none[ins.a as usize] = false;
                 self.is_float[ins.a as usize] = false;
                 Some(())
             }
-            // Mixed Bool ??Int/Float ??rejected by has_bool && has_numeric
-            // check above. This branch is only reachable if the early return
-            // misfired; keep it as None for safety.
+            // Unreachable (filtered above); keep as None for safety.
             _ => None,
         }
     }
@@ -897,14 +909,7 @@ impl<'a> Tr<'a> {
         builder.seal_block(bail_blk);
         builder.seal_block(cont_blk);
         self.goto(builder, bail_blk);
-        self.emit_int_dict_cleanup(builder);
-        let hp = builder.use_var(self.hp_var);
-        let zb = builder.ins().iconst(types::I64, 0);
-        let tb = builder.ins().iconst(types::I64, 2);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zb, hp, 0);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tb, hp, 8);
-        builder.ins().return_(&[]);
-         self.terminated = true;
+        self.emit_bail_exit(builder);
         self.goto(builder, cont_blk);
         builder.def_var(self.rv_i64(ins.a as usize), v);
         self.ret_slot[ins.a as usize] = None;
@@ -967,34 +972,38 @@ impl<'a> Tr<'a> {
         }
         builder.ins().call(func_ref, &arg_vals);
         let pure_kind = callee_kind & (RET_INT | RET_FLOAT | RET_BOOL | RET_INTLIST);
-        let has_bool = (pure_kind & RET_BOOL) != 0;
-        let has_numeric = (pure_kind & (RET_INT | RET_FLOAT)) != 0;
-        if has_bool && has_numeric {
-            // Mixed Bool ??Int paths: outer can't type statically.
-            return None;
-        }
-        if pure_kind == 0 {
-            return None;
-        }
+        let expected_tag = match pure_kind {
+            RET_INT => 0i64,
+            RET_FLOAT => 1i64,
+            RET_BOOL => 3i64,
+            RET_INTLIST => 6i64,
+            // Heterogeneous return kinds (Int|Float, Int|IntList,
+            // Bool|numeric…) cannot be typed statically at this call
+            // site. Bail at compile time; the interpreter handles them
+            // correctly.
+            _ => {
+                if crate::jit_cache::jit_debug() {
+                    eprintln!("JITREJECT emit_user_call callee_kind={callee_kind:#x} (heterogeneous)");
+                }
+                return None;
+            }
+        };
         let val = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 0);
         let tag = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 8);
-        let two_v = builder.ins().iconst(types::I64, 2);
-        let is_bail = builder.ins().icmp(IntCC::Equal, tag, two_v);
+        // The callee may only produce `expected_tag` for this call site ??any
+        // other value (including an unexpected tag from a mis-analysed
+        // callee) bails the frame to the interpreter, which is always
+        // correct.
+        let expected_v = builder.ins().iconst(types::I64, expected_tag);
+        let is_expected = builder.ins().icmp(IntCC::Equal, tag, expected_v);
         let bail_blk = builder.create_block();
         let cont_blk = builder.create_block();
-        builder.ins().brif(is_bail, bail_blk, &[], cont_blk, &[]);
+        builder.ins().brif(is_expected, cont_blk, &[], bail_blk, &[]);
          self.terminated = true;
         builder.seal_block(bail_blk);
         builder.seal_block(cont_blk);
         self.goto(builder, bail_blk);
-        self.emit_int_dict_cleanup(builder);
-        let hp = builder.use_var(self.hp_var);
-        let zb = builder.ins().iconst(types::I64, 0);
-        let tb = builder.ins().iconst(types::I64, 2);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zb, hp, 0);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tb, hp, 8);
-        builder.ins().return_(&[]);
-         self.terminated = true;
+        self.emit_bail_exit(builder);
         self.goto(builder, cont_blk);
         builder.def_var(self.rv_i64(ins.a as usize), val);
         self.ret_slot[ins.a as usize] = None;
@@ -1007,7 +1016,7 @@ impl<'a> Tr<'a> {
         self.intlist_regs.remove(&(ins.a as usize));
         self.len_regs.remove(&(ins.a as usize));
         match pure_kind {
-            k if (k & RET_INTLIST) != 0 => {
+            RET_INTLIST => {
                 self.intlist_regs.insert(ins.a as usize, 7);
                 self.is_bool[ins.a as usize] = false;
                 self.is_none[ins.a as usize] = false;
@@ -1026,18 +1035,13 @@ impl<'a> Tr<'a> {
                 self.is_float[ins.a as usize] = true;
                 Some(())
             }
-            k if k == RET_INT | RET_FLOAT => {
-                self.is_bool[ins.a as usize] = false;
-                self.is_none[ins.a as usize] = false;
-                self.is_float[ins.a as usize] = false;
-                Some(())
-            }
             RET_BOOL => {
                 self.is_bool[ins.a as usize] = true;
                 self.is_none[ins.a as usize] = false;
                 self.is_float[ins.a as usize] = false;
                 Some(())
             }
+            // Unreachable (filtered above); keep as None for safety.
             _ => None,
         }
     }
@@ -1070,18 +1074,14 @@ impl<'a> Tr<'a> {
         builder.seal_block(bail_blk);
         builder.seal_block(cont_blk);
         self.goto(builder, bail_blk);
-        self.emit_int_dict_cleanup(builder);
-        let hp = builder.use_var(self.hp_var);
-        let zb = builder.ins().iconst(types::I64, 0);
-        let tb = builder.ins().iconst(types::I64, 2);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zb, hp, 0);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tb, hp, 8);
-        builder.ins().return_(&[]);
-         self.terminated = true;
+        self.emit_bail_exit(builder);
         self.goto(builder, cont_blk);
         // The receiver is now known-good; remember it statically for the
-        // rest of the emit pass.
-        self.intlist_regs.insert(target_reg, 7);
+        // rest of the emit pass. Argument handles are the caller's
+        // property: they are marked borrowed so the callee's teardown
+        // does not free them (jit_fast copies contents back afterwards).
+        let borrowed = self.param_regs.contains(&target_reg);
+        self.intlist_regs.insert(target_reg, if borrowed { INTLIST_BORROWED } else { 7 });
         Some(v)
     }
 
@@ -1121,9 +1121,14 @@ impl<'a> Tr<'a> {
             .local_is_list
             .iter()
             .enumerate()
-            .filter_map(|(i, &live)| (live != 0).then_some(i))
+            .filter_map(|(i, &live)| (live != 0 && live != INTLIST_BORROWED).then_some(i))
             .collect();
-        let list_regs: Vec<usize> = self.intlist_regs.keys().copied().collect();
+        let list_regs: Vec<usize> = self
+            .intlist_regs
+            .iter()
+            .filter(|&(_, &kind)| kind != INTLIST_BORROWED)
+            .map(|(&reg, _)| reg)
+            .collect();
         if !list_slots.is_empty() || !list_regs.is_empty() {
             let fid = self.fid_list_free;
             let f_free = self.module.declare_func_in_func(fid, builder.func);
@@ -1140,6 +1145,25 @@ impl<'a> Tr<'a> {
 
     fn emit_int_dict_cleanup(&mut self, builder: &mut FunctionBuilder<'_>) {
         self.emit_int_cleanup(builder, false);
+    }
+
+    /// Store `(0, TAG_BAIL)` through the hidden pointer and return ??the
+    /// interpreter re-runs the frame exactly once. Every bail exit must take
+    /// the depth-exit path too, or the depth counter leaks and every future
+    /// JIT entry looks "too deep" (silent permanent interpreter fallback).
+    fn emit_bail_exit(&mut self, builder: &mut FunctionBuilder<'_>) {
+        if self.needs_depth {
+            let exit_ref = self.module.declare_func_in_func(self.fid_exit, builder.func);
+            builder.ins().call(exit_ref, &[]);
+        }
+        self.emit_int_dict_cleanup(builder);
+        let hp = builder.use_var(self.hp_var);
+        let zero = builder.ins().iconst(types::I64, 0);
+        let two = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero, hp, 0);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hp, 8);
+        builder.ins().return_(&[]);
+        self.terminated = true;
     }
 
     fn emit_return_pair(
@@ -1232,23 +1256,6 @@ impl<'a> Tr<'a> {
                 continue;
             }
 
-            if let Some(patch) = self.intrinsics.get(&ip).copied() {
-                if self.emit_unary_float(builder, patch).is_none() {
-                    if crate::jit_cache::jit_debug() {
-                        eprintln!("JITREJECT emit_unary_float ip={ip}");
-                    }
-                    return None;
-                }
-                ip += 1; // intrinsic Call consumed
-                continue;
-            }
-
-            if self.skip_ips.contains(&ip) {
-                // instruction belongs to an intrinsic window; skip it
-                ip += 1;
-                continue;
-            }
-
             if self.emit_ins(builder, code, ip, ins).is_none() {
                 if crate::jit_cache::jit_debug() {
                     eprintln!("JITREJECT emit_ins ip={ip} op={:?}", ins.op);
@@ -1258,6 +1265,15 @@ impl<'a> Tr<'a> {
             ip += 1;
         }
         if !self.terminated {
+            // Reaching the end of the instruction stream means the proto
+            // did not terminate (every compilable proto ends in Return).
+            // Bail through the hidden pointer so the interpreter re-runs
+            // the frame instead of the caller reading an uninitialised pair.
+            let hp = builder.use_var(self.hp_var);
+            let zero = builder.ins().iconst(types::I64, 0);
+            let two = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
+            builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero, hp, 0);
+            builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hp, 8);
             builder.ins().return_(&[]);
             self.terminated = true;
         }
@@ -1345,66 +1361,6 @@ impl<'a> Tr<'a> {
         builder.def_var(yield_var, i_v);
         self.is_float[yield_reg] = false;
 
-        Some(())
-    }
-
-    fn emit_unary_float(&mut self, builder: &mut FunctionBuilder, patch: UnaryFloatPatch) -> Option<()> {
-        match patch.kind {
-            UnaryFloatKind::FloorSqrt => {
-                // Bail to the interpreter for domain errors: Un propagates an error
-                // for negative Int args here; the JIT cannot raise it, so it signals
-                // tag = 2 and the VM re-runs the proto interpreted. Semantics are
-                // identical to never JIT-compiling this proto.
-                let bail_block = builder.create_block();
-                let arg = match patch.arg {
-                    IntArgSrc::Local(slot) => builder.use_var(self.lv(slot)),
-                    IntArgSrc::Param(pos) => builder.use_var(self.vars[pos]),
-                    IntArgSrc::ConstInt(n) => builder.ins().iconst(types::I64, n),
-                };
-                let zero_v = builder.ins().iconst(types::I64, 0);
-                let le = builder.ins().icmp(IntCC::SignedLessThan, arg, zero_v);
-                // main path continues; bail path exits with tag = 2
-                let cont_block = builder.create_block();
-                builder.ins().brif(le, bail_block, &[], cont_block, &[]);
-                 self.terminated = true;
-                builder.seal_block(bail_block);
-                self.goto(builder, bail_block);
-                let zero_b = builder.ins().iconst(types::I64, 0);
-                let two_b = builder.ins().iconst(types::I64, 2);
-                self.emit_return_pair(builder, zero_b, two_b);
-                // main path
-                self.goto(builder, cont_block);
-                builder.seal_block(cont_block);
-                let f = builder.ins().fcvt_from_sint(types::F64, arg);
-                let s = builder.ins().sqrt(f);
-                let fl = builder.ins().floor(s);
-                builder.def_var(self.rv_f64(patch.ret_reg as usize), fl);
-                self.is_bool[patch.ret_reg as usize] = false;
-                self.is_none[patch.ret_reg as usize] = false;
-                self.is_float[patch.ret_reg as usize] = true;
-                self.ret_slot[patch.ret_reg as usize] = None;
-            }
-            UnaryFloatKind::Sin => {
-                // math.sin(i) where `i` is Int: promote to f64 and call the
-                // extern libm wrapper. Un has no domain error here (sin is
-                // total), so no bail block; sub/cos/tan will slot in the same
-                // way later.
-                let arg = match patch.arg {
-                    IntArgSrc::Local(slot) => builder.use_var(self.lv(slot)),
-                    IntArgSrc::Param(pos) => builder.use_var(self.vars[pos]),
-                    IntArgSrc::ConstInt(n) => builder.ins().iconst(types::I64, n),
-                };
-                let f = builder.ins().fcvt_from_sint(types::F64, arg);
-                let f_ref = self.module.declare_func_in_func(self.fid_sin, builder.func);
-                let call = builder.ins().call(f_ref, &[f]);
-                let res = builder.inst_results(call)[0];
-                builder.def_var(self.rv_f64(patch.ret_reg as usize), res);
-                self.is_bool[patch.ret_reg as usize] = false;
-                self.is_none[patch.ret_reg as usize] = false;
-                self.is_float[patch.ret_reg as usize] = true;
-                self.ret_slot[patch.ret_reg as usize] = None;
-            }
-        }
         Some(())
     }
 
@@ -1505,6 +1461,7 @@ impl<'a> Tr<'a> {
             self.len_regs.remove(&(ins.a as usize));
             self.list_add_regs.remove(&(ins.a as usize));
             self.intlist_iter_regs.remove(&(ins.a as usize));
+            self.param_regs.remove(&(ins.a as usize));
         }
         r
     }
@@ -1589,6 +1546,7 @@ impl<'a> Tr<'a> {
                 self.intlist_regs.remove(&(ins.a as usize));
                 self.len_regs.remove(&(ins.a as usize));
                 self.list_add_regs.remove(&(ins.a as usize));
+                self.param_regs.remove(&(ins.a as usize));
                 // The builtin `len` name lowers to a bare marker: the call
                 // site can special-case an IntVec argument. Values for it
                 // never materialise at the FFI boundary.
@@ -1605,6 +1563,7 @@ impl<'a> Tr<'a> {
                 match self.param_pos.get(&name) {
                     Some(&pos) => {
                         let v = builder.use_var(self.vars[pos]);
+                        self.param_regs.insert(ins.a as usize);
                         // A list-typed argument arrives as a raw arena
                         // handle, but its runtime identity is unknown at
                         // compile time. The list intrinsics probe the
@@ -1690,6 +1649,11 @@ impl<'a> Tr<'a> {
                 } else {
                     self.intlist_regs.remove(&(ins.a as usize));
                 }
+                if self.param_regs.contains(&(ins.b as usize)) {
+                    self.param_regs.insert(ins.a as usize);
+                } else {
+                    self.param_regs.remove(&(ins.a as usize));
+                }
                 if let Some(&desc) = self.instance_regs.get(&(ins.b as usize)) {
                     self.instance_regs.insert(ins.a as usize, desc);
                 } else {
@@ -1736,11 +1700,8 @@ impl<'a> Tr<'a> {
                     let v = builder.use_var(self.rv_i64(ins.a as usize));
                     builder.def_var(self.lv_i64(slot), v);
                 }
-                if self.int_dict_regs.contains(&(ins.a as usize)) {
-                    self.local_is_intdict[slot] = true;
-                } else {
-                    self.local_is_intdict[slot] = false;
-                }
+                self.local_is_intdict[slot] = self.int_dict_regs.contains(&(ins.a as usize));
+                self.local_borrow_raw[slot] = self.param_regs.contains(&(ins.a as usize));
                 self.local_is_instance[slot] = self.instance_regs.get(&(ins.a as usize)).copied();
                 self.local_is_list[slot] = self.intlist_regs.get(&(ins.a as usize)).copied().unwrap_or(0);
                 self.local_is_bool[slot] = self.is_bool[ins.a as usize];
@@ -1768,6 +1729,7 @@ impl<'a> Tr<'a> {
                         self.instance_regs.remove(&(ins.a as usize));
                         self.method_regs.remove(&(ins.a as usize));
                         self.len_regs.remove(&(ins.a as usize));
+                        self.param_regs.remove(&(ins.a as usize));
                         let ptr = builder.use_var(self.rv_i64(ins.b as usize));
                         builder.def_var(self.rv_i64(ins.a as usize), ptr);
                         self.is_bool[ins.a as usize] = false;
@@ -1781,6 +1743,7 @@ impl<'a> Tr<'a> {
                 self.class_ctor_regs.remove(&(ins.a as usize));
                 self.instance_regs.remove(&(ins.a as usize));
                 self.method_regs.remove(&(ins.a as usize));
+                self.param_regs.remove(&(ins.a as usize));
                 if let Some(&desc_id) = inst_recv.as_ref() {
                     let Some(method_name) = self.arena.get(ins.d as usize).cloned() else {
                         return None;
@@ -1861,14 +1824,7 @@ impl<'a> Tr<'a> {
                 builder.seal_block(bail_attr);
                 builder.seal_block(cont_attr);
                 self.goto(builder, bail_attr);
-                self.emit_int_dict_cleanup(builder);
-                let hp = builder.use_var(self.hp_var);
-                let zero_e = builder.ins().iconst(types::I64, 0);
-                let two_e = builder.ins().iconst(types::I64, 2);
-                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero_e, hp, 0);
-                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two_e, hp, 8);
-                builder.ins().return_(&[]);
-                 self.terminated = true;
+                self.emit_bail_exit(builder);
                 self.goto(builder, cont_attr);
                 let f_ref = self.module.declare_func_in_func(self.fid_int_get, builder.func);
                 let get_call = builder.ins().call(f_ref, &[self_ptr, e_idx]);
@@ -1905,7 +1861,9 @@ impl<'a> Tr<'a> {
                 let Some(field_ix) = layout.iter().position(|f| f == field_ref) else {
                     return None;
                 };
-                // Value must be Int (Float/Bool/etc are not expected here for this bench).
+                // Value must be Int: the FFI only carries i64 payloads, so a
+                // Float/Bool/None source can't be stored through the
+                // name-checked field intrinsic; bail to the interpreter.
                 if self.is_float[ins.c as usize] || self.is_bool[ins.c as usize] || self.is_none[ins.c as usize] {
                     return None;
                 }
@@ -1940,14 +1898,7 @@ impl<'a> Tr<'a> {
                 builder.seal_block(bail_attr);
                 builder.seal_block(cont_attr);
                 self.goto(builder, bail_attr);
-                self.emit_int_dict_cleanup(builder);
-                let hp = builder.use_var(self.hp_var);
-                let zero_e = builder.ins().iconst(types::I64, 0);
-                let two_e = builder.ins().iconst(types::I64, 2);
-                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero_e, hp, 0);
-                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two_e, hp, 8);
-                builder.ins().return_(&[]);
-                 self.terminated = true;
+                self.emit_bail_exit(builder);
                 self.goto(builder, cont_attr);
                 builder.def_var(self.rv_i64(ins.a as usize), val);
                 self.is_bool[ins.a as usize] = false;
@@ -1967,6 +1918,11 @@ impl<'a> Tr<'a> {
                 self.method_regs.remove(&(ins.a as usize));
                 self.intlist_regs.remove(&(ins.a as usize));
                 self.len_regs.remove(&(ins.a as usize));
+                if self.local_borrow_raw[slot] {
+                    self.param_regs.insert(ins.a as usize);
+                } else {
+                    self.param_regs.remove(&(ins.a as usize));
+                }
                 let float_slot = self.local_float[slot];
                 if float_slot {
                     let v = builder.use_var(self.lv_f64(slot));
@@ -2097,6 +2053,7 @@ impl<'a> Tr<'a> {
                     self.len_regs.remove(&dst);
                     self.list_add_regs.remove(&dst);
                     self.intlist_iter_regs.remove(&dst);
+                    self.param_regs.remove(&dst);
                 }
                 // Class constructor (`Point(i, i + 1)`): lower to the
                 // un_class_make intrinsic.
@@ -2119,6 +2076,19 @@ impl<'a> Tr<'a> {
                     let f_ref = self.module.declare_func_in_func(fid, builder.func);
                     let call = builder.ins().call(f_ref, &[d_i]);
                     let res = builder.inst_results(call)[0];
+                    // `-1` means "not a live handle"; bail the frame to the
+                    // interpreter rather than bind a bogus length.
+                    let one_v = builder.ins().iconst(types::I64, -1);
+                    let is_dead = builder.ins().icmp(IntCC::Equal, res, one_v);
+                    let bail_blk = builder.create_block();
+                    let cont_blk = builder.create_block();
+                    builder.ins().brif(is_dead, bail_blk, &[], cont_blk, &[]);
+                    self.terminated = true;
+                    builder.seal_block(bail_blk);
+                    builder.seal_block(cont_blk);
+                    self.goto(builder, bail_blk);
+                    self.emit_bail_exit(builder);
+                    self.goto(builder, cont_blk);
                     builder.def_var(self.rv_i64(ins.a as usize), res);
                     self.is_bool[ins.a as usize] = false;
                     self.is_none[ins.a as usize] = false;
@@ -2472,14 +2442,7 @@ impl<'a> Tr<'a> {
                     builder.seal_block(bail_blk);
                     builder.seal_block(cont_blk);
                     self.goto(builder, bail_blk);
-                    self.emit_int_dict_cleanup(builder);
-                    let hp = builder.use_var(self.hp_var);
-                    let zb = builder.ins().iconst(types::I64, 0);
-                    let tb = builder.ins().iconst(types::I64, 2);
-                    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zb, hp, 0);
-                    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tb, hp, 8);
-                    builder.ins().return_(&[]);
-                     self.terminated = true;
+                    self.emit_bail_exit(builder);
                     self.goto(builder, cont_blk);
                     let is_bool = builder.ins().iconst(types::I64, self.is_bool[value] as i64);
                     let call = builder.ins().call(f_set, &[d_i, k_i, v_i, is_bool]);
@@ -2594,14 +2557,7 @@ impl<'a> Tr<'a> {
                 builder.seal_block(bail_blk);
                 builder.seal_block(cont_blk);
                 self.goto(builder, bail_blk);
-                self.emit_int_dict_cleanup(builder);
-                let hp = builder.use_var(self.hp_var);
-                let zb = builder.ins().iconst(types::I64, 0);
-                let tb = builder.ins().iconst(types::I64, 2);
-                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zb, hp, 0);
-                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tb, hp, 8);
-                builder.ins().return_(&[]);
-                self.terminated = true;
+                self.emit_bail_exit(builder);
                 self.goto(builder, cont_blk);
                 builder.def_var(self.rv_i64(ins.a as usize), handle);
                 self.is_bool[ins.a as usize] = false;
@@ -2657,10 +2613,30 @@ impl<'a> Tr<'a> {
                 // key (c) and value (a) must be Int. The IntDict index is loaded
                 // directly with `rv_i64`.
                 if self.int_dict_regs.contains(&target) && !self.is_float[key] && !self.is_bool[key] && !self.is_none[key] {
-                    let fid = self.fid_dict_get;
-                    let f_ref = self.module.declare_func_in_func(fid, builder.func);
+                    // Probe presence first: the interpreter raises
+                    // `key not found` for a missing key, but the JIT cannot
+                    // raise — bail to the interpreter so the exact error
+                    // semantics are preserved (a `-1` fallback would be a
+                    // silently wrong answer).
+                    let fid_has = self.fid_dict_has;
+                    let f_has = self.module.declare_func_in_func(fid_has, builder.func);
                     let d_i = builder.use_var(self.rv_i64(target));
                     let k_i = builder.use_var(self.rv_i64(key));
+                    let call_has = builder.ins().call(f_has, &[d_i, k_i]);
+                    let has = builder.inst_results(call_has)[0];
+                    let zero_i = builder.ins().iconst(types::I64, 0);
+                    let missing = builder.ins().icmp(IntCC::Equal, has, zero_i);
+                    let bail_blk = builder.create_block();
+                    let cont_blk = builder.create_block();
+                    builder.ins().brif(missing, bail_blk, &[], cont_blk, &[]);
+                    self.terminated = true;
+                    builder.seal_block(bail_blk);
+                    builder.seal_block(cont_blk);
+                    self.goto(builder, bail_blk);
+                    self.emit_bail_exit(builder);
+                    self.goto(builder, cont_blk);
+                    let fid = self.fid_dict_get;
+                    let f_ref = self.module.declare_func_in_func(fid, builder.func);
                     let call = builder.ins().call(f_ref, &[d_i, k_i]);
                     let res = builder.inst_results(call)[0];
                     builder.def_var(self.rv_i64(dst), res);
@@ -2698,14 +2674,7 @@ impl<'a> Tr<'a> {
                     builder.seal_block(bail_blk);
                     builder.seal_block(cont_blk);
                     self.goto(builder, bail_blk);
-                    self.emit_int_dict_cleanup(builder);
-                    let hp = builder.use_var(self.hp_var);
-                    let zb = builder.ins().iconst(types::I64, 0);
-                    let tb = builder.ins().iconst(types::I64, 2);
-                    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zb, hp, 0);
-                    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tb, hp, 8);
-                    builder.ins().return_(&[]);
-                    self.terminated = true;
+                    self.emit_bail_exit(builder);
                     self.goto(builder, cont_blk);
                     let call = builder.ins().call(f_get, &[d_i, k_i]);
                     let res = builder.inst_results(call)[0];
@@ -2726,6 +2695,15 @@ impl<'a> Tr<'a> {
                 // tag 2 ??runtime bail; tag 3 ??Bool (0/1). Anything else
                 // (none, a class instance, an unexpected payload) bails to the
                 // interpreter, which runs the function with full semantics.
+                // A class instance / bound method / constructor token / self in
+                // the return slot is never a valid raw Int ??decline (tag=2).
+                if self.instance_regs.contains_key(&(ins.a as usize))
+                    || self.method_regs.contains_key(&(ins.a as usize))
+                    || self.class_ctor_regs.contains_key(&(ins.a as usize))
+                    || self.self_regs.contains(&(ins.a as usize))
+                {
+                    return None;
+                }
                 if self.is_none[ins.a as usize] {
                     // An implicit-None return (class `__init__`s, void-ish
                     // functions). Emit `tag = TAG_NONE`; the value cell is
@@ -2743,15 +2721,9 @@ impl<'a> Tr<'a> {
                     self.emit_return_pair_keep(builder, bits, six, true);
                     return Some(());
                 }
-                // The proto was inferred list-capable at plan time, but the
-                // returned register carries no static marker: it may still be
-                // an FFI-materialised parameter handle (e.g. `-> xs`). Ask the
-                // runtime which it is; handles get tag=6, plain Ints fall
-                // through to the numeric paths. Semantics are preserved by
-                // the caller either way (a tag=6 that fails materialisation
-                // declines the JIT slot).
-                let proto_may_intlist = (self.ret_kinds.get(&self.proto_index).copied().unwrap_or(0) & RET_INTLIST) != 0;
-                if proto_may_intlist
+                // The plan-time analysis is a hint, not a sentence: the
+                // runtime tag probe decides Int vs IntVec.
+                if true
                     && !self.is_none[ins.a as usize]
                     && !self.is_float[ins.a as usize]
                     && !self.is_bool[ins.a as usize]
@@ -2897,247 +2869,6 @@ struct RangePatch {
     argpos1: usize,
 }
 
-/// Where the `floor(sqrt(int_expr))` argument comes from.
-#[derive(Clone, Copy)]
-enum IntArgSrc {
-    Local(usize),
-    Param(usize),
-    ConstInt(i64),
-}
-
-/// Matches the exact bytecode shape of a single-argument math intrinsic
-/// (floor(sqrt(x)) or sin(x)) with an Int argument and one Float result.
-/// Recognized as an intrinsic and emitted directly as f64 math.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum UnaryFloatKind {
-    FloorSqrt,
-    Sin,
-}
-#[derive(Clone, Copy)]
-struct UnaryFloatPatch {
-    /// which intrinsic call this is
-    kind: UnaryFloatKind,
-    /// the intrinsic Call's destination register (the Float result).
-    ret_reg: u8,
-    arg: IntArgSrc,
-}
-
-/// Scan back from `ip` for exactly `call1; call2` `floor(sqrt(x))`.
-/// Falls back to interpreter eligibility on any unexpected shape.
-fn match_math_sin(
-    code: &[Ins],
-    arena: &[String],
-    proto: &Proto,
-    program: &Program,
-    ip: usize,
-) -> Option<UnaryFloatPatch> {
-    if ip < 6 {
-        return None;
-    }
-    let call = code.get(ip)?;
-    if call.op != Op::Call || call.d != 1 {
-        return None;
-    }
-    // window of 7 instructions ending at `ip`:
-    // LoadName math; GetAttr sin; Unwrap; ArgBegin 1; arg; ArgPos; Call
-    let wn = |off: usize| {
-        ip.checked_sub(7 - off).and_then(|at| code.get(at).copied())
-    };
-    let m = wn(1)?;
-    if m.op != Op::LoadName || arena.get(m.d as usize)?.as_str() != "math" {
-        return None;
-    }
-    let g = wn(2)?;
-    if g.op != Op::GetAttr || arena.get(g.d as usize)?.as_str() != "sin" {
-        return None;
-    }
-    if g.a != m.a || g.b != m.a {
-        return None;
-    }
-    let u = wn(3)?;
-    if u.op != Op::Unwrap || u.a != g.a {
-        return None;
-    }
-    // [3] ArgBegin 1
-    let ab = wn(4)?;
-    if ab.op != Op::ArgBegin || ab.d != 1 {
-        return None;
-    }
-    // [4] arg ??Int-typed only. Float promotion is not handled here.
-    let argsrc: IntArgSrc;
-    let arreg: u8;
-    let arg_ins = wn(5)?;
-    match arg_ins.op {
-        Op::LoadLocal => {
-            let slot = arg_ins.d as usize;
-            if slot >= proto.locals.len() {
-                return None;
-            }
-            argsrc = IntArgSrc::Local(slot);
-            arreg = arg_ins.a;
-        }
-        Op::LoadName => {
-            let name = arena.get(arg_ins.d as usize)?.as_str();
-            let pos = proto
-                .params
-                .iter()
-                .position(|p| program.names.get(p.name).map(|s| s.as_str()) == Some(name))?;
-            argsrc = IntArgSrc::Param(pos);
-            arreg = arg_ins.a;
-        }
-        Op::LoadConst => {
-            let idx = proto.consts.get(arg_ins.d as usize)?;
-            match program.consts.get(*idx) {
-                Some(Constant::Int(n)) => {
-                    argsrc = IntArgSrc::ConstInt(*n);
-                    arreg = arg_ins.a;
-                }
-                _ => return None,
-            }
-        }
-        _ => return None,
-    }
-    // [5] ArgPos with the arg register
-    let ap = wn(6)?;
-    if ap.op != Op::ArgPos || ap.a != arreg {
-        return None;
-    }
-    // the Call itself is `ip`; verify the callee register
-    let fl = wn(7)?;
-    if fl.op != Op::Call || fl.d != 1 || fl.a != call.a || fl.b != g.a {
-        return None;
-    }
-    Some(UnaryFloatPatch {
-        kind: UnaryFloatKind::Sin,
-        ret_reg: call.a,
-        arg: argsrc,
-    })
-}
-fn match_floor_sqrt(
-    code: &[Ins],
-    arena: &[String],
-    proto: &Proto,
-    program: &Program,
-    ip: usize,
-) -> Option<UnaryFloatPatch> {
-    if ip < 12 {
-        return None;
-    }
-    let floor_call = code.get(ip)?;
-    if floor_call.op != Op::Call || floor_call.d != 1 {
-        return None;
-    }
-
-    // window of 13 instructions ending at `ip`:
-    let wn = |off: usize| code.get(ip.checked_sub(13 - off)?).copied();
-
-    // window: w(1)=ip-12 ... w(13)=ip
-    let m1 = wn(1)?;
-    if m1.op != Op::LoadName || arena.get(m1.d as usize)?.as_str() != "math" {
-        return None;
-    }
-    // [1] GetAttr floor
-    let g1 = wn(2)?;
-    if g1.op != Op::GetAttr || arena.get(g1.d as usize)?.as_str() != "floor" {
-        return None;
-    }
-    if g1.a != m1.a || g1.b != m1.a {
-        return None;
-    }
-    // [2] Unwrap
-    let u1 = wn(3)?;
-    if u1.op != Op::Unwrap || u1.a != g1.a {
-        return None;
-    }
-    // [3] ArgBegin 1
-    let ab1 = wn(4)?;
-    if ab1.op != Op::ArgBegin || ab1.d != 1 {
-        return None;
-    }
-    // [4] LoadName math
-    let m2 = wn(5)?;
-    if m2.op != Op::LoadName || arena.get(m2.d as usize)?.as_str() != "math" {
-        return None;
-    }
-    // [5] GetAttr sqrt
-    let g2 = wn(6)?;
-    if g2.op != Op::GetAttr || arena.get(g2.d as usize)?.as_str() != "sqrt" {
-        return None;
-    }
-    if g2.a != m2.a || g2.b != m2.a {
-        return None;
-    }
-    // [6] Unwrap
-    let u2 = wn(7)?;
-    if u2.op != Op::Unwrap || u2.a != g2.a {
-        return None;
-    }
-    // [7] ArgBegin 1
-    let ab2 = wn(8)?;
-    if ab2.op != Op::ArgBegin || ab2.d != 1 {
-        return None;
-    }
-    // [8] Int-typed arg
-    let argsrc: IntArgSrc;
-    let arreg: u8;
-    let arg_ins = wn(9)?;
-    match arg_ins.op {
-        Op::LoadLocal => {
-            let slot = arg_ins.d as usize;
-            if slot >= proto.locals.len() {
-                return None;
-            }
-            argsrc = IntArgSrc::Local(slot);
-            arreg = arg_ins.a;
-        }
-        Op::LoadName => {
-            let name = arena.get(arg_ins.d as usize)?.as_str();
-            let pos = proto
-                .params
-                .iter()
-                .position(|p| program.names.get(p.name).map(|s| s.as_str()) == Some(name))?;
-            argsrc = IntArgSrc::Param(pos);
-            arreg = arg_ins.a;
-        }
-        Op::LoadConst => {
-            let idx = proto.consts.get(arg_ins.d as usize)?;
-            match program.consts.get(*idx) {
-                Some(Constant::Int(n)) => {
-                    argsrc = IntArgSrc::ConstInt(*n);
-                    arreg = arg_ins.a;
-                }
-                _ => return None,
-            }
-        }
-        _ => return None,
-    }
-    // [9] ArgPos with the arg register
-    let ap1 = wn(10)?;
-    if ap1.op != Op::ArgPos || ap1.a != arreg {
-        return None;
-    }
-    // [10] Call sqrt (argc 1)
-    let sc = wn(11)?;
-    if sc.op != Op::Call || sc.d != 1 || sc.b != g2.a {
-        return None;
-    }
-    // [11] ArgPos with the sqrt result register
-    let ap2 = wn(12)?;
-    if ap2.op != Op::ArgPos || ap2.a != sc.a {
-        return None;
-    }
-    // the floor Call itself is `ip`; verify the callee register
-    let fl = wn(13)?;
-    if fl.op != Op::Call || fl.d != 1 || fl.a != floor_call.a || fl.b != g1.a {
-        return None;
-    }
-    Some(UnaryFloatPatch {
-        kind: UnaryFloatKind::FloorSqrt,
-        ret_reg: floor_call.a,
-        arg: argsrc,
-    })
-}
-
 fn match_range_for_next(code: &[Ins], arena: &[String], ip: usize) -> Option<RangePatch> {
     let l = code.get(ip)?;
     if l.op != Op::LoadName || arena.get(l.d as usize)?.as_str() != "iter" {
@@ -3186,12 +2917,18 @@ fn match_range_for_next(code: &[Ins], arena: &[String], ip: usize) -> Option<Ran
 /// Monotone Int??????????????????fixpoint over the register file. Determines which
 /// locals hold promoted Float values on at least one execution path.
 /// Registers are Float when any operand/source is Float (Un's promotion
-/// rule), or when they hold the result of one of the recognized intrinsics.
+/// rule).
 // Ret tag bit flags used by analyze_return_kinds.
 const RET_INT: u8 = 0x1;
 const RET_FLOAT: u8 = 0x2;
 const RET_INTLIST: u8 = 0x8;
 const RET_BOOL: u8 = 0x4;
+/// `intlist_regs`/`local_is_list` marker for an *argument* list handle.
+/// The handle is owned by the caller (`jit_fast`): the callee must never
+/// free it (the caller copies contents back into the caller's Un list and
+/// frees it there). Owned arena handles are marker `7`; marker `8` is the
+/// same handle seen through an argument.
+const INTLIST_BORROWED: u8 = 8;
 
 /// Return-kind analysis for every function-proto in `program` ??which tag
 /// kinds each one may produce at `Return`. Program-wide fixpoint because
@@ -3230,9 +2967,15 @@ pub fn analyze_return_kinds(program: &Program) -> HashMap<usize, u8> {
         for proto_index in 0..n {
             let cur_tags = tags.clone();
             if let Some(cur) = analyze_one_proto(program, plan, proto_index, &callee_lookup, &cur_tags) {
-                if cur != tags[&proto_index] {
-                    tags.insert(proto_index, cur);
-                    changed = true;
+                // The tags map must only ever GROW: a callee whose dynamic
+                // result any arm produced a handle is at least INTLIST, and a
+                // growth step can never be undone by a later pass. Making the
+                // step monotone makes the fixpoint terminate and makes the
+                // result independent of pass order.
+                let union = cur | tags[&proto_index];
+                if union != tags[&proto_index] {
+                    tags.insert(proto_index, union);
+                        changed = true;
                 }
             }
         }
@@ -3246,7 +2989,8 @@ pub fn analyze_return_kinds(program: &Program) -> HashMap<usize, u8> {
     for proto_index in 0..n {
         let cur_tags = tags.clone();
         if let Some(cur) = analyze_one_proto(program, plan, proto_index, &callee_lookup, &cur_tags) {
-            tags.insert(proto_index, cur);
+            let union = cur | tags[&proto_index];
+            tags.insert(proto_index, union);
         }
     }
     if std::env::var_os("UV_JIT_DEBUG").is_some() && std::env::var_os("UV_JIT_DEBUG_IF").is_some() {
@@ -3278,23 +3022,6 @@ fn analyze_one_proto(
                 .unwrap_or_else(|| "?".into())
         })
         .collect();
-    let mut intrinsics: HashMap<usize, UnaryFloatPatch> = HashMap::new();
-    let mut consumed: HashSet<usize> = HashSet::new();
-    for ip in 0..code.len() {
-        if let Some(patch) = match_floor_sqrt(code, &arena, proto, program, ip) {
-            for k in (ip - 12)..ip {
-                consumed.insert(k);
-            }
-            intrinsics.insert(ip, patch);
-            continue;
-        }
-        if let Some(patch) = match_math_sin(code, &arena, proto, program, ip) {
-            for k in (ip - 6)..ip {
-                consumed.insert(k);
-            }
-            intrinsics.insert(ip, patch);
-        }
-    }
     let n_regs = code.iter().map(|i| i.a as usize).max().unwrap_or(0) + 1;
     let n_locals = proto.locals.len();
     let mut reg_float = vec![false; n_regs];
@@ -3303,10 +3030,16 @@ fn analyze_one_proto(
     let mut local_bool = vec![false; n_locals];
     let mut reg_list = vec![false; n_regs];
     let mut local_list = vec![false; n_locals];
+    let mut local_param = vec![false; n_locals];
     // Which local slot a register was loaded from (covers the canonical
     // `LoadLocal/Dup/StoreLocal` round-trips for list-typed locals). Used at
     // `Return` to attribute list-ness back onto the returned register.
     let mut reg_slot: Vec<Option<usize>> = vec![None; n_regs];
+    // `param_regs[r]` = the register was populated by a `LoadName` of a
+    // parameter (or is now a copy/read of such a register). Used at
+    // `Op::Return` to attribute list-capability to parameter forwarding
+    // (`-> xs`). A rebind clears the bit.
+    let mut param_regs: Vec<bool> = vec![false; n_regs];
     // Which proto a register currently holds, resolved via LoadName;
     // consumed by Op::Call to propagate the callee's return kinds to the
     // call's destination register. Any op that rebinds the register clears
@@ -3315,11 +3048,10 @@ fn analyze_one_proto(
     // Local slot -> name for every slot the proto ever binds. Used at
     // `LoadName` to remember which slot the name resolves to, so `Return`
     // can attribute list-ness back through the slot (xs -> local 0).
-    // Parameter slots use a sentinel tag so `Return` can treat them the same
-    // way: statically we cannot disprove list-ness from within the proto,
-    // so any unresolved parameter-sourced return claims RET_INTLIST and the
-    // caller degrades to interpreter materialisation on mismatch.
-    const PARAM_SENTINEL: usize = 1usize << 48;
+    // Parameters are recorded on the same map with a sentinel `0usize - 1 - ix`
+    // (never a real slot, because proto.locals.len() is much smaller); the
+    // analyzer only distinguishes "name not found" from a real slot index,
+    // so any consistent hashable key works.
     let mut name_to_slot: HashMap<String, usize> = HashMap::new();
     for (slot, &proto_ix) in proto.locals.iter().enumerate() {
         if let Some(name) = proto
@@ -3330,14 +3062,14 @@ fn analyze_one_proto(
             name_to_slot.entry(name.clone()).or_insert(slot);
         }
     }
-    // when UV_JIT_DEBUG and proto_index == the filtered id.
     for (ix, p) in proto.params.iter().enumerate() {
         let Some(name) = program.names.get(p.name).cloned().map(|s| s) else {
             continue;
         };
-        let entry = PARAM_SENTINEL | ix;
+        let entry = usize::MAX - ix;
         name_to_slot.entry(name).or_insert(entry);
     }
+
     let mut kinds = 0u8;
 
     // Coarse-but-sound extrapolated claim: a proto whose body contains
@@ -3354,22 +3086,15 @@ fn analyze_one_proto(
     // Inner fixpoint: propagate register/local kinds to fixpoint in this proto.
     for _inner in 0..8 {
         let mut gchanged = false;
-        for (ip, ins) in code.iter().enumerate() {
-            if let Some(patch) = intrinsics.get(&ip) {
-                if !reg_float[patch.ret_reg as usize] {
-                    reg_float[patch.ret_reg as usize] = true;
-                    gchanged = true;
-                }
-                continue;
-            }
-            if consumed.contains(&ip) {
-                continue;
-            }
+        for (_ip, ins) in code.iter().enumerate() {
             // Clear stale provenance identities from any register rebound by
             // a non-LoadName op (including intrinsic producers like
             // BuildList). `LoadName`/`Dup`/`StoreLocal`/`Call` maintain
-            // these themselves in their arms.
-            if !matches!(ins.op, Op::LoadName | Op::Dup | Op::Call) {
+            // these themselves in their arms. `param_regs` is set only at
+            // `LoadName` (a parameter is referenced) and is preserved here,
+            // so `Return` can see through the clears — that is what the
+            // parameter-forwarding test relies on.
+            if !matches!(ins.op, Op::LoadName | Op::Dup | Op::Call | Op::StoreLocal | Op::LoadLocal | Op::Return) {
                 let a = ins.a as usize;
                 if a < n_regs {
                     if reg_call[a].is_some() {
@@ -3378,6 +3103,10 @@ fn analyze_one_proto(
                     }
                     if reg_slot[a].is_some() {
                         reg_slot[a] = None;
+                        gchanged = true;
+                    }
+                    if param_regs[a] {
+                        param_regs[a] = false;
                         gchanged = true;
                     }
                 }
@@ -3391,9 +3120,17 @@ fn analyze_one_proto(
                         } else if reg_bool[r] {
                             kinds |= RET_BOOL;
                         } else if reg_list[r] {
+                            // List-typed register straight from a list
+                            // producer. Anything else (including parameter
+                            // forwards, whose runtime value the compiler
+                            // cannot see) is typed INT at plan time and the
+                            // Return emission probes it at run time.
                             kinds |= RET_INTLIST;
                         } else {
                             kinds |= RET_INT;
+                        }
+                        if std::env::var_os("UV_JIT_DEBUG_IF").is_some() {
+                            eprintln!("JITDBG ret arm proto={proto_index} r={r} reg_list={} param_regs={} kinds={kinds:#x}", reg_list[r], param_regs[r]);
                         }
                         gchanged = true;
                     }
@@ -3475,6 +3212,7 @@ fn analyze_one_proto(
                         reg_bool[a] = false;
                         gchanged = true;
                     }
+                    param_regs[a] = false;
                 }
                 Op::Slice => {
                     // A slice of a list-typed receiver is a list handle.
@@ -3493,6 +3231,7 @@ fn analyze_one_proto(
                         reg_bool[a] = false;
                         gchanged = true;
                     }
+                    param_regs[a] = false;
                 }
                 Op::Call => {
                     let a = ins.a as usize;
@@ -3531,15 +3270,21 @@ fn analyze_one_proto(
                             gchanged = true;
                         }
                     }
+                    param_regs[a] = false;
                     reg_call[a] = None;
                 }
                 Op::LoadName => {
                     // If the name is a known callee in this program, borrow its kinds
                     let name = arena.get(ins.d as usize)?.to_string();
+                    let was_param = name_to_slot.get(&name).map(|&s| s >= n_locals).unwrap_or(false);
                     if let Some(&slot) = name_to_slot.get(&name) {
                         reg_slot[ins.a as usize] = Some(slot);
                     } else {
                         reg_slot[ins.a as usize] = None;
+                    }
+                    param_regs[ins.a as usize] = was_param;
+                    if was_param {
+                        gchanged = true;
                     }
                     if let Some(&callee) = callee_lookup.get(&name) {
                         reg_call[ins.a as usize] = Some(callee);
@@ -3595,6 +3340,10 @@ fn analyze_one_proto(
                             reg_list[a] = want;
                             gchanged = true;
                         }
+                        if param_regs[a] != local_param[slot] {
+                            param_regs[a] = local_param[slot];
+                            gchanged = true;
+                        }
                     }
                 }
                 Op::Add | Op::Sub | Op::Mul => {
@@ -3614,6 +3363,7 @@ fn analyze_one_proto(
                         reg_list[a] = false;
                         gchanged = true;
                     }
+                    param_regs[a] = false;
                 }
                 Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq | Op::Ne => {
                     let a = ins.a as usize;
@@ -3649,6 +3399,7 @@ fn analyze_one_proto(
                     let a = ins.a as usize;
                     let b = ins.b as usize;
                     reg_slot[a] = reg_slot[b];
+                    param_regs[a] = param_regs[b];
                     if reg_float[a] != reg_float[b] {
                         reg_float[a] = reg_float[b];
                         gchanged = true;
@@ -3680,6 +3431,10 @@ fn analyze_one_proto(
                             local_list[slot] = true;
                             gchanged = true;
                         }
+                        if param_regs[a] && !local_param[slot] {
+                            local_param[slot] = true;
+                            gchanged = true;
+                        }
                     }
                 }
                 _ => {}
@@ -3695,8 +3450,15 @@ fn analyze_one_proto(
     if claims_intlist {
         kinds |= RET_INTLIST;
     }
+    // Note: a parameter-forward-only return may still produce a list handle
+    // at run time; the Return emission probes the register and tags=6 vs 0,
+    // so a homogeneous RET_INT claim here is safe — a mismatched dynamic arm
+    // costs one bail, never a wrong answer.
     if std::env::var_os("UV_JIT_DEBUG").is_some() && std::env::var_os("UV_JIT_DEBUG_IF").is_some() {
         eprintln!("JITDBG analyze_one proto={proto_index} kinds={kinds:#x}");
+    }
+    if std::env::var_os("UV_JIT_DEBUG_IF").is_some() {
+        eprintln!("JITDBG analyze_one-full proto={proto_index} kinds={kinds:#x}");
     }
     Some(kinds)
 }
@@ -3705,8 +3467,6 @@ fn compute_local_float(
     code: &[Ins],
     proto: &Proto,
     program: &Program,
-    intrinsics: &HashMap<usize, UnaryFloatPatch>,
-    consumed: &HashSet<usize>,
 ) -> Vec<bool> {
     let n_regs = code.iter().map(|i| i.a as usize).max().unwrap_or(0) + 1;
     let n_locals = proto.locals.len();
@@ -3714,14 +3474,7 @@ fn compute_local_float(
     loop {
         let mut changed = false;
         let mut reg_float = vec![false; n_regs];
-        for (ip, ins) in code.iter().enumerate() {
-            if let Some(patch) = intrinsics.get(&ip) {
-                reg_float[patch.ret_reg as usize] = true;
-                continue;
-            }
-            if consumed.contains(&ip) {
-                continue;
-            }
+        for (_ip, ins) in code.iter().enumerate() {
             match ins.op {
                 Op::LoadConst => {
                     let is_f = matches!(
@@ -3748,7 +3501,7 @@ fn compute_local_float(
                     reg_float[ins.a as usize] = reg_float[ins.b as usize];
                 }
                 Op::Unwrap => {
-                    reg_float[ins.a as usize] = reg_float[ins.a as usize];
+                    // Register move with unchanged float-kind; nothing to track.
                 }
                 Op::StoreLocal => {
                     let slot = ins.d as usize;
@@ -3874,8 +3627,8 @@ pub fn emit_fn_in_module(
     fid_dict_empty: cranelift_module::FuncId,
     fid_dict_set: cranelift_module::FuncId,
     fid_dict_get: cranelift_module::FuncId,
+    fid_dict_has: cranelift_module::FuncId,
     fid_dict_free: cranelift_module::FuncId,
-    fid_sin: cranelift_module::FuncId,
     fid_int_get: cranelift_module::FuncId,
     fid_int_ok_name: cranelift_module::FuncId,
     fid_int_set_name: cranelift_module::FuncId,
@@ -3946,52 +3699,13 @@ pub fn emit_fn_in_module(
         }
     }
 
-    // ---------- pass 2b: match floor(sqrt(int)) intrinsics ----------
-    let mut intrinsics: HashMap<usize, UnaryFloatPatch> = HashMap::new();
-    let mut consumed: HashSet<usize> = HashSet::new();
-    for ip in 0..code.len() {
-        if let Some(p) = match_floor_sqrt(code, &arena, proto, program, ip) {
-            // the intrinsic emits the whole 13-instruction window; anything
-            // matched inside the window must not be emitted separately
-            for k in (ip - 12)..ip {
-                consumed.insert(k);
-            }
-            intrinsics.insert(ip, p);
-            continue;
-        }
-        if let Some(p) = match_math_sin(code, &arena, proto, program, ip) {
-            // the intrinsic emits the whole 7-instruction window; anything
-            // matched inside the window must not be emitted separately
-            for k in (ip - 6)..ip {
-                consumed.insert(k);
-            }
-            intrinsics.insert(ip, p);
-        }
-    }
-
     // ---------- pass 2c: Int??????????????????promotion fixpoint ----------
-    let local_float = compute_local_float(code, proto, program, &intrinsics, &consumed);
-    // Float-const-bearing range-loops are no longer rejected wholesale. The
-    // per-candidate catch_unwind above converts any SSA-type mismatch into a
-    // bail-stub for just this proto, so the rest of the module still gets
-    // native code. If this proto panics, it falls back to the interpreter.
-    // reject a floor(sqrt()) whose Int argument is a promoted local ? the
-    // window previously matched with only Int assumptions
-    for &p in intrinsics.values() {
-        if let IntArgSrc::Local(slot) = p.arg {
-            if slot < local_float.len() && local_float[slot] {
-                return None;
-            }
-        }
-    }
-    // If the function contains no user-call sites (other than intrinsic
-    // floor/sqrt patches), there is no chance of infinite recursion through
-    // the JIT, so skip the depth bookkeeping on entry/exit. Otherwise take
-    // the safe path: a user-call site may recurse (fib/sum), so we must
-    // guard against native stack overflow.
-    let has_user_call = code.iter().enumerate().any(|(ip, ins)| {
-        ins.op == Op::Call && !intrinsics.contains_key(&ip)
-    });
+    let local_float = compute_local_float(code, proto, program);
+    // If the function contains no user-call sites, there is no chance of
+    // infinite recursion through the JIT, so skip the depth bookkeeping on
+    // entry/exit. Otherwise take the safe path: a user-call site may recurse
+    // (fib/sum), so guard against native stack overflow.
+    let has_user_call = code.iter().any(|ins| ins.op == Op::Call);
 
     // ---------- pass 3: build the Cranelift context ----------
     let mut fun_ctx = module.make_context();
@@ -4153,8 +3867,6 @@ pub fn emit_fn_in_module(
         arena,
         param_pos,
         patches,
-        intrinsics,
-        skip_ips: consumed,
         f64_vars,
         arity,
         locals_len,
@@ -4190,8 +3902,8 @@ pub fn emit_fn_in_module(
         fid_dict_empty,
         fid_dict_set,
         fid_dict_get,
+        fid_dict_has,
         fid_dict_free,
-        fid_sin,
         fid_int_get,
         fid_int_ok_name,
         fid_int_set_name,
@@ -4215,6 +3927,8 @@ pub fn emit_fn_in_module(
         class_desc_ids,
         intlist_regs: HashMap::new(),
         local_is_list: vec![0u8; locals_len],
+        param_regs: HashSet::new(),
+        local_borrow_raw: vec![false; locals_len],
         len_regs: HashSet::new(),
         list_add_regs: HashMap::new(),
         intlist_iter_regs: HashSet::new(),

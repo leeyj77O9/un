@@ -53,8 +53,11 @@ pub struct JitEntry {
 // shared memory, and there is no contention.
 pub static JIT_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 // Cached copy of `world::max_recursion_depth()`. Refreshed by
-// `sync_max_jit_depth()` so the hot path never borrows `WORLD`.
-pub static JIT_MAX_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+// `sync_max_jit_depth()` so the hot path never borrows `WORLD`. Initialised
+// to the default interpreter bound: an embedder that never calls
+// `world::reset()` must not end up with an unlimited native recursion guard.
+pub static JIT_MAX_DEPTH: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(crate::runtime::function::MAX_RECURSION_DEPTH);
 
 /// Refresh the JITed bound after a `set_max_recursion_depth()` call.
 pub(crate) fn sync_max_jit_depth(depth: usize) {

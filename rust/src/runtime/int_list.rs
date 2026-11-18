@@ -43,6 +43,13 @@ fn arena() -> MutexGuard<'static, IntListArena> {
 const ID_BASE: i64 = 1i64 << 62;
 const KIND_OUTER: u8 = 4;
 
+/// The lowest value that may ever be a live arena handle. Callers passing
+/// raw Ints into the JIT must reject `v >= id_base()` — otherwise the Int
+/// could alias an arena handle.
+pub(crate) const fn id_base() -> i64 {
+    ID_BASE
+}
+
 fn id_of(idx: usize) -> i64 {
     idx as i64 + ID_BASE
 }
@@ -323,8 +330,9 @@ impl IntListArena {
             return false;
         };
         if list.refs > 0 {
-            // Owned by at least one `KIND_OUTER` list; release the parent's
-            // reference and keep the slot live for the other owners.
+            // Owned by at least one `KIND_OUTER` list; release this reference
+            // and keep the slot live for the other owners (and for parents
+            // whose items still hold the handle).
             self.slots[idx].as_mut().map(|l| l.refs -= 1);
             return true;
         }
@@ -333,6 +341,10 @@ impl IntListArena {
 
     /// Drop the slot unconditionally, recurring into outer children. Used
     /// when the caller (bulk teardown) knows no one else references it.
+    /// Children are dropped through the refcounted `free` — a row shared
+    /// with another outer must not vanish from under it (that would corrupt
+    /// the surviving parent's view; the refcounted path keeps the slot as a
+    /// valid tombstone for the interpreter fallback).
     fn free_force(&mut self, id: i64) -> bool {
         let Some(idx) = decode(id) else {
             return false;
@@ -344,9 +356,10 @@ impl IntListArena {
             Some(l) => {
                 if l.kind == KIND_OUTER {
                     for child in l.items {
-                        // Parent owns the children; force-drop them so a
-                        // ref-count anchored by the parent doesn't leak.
-                        let _ = self.free_force(child);
+                        // Parent owns the children; drop through the
+                        // refcounted path so shared rows survive for
+                        // their other parents.
+                        let _ = self.free(child);
                     }
                 }
                 true
@@ -558,6 +571,100 @@ pub(crate) fn snapshot(v: i64) -> Option<Vec<Obj>> {
     )
 }
 
+/// Rebuild the entire tree behind `handle` into a fresh tree of Un objects.
+/// Used by the JIT argument write-back; `None` when any part is poisoned.
+fn snapshot_list(v: i64) -> Option<Obj> {
+    snapshot(v).map(crate::runtime::collections::list)
+}
+
+/// Copy the contents of the arena list `handle` back into the Un list object
+/// `orig`, in place. Flat Int/Bool lists take their elements wholesale;
+/// `KIND_OUTER` lists merge row by row, recursing into inner Un lists when
+/// they are still lists, so identity of the caller's lists is preserved
+/// where the shape did not change. Inner positions the JIT cannot model
+/// (mixed rows, a scalar row spliced in, a list row replacing a scalar) are
+/// replaced with a freshly built list instead.
+///
+/// Call only after a successful `snapshot(handle)` preflight; the mutation
+/// step cannot fail afterwards (the tree was fully validated and no arena
+/// slot is re-read while mutating Un objects).
+fn write_back(orig: &Obj, handle: i64) -> bool {
+    enum Level {
+        Flat(bool, Vec<i64>),
+        Outer(Vec<i64>),
+    }
+    let level = {
+        let slots = arena();
+        match slots.get(handle) {
+            Some(l) => match l.kind {
+                KIND_OUTER => Level::Outer(l.items.clone()),
+                0 => Level::Flat(false, Vec::new()),
+                1 => Level::Flat(false, l.items.clone()),
+                2 => Level::Flat(true, l.items.clone()),
+                _ => return false, // poisoned
+            },
+            None => return false,
+        }
+    };
+    let crate::runtime::obj::Payload::List(cell) = obj::payload(orig) else {
+        return false;
+    };
+    let mut items = cell.borrow_mut();
+    match level {
+        Level::Flat(bools, elems) => {
+            let new_items: Vec<Obj> = elems
+                .into_iter()
+                .map(|i| {
+                    if bools {
+                        obj::boolean(i != 0)
+                    } else {
+                        crate::runtime::world::int_cached(i)
+                    }
+                })
+                .collect();
+            *items = new_items;
+            true
+        }
+        Level::Outer(rows) => {
+            let common = items.len().min(rows.len());
+            for i in 0..common {
+                let row = rows[i];
+                if matches!(obj::payload(&items[i]), crate::runtime::obj::Payload::List(_)) {
+                    let child = items[i].clone();
+                    if write_back(&child, row) {
+                        continue;
+                    }
+                }
+                match snapshot_list(row) {
+                    Some(list) => items[i] = list,
+                    None => return false, // unreachable after preflight
+                }
+            }
+            for &row in rows.iter().skip(common) {
+                match snapshot_list(row) {
+                    Some(list) => items.push(list),
+                    None => return false, // unreachable after preflight
+                }
+            }
+            items.truncate(rows.len());
+            true
+        }
+    }
+}
+
+/// Write the current contents of the arena list `handle` back into the Un
+/// list object `orig`. Returns `false` (leaving `orig` untouched) when the
+/// tree is no longer fully materialisable; callers must not use the JIT
+/// result in that case.
+pub(crate) fn sync_into(orig: &Obj, handle: i64) -> bool {
+    // Preflight: validate the whole tree before touching any Un object so a
+    // poisoned or dead subtree cannot leave `orig` half-written.
+    if snapshot(handle).is_none() {
+        return false;
+    }
+    write_back(orig, handle)
+}
+
 /// Materialise an `Obj::List` of all-Int/all-Bool values into a fresh
 /// IntVec handle; mixed elements decline with `None`. Public to the FFI
 /// layer (`jit_fast`); used when the interpreter passes a list into a
@@ -640,7 +747,7 @@ pub extern "C" fn un_list_int_set(v: i64, idx: i64, value: i64, is_bool: i64) ->
         slots.slots[value_idx].as_mut().map(|c| c.refs += 1);
         if let Some(old_idx) = decode(old).and_then(|i| i.checked_sub(1)) {
             if old_idx != v_idx && old_idx < slots.slots.len() {
-                slots.slots[old_idx].as_mut().map(|c| c.refs -= 1);
+                slots.slots[old_idx].as_mut().map(|c| c.refs = c.refs.saturating_sub(1));
             }
         }
         return value;

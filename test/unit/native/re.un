@@ -28,6 +28,10 @@ assert.assert_eq(re.replace("a", "abc", "X"), "Xbc", "replace first")
 assert.assert_eq(re.replace("z", "abc", "X"), "abc", "replace miss keeps text")
 assert.assert_eq(re.replace_all("a", "aaa", "X"), "XXX", "replace_all every match")
 assert.assert_eq(re.replace_all("a", "aaa", ""), "", "replace_all with empty replacement")
+# fast-path (DFA-shaped) pattern with a $0 backreference expands to the whole match
+assert.assert_eq(re.replace_all("[0-9]+", "abc123def45", "[$0]"), "abc[123]def[45]", "fast-path $0 expands to the match")
+assert.assert_eq(re.replace_all("[0-9]+", "abc123def45", "(${0})"), "abc(123)def(45)", "fast-path ${0} expands to the match")
+assert.assert_eq(re.replace_all("[0-9]+", "1234567", "$0-$0"), "1234567-1234567", "fast-path $0 repeated")
 
 # ---------- 분할 ----------
 assert.assert_eq(re.split("\\d", "a1b2"), ["a", "b", ""], "split on digits")
