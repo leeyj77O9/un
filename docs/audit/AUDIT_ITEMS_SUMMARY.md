@@ -19,8 +19,8 @@
   `docs/audit/AUDIT_ITEM1.md`에 상세 기록.
 - **부작용**: bench 기준 `fib24`는 JIT 유지(1.3–1.9ms). `qsort500`/`mergesort1000`은
   인터프리터 속도(17ms/11ms) — 결과는 정확함.
-- **검증**: `scripts/test.ps1` Positive **1482 passed / 0 failed / 0 crashed**,
-  `scripts/differential.ps1` **87 files, 0 differences**.
+- **검증**: `scripts/test.ps1` Positive **1493 passed / 0 failed / 0 crashed**,
+  `scripts/differential.ps1` **88 files, 0 differences**.
 - **측정**: 14개 벤치마크 중 수치는 AUDIT_FINAL.md §4 갱신 참조 예정.
 
 ## Item 2 — `scope::snapshot`의 slots/slot_scope clone 축소 (A31) ✅ 미수정 — 측정 후 종결
@@ -62,5 +62,13 @@ TD-47에 "`io.open("rw")`가 `r`처럼 동작한다"고 잘못 적었을 가능�
 ## 종합
 
 세 항목은 "현재 상태가 적절한 이유"가 근거로 확인되고, item 1만 수정이 적용되었다.
-변경 내용은 `git diff`(사용자 미커밋 변경 보존), 검증은 `scripts/test.ps1` (1482/0),
+변경 내용은 `git diff`(사용자 미커밋 변경 보존), 검증은 `scripts/test.ps1` (1493/0),
 `scripts/differential.ps1` (87/0)로 확인했다.
+
+## Addendum (2026-11-19): Item 1 RESOLVED
+The investigation above describes the state before the fix. See docs/audit/AUDIT_ITEM1.md addendum:
+- Call sites accept RET_INT|RET_INTLIST (0x9): tag==6 or (tag==0 and value<ID_BASE), else bail (tag=2). Destination marked INTLIST_UNION; intrinsics probe is_handle at run time, Int arith rejects via int_dict_seen, Return strips the marker and re-tags by probing.
+- bench (unjit): qsort500 16.6 -> 0.84 ms, mergesort1000 17.5 -> 1.52 ms.
+- differential 88/88 (new test/unit/runtime/union_calls.un); suite 1493 assertions; cargo 210/210.
+- Remaining: iter.range(1, len(xs)) nested call args still out of the Int-JIT; Float|Int and other holed unions unchanged.
+

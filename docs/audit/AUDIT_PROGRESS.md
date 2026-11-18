@@ -1,4 +1,4 @@
-﻿# AUDIT_PROGRESS.md — Phase 4 진행 기록
+# AUDIT_PROGRESS.md — Phase 4 진행 기록
 
 작성: 2026-11-18. Phase 3 계획(`AUDIT_PLAN.md`)에 따라 우선순위별 수정을 적용하고,
 각 단계마다 빌드/테스트를 반복했다. 기준: `main` @ `2f67935` + 사용자 미커밋 변경 유지.
@@ -140,7 +140,7 @@
 - `cargo test --release --workspace` — **210/210 통과** (unvm 205 + playground 5).
 - `cargo test --release --workspace` ? **210/210 통과** (unvm 205 + playground 5).
   Negative 41 matched / 0 mismatched; Known 0; exit 0.
-- `scripts/differential.ps1` — **87 files, 0 differences**.
+- `scripts/differential.ps1` — **88 files, 0 differences**.
 - `scripts/unbc-roundtrip.ps1 -IncludeNegative` — Positive **46/46 identical**, Negative 34 identical.
 - `wasm32-unknown-unknown` playground 빌드 성공.
 - `wasm32-unknown-unknown` playground build 성공.

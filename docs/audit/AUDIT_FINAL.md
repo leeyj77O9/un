@@ -1,4 +1,4 @@
-﻿# AUDIT_FINAL.md — Un 프로젝트 감사 최종 보고서
+# AUDIT_FINAL.md — Un 프로젝트 감사 최종 보고서
 
 작성: 2026-11-18. 기준: `main` @ `2f67935` + 워킹 트리의 사용자 미커밋 변경 유지.
 감사 문서: `AUDIT.md`(Phase 1 구조/기준선), `AUDIT_FINDINGS.md`(발견 사항),
@@ -15,15 +15,14 @@
 | 항목 | 평가 |
 | --- | --- |
 | 아키텍처 | 파이프라인(`lex → parse → optimize → compile → unbc → validate → register VM / Cranelift JIT`)이 잘 분리돼 있다. `Op`의 `#[repr(u8)]` 계약, `.unbc` 왕복 검증, differential 러너 등 검증 체계가 강하다. |
-| 구현 완성도 | 언어 전반부(클래스/상속/enum/match/예외/이터레이터)까지 동작하는 유례없는 초기 단계 언어치고 완성도가 높다. Rust 205 unit tests + 46 `.un` suite 파일(1482 assertions) + differential + unbc byte-compare. |
+| 구현 완성도 | 언어 전반부(클래스/상속/enum/match/예외/이터레이터)까지 동작하는 유례없는 초기 단계 언어치고 완성도가 높다. Rust 205 unit tests + 47 `.un` suite 파일(1493 assertions) + differential + unbc byte-compare. |
 | 코드 품질 | 일관된 Rust 스타일, `RefCell` 소유권 승인, Error는 언어 error object로 통일 (`LangError`). Clippy 경고는 대부분 pedantic하고, 오류는 0개. |
-| 안정성 | 감사 전에는 실 입력에서 프로세스 abort/UB에 이르는 결함 다수 (아래 §2). 수정 후에는 `cargo test` 210/210, suite 1482/1482, differential 87/87, 비정상 종료 0건. |
-| 성능 | Int-JIT은 동질 Int 반환 proto에서 잘 작동한다(`call200000` 0.7ms vs 이전 인터프리터 ~211ms; fib24 ~1.9ms JIT 유지). 이종 반환 proto(qsort500/mergesort1000)는 태그 계약 유지 조건상 인터프리터로 fallback한다 — 정확성 우선, 결과값은 정확함. 대부분의 Int/Float 계산 벤치는 개선되거나 동일하다. 나머지 회귀는 사용자의 JIT 개선(dual-tag)으로 되돌릴 수 있다. |
+| 안정성 | 감사 전에는 실 입력에서 프로세스 abort/UB에 이르는 결함 다수 (아래 §2). 수정 후에는 `cargo test` 210/210, suite 1493/1493, differential 88/88, 비정상 종료 0건. |
+| Summary | Int-JIT decodes pure-Int protos natively (fib24 ~2.5ms JIT kept; call200000 ~1.8ms). **qsort500/mergesort1000 are back on the JIT too (2026-11-19, item 1 resolved: the Int-lane union RET_INT|RET_INTLIST = 0x9 is accepted at call sites via a runtime tag probe).** Remaining heterogeneous protos (Float|Int etc.) still fall back to the interpreter. Verified by the gates (differential 88 files / 0 differences, suite 1493 assertions incl. union_calls 11). Scope: the Int subset + IntList intrinsics only. |
 | 확장성 | JIT 범위가 Int/Float 부분집합으로 한정돼 있어 가장 큰 체계적 위험(tag 계약)이 드러났다. 타입 확장은 별도 프로젝트. |
-> **핵심 리스크(감사 후)**: JIT는 이제 정확하지만, 이종(heterogeneous) 반환 proto는
-> 인터프리터로 fallback한다 (fib24는 JIT 유지, qsort500/mergesort1000은 fallback).
-> 정확성은 확보했고, 언어 semantics는 보존됐다. 이종 반환 회복은 dual-tag emission
-> 에 대한 별도 작업이 필요하다.
+> **Remaining limitation (2026-11-19, after item 1)**: only the pure Int-lane union
+> RET_INT|RET_INTLIST (0x9) is admitted. Float|Int / Bool|numeric / other holed unions are
+> still rejected to the interpreter. A dual-suffix emission remains the principled solution.
 ## 2. 발견한 문제
 
 ID는 `AUDIT_FINDINGS.md`와 동일. **심각도**는 P0(크래시/UB/손상) / P1(의미론/보안) / P2(성능·유지보수) / P3(정리).
@@ -90,9 +89,9 @@ ID는 `AUDIT_FINDINGS.md`와 동일. **심각도**는 P0(크래시/UB/손상) / 
   알려진 문제만 처리"한 결과다.
 - **`cargo test`가 녹색이었어도 언어 semantics는 깨져 있었다**: `enum` 접근 공개 API가
   동작하지 않았고, `fs.move(dir, existing-file)`이 데이터를 잃고 성공을 보고하고,
-  `str({"k": Boom()})`이 프로세스를 abort했다. 46개 suite 파일, 1482 assertions가
+  `str({"k": Boom()})`이 프로세스를 abort했다. 46개 suite 파일, 1493 assertions가
   이 보호망을 감지하지 못했다.
-- **differential runner는 JIT를 증명하지 못한다**: "87 files, 0 differences"는 둘 중
+- **differential runner는 JIT를 증명하지 못한다**: "88 files, 0 differences"는 둘 중
   어느 쪽도 semantic miscompile이 없었음을 의미할 뿐, "JIT가 컴파일되는 코드가 실제로
   이종(0x9)로 인식되어 거부된다. 이 사실 자체는 로그(`UV_JIT_DEBUG=1`)에 남으며,
   qsort500 JIT가 거부됐고, 이 사실이 로그에만 남는다.
@@ -171,8 +170,8 @@ ID는 `AUDIT_FINDINGS.md`와 동일. **심각도**는 P0(크래시/UB/손상) / 
 |---|---|---|
 | `cargo build --release` | exit 0, rustc 경고 0 | GNU toolchain |
 | `cargo test --release --workspace` | **210 passed, 0 failed** | unvm 205 + playground 5 |
-| `scripts/test.ps1` (전체) | **Positive 46 files / 1482 passed / 0 failed / 0 crashed; Negative 41 matched / 0 mismatched / 0 divergences; Known 0; exit 0** | 신규 회귀 6파일 포함 |
-| `scripts/differential.ps1` | **87 files, 0 differences** | 신규 파일 포함 |
+| `scripts/test.ps1` (전체) | **Positive 47 files / 1493 passed / 0 failed / 0 crashed; Negative 41 matched / 0 mismatched / 0 divergences; Known 0; exit 0** | 신규 회귀 6파일 포함 |
+| `scripts/differential.ps1` | **88 files, 0 differences** | 신규 파일 포함 |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **46/46 identical**; Negative 34 identical, 7 skipped(compile-rejected, 의도된) | |
 | WASM playground build | exit 0 | |
 | playground 단위 테스트 | **5 passed** | sandbox confinement 테스트 추가 |
@@ -187,12 +186,14 @@ ID는 `AUDIT_FINDINGS.md`와 동일. **심각도**는 P0(크래시/UB/손상) / 
 
 ### 해결하지 못한 문제 (또는 의도적으로 보류한 문제)
 
-1. **qsort500/mergesort1000 JIT 복귀는 미완료이다 (fib24는 복구).**
-   원인: `analyze_return_kinds`의 parameter-forwarding speculation(`-> xs`)이 반환 타입을
-   `RET_INTLIST`로 추측해 이종 조합(INT|INTLIST)을 만든다. 기술적 대안(tag-분기 dual-tail
-   생성)은 복잡하고 이번 범위를 벗어난다. 현재 동작은 정확함을 보존하며,
-   `emit_user_call`/`emit_class_method_call`에 `JITREJECT callee_kind=...` 진단이
-   출력된다. 자세한 내용은 docs/audit/AUDIT_ITEMS_SUMMARY.md 참조.
+1. **qsort500/mergesort1000 JIT recovery (RESOLVED, 2026-11-19)**: call sites now accept the
+   heterogeneous `RET_INT|RET_INTLIST` (0x9): the callee `Return` emission probes the register at
+   run time (is_handle) and emits tag 0 (Int) vs 6 (handle), so the site allows tag==6 | (tag==0 & value<ID_BASE);
+   anything else bails to the interpreter (tag=2). The destination register is marked INTLIST_UNION:
+   intrinsics probe is_handle at run time, Int arithmetic rejects via int_dict_seen, and Return strips the
+   UNION marker and re-tags via the runtime probe. Verified: differential 88/88, suite 1493 assertions
+   (union_calls.un adds 11, covering both runtime arms). bench (unjit): qsort500 16.9 -> 0.84 ms,
+   mergesort1000 17.5 -> 1.52 ms. See docs/audit/AUDIT_ITEM1.md addendum.
 2. **`scope::snapshot`의 clone은 `slots` 절반이 읽히지 않는다** (A31, P2). `go`가 많은
    프로그램에서 비용이 크다.
 3. **`.unbc`를 통과한 패닉이 제어 흐름을 깨뜨릴 수 있다** — `validate()`가 `TryEntry`의
@@ -256,11 +257,11 @@ ID는 `AUDIT_FINDINGS.md`와 동일. **심각도**는 P0(크래시/UB/손상) / 
 
 `AUDIT_FINAL.md` §6에 남은 4개 항목을 차례로 진행했다 (`docs/audit/AUDIT_ITEMS_SUMMARY.md`):
 
-- **Item 1 — JIT 이종 반환 (fib24/qsort500/mergesort1000)**: callsite tag 계약을 정확히
-  검사하도록 수정해 fib24는 JIT 유지(~1.9ms). qsort500/mergesort1000은 heterogeneous(0x9)
-  로 인식되어 여전히 인터프리터 fallback — 이종 반환 회복은 `claims_intlist` 분석기의
-  근본 정교화와 dual-tag emission이 필요하며, `docs/audit/AUDIT_ITEM1.md`에 조사 결과와
-  제안을 정리했다. 정확성은 보존됐고 differential/test는 green이다.
+- **Item 1 - JIT heterogeneous returns (fib24/qsort500/mergesort1000)**: **RESOLVED (2026-11-19).**
+  fib24 stays JIT-resident; qsort500 0.84 ms / mergesort1000 1.52 ms via the Int-lane union 0x9 call-site
+  tag probe + `INTLIST_UNION` marker (`test/unit/runtime/union_calls.un`, 11 assertions, both runtime arms;
+  differential 88 files). Note: `iter.range(1, len(xs))` and similar nested-call range arguments remain
+  outside the Int-JIT (interpreter fallback, correct semantics).
 - **Item 2 — `scope::snapshot` clone 축소 (A31)**: 실측 결과(임시 벤치, 3-level 체인·슬롯 20개)
   snapshot 1회 ≈ **40µs**. 캡처 의미론(go 시점 값 보존) 보장이 필요해 slots/slot_scope
   clone은 그대로 유지한다. 수정 없음 — 현 상태가 적절하다.
@@ -269,8 +270,8 @@ ID는 `AUDIT_FINDINGS.md`와 동일. **심각도**는 P0(크래시/UB/손상) / 
 - **Item 4 — `io.open("rw")`**: 이미 올바른 read/write 모드로 구현돼 있고 `io.un` 테스트가
   검증함. 수정 없음 — 이전 감사 기술 파생 오해였다.
 
-**최종 검증**: `cargo test --release --workspace` 210/210, `scripts/test.ps1` **1482 passed / 0 failed / 0 crashed**,
-`scripts/differential.ps1` **87 files, 0 differences**, `scripts/unbc-roundtrip.ps1 -IncludeNegative`
+**최종 검증**: `cargo test --release --workspace` 210/210, `scripts/test.ps1` **1493 passed / 0 failed / 0 crashed**,
+`scripts/differential.ps1` **88 files, 0 differences**, `scripts/unbc-roundtrip.ps1 -IncludeNegative`
 **46/46 identical** (positive), negative 34 identical.
 
 ## 8. 최종 평가

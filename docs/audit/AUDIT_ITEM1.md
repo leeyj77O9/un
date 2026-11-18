@@ -53,9 +53,16 @@ recover qsort either: it is still 0x9 via `claims_intlist`.
   benchmarks ~16ms, results correct, `assert.summary()` 5/5 green.
 - `mergesort1000`: **JIT-rejected** (0x9). Same as qsort.
 - The full test suite / differential remain green:
-  - `scripts/test.ps1`: Positive **46 files / 1482 passed / 0 failed / 0 crashed**;
+  - `scripts/test.ps1`: Positive **47 files / 1493 passed / 0 failed / 0 crashed**;
     Negative 41 matched / 0 mismatched; Known 0; exit 0.
-  - `scripts/differential.ps1`: **87 files, 0 differences**.
+  - `scripts/differential.ps1`: **88 files, 0 differences**.
+
+### Resolution (2026-11-19)
+
+See the addendum above. The 0x9 Int-lane union is now admitted at call
+sites; both runtime arms are covered by `test/unit/runtime/union_calls.un`
+and the benches show qsort500 at 0.84 ms and mergesort1000 at 1.52 ms.
+The sketch below is kept for the remaining (out-of-scope) unions.
 
 ### What a real fix would require
 
@@ -77,3 +84,45 @@ tag-checking logic. Estimated work: moderate (need to extend the register
 state with "reg-reaching-Return" flags). **Recommended next pass** if this
 item is to be revisited — cheaper than dual-tag JIT and fits the existing
 super-set analysis framework.
+
+## Addendum (2026-11-19): Item 1 RESOLVED
+
+### The fix (shipped)
+
+Call sites (`emit_user_call` and `emit_class_method_call`) now accept the
+homogeneous Int-lane union `RET_INT|RET_INTLIST` (0x9):
+
+- The callee `Op::Return` emission already probes `un_list_int_is_handle`
+  at run time for registers with no static marker, so it emits tag 0 (Int) or
+  tag 6 (handle) per actual value. The call site therefore accepts
+  `tag == 6`, or `tag == 0` with `value < ID_BASE`; anything else bails the
+  frame to the interpreter (tag=2).
+- The destination register is marked `INTLIST_UNION` (new marker byte 9, not
+  owned-7): every IntVec intrinsic probes the arena id at run time
+  (`emit_intlist_target` leaves UNION registers to the runtime probe), Int
+  arithmetic rejects via `int_dict_seen`, and `Op::Return` strips the UNION
+  marker so the existing runtime-probe arm re-tags the value (Int tag=0, handle
+  TAG_INTLIST with keep-all-intlist) instead of blindly emitting TAG_INTLIST.
+- Validation: `differential` 88/88 (new `test/unit/runtime/union_calls.un`,
+  both arms, byte-identical UV_JIT=0); suite 47/47 files, 1493 assertions;
+  `cargo test --workspace` 210/210.
+- Benchmarks (`unjit`): `qsort500` 16.6 ms -> **0.84 ms (-94.8%)**,
+  `mergesort1000` 17.5 ms -> **1.52 ms (-85.7%)**, fib24 unchanged.
+
+### Why the first attempt regressed sieve30000 (2.46 -> 4.9 ms)
+
+The initial binding marked the union destination as a plain OWNED IntList
+(marker 7) and let Return emit TAG_INTLIST unconditionally. The FFI boundary
+(`jit_fast`) then ran `snapshot(value)` on what was actually an Int, failed,
+returned None from `jit_fast`, and the interpreter re-executed the frame from
+scratch - running sieve a second time (~2x). The current fix probes at Return
+instead, restoring sieve to 2.45-2.46 ms with no lost precision on the Int arm.
+
+### Remaining limits (not in scope)
+
+- `iter.range(1, len(xs))` and other nested-call range arguments: outside the
+  Int-JIT (`match_range_for_next` cannot skip an `ArgBegin` that opens a
+  nested call), so e.g. `is_sorted` still bails to the interpreter.
+- Float|Int / Bool|numeric unions: unchanged rejection.
+- Heterogeneous tag dispatch beyond the Int lane still requires dual-suffix
+  emission (the original design sketch below).
