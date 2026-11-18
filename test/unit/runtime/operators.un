@@ -1,4 +1,4 @@
-use io
+﻿use io
 use test.assert as assert
 
 # ============================================================
@@ -18,7 +18,7 @@ assert.assert_eq(-7 // 2, -3, "integer division truncates toward zero")
 assert.assert_eq(7 % 3, 1, "modulo")
 assert.assert_eq(-7 % 3, -1, "modulo keeps the sign of the left operand")
 assert.assert_eq(2 ** 3, 8, "power")
-assert.assert_eq(2 ** 3 ** 2, 64, "power is right associative")
+assert.assert_eq(2 ** 3 ** 2, 512, "power is right associative")
 assert.assert_eq(-2 ** 2, 4, "unary minus binds looser than power")
 
 # ---------- 0과 음수 ----------

@@ -1,4 +1,4 @@
-use io
+﻿use io
 use test.assert as assert
 
 # ============================================================
@@ -58,7 +58,7 @@ assert.assert_eq(len((1,)), 1, "single element tuple literal")
 # ---------- 리터럴은 연산 대상이 된다 ----------
 assert.assert_eq(1 + 1e3, 1001, "int and float literal add")
 assert.assert_eq("a" + "b" + "c", "abc", "chained string concat")
-assert.assert_eq(2 ** 3 ** 2, 64, "power is right associative")
+assert.assert_eq(2 ** 3 ** 2, 512, "power is right associative")
 assert.assert_eq(-2 ** 2, 4, "unary minus binds looser than power")
 assert.assert_eq(~5, -6, "bitwise not")
 assert.assert_eq(~~5, 5, "double bitwise not cancels")

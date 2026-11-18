@@ -31,4 +31,18 @@ d[Color.GREEN] = "enum"
 assert.assert_eq(len(d), 1, "enum member is the same key as its integer")
 assert.assert_eq(d[Color.GREEN], "enum", "enum member read back")
 
+# explicit integer literals, including negative and unary values
+enum Signed
+    NEG = -1
+    TERM = 0
+    BIG = 123456789
+    TILDE = ~7
+    PLUS = +3
+
+assert.assert_eq(Signed.NEG, -1, "negative enum value")
+assert.assert_eq(Signed.TERM, 0, "zero enum value")
+assert.assert_eq(Signed.BIG, 123456789, "large enum value")
+assert.assert_eq(Signed.TILDE, -8, "bitwise-not enum value")
+assert.assert_eq(Signed.PLUS, 3, "unary-plus enum value")
+
 assert.summary()

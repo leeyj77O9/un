@@ -28,6 +28,51 @@ assert.assert_eq(c.inc(), 2, "method mutation persists")
 assert.assert_eq(len(c), 2, "__len__ is used by len")
 assert.assert_eq(str(c), "Counter(2)", "__str__ is used by str")
 
+# ---------- 필드 타입 어노테이션 ----------
+class TypedDefaults
+    count: int = 0
+    name: str = "anon"
+    scale: float = 1.5
+
+td = TypedDefaults()
+assert.assert_eq(td.count, 0, "annotated int default reads back")
+assert.assert_eq(td.name, "anon", "annotated str default reads back")
+assert.assert_eq(td.scale, 1.5, "annotated float default reads back")
+
+td2 = TypedDefaults()
+td2.count = 7
+td2.name = "hi"
+td2.scale = 2.5
+assert.assert_eq(td2.count, 7, "annotated int member assignable")
+assert.assert_eq(td2.name, "hi", "annotated str member assignable")
+assert.assert_eq(td2.scale, 2.5, "annotated float member assignable")
+
+class BareTypedFields
+    a: int
+    b: str
+
+bt = BareTypedFields()
+assert.assert_eq(bt.a, none, "bare annotated member loads as none")
+assert.assert_eq(bt.b, none, "bare annotated member loads as none")
+bt.a = 41
+bt.b = "answer"
+assert.assert_eq(bt.a, 41, "bare annotated int stores")
+assert.assert_eq(bt.b, "answer", "bare annotated str stores")
+
+class TypedInherited: TypedDefaults
+    extra: int = 99
+
+ti = TypedInherited()
+assert.assert_eq(ti.count, 0, "inherited annotated member intact")
+assert.assert_eq(ti.extra, 99, "annotated child member reads back")
+
+class AnnotatedInit(x: int, y: int)
+    fn sum()
+        -> self.x + self.y
+
+an = AnnotatedInit(30, 12)
+assert.assert_eq(an.sum(), 42, "class header params with annotations bind the fields")
+
 # ---------- 매직 메서드 ----------
 class Num
     fn __init__(v)

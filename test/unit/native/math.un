@@ -38,6 +38,16 @@ assert.assert_err(fn() -> math.lcm(9223372036854775807, 2), "lcm overflow")
 # ---------- 제곱 (int wrap) ----------
 assert.assert_eq(math.pow(2, 3), 8, "pow small int")
 assert.assert_eq(math.pow(2, 63), 9223372036854775808.0, "pow overflow to float, not saturate")
+assert.assert_eq(type(math.pow(2, 63)), float, "pow at 2^63 is a float, not a truncated int")
+
+# ------ i64::MIN 경계 ------
+int_min = 0 - 9223372036854775807 - 1
+assert.assert_eq(math.abs(int_min), 9223372036854775808.0, "abs(i64::MIN) is the exact float, not i64::MAX")
+assert.assert_eq(type(math.abs(int_min)), float, "abs(i64::MIN) returns a float")
+assert.assert_eq(math.gcd(int_min, int_min), 9223372036854775808.0, "gcd(MIN, MIN) is 2^63 as a float")
+assert.assert_eq(type(math.gcd(int_min, int_min)), float, "gcd(MIN, MIN) returns a float")
+assert.assert_eq(math.gcd(int_min, 5), 1, "gcd(MIN, 5) is 1, not negative")
+assert.assert_eq(math.gcd(int_min, 0), 9223372036854775808.0, "gcd(MIN, 0) is 2^63 as a float")
 
 # ---------- 부호/범위 ----------
 assert.assert_eq(math.sign(-3), -1, "sign negative")

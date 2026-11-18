@@ -53,4 +53,17 @@ assert.assert_eq(mix(41), 42, "Int arm feeds Int arithmetic")
 assert.assert_eq(mix(100), 101, "Int arm at the boundary feeds Int arithmetic")
 assert.assert_err(fn() -> mix(500), "unsupported operand type(s)")
 
+# ---------- list 인자를 IntVec 핸들로 받는 경우 ----------
+fn id_list(xs)
+    -> xs
+
+l = id_list([7, 8, 9])
+assert.assert_eq(len(l), 3, "list argument round-trips through the JIT")
+assert.assert_eq(l[2], 9, "round-tripped list keeps its contents")
+
+fn list_plus_one(xs)
+    -> xs + 1
+
+assert.assert_err(fn() -> list_plus_one([1, 2, 3]), "unsupported operand type(s)")
+
 assert.summary()

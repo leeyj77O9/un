@@ -37,4 +37,24 @@ x = 7
 x *= 6
 assert.assert_eq(x, 42, "compound on a plain local")
 
+# typed compound assignment (`x: int += 1`) must reach codegen
+fn bump_typed()
+    y: int := 1
+    y: int += 2
+    y: int *= 3
+    -> y
+assert.assert_eq(bump_typed(), 9, "typed compound assignment works inside functions")
+
+fn typed_prop_bump()
+    self_v := Foo(1)
+    self_v.v: int += 10
+    -> self_v.v
+assert.assert_eq(typed_prop_bump(), 11, "typed property compound assignment works")
+
+# typed compound at module level
+w: int := 10
+w: int += 5
+w: int *= 2
+assert.assert_eq(w, 30, "typed compound assignment works at module level")
+
 assert.summary()

@@ -1,0 +1,9 @@
+﻿use io
+
+try
+    panic("x")
+catch e
+    io.write("a\n")
+catch e2
+    io.write("b\n")
+

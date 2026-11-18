@@ -51,4 +51,23 @@ a = {1: "x"}
 b = {1.0: "x"}
 assert.assert_true(a == b, "dict with int key equals dict with float key")
 
+# re-entrant `__eq__` that mutates the same dict must not double-borrow
+class Key
+    fn __init__(n)
+        self.n = n
+
+    fn __hash__()
+        -> self.n
+
+    fn __eq__(other)
+        d["probe"] = 999
+        -> other.n == self.n
+
+d = {"z": 1}
+d[Key(1)] = "one"
+d[Key(1)] = "two"
+assert.assert_eq(d["z"], 1, "re-entrant write from __eq__ did not corrupt the caller's key")
+assert.assert_eq(len(d), 3, "the re-entrant key landed in the same dict")
+assert.assert_eq(d["probe"], 999, "the re-entrant write from __eq__ persisted")
+
 assert.summary()

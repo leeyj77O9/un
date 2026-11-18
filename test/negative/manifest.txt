@@ -1,4 +1,4 @@
-# test/negative/manifest.txt
+﻿# test/negative/manifest.txt
 # 비정상 입력 / 구문 오류 / 런타임 crash 스크립트 검증 목록.
 # 형식: <path>|<expected exit code>|<expected substring>
 # substring이 비어 있으면 종료 코드만 검증한다.
@@ -49,3 +49,5 @@ test/negative/empty_index.un|1|expected an index expression
 test/negative/regex_limit.un|1|regex backtracking limit exceeded
 test/negative/dict_add_duplicate.un|1|System.ArgumentException
 test/negative/ord_multiple_chars.un|1|ord: expected a single character, got multiple characters
+test/negative/multi_catch.un|1|multiple 'catch' clauses
+test/negative/same_line.un|1|expected a newline after the previous statement
