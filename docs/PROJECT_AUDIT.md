@@ -171,6 +171,11 @@ symbol with exactly one occurrence in its own definition file is reported as
 
 ## 6. Result of this audit pass
 
+(as of 2026-11-16/17. Several counts have since moved — current figures are maintained in
+`README.md` / `docs/TEST_GUIDE.md` / `docs/ARCHITECTURE.md`: Positive 47 files / **1507 passed** /
+0 failed, Negative **43 matched**, differential **90 files / 0 differences**. The numbers below
+are kept as the historical record of the audit run.)
+
 - Build: `cargo build --release` → **exit 0, 0 warnings**.
 - Tests: `scripts/test.ps1` → **Positive 40 files / 1391 passed / 0 failed /
   0 crashed**, Negative **39 matched / 0 mismatched / 0 documented divergences**,

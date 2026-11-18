@@ -75,9 +75,9 @@ Counts at the time of writing:
 | Group | Files | Assertions |
 |---|---|---|
 | suite | 1 | 109 |
-| unit + integration + regression | 45 | (1471 - 109) |
-| **Positive total** | **46** | **1471** |
-| negative (exit-code checks) | 41 checks | 41 matched + 0 documented divergences |
+| unit + integration + regression | 46 | (1507 - 109) |
+| **Positive total** | **47** | **1507** |
+| negative (exit-code checks) | 43 checks | 43 matched + 0 documented divergences |
 | known (documented defects) | 0 | none registered |
 | fixtures (not run directly) | 8 | n/a |
 
@@ -140,8 +140,8 @@ moved into meaningful tests (2026-11-16), and `scripts/test.ps1` passes with
 ## Current status
 
 ```
-Positive: 46 files, 1471 passed, 0 failed, 0 crashed
-Negative: 41 matched, 0 mismatched, 0 documented divergences
+Positive: 47 files, 1507 passed, 0 failed, 0 crashed
+Negative: 43 matched, 0 mismatched, 0 documented divergences
 Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```
@@ -149,9 +149,9 @@ Overall exit code: 0
 `cargo test --release` covers the Rust side (205 tests). Two additional
 runners compare execution shapes: `scripts/differential.ps1` runs every
 manifest file with `UV_JIT=0` and default JIT and diffs stdout + exit code
-(81 files, 0 differences), and `scripts/unbc-roundtrip.ps1 -IncludeNegative`
+(90 files, 0 differences), and `scripts/unbc-roundtrip.ps1 -IncludeNegative`
 byte-compares `unvm run` against `unvm compile` + `unvm run <file>.unbc`
-(Positive 40/40, compilable Negative 34/34).
+(Positive 47/47, compilable Negative 36/36).
 
 All previously known failures are fixed: negative-step slicing, `upper_bound`,
 `lower_bound` past-the-end, set equality, dict equality, `2 in [1, 2, 3]`,

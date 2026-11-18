@@ -182,7 +182,7 @@ them.
 | `test/negative/manifest.txt` | `path|expected exit|expected substring` — exit code and stderr matching for error cases |
 | `test/KnownFailures.txt` | scripts that are expected to fail (currently empty) |
 | `test/KnownDivergent.txt` | documented divergences (currently none registered) |
-| `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (81 files) |
+| `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (90 files) |
 | `scripts/unbc-roundtrip.ps1` | `.unbc` round-trip byte comparison for Positive and compilable Negative files |
 | `scripts/bench.ps1` | warm-up + repetitions + statistics (min/median/mean/max/stddev/ops) |
 | `cargo test --release` | 205 Rust unit tests (lexer, parser, compiler, runtime, VM, native) |

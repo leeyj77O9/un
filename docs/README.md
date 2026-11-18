@@ -1,4 +1,4 @@
-# Un
+﻿# Un
 
 A modern scripting language with concise syntax, explicit asynchronous execution, and pattern matching.
 
@@ -281,8 +281,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
-The current baseline is Positive 40 files / 1415 passed / 0 failed / 0 crashed,
-Negative 41 checks matched + 0 documented divergences, and Known 0 files.
+The current baseline is Positive 47 files / 1507 passed / 0 failed / 0 crashed,
+Negative 43 checks matched + 0 documented divergences, and Known 0 files.
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
 statistics, and saved to `bench/results/<timestamp>/results.csv` and `results.md`.
