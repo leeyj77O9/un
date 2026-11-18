@@ -16,9 +16,5 @@ unchanged.
 | `icache-coherence` (package `wasmtime-internal-jit-icache-coherence`) | 50.0.1 | Apache-2.0 WITH LLVM-exception | Bytecode Alliance wasmtime (`wasmtime-jit-icache-coherence`) |
 
 Attribution summary: `region`'s upstream copyright and licence text are in
-`region/LICENSE` (and `region/Cargo.toml.orig`). The two wasmtime crates
-ship in this directory **without their upstream `LICENSE` files**; the
-upstream texts are Apache-2.0 WITH LLVM-exception, available from the
-Bytecode Alliance repositories and from every version published on
-crates.io, and no license grant is removed by the raw-FFI patches.
+`region/LICENSE` (and `region/Cargo.toml.orig`). The two wasmtime crates ship in this directory with their upstream `LICENSE` files (the Apache-2.0 text with the LLVM exception, verbatim as published on crates.io and in the bytecodealliance repositories). The raw-FFI patches only remove the `windows-sys` dependency; no license grant is removed by the patches.
 `THIRD_PARTY.md` in this directory summarises the notices.
