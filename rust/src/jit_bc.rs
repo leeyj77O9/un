@@ -1245,8 +1245,20 @@ impl<'a> Tr<'a> {
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
         let hp = builder.use_var(self.hp_var);
         let recv = builder.use_var(self.rv_i64(recv_reg));
-        let mut arg_vals: Vec<Value> = Vec::with_capacity(argc + 2);
+        // Borrowed-handle bitmap for the class method's own arguments
+        // (position 0 is `self`, which is never a list; bits start at the
+        // callee parameter positions).
+        let mut tags = builder.ins().iconst(types::I64, 0);
+        for k in 0..argc {
+            let r = ins.b as usize + 1 + k;
+            if self.intlist_regs.contains_key(&r) || self.param_idx.contains_key(&r) {
+                let bit = builder.ins().iconst(types::I64, 1i64 << (k + 1));
+                tags = builder.ins().bor(tags, bit);
+            }
+        }
+        let mut arg_vals: Vec<Value> = Vec::with_capacity(argc + 3);
         arg_vals.push(hp);
+        arg_vals.push(tags);
         arg_vals.push(recv);
         for k in 0..argc {
             arg_vals.push(builder.use_var(self.rv_i64(ins.b as usize + 1 + k)));

@@ -7,6 +7,28 @@ use crate::runtime::obj::{BinOp, Obj, Payload, UnOp};
 use crate::runtime::prims;
 use crate::runtime::types::Types;
 use crate::runtime::world;
+
+/// Pure-scalar payload check: does the value's payload require user code
+/// to compare? Everything that is not a composite value dispatches through
+/// `Payload::binop` `__eq__`.
+fn primitive_payload(o: &Obj) -> bool {
+    matches!(
+        &*obj::payload_ref(o),
+        Payload::Int(_) | Payload::Float(_) | Payload::Bool(_)
+            | Payload::Str(_) | Payload::Enu(_)
+    )
+}
+
+/// Result of a probe that does not run user code under a map borrow:
+/// `Hit(idx)` = entry at `idx` compares equal; `Miss` = excluded;
+/// `Divergent` = some candidate (or the query) may carry user `__eq__`,
+/// so the caller must fall back to the snapshot path.
+enum ProbeOutcome {
+    Hit(usize),
+    Miss,
+    Divergent,
+}
+
 pub struct KeyMap {
     entries: Vec<Entry>,
 
@@ -141,6 +163,28 @@ impl KeyMap {
     }
     pub fn is_empty(&self) -> bool {
         self.live == 0
+    }
+    fn probe(&self, h: u64, key: &Obj) -> (ProbeOutcome, u64) {
+        let gen = self.gen;
+        let q_prim = primitive_payload(key);
+        let mut idx = if self.buckets.is_empty() {
+            NONE
+        } else {
+            self.buckets[self.bucket(h)]
+        };
+        while idx != NONE {
+            let e = &self.entries[idx];
+            if e.used && e.hash == h {
+                if !q_prim || !primitive_payload(&e.key) {
+                    return (ProbeOutcome::Divergent, gen);
+                }
+                if obj::key_eq(&e.key, key) {
+                    return (ProbeOutcome::Hit(idx), gen);
+                }
+            }
+            idx = self.next[idx];
+        }
+        (ProbeOutcome::Miss, gen)
     }
     fn find(&self, key: &Obj) -> Option<usize> {
         if self.buckets.is_empty() {
@@ -709,6 +753,16 @@ pub(crate) fn find_index(
     key: &Obj,
 ) -> Option<(Option<usize>, u64)> {
     let h = obj::hash_code(key);
+    {
+        // Fast no-allocation probe: every key that shares the hash AND the
+        // query key are primitive payloads (Int/Float/Bool/Str/None/Enum),
+        // so comparing them runs no user code at all.
+        match km.borrow().probe(h, key) {
+            (ProbeOutcome::Hit(idx), gen) => return Some((Some(idx), gen)),
+            (ProbeOutcome::Miss, gen) => return Some((None, gen)),
+            (ProbeOutcome::Divergent, _) => {}
+        }
+    }
     for _ in 0..64 {
         let (candidates, gen) = {
             let b = km.borrow();
