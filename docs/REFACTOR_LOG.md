@@ -1331,3 +1331,33 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   (incl. why `unsafe impl Send for JitEntry` is sound today), PLAN_CACHE
   (TD-03) bounds, recursion-depth atomic + cached bound, tag=2 bail as the
   safety valve, class-layout reordering note (TD-51).
+
+---
+
+## 2026-11-19 - Pass 24: unary Op::Neg JIT lowering (TD-53)
+
+### Trigger
+
+- `strict_float.un` bring-up (Pass 23 follow-up) revealed the Int-JIT never
+  lowers unary `Op::Neg` - any proto with an unary minus is rejected and
+  falls back to the interpreter. Registered as TD-53.
+
+### Changes
+
+- `rust/src/jit_bc.rs`: new `Op::Neg` arm. Int args lower to `ineg`
+  (two's-complement wrapping, identical to the interpreter's `wrapping_neg`,
+  including i64::MIN); Float args to `fneg`. Bool/none payloads and arena
+  handles (IntVec/IntDict/class markers) bail the frame to the interpreter,
+  which raises the exact "unsupported operand type(s) for -" error.
+- Module header updated: `Neg` listed under supported unary ops.
+- `test/jit/strict_float.un` now writes `-0.5`/`-7` instead of the fsub
+  workaround, keeping the arm CI-verified under UV_JIT=2.
+- Debt/docs: TD-53 closed (table + resolved list), D-079 registered, the
+  Float strict-canary decision entry in the design doc updated.
+
+### Result
+
+- Gates: Positive 1493/1493, Negative 41 matched, differential 88/0,
+  unbc-roundtrip 47/47+34/34, cargo test 205, strict_float canary green in
+  all three lanes. i64 extremes (9223372036854775807 / negatives) identical
+  on both lanes.

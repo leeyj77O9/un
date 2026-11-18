@@ -340,9 +340,9 @@ tag=2 bail은 interpreter 재실행이다. 같은 입력에 대해 동일 결과
 3. **`UV_JIT=2` strict canary를 Float에도 신설했다.** `strict.un`(Int)을 그대로 두고
    `test/jit/strict_float.un`을 같은 형태로 추가하고 CI `JIT Float strict canary (UV_JIT=2)`
    스텝을 넣었다. bring-up 과정에서 unary `Op::Neg`(Float 상수 부정)이 JIT 미지원임이
-   실측으로 드러났다 — canary는 `0.0 - 0.5` 형태(fsub)로만 부정을 만든다. `Op::Neg`의
-   unary minus 미지원(Int/Float 공통)은 남은 JIT 갭으로 기록해 두고, 쉬운 intrinsic
-   추가 후보로 남긴다.
+   실측으로 드러났다 — 그 사실은 **TD-53**으로 등록했다가, 곧바로 해결했다
+   (`ineg`(Int, wrapping) / `fneg`(Float) lower, Bool/none/arena handle은 bail).
+   `strict_float.un`은 이제 `-0.5`/`-7`을 써서 Neg arm을 상시 CI 검증한다.
 4. **rebind 규칙 2(조건부 veto) 채택.** math 사용 프로그램은 member 이름이 정확히
    Phase-1 함수 이름인 `SetAttr`이 어디든 있으면 interpreter — 정확성 우선, `len`과 같은
    문서화된 bluntness. math를 쓰지 않는 프로그램은 영향 없음. (`use math` + `self.sin = x`

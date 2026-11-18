@@ -14,6 +14,7 @@
 //!   - parameters of runtime Int type (max 8), essential or optional positional
 //!   - integer consts (Int, Bool literals), `LoadName` of a parameter
 //!   - integer consts (Int, Bool literals), `Constant::Float` consts
+//!   - unary `Neg` (`-x` on Int: two's-complement wrapping, like the interpreter's `wrapping_neg`; on Float: `fneg`)
 //!   - integer `+ - *`; Float variants are emitted as `fadd`/`fsub`/`fmul`
 //!     when any operand is Float (Un promotes Int+Float to Float)
 //!   - `//` and `%` only with a non-zero integer constant divisor loaded into
@@ -2764,6 +2765,44 @@ impl<'a> Tr<'a> {
                     self.ret_slot[ins.a as usize] = None;
                     Some(())
                 }
+            }
+            Op::Neg => {
+                let a = ins.a as usize;
+                let b = ins.b as usize;
+                // Bool / none payloads, and arena handles (list/dict/class
+                // markers), are not numbers. Bail to the interpreter, which
+                // raises the exact error ("unsupported operand type(s) for -").
+                if self.is_bool[b] || self.is_none[b] {
+                    return None;
+                }
+                if self.int_dict_seen(&[b])
+                    || self.intlist_regs.contains_key(&b)
+                    || self.intlist_iter_regs.contains(&b)
+                    || self.instance_regs.contains_key(&b)
+                    || self.method_regs.contains_key(&b)
+                    || self.class_ctor_regs.contains_key(&b)
+                {
+                    return None;
+                }
+                if self.is_float[b] {
+                    let v = builder.use_var(self.rv_f64(b));
+                    let n = builder.ins().fneg(v);
+                    builder.def_var(self.rv_f64(a), n);
+                    self.is_bool[a] = false;
+                    self.is_none[a] = false;
+                    self.is_float[a] = true;
+                    self.ret_slot[a] = None;
+                    return Some(());
+                }
+                // Int: wrapping negation (matches the interpreter's `wrapping_neg`).
+                let v = builder.use_var(self.rv_i64(b));
+                let n = builder.ins().ineg(v);
+                builder.def_var(self.rv_i64(a), n);
+                self.is_bool[a] = false;
+                self.is_none[a] = false;
+                self.is_float[a] = false;
+                self.ret_slot[a] = None;
+                Some(())
             }
             Op::ArgBegin => Some(()), // frame marker: no register effect
             Op::ArgPos | Op::ArgKw => {

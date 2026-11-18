@@ -38,7 +38,7 @@ fn sign_sum(n)
         if i % 3 == 0
             total += math.sign(0.5)
         else
-            total += math.sign(0.0 - 0.5)
+            total += math.sign(-0.5)
     -> total
 
 fn hypot_sum(n)
@@ -86,8 +86,10 @@ if math.sign(2.5) == 1
     checks += 1
 if math.sign(-2.5) == -1
     checks += 1
+if math.sign(-7) == -1
+    checks += 1
 
-if checks == 16
+if checks == 17
     io.write("jit-float-strict canary OK")
 else
     io.write("jit-float-strict canary MISMATCH")

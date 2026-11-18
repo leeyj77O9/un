@@ -1031,3 +1031,17 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   속성을 math 사용 프로그램에서 재정의하면 JIT가 꺼진다(interpreter가 정확). 런타임 probe
   정밀화는 plan 타임에 program global scope에 접근이 필요해 별도 엔진 설계.
 - **상세**: `docs/JIT_FLOAT_MATH_INTRINSIC.md`(설계 문서).
+
+
+## D-079 | JIT: unary `Op::Neg` lowering (ineg/fneg); TD-53 closed | Accepted
+
+- **결정**: `Op::Neg`을 JIT에서 `ineg`(Int — two's-complement wrapping, interpreter
+  `wrapping_neg`과 동일) / `fneg`(Float)으로 lower. Bool/none/arena handle
+  (IntVec/IntDict/class marker)의 피연산은 bail → interpreter가 정확한
+  "unsupported operand type(s) for -" 오류를 그대로 발생시킨다.
+- **배경**: `strict_float.un` bring-up에서 실측으로 발견(`math.sign(-0.5)`가 Neg 미지원으로
+  candidate reject → `1/6 candidate(s) failed JIT codegen`). 부채 TD-53으로 등록 후 해결.
+- **검증**: Positive 1493, differential 88/0, unbc-roundtrip 47/47, cargo test 205,
+  strict_float canary 양 lane + UV_JIT=2 green, i64 경계값(9223372036854775807) JIT/인터프리터
+  동일. `strict_float.un`은 `-0.5`/`-7`을 써서 Neg arm을 상시 CI 검증한다.
+- **잔여**: `Op::Pos`/`Op::Bnot`은 여전히 미지원(같은 클래스 — 필요할 때 D-0xx로).

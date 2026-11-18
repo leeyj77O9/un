@@ -38,7 +38,7 @@ Severity:
 | TD-48 | low | `dict.add` on a duplicate key panics with the .NET `ArgumentException` — the message is byte-identical parity (D-024) and has no test | `rust/src/native/members.rs:1362-1370` |
 | TD-49 | low | `exit()` with a non-int code silently exits 0; `ord` accepts multi-char strings and returns the first codepoint; `ascii` on an astral char errors while returning UTF-16 units elsewhere; `inspect.delattr` only removes own instance members | `rust/src/native/builtin.rs`, `rust/src/native/inspect.rs` |
 | TD-50 | low | `hash` of a NaN key is unfindable (IEEE semantics, consistent with `.NET`); document, do not "fix" | `rust/src/runtime/obj.rs:299` |
-| TD-53 | low | The Int-JIT does not lower unary `Op::Neg` — any function whose body contains one (e.g. an unary minus on a constant) is rejected and falls back to the interpreter; `0.0 - x` (fsub) works fine and is what the Float strict canary uses | `rust/src/jit_bc.rs` (no `Op::Neg` arm) |
+| TD-53 | low | The Int-JIT does not lower unary `Op::Neg` — any function whose body contains one (e.g. an unary minus on a constant) is rejected and falls back to the interpreter; `0.0 - x` (fsub) works fine and is what the Float strict canary uses | `rust/src/jit_bc.rs` (no `Op::Neg` arm) | **Resolved (2026-11-19)**: `Op::Neg` now lowers Int args to `ineg` (wrapping, matching the interpreter's `wrapping_neg`) and Float args to `fneg`; Bool/none/arena handles bail to the interpreter (which raises the exact error). The Float strict canary now uses `-0.5` / `-7` to keep the arm CI-verified. |
 | TD-51 | medium | JIT native emission can fail at any stage (frontend debug asserts, Cranelift verifier, `catch_unwind`) and every failure was silently swallowed into an interpreter-fallback stub: the whole JIT could be dead with every gate green (it was, between `aad0f42` and Pass 18). | `rust/src/jit_bc.rs`, `.github/workflows/build.yml` | **Mitigated (2026-11-19):** `UV_JIT=2` strict canary makes any JIT candidate that fails to compile abort the process with exit code 2 and a named proto list, instead of a silent stub. Curated canary `test/jit/strict.un` (self-contained Int-subset, all protos must compile; marker `jit-strict canary OK`) runs under `UV_JIT=2` in the `JIT strict canary` step of `.github/workflows/build.yml`. Verified locally (exit-2 on forced stub; marker passes under default JIT and UV_JIT=0). Remaining subclasses still print via `UV_JIT_DEBUG=1` only. |
 
 ## Resolved in 2026-11
@@ -62,6 +62,10 @@ TD-25, TD-28, TD-29, TD-30, TD-32, TD-33, TD-34, TD-35, TD-36, TD-37, TD-42, TD-
   now terminate and agree byte-for-byte with UV_JIT=0; differential 88/88.
 
 - **TD-51** (see table): strict canary mitigated 2026-11-19.
+
+- **TD-53** (see table): `Op::Neg` now lowers to `ineg` (Int, wrapping) and
+  `fneg` (Float); Bool/none/arena handles bail to the interpreter. The
+  Float strict canary (`test/jit/strict_float.un`) keeps the arm CI-verified.
 
 Closed-out notes: TD-37 kept the deliberate API shape (4xx/5xx responses
 return the body, matching the .NET reference — the Un http client does not
