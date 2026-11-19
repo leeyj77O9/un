@@ -18,6 +18,60 @@ use crate::runtime::obj::{self, Obj};
 /// as plain Int-arity functions to the JIT.
 ///
 /// Returns the produced Obj on success, `None` when the call must run in the interpreter.
+/// Call a compile-mode core entry. All argument types were statically
+/// verified at the call site; the only runtime freedom is which payload
+/// carries the value. Mismatches decline to the interpreter.
+fn try_call_tir_entry(
+    entry: crate::jit_cache::JitEntry,
+    args: &Args,
+    proto_index: usize,
+    program: &Rc<Program>,
+) -> Option<Obj> {
+    if proto_index >= program.protos.len() {
+        return None;
+    }
+    if !args.names.iter().all(|n| n.is_empty()) {
+        return None;
+    }
+    if entry.arg_kinds.len() != args.values.len() {
+        return None;
+    }
+    let mut ints = Vec::with_capacity(args.values.len());
+    let mut param_tags = 0i64;
+    for (pos, (kind, arg)) in entry.arg_kinds.iter().zip(&args.values).enumerate() {
+        match (kind, obj::payload(arg)) {
+            (crate::jit_cache::ArgKind::Int, crate::runtime::obj::Payload::Int(v)) => {
+                ints.push(v);
+            }
+            (crate::jit_cache::ArgKind::Float, crate::runtime::obj::Payload::Float(v)) => {
+                param_tags |= 1i64 << (32 + pos);
+                ints.push(v.to_bits() as i64);
+            }
+            (crate::jit_cache::ArgKind::Float, crate::runtime::obj::Payload::Int(v)) => {
+                // int flowing into a float parameter promotes, like the interpreter.
+                param_tags |= 1i64 << (32 + pos);
+                ints.push((v as f64).to_bits() as i64);
+            }
+            (crate::jit_cache::ArgKind::Bool, crate::runtime::obj::Payload::Bool(b)) => {
+                param_tags |= 1i64 << (40 + pos);
+                ints.push(if b { 1 } else { 0 });
+            }
+            _ => return None,
+        }
+    }
+    if ints.len() != entry.arity as usize {
+        return None;
+    }
+    let res = crate::vm::jit_call(entry, &ints, param_tags);
+    match res.tag {
+        crate::jit_cache::TAG_INT => Some(obj::int(res.value)),
+        crate::jit_cache::TAG_FLOAT => Some(obj::float(f64::from_bits(res.value as u64))),
+        crate::jit_cache::TAG_BOOL => Some(obj::boolean(res.value != 0)),
+        crate::jit_cache::TAG_NONE => Some(obj::none()),
+        _ => None,
+    }
+}
+
 pub(crate) fn try_call_jit(
     program: &Rc<Program>,
     proto_index: usize,
@@ -32,6 +86,13 @@ pub(crate) fn try_call_jit(
         .get(proto_index)
         .and_then(|p| p.ext_type)
         .is_some();
+    // Compile-mode TIR entries bypass UV_JIT: `un native` asked for them.
+    let tir_entry = crate::jit_cache::get_tir_entry(program.id, proto_index as u32);
+    // Two kinds of JIT entries share `jit_cache`: the bytecode JIT (lazy,
+    // UV_JIT-gated) and the compile-mode TIR backend (eager, always on).
+    if let Some(entry) = tir_entry {
+        return try_call_tir_entry(entry, args, proto_index, program);
+    }
     let entry = match crate::jit_cache::get_jit_entry(program.id, proto_index as u32) {
         Some(entry) => Some(entry),
         None => {
@@ -50,6 +111,10 @@ pub(crate) fn try_call_jit(
         }
     };
     let entry = entry?;
+    // Two kinds of JIT entries share `jit_cache`: the bytecode JIT (lazy,
+    // UV_JIT-gated, `arg_kinds` empty) and the compile-mode TIR backend
+    // (eager, always on, `arg_kinds` present). The TIR path already returned
+    // above when an entry exists, so reaching here means bytecode JIT.
     let mut ints = Vec::with_capacity(args.values.len() + if is_class_method { 1 } else { 0 });
     // Bit p of the JIT's hidden `param_tags` argument: argument p (in
     // `ints` order) is a borrowed IntVec arena handle, not a plain Int.

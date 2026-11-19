@@ -728,7 +728,11 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         crate::jit_cache::register_jit_entry(
             program_id,
             idx as u32,
-            crate::jit_cache::JitEntry { ptr: code_ptr as *const u8, arity: arity as u32 },
+            crate::jit_cache::JitEntry {
+                ptr: code_ptr as *const u8,
+                arity: arity as u32,
+                arg_kinds: Vec::new(),
+            },
         );
     }
     // Keep the module in the per-program registry so `jit_cache::clear()` /

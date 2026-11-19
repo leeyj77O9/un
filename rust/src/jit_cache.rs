@@ -36,15 +36,34 @@ pub const TAG_NONE: i64 = 5;
 /// handle.
 pub const TAG_INTLIST: i64 = 6;
 
+/// How each positional argument is expected by the callee's native code.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ArgKind {
+    /// Historical bytecode-JIT marshalling: a plain Int (its value must not
+    /// be a live IntVec arena handle), or an IntVec arena handle marked by
+    /// `param_tags` bit p.
+    Unbc,
+    /// Compile-mode core entry: plain Int bits.
+    Int,
+    /// Compile-mode core entry: raw IEEE-754 bits of a Float (`param_tags`
+    /// bit 32+p marks the position as float).
+    Float,
+    /// Compile-mode core entry: 0/1 (`param_tags` bit 40+p marks bool).
+    Bool,
+}
+
 /// A JIT-compiled function. The `ptr` points to the Cranelift-emitted native
 /// function with `arity` `i64` parameters plus a hidden result pointer,
 /// returning via that hidden pointer: the first i64 cell carries the result
 /// value (sent as i64 bits for Float too), the second cell carries one of
 /// `TAG_INT`, `TAG_FLOAT`, `TAG_BAIL`, `TAG_BOOL` or `TAG_NONE`.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct JitEntry {
     pub ptr: *const u8,
     pub arity: u32,
+    /// Per-argument marshalling for compile-mode core entries; empty for
+    /// bytecode-JIT entries (all `Unbc`).
+    pub arg_kinds: Vec<ArgKind>,
 }
 
 // The JIT increments this counter on entry and decrements on exit. The
@@ -194,12 +213,29 @@ pub fn register_jit_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
         .insert(proto_index, entry);
 }
 
+/// Register an entry produced by the compile-mode TIR backend. Unlike the
+/// bytecode JIT registration this is not gated by `UV_JIT`: when the user
+/// runs `un native`, compile mode is the contract.
+pub fn register_tir_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
+    JIT_FNS
+        .lock()
+        .expect("jit_cache")
+        .entry(program_id)
+        .or_default()
+        .insert(proto_index, entry);
+}
+
 /// Look up a previously registered JIT entry for `program_id`.
 pub fn get_jit_entry(program_id: u64, proto_index: u32) -> Option<JitEntry> {
     if !jit_enabled() {
         return None;
     }
-    JIT_FNS.lock().ok()?.get(&program_id)?.get(&proto_index).copied()
+    JIT_FNS.lock().ok()?.get(&program_id)?.get(&proto_index).cloned()
+}
+
+/// Look up a compile-mode TIR entry bypassing `UV_JIT`.
+pub fn get_tir_entry(program_id: u64, proto_index: u32) -> Option<JitEntry> {
+    JIT_FNS.lock().ok()?.get(&program_id)?.get(&proto_index).cloned()
 }
 
 /// Free exactly one program's JIT state: remove its entries, drop its

@@ -251,6 +251,44 @@ Windows 산출물은 `rust\target\release\un.exe`이다.
 .\rust\target\release\un.exe run path/to/file.un
 ```
 
+### 컴파일 모드 (실험적)
+
+Interpreter Mode(`un run`)와 Compile Mode는 같은 언어를 공유하는 두 실행 모드이다.
+Compile Mode는 프로그램을 미리 타입 검사한 뒤 core 부분집합의 함수들을
+Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일한 의미론으로
+인터프리터가 실행한다.
+
+```bash
+.\rust\target\release\un.exe check path/to/file.un   # 정적 검사만
+.\rust\target\release\un.exe native path/to/file.un  # 검사 + 네이티브 실행
+```
+
+- `un check`는 프로그램이 타입 검사를 통과하면 exit 0, 아니면 exit 1이며,
+  최대 50개의 진단을 줄/캐럿 마커와 함께 출력한다.
+- Compile Mode는 더 엄격하다: **모든 함수의 매개변수와 반환 타입에 어노테이션이
+  필요하다** (`fn add(a: int, b: int) -> int`). 어노테이션이 없는 인터프리터
+  프로그램은 컴파일 모드에서 의도적으로 거부된다.
+- `un native`는 `un run`의 상위 집합이다. core에 들어가는 함수(int/float/bool
+  매개변수·지역변수·반환, 직접 호출)는 레지스터 VM의 호출 경로를 통해 네이티브로
+  컴파일되고, 나머지 함수는 투명하게 인터프리터로 fallback한다. bail이 발생해도
+  잘못된 답이 나오지 않는다 — VM이 해당 호출을 인터프리터로 재실행한다.
+- `un run`과 `un compile`은 변경 없었다. 컴파일 모드는 `docs/compile/COMPILE_DESIGN.md`에
+  설명되어 있으며,
+  `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-check.ps1`로
+  교차 검증할 수 있다.
+- `un obj <file.un|file.unbc> [-o out.obj] [--entry name]`는 `.unbc` 바이트코드 또는
+  `.un` 소스를 재배치 가능한 네이티브 오브젝트 파일(COFF .obj)로 번역한다. 소스
+  경로는 `if`/`while`/`for` 루프까지 네이티브로 지원한다. core 부분집합만
+  지원하며 `scripts\obj-demo.ps1`이 fib 예제를 링크해 실행까지 검증한다
+  (`docs/compile/OBJ_MILESTONES.md`).
+- `un build <file.un> [-o out.exe]`는 위 과정을 명령 하나로 수행해 독립 실행형
+  `.exe`를 만든다 (rustup self-contained mingw gcc로 링크).
+- `un build --embed <file.un> [-o out.exe]`는 대신 프로그램의 `.unbc` 이미지를
+  작은 드라이버에 구워 `libunvm.a`(전체 VM 런타임, 정적으로 링크)와 함께 링크한다.
+  이 경로는 **모든 Un 프로그램**(class, collection, IO, 문자열 보간 등 Int core
+  부분집합에 속하지 않는 것 포함)에서 완전하게 동작하며, 소스는 물론 공유 런타임
+  없이도 단일 실행형이다.
+
 ### 첫 프로그램
 
 ```un

@@ -1,0 +1,57 @@
+use io
+use test.assert as assert
+
+T = int | str
+
+fn add(a: int, b: int) -> int
+    -> a + b
+
+fn square(n: int) -> int
+    -> n * n
+
+fn apply_twice(x: int, f: any) -> int
+    -> f(f(x))
+
+fn pick(x: T) -> T
+    -> x
+
+fn sum_list(xs: list[int]) -> int
+    total = 0
+    for v in xs
+        total += v
+    -> total
+
+fn dict_lookup(d: dict[str, int], key: str) -> int
+    -> d[key]
+
+fn tuple_sum(t: tuple[int, int, int]) -> int
+    -> t[0] + t[1] + t[2]
+
+fn mixed(x: int, y: float) -> float
+    -> x + y
+
+fn id_bool(b: bool) -> bool
+    -> not b
+
+fn fib(n: int) -> int
+    if n < 2
+        -> n
+    -> fib(n - 1) + fib(n - 2)
+
+fn make_adder(n: int) -> any
+    fn add(x: int) -> int
+        -> x + n
+    -> add
+
+assert.assert_eq(add(2, 3), 5, "add works")
+assert.assert_eq(square(9), 81, "square works")
+assert.assert_eq(apply_twice(3, square), 81, "higher order works")
+assert.assert_eq(pick(42), 42, "union int")
+assert.assert_eq(pick("hello"), "hello", "union str")
+assert.assert_eq(sum_list([1, 2, 3, 4]), 10, "sum list")
+assert.assert_eq(dict_lookup({"a": 10, "b": 20}, "b"), 20, "dict lookup")
+assert.assert_eq(tuple_sum((1, 2, 3)), 6, "tuple sum")
+assert.assert_eq(mixed(3, 2.5), 5.5, "int promotes to float")
+assert.assert_eq(fib(10), 55, "recursion works")
+assert.assert_eq(make_adder(40)(2), 42, "closure capture works")
+assert.summary()

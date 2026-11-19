@@ -256,6 +256,44 @@ The Windows executable is `rust\target\release\un.exe`.
 .\rust\target\release\un.exe run path/to/file.un
 ```
 
+### Compile Mode (experimental)
+
+Interpreter Mode (`un run`) and Compile Mode are two execution modes over the
+same language. Compile Mode type-checks a program ahead of time and compiles
+a subset of functions to Cranelift-native code; anything outside the subset
+runs in the interpreter with identical semantics.
+
+```bash
+.\rust\target\release\un.exe check path/to/file.un   # static analysis only
+.\rust\target\release\un.exe native path/to/file.un  # analysis + native execution
+```
+
+- `un check` exits 0 when the program type-checks and 1 otherwise, printing up
+  to 50 diagnostics with line/caret markers.
+- Compile Mode is stricter: **every function parameter and return type must be
+  annotated** (`fn add(a: int, b: int) -> int`). Interpreter-mode programs that
+  omit annotations are rejected in compile mode by design.
+- `un native` is a superset of `un run`: core-eligible functions (int/float/bool
+  params, locals and returns, direct calls) are compiled to native code through
+  the register VM's call path; every other function falls back to the
+  interpreter transparently. A bail never produces a wrong answer — the VM
+  re-runs the call in the interpreter.
+- `un run` and `un compile` are unchanged. Compile Mode is documented in
+  `docs/compile/COMPILE_DESIGN.md`; cross-check it with
+  `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-check.ps1`.
+- `un obj <file.un|file.unbc> [-o out.obj] [--entry name]` translates `.unbc`
+  bytecode or a `.un` source file into a relocatable native object file (COFF
+  `.obj`). The source path also compiles `if`/`while`/`for` loops to native
+  code. Only the core subset is supported; `scripts\obj-demo.ps1` links and
+  runs the fib demo (`docs/compile/OBJ_MILESTONES.md`).
+- `un build <file.un> [-o out.exe]` does the same end to end and links the
+  object into a standalone executable (via rustup's self-contained mingw gcc).
+- `un build --embed <file.un> [-o out.exe]` instead bakes the program's
+  `.unbc` image into a tiny generated driver and links it against `libunvm.a`
+  (the whole VM runtime, statically). This works for **any** Un program —
+  classes, collections, IO, string interpolation — not just the Int core
+  subset, and the binary is fully self-contained.
+
 ### First program
 
 ```un

@@ -1,0 +1,27 @@
+use io
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# Compile Mode 벤치마크 - native fib(24)
+# bench/fib.un의 정적 타입 판본. `un run`(인터프리터), `UV_JIT=0 un run`,
+# `un native`(컴파일 모드)에서 모두 실행된다.
+# 실행: un natbench.un 이 아니라 un run|native bench/native_fib.un
+# ============================================================
+
+fn fib(n: int) -> int
+    if n < 2
+        -> n
+    -> fib(n - 1) + fib(n - 2)
+
+fn fib_work(n: int) -> int
+    -> fib(24)
+
+# ---------- 검증 ----------
+assert.assert_eq(fib(10), 55, "fib(10)")
+assert.assert_eq(fib(24), 46368, "fib(24)")
+
+# ---------- 측정 ----------
+bench.measure("native_fib24", fib_work, 1, 7, 2)
+
+assert.summary()

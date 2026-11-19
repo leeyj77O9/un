@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 name = "unvm"
 path = "src/lib.rs"
+# Also produced as a static library so programs compiled with `un build` can
+# link the whole VM runtime (Obj model, natives, collections, exceptions)
+# directly into a standalone executable.
+crate-type = ["rlib", "staticlib"]
 
 [[bin]]
 name = "un"
@@ -20,6 +24,8 @@ cranelift-frontend = "0.137.1"
 cranelift-jit = "0.137.1"
 cranelift-module = "0.137.1"
 cranelift-native = "0.137.1"
+# Object emission for the `un obj` command (Cranelift → relocatable .obj).
+cranelift-object = { version = "0.137.1", default-features = false }
 
 [patch.crates-io]
 region = { path = "../vendor/region" }

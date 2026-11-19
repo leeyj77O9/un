@@ -71,6 +71,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 # .unbc 왕복 runner ( Positive + negative 중 컴파일 가능 파일을 run vs compile+run 으로 바이트 비교 )
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\unbc-roundtrip.ps1 -IncludeNegative
 
+# Compile Mode cross-validation ( test/compile/*.un 을 un run vs un native 로 실행해 바이트 비교 )
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-check.ps1
+
+# Compile Mode 벤치마크 ( un run vs UV_JIT=0 vs un native fib(24) 측정 )
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-bench.ps1
+
+# 오브젝트 파일 데모 ( .unbc → .obj → rustc link → 실행, 출력 "fib = 55" + un build 단일 명령 )
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\obj-demo.ps1
+# un build --embed <file.un> → 임의 프로그램도 단일 .exe로 (libunvm.a 정적 링크)
+
 # 벤치마크 runner ( -Group all|un|unvm|unjit|node|python, -Rebuild, -NoSave, -Report, -Compare <csv> )
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 # Un VM과 JIT을 각각 측정한다. -Report는 BENCHMARK.md도 갱신한다.
@@ -100,9 +110,12 @@ C:\dev\un
 │  ├─ MANIFEST.txt           # group|path 행
 │  ├─ KnownFailures.txt      # runner가 KNOWN FAIL로 기록하는 파일
 │  ├─ KnownDivergent.txt     # 문서화된 구현 간 차이(실패로 세지 않음)
+│  ├─ compile/               # Compile Mode 테스트 (typed_pass.un — un native/check로 실행)
 │  └─ assert.un              # assert 모듈 (assert_eq / assert_true)
-├─ scripts/                  (test.ps1, differential.ps1, unbc-roundtrip.ps1, bench.ps1)
-├─ bench/                    (측정 스크립트, bench/{node,python}/, bench/results/ — results/는 gitignore)
+├─ scripts/                  (test.ps1, differential.ps1, unbc-roundtrip.ps1, bench.ps1,
+│                            compile-check.ps1, compile-bench.ps1, obj-demo.ps1)
+├─ bench/                    (측정 스크립트, bench/{node,python}/, bench/results/ — results/는 gitignore,
+│                            bench/obj_fib_driver.rs — `un obj` 데모 드라이버)
 ├─ vendor/                   (패치된 외부 crate: region, cranelift-jit, icache-coherence — vendor/README.md 참고)
 ├─ docs/                     # 문서 전체
 │  ├─ README.md              # 영어 user doc (docs/README.md ↔ README.md 쌍)
@@ -114,11 +127,30 @@ C:\dev\un
 │  ├─ DECISIONS.md           # D-001…D-072
 │  ├─ TEST_GUIDE.md          # 테스트 가이드
 │  ├─ BYTECODE.md            # .unbc 포맷
-│  └─ BENCHMARK_GUIDE.md     # 벤치마크
+│  ├─ BENCHMARK_GUIDE.md     # 벤치마크
+│  └─ compile/               # Compile Mode 문서 (COMPILE_DESIGN/PROGRESS/FINDINGS/TESTS/BENCHMARK/OBJ_MILESTONES)
 ```
 
 ## 아키텍처 메모
 
+- Compile Mode: `un check`/`un native` 두 진입점이 있다 (`main.rs`). 파이프라인은
+  `parse -> optimize -> typeck -> tir -> natcode`이며, core 함수(int/float/bool)만
+  Cranelift로 컴파일하고 FFI wrapper를 통해 VM의 `try_call_jit` 경로에 등록한다
+  (`get_tir_entry`, `UV_JIT` 우회). 자세한 내용은 `docs/compile/COMPILE_DESIGN.md`.
+- `un obj <file.un|file.unbc> [-o out.obj]`: `.unbc`/소스를 Cranelift로 번역해 재배치
+  가능한 오브젝트(.obj)를 출력한다 (`objify.rs`, `natcode.rs`의 `obj_compile`).
+  core 부분집합 + 소스 경로의 `if`/`while`/`for` 루프를 지원한다. 소스 경로는
+  추가로 `Str`(리터럴/concat/`str == str`), `list[int]`/`list[float]`(리터럴,
+  `for ... in`, `xs[i]` read/write, 리스트 메서드 `add`/`insert`/`reverse`/`sort`/`pop`/`contains`/`index_of`)와
+  `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write), `len(x)`까지
+  지원하며 VM 런타임을 `unrt_*` C ABI로 호출한다. 등록된 list/dict 멤버 시그니처는
+  정적 체크에도 반영된다.
+  class/예외는 네이티브 미지원이며, plain `un obj`/`un build`는 클래스 타입 함수를
+  빌드 시점에 명확한 오류와 함께 거부한다(`un build --embed`는 임의의 클래스 프로그램을 지원).
+  `.unbc` 경로는 Int 코어만 지원한다.
+  `un build <file.un> [-o out.exe]`는 소스 → .obj → 링크 → 실행형까지 단일 명령으로
+  수행한다 (rustup self-contained mingw gcc 경유 rustc). 검증은 `scripts\obj-demo.ps1`,
+  진행 상황은 `docs/compile/OBJ_MILESTONES.md`.
 - `Runner.RunCore` 대응: 파싱 → desugar → optimize → compile → evaluate를 순서대로 수행한다.
   `Runner.Load`는 `Global.PATH` 기준으로 파일을 읽고 CRLF를 LF로 정규화한다.
 - `Scope`는 부모 체인을 갖는 슬롯 기반 심볼 테이블이다. `Scope`의 slot table에서

@@ -353,6 +353,7 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
         patterns,
         flags,
         ext_type,
+        fn_span: None,
     })
 }
 fn read_pattern(reader: &mut Reader) -> Result<Pattern, String> {

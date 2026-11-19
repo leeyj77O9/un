@@ -153,12 +153,13 @@ impl<'a> Compiler<'a> {
         self.slot_stack.len() - 1
     }
 
-    fn begin_proto(&mut self, name: &str, ext_type: Option<&str>) -> usize {
+    fn begin_proto(&mut self, name: &str, ext_type: Option<&str>, fn_span: Option<(usize, usize)>) -> usize {
         let name_index = push_name(&mut self.program, name);
         let mut proto = Proto::new(name_index, PROTO_FUNCTION);
         if let Some(ext) = ext_type {
             proto.ext_type = Some(push_name(&mut self.program, ext));
         }
+        proto.fn_span = fn_span;
         self.program.protos.push(proto);
         let index = self.program.protos.len() - 1;
         self.proto_stack.push(self.current);
@@ -184,6 +185,7 @@ impl<'a> Compiler<'a> {
             flags: 0,
             patterns: Vec::new(),
             ext_type: None,
+            fn_span: None,
         };
         let original = std::mem::replace(&mut self.program.protos[proto_index], dummy);
         let original_code = original.code;
@@ -291,6 +293,7 @@ impl<'a> Compiler<'a> {
             flags: original.flags,
             patterns: original.patterns,
             ext_type: original.ext_type,
+            fn_span: original.fn_span,
         };
         self.program.protos[proto_index] = final_proto;
     }
@@ -866,7 +869,7 @@ impl<'a> Compiler<'a> {
         let span = (node.start, node.length);
         let block = &node.children[0];
 
-        self.begin_proto("defer", None);
+        self.begin_proto("defer", None, None);
         self.code_function_body(block)?;
         let proto_slot = self.end_proto();
         self.emit(Op::PushDefer, 0, proto_slot as i32, span);
@@ -1080,7 +1083,7 @@ impl<'a> Compiler<'a> {
 
         let saved_raises = self.raises;
         let saved_groups = std::mem::take(&mut self.groups);
-        self.begin_proto(name, ext_type);
+        self.begin_proto(name, ext_type, Some(span));
         self.compile_params(params)?;
         self.code_function_body(body)?;
         let slot = self.end_proto();
@@ -1277,7 +1280,7 @@ impl<'a> Compiler<'a> {
                     }
                     let saved_raises = self.raises;
                     let saved_groups = std::mem::take(&mut self.groups);
-                    self.begin_proto(&member_name, Some(&class_name));
+                    self.begin_proto(&member_name, Some(&class_name), Some((member.start, member.length)));
                     // Class methods receive `self` implicitly; register it
                     // as local slot 0 so `self` reads emit Op::LoadLocal
                     // instead of Op::LoadName (needed for the class-method
@@ -1348,7 +1351,7 @@ impl<'a> Compiler<'a> {
                         let body = &accessor_node.children[1];
                         let saved_raises = self.raises;
                         let saved_groups = std::mem::take(&mut self.groups);
-                        self.begin_proto(name, Some(&class_name));
+                        self.begin_proto(name, Some(&class_name), Some((accessor_node.start, accessor_node.length)));
                         self.slot_alloc("self");
 
                         if accessor_node.value.as_ref()
@@ -1596,7 +1599,7 @@ impl<'a> Compiler<'a> {
         if op == TokenType::Go {
             let saved_raises = self.raises;
             let saved_groups = std::mem::take(&mut self.groups);
-            self.begin_proto("go", None);
+            self.begin_proto("go", None, None);
             self.code(&node.children[0])?;
             self.emit(Op::Return, 0, 0, span);
             let slot = self.end_proto();

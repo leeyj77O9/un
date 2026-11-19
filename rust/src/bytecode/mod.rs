@@ -83,6 +83,12 @@ pub struct Proto {
     pub patterns: Vec<Pattern>,
 
     pub ext_type: Option<usize>,
+
+    /// Source span of the `fn`/`lambda` declaration this proto was compiled
+    /// from, when known. Used by the compile-mode TIR lowering to match a
+    /// typed function back to its proto. **Not serialized to `.unbc`** — a
+    /// program read back from disk has `None` here.
+    pub fn_span: Option<(usize, usize)>,
 }
 impl Proto {
     pub fn new(name: usize, flags: u16) -> Self {
@@ -101,6 +107,7 @@ impl Proto {
             flags,
             patterns: Vec::new(),
             ext_type: None,
+            fn_span: None,
         }
     }
 
