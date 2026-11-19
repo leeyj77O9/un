@@ -1,0 +1,6 @@
+use io
+
+fn add(a, b)
+    -> a + b
+
+main()

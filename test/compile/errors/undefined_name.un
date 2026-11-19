@@ -1,0 +1,7 @@
+use io
+
+fn main() -> int
+    far = add(1, 2)
+    -> 0
+
+main()

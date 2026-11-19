@@ -128,15 +128,23 @@ main()
         exit 1
     }
 
-    # Plain `un obj`/`un build` on a class program: must reject at build time
-    # with a clear message (not crash, not produce a broken exe).
+    # Plain `un obj`/`un build` on a class program: classes are supported
+    # natively; the exe must produce the same output as `un run`.
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     & $Exe build $classSrc -o embed_class_plain.exe *> $null
     $plainCode = $LASTEXITCODE
+    if ($plainCode -ne 0) {
+        $ErrorActionPreference = $prevEAP
+        Write-Host "obj-demo (un build class): FAILED (expected exit 0, got $plainCode)" -ForegroundColor Red
+        exit 1
+    }
+    $out5 = & .\embed_class_plain.exe 2>&1 | Out-String
     $ErrorActionPreference = $prevEAP
-    if ($plainCode -ne 1) {
-        Write-Host "obj-demo (un build class): FAILED (expected exit 1 refusal, got $plainCode)" -ForegroundColor Red
+    $out5Trim = $out5.Trim()
+    Write-Host "obj-demo (un build class): $out5Trim"
+    if ($out5Trim -ne "37") {
+        Write-Host "obj-demo (un build class): FAILED (expected '37')" -ForegroundColor Red
         exit 1
     }
 

@@ -1,0 +1,13 @@
+# compile-mode error cases — compile-check.ps1 verifies that `un check`
+# and `un native` both reject these programs with the expected substring.
+test/compile/errors/unknown_member_class.un|'p' object has no attribute 'missing'
+test/compile/errors/unassignable_property.un|'s' method 'd' is not assignable
+test/compile/errors/undefined_name.un|undefined name 'add'
+test/compile/errors/member_call_on_list.un|'list' object has no attribute 'a'
+test/compile/errors/member_call_on_str.un|'value' object has no attribute 'nope'
+test/compile/errors/return_type_mismatch.un|cannot return value of type 'widget' from a function returning 'int'
+test/compile/errors/untyped_param.un|requires a type annotation
+test/compile/errors/syntax_error.un|expected a newline after the previous statement
+test/compile/errors/field_type_mismatch.un|cannot assign value of type 'str' to field 'tag' of type 'int'
+test/compile/errors/match_missing_wildcard.un|match exhaustiveness: expected a wildcard '_' arm
+test/compile/errors/match_bool_partial.un|match exhaustiveness: expected 'true' and 'false' arms

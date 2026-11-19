@@ -1,0 +1,38 @@
+use io
+use test.assert as assert
+
+class point
+    x: int
+    y: int
+
+    fn __init__(x: int = 0, y: int = 0)
+        self.x = x
+        self.y = y
+
+    fn sum() -> int
+        -> self.x + self.y
+
+    fn mag2() -> int
+        -> self.x * self.x + self.y * self.y
+
+    fn translate(dx: int, dy: int) -> int
+        self.x = self.x + dx
+        self.y = self.y + dy
+        -> self.x + self.y
+
+fn dist_squared(p: point) -> int
+    -> p.mag2() + p.sum()
+
+fn classes_emit() -> int
+    a = point(3, 4)
+    b = point()
+    b.translate(5, 7)
+    assert.assert_eq(a.sum(), 7, "point(3,4).sum")
+    assert.assert_eq(a.mag2(), 25, "point(3,4).mag2")
+    assert.assert_eq(b.sum(), 12, "empty point + translate")
+    assert.assert_eq(dist_squared(a), 32, "dist_squared helper")
+    assert.assert_eq(b.translate(1, 1), 14, "translate returns sum")
+    assert.summary()
+    -> 0
+
+classes_emit()

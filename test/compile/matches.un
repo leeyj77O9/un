@@ -1,0 +1,27 @@
+use io
+use test.assert as assert
+
+fn bool_code(b: bool) -> str
+    -> match b { true -> "yes", false -> "no" }
+
+fn int_code(n: int) -> str
+    r = match n { 1 -> "one", 2 -> "two", 3 -> "three", _ -> "many" }
+    -> r
+
+fn none_code(v: any) -> str
+    r = match v { none -> "nada", _ -> "some" }
+    -> r
+
+fn bool_early(b: bool) -> str
+    r = match b { true -> "yes", false -> "no" }
+    -> r
+
+assert.assert_eq(bool_code(true), "yes", "bool true arm")
+assert.assert_eq(bool_code(false), "no", "bool false arm")
+assert.assert_eq(int_code(1), "one", "int arm 1")
+assert.assert_eq(int_code(3), "three", "int arm 3")
+assert.assert_eq(int_code(99), "many", "int wildcard fallback")
+assert.assert_eq(none_code(none), "nada", "none arm")
+assert.assert_eq(none_code("x"), "some", "wildcard arm")
+assert.assert_eq(bool_early(true), "yes", "match used as statement")
+assert.summary()

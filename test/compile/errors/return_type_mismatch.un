@@ -1,0 +1,10 @@
+use io
+
+class widget
+    v: int = 1
+
+fn main() -> int
+    p = widget()
+    -> p
+
+main()

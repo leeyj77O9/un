@@ -61,6 +61,41 @@ if ($expected) {
 }
 Remove-Item $tmp -Force
 
+# 거부가 예정된 프로그램들: `un check`와 `un native` 양쪽이 exit 1이며
+# 기대 부분문자열이 stderr/stdout에 있어야 한다.
+$errorsDir = Join-Path $Root "test\compile\errors"
+$errorsManifest = Join-Path $errorsDir "manifest.txt"
+if (Test-Path $errorsManifest) {
+    $expected = @{}
+    Get-Content $errorsManifest | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -eq '' -or $line.StartsWith('#')) { return }
+        $sep = $line.IndexOf('|')
+        if ($sep -lt 1) { Write-Host "[BAD] errors manifest row: $line" -ForegroundColor Red; $fail += 1; return }
+        $key = Split-Path $line.Substring(0, $sep).Trim() -Leaf
+        $expected[$key] = $line.Substring($sep + 1).Trim()
+    }
+    foreach ($f in Get-ChildItem $errorsDir -Filter *.un -File | Sort-Object Name) {
+        $key = $f.Name
+        $sub = $expected[$key]
+        if (-not $sub) {
+            Write-Host "[FAIL] $key (missing manifest row)" -ForegroundColor Red
+            $fail += 1
+            continue
+        }
+        $chk = Invoke-Un check $f.FullName
+        $nat = Invoke-Un native $f.FullName
+        $ok = ($chk.code -eq 1) -and ($nat.code -eq 1) -and ($chk.text -match [regex]::Escape($sub)) -and ($nat.text -match [regex]::Escape($sub))
+        if ($ok) {
+            Write-Host "[PASS] errors/$key" -ForegroundColor Green
+            $pass += 1
+        } else {
+            Write-Host "[FAIL] errors/$key (check=$($chk.code) native=$($nat.code))" -ForegroundColor Red
+            $fail += 1
+        }
+    }
+}
+
 Write-Host ""
 Write-Host "compile-check: $pass passed, $fail failed"
 if ($fail -gt 0) { exit 1 }

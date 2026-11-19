@@ -1,0 +1,12 @@
+use io
+
+class s
+    v: int = 1
+    get d -> self.v * 2
+
+fn main() -> int
+    o = s()
+    o.d = 5
+    -> 0
+
+main()

@@ -21,13 +21,15 @@
     group은 언어 레인을, Only는 벤치마크를 고른다.
 
 .PARAMETER Group
-    all(기본) | un | unvm | unjit | node | python
-    all   = Un VM + Un JIT + Python + Node
-    un    = Un JIT만 (하위 호환)
-    unvm  = Un VM만 (UV_JIT=0)
-    unjit = Un JIT만 (기본 런타임)
-    node  = Node만
-    python= Python만
+    all(기본) | un | unvm | unjit | unnative | native | node | python
+    all      = Un VM + Un JIT + Python + Node
+    un       = Un JIT만 (하위 호환)
+    unvm     = Un VM만 (UV_JIT=0)
+    unjit    = Un JIT만 (기본 런타임)
+    unnative = 컴파일 모드만 (`un native`) — 결과는 unjit 컬럼에 담는다
+    native   = unnative의 별칭
+    node     = Node만
+    python   = Python만
 
 .PARAMETER Rebuild
     cargo build --release를 먼저 실행한다.
@@ -121,6 +123,15 @@ function Invoke-Un([string]$path, [bool]$jitOff = $false) {
     return @{ code = $code; text = ($out -join "`n") }
 }
 
+function Invoke-UnNative([string]$path) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $out = & $Exe native $path 2>&1
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    return @{ code = $code; text = ($out -join "`n") }
+}
+
 function Invoke-Node([string]$path) {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -144,6 +155,7 @@ function Invoke-Python([string]$path, [string]$pythonExe) {
 $Pairs = @(
     [pscustomobject]@{ label = "int_ops";        un = "bench/int_ops.un";   node = "bench/node/int_ops.mjs";   python = "bench/python/int_ops.py" }
     [pscustomobject]@{ label = "fib24";          un = "bench/fib.un";       node = "bench/node/fib.mjs";       python = "bench/python/fib.py" }
+    [pscustomobject]@{ label = "native_fib24";   un = "bench/native_fib.un"; node = "bench/node/fib.mjs";      python = "bench/python/fib.py" }
     [pscustomobject]@{ label = "nested_sum_200"; un = "bench/loop.un";      node = "bench/node/loop.mjs";     python = "bench/python/loop.py" }
     [pscustomobject]@{ label = "qsort500";       un = "bench/sort.un";      node = "bench/node/sort.mjs";     python = "bench/python/sort.py" }
     [pscustomobject]@{ label = "mergesort1000";  un = "bench/mergesort.un"; node = "bench/node/mergesort.mjs"; python = "bench/python/mergesort.py" }
@@ -180,10 +192,14 @@ foreach ($g in ($Group -split ',' | ForEach-Object { $_.Trim().ToLower() })) {
         "un"    { $eachMode += "unjit" }   # 하위 호환: un == unjit
         "unvm"  { $eachMode += "unvm" }
         "unjit" { $eachMode += "unjit" }
+        # compile-mode(`un native`): 정적분석(컴파일) 기반 네이티브 경로만 별도로 측정한다.
+        # 결과는 unjit 컬럼에 담지만 -Group 이름은 native/unnative로 선택한다.
+        "unnative" { $eachMode += "unnative" }
+        "native"   { $eachMode += "unnative" }
         "node"  { $eachMode += "node" }
         "python"{ $eachMode += "python" }
         default {
-            Write-Host "unknown group: $g (valid: all | un | unvm | unjit | node | python)"
+            Write-Host "unknown group: $g (valid: all | un | unvm | unjit | unnative | native | node | python)"
             exit 2
         }
     }
@@ -281,6 +297,14 @@ foreach ($p in $Pairs) {
         $row.unvmCode = $r.code; $row.unvmValid = Get-Validation $r.text
         if ($r.code -ne 0) { Write-Host "[BAD]  VM  $($p.un) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }
         foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.unvm = $b } }
+    }
+    if ($eachMode -contains "unnative") {
+        # compile mode(`un native`)만 측정한다. 바이트코드 JIT 경로는 건드리지 않고 결과를
+        # unjit 계열 칸에 채운다.
+        $r = Invoke-UnNative $p.un
+        $row.unjitCode = $r.code; $row.unjitValid = Get-Validation $r.text
+        if ($r.code -ne 0) { Write-Host "[BAD]  native $($p.un) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }
+        foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.unjit = $b } }
     }
     if ($eachMode -contains "unjit") {
         $r = Invoke-Un $p.un $false

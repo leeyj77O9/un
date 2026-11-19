@@ -1,0 +1,41 @@
+use io
+use math
+use test.assert as assert
+
+fn square_root_of(n: float) -> float
+    -> math.sqrt(n)
+
+fn sin_complement_of_pi_half() -> float
+    -> math.cos(math.sin(math.log10(10.0)))
+
+fn fourth_quadrant() -> float
+    -> math.sqrt(math.sin(1.5) * math.sin(1.5) + math.cos(1.5) * math.cos(1.5))
+
+fn arc_cos_unary_zero() -> float
+    -> math.acos(1.0)
+
+fn cubic() -> float
+    -> math.cbrt(27.0)
+
+fn hyperbolic() -> float
+    -> math.pow(2.0, 8.0)
+
+fn within_one(f: float) -> bool
+    if f > -1.0
+        if f < 1.0
+            -> true
+    -> false
+
+fn abs_neg() -> float
+    -> math.abs(-3.5)
+
+assert.assert_eq(square_root_of(4.0), 2.0, "sqrt of 4")
+assert.assert_eq(square_root_of(2.0), 1.4142135623730951, "sqrt of 2")
+assert.assert_eq(sin_complement_of_pi_half(), 0.6663667453928805, "sin/cos/log10 mix")
+assert.assert_true(within_one(math.sin(1.5)), "sin is bounded")
+assert.assert_eq(fourth_quadrant(), 1.0, "sin^2 + cos^2 == 1")
+assert.assert_eq(arc_cos_unary_zero(), 0.0, "acos(1)")
+assert.assert_eq(cubic(), 3.0, "cbrt of 27")
+assert.assert_eq(hyperbolic(), 256.0, "pow of 2^8")
+assert.assert_eq(abs_neg(), 3.5, "abs negative")
+assert.summary()

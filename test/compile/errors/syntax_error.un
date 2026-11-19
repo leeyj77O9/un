@@ -1,0 +1,4 @@
+def main() -> int
+    -> 0
+
+main()

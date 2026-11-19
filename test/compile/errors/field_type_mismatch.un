@@ -1,0 +1,15 @@
+use io
+
+class radio
+    tag: int = 1
+
+fn fnLeave() -> int
+    -> 0
+
+fn main() -> int
+    p: radio = radio()
+    io.write(p.tag)
+    p.tag = "nope"
+    -> 0
+
+main()

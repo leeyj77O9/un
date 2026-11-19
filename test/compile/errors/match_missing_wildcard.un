@@ -1,0 +1,7 @@
+use io
+
+fn main() -> int
+    r = match 7 { 1 -> "one", 2 -> "two" }
+    -> 0
+
+main()

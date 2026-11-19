@@ -1,0 +1,8 @@
+use io
+
+fn main() -> int
+    xs = [1, 2]
+    xs.a()
+    -> 0
+
+main()

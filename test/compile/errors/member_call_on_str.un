@@ -1,0 +1,8 @@
+use io
+
+fn main() -> int
+    d: str = "hello"
+    x = d.nope()
+    -> 0
+
+main()

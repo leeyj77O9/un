@@ -1,0 +1,7 @@
+use io
+
+fn main() -> int
+    r = match true { true -> "T" }
+    -> 0
+
+main()
