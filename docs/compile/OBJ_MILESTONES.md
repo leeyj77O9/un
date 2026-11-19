@@ -158,6 +158,10 @@ plain `un build`로 링크한 exe가 각각 `un run`과 stdout/stderr/exit code 
 - `un build`의 드라이버는 `unrt_init()` → `un_main()` → `unrt_flush_stdout()` 순서로
   호출한다. Str 출력은 VM runtime의 stdout 버퍼를 통해 나간다. 엔트리 반환이
   float/bool이면 값을 출력하지 않고 숫자 그대로/0으로 출력한다.
+  **plain exe는 모듈 최상위 문장을 실행하지 않는다** — 진입 proto(`fn main`, `un_main`으로
+  export)만 실행된다. 이에 반해 `un run` / `un native` / `--embed`는 인터프리터 의미론이라
+  모듈 최상위 문장이 한 번 실행되고 `main()`은 파일이 직접 호출할 때만 실행된다.
+  함정 예: top-level의 `io.write("boot")`는 plain exe에서 조용히 무시된다.
 - `use`로 가져와야 하는 모듈이라도 `io.write`처럼 **네이티브 테이블에 등록된** native 호출은
   `unrt_call_native`로 연결되므로 독립 exe에서 바로 동작한다. 일반 모듈 import(사용자 `.un` 파일 등)는
   여전히 embed 런타임(`--embed`)을 쓴다.
