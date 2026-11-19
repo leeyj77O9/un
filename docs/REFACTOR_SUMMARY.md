@@ -74,9 +74,9 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
 | `cargo test --release` | **213 passed / 0 failed** |
-| `scripts/test.ps1` | Positive **47 files / 1538 passed** / 0 failed / 0 crashed; Negative **46 matched / 0 divergences**; Known **0**; exit **0** |
-| `scripts/differential.ps1` | **93 files, 0 differences** (JIT on vs off, byte-identical) |
-| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **47/47**; Negative compilable **37/37** identical |
+| `scripts/test.ps1` | Positive **47 files / 1538 passed** / 0 failed / 0 crashed; Negative **48 matched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/differential.ps1` | **95 files, 0 differences** (JIT on vs off, byte-identical) |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **47/47**; Negative compilable **39/39** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |
 | `scripts/bench.ps1 -Group all -Report` | all 15 x 4 lanes self-validate; root `BENCHMARK.md` regenerated; Un JIT/Python geomean **2.124x** (JIT live since pass 18; depth-guard fix moved fib24 3.39 → 1.32 ms in pass 22) |
 

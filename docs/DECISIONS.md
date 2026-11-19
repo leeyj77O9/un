@@ -1167,7 +1167,7 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
     지원하려면 별도의 결정이 필요하다.
 - **사용자 결정** (2026-11-19 "클래스 내부의 멤버 변수에 타입 어노테이션이 안되는데 가능하게 해줘").
 
-## D-091 | 미처리 오류는 Python식 트레이스백을 출력한다 | Accepted
+## D-091 | 미처리 오류는 Un식 트레이스(`un: error trace`)를 출력한다 | Accepted
 
 - **문제**: 미처리 에러가 최상위에 도달할 때 함수 경계들의 호출 위치가 출력되지 않았다.
   에러가 콜 프레임을 넘어가는 순간 `pop_frame`으로 프레임이 버려져서 `report()`에는
@@ -1177,8 +1177,8 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **결정**:
   - 에러가 콜 경계를 넘을 때마다 공유 trace 버퍼에 `TraceEntry`
     (call-site의 `Rc<Source>` + span + **콜러** 함수명)를 푸시한다. 출력은
-    `Traceback (most recent call last):` 뒤에 outermost-first로
-    `File "<파일>", line <줄>, in <함수>`와 소스 라인 한 줄씩 표시하고,
+    `un: error trace` 헤더 아래 outermost-first로
+    `-> <함수> <파일>, line [N]`와 소스 라인을 표시하고,
     마지막에 기존 LangError 블록(파일/라인/캐럿 + `error: <msg>`)을 그대로 이어 쓴다.
   - `catch`는 trace를 클리어한다(잡힌 에러의 잔재가 이후의 무관한 에러에 섞이지 않게).
     `finally`를 통과하는 에러는 계속 누적된다.
@@ -1188,26 +1188,65 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
     ctx의 소스를 첨부한다. `display()`는 첨부된 소스를 우선 사용한다 — import 모듈의
     에러가 모듈 기준 파일/라인으로 표시된다(기존 잠재 버그 수정).
   - 루트 프로토는 `<module>`로 등록된다. 프레임의 함수명은 caller(현재 프로토)의
-    이름을 사용한다 — Python이 각 프레임을 그 프레임을 실행 중인 함수로 명명하는 것과 동일하다.
-- **형식**: 요청자 선택 — "traceback 완전판", "Python식(여러 줄, 헤더 있음)". 예시:
+    이름을 사용한다 — 각 프레임을 그 프레임을 실행 중인 함수로 명명한다.
+- **형식**: 최초에는 Python식(`Traceback (most recent call last):` + `File "..."` 행)으로
+  구현했으나, 요청자 판단("너무 파이썬 같다")으로 Un식으로 다시 디자인했다. 요청자 선택 —
+  형식 A(`un:` 접두 + `->` 체인), 프레임 순서 바깥→안쪽, 프레임에 소스 라인 표시.
+  프레임 위치 표기(`<파일>, line [N]`)는 기존 에러 캐럿 블록과 동일 규칙을 쓴다. 예시:
 
   ```
-  Traceback (most recent call last):
-    File "temp.un", line 12, in <module>
-      main()
-    File "temp.un", line 10, in main
-      outer()
-    File "temp.un", line 7, in outer
-      inner()
+  un: error trace
+      -> <module>  <temp_fmt2>, line [12]
+           main()
+      -> main      <temp_fmt2>, line [10]
+           outer()
+      -> outer     <temp_fmt2>, line [7]
+           inner()
 
-  <temp>, line [4], column [8]
+  <temp_fmt2>, line [4], column [8]
       -> 1 / 0
          ^^^^^
   error: int division by zero
   ```
-- **알려진 한계**: Python의 "During handling of the above exception" 식 중첩 예외 체인은
-  없다. catch 안에서 새 에러를 throw하면 새 트레이스로 시작한다(의도된 단순화).
-  CLI/`.unbc` 경로에만 적용되며, WASM 플레이그라운드의 오류 표시는 기존 방식을 유지한다.
-- **검증**: Negative 46(신규 `test/negative/traceback.un` 핀), differential 93 files,
-  roundtrip compilable Negative 37/37, cargo test 213. 벤치 영향 없음(에러 경로에서만 호출).
-- **요청자 발언** (2026-11-19 "에러 나올때 에러를 전파해서 이너 예외도 에러 출력할때 나오게 해줘").
+- **알려진 한계**: Python의 "During handling of the above exception" 식 중첩 예외 체인에
+  해당하는 기능은 없다. catch 안에서 새 에러를 throw하면 새 트레이스로 시작한다(의도된 단순화).
+  중첩 예외 체인은 아니지만, 미처리 에러는 CLI / `.unbc` / **웹 플레이그라운드**
+  모두 동일한 `un: error trace` 출력을 낸다(플레이그라운드는 `parse_error` 경로만
+  예외 — VM-native 오류 지점이 없으므로 트레이스 없이 진단 메시지만 나온다).
+- **검증**: Negative 48(`test/negative/traceback.un`, `traceback_toplevel.un`,
+  `traceback_import` 핀), differential **95** files, compilable Negative **39/39**,
+  cargo test 213. 벤치 영향 없음(에러 경로에서만 호출).
+- **보강 (같은 날 후속, "트레이스백 안되는거 같은데?")**:
+  - **최상위/모듈 import-time 에러도 트레이스백을 찍는다.** 호출 경계를 0번 건넌
+    에러(예: 모듈 최상위의 `1 / 0`, import 실패)는 LangError의 span에서 `<module>`
+    프레임을 합성한다. (이전에는 trace가 비어 "Traceback" 헤더 자체가 빠졌다.)
+  - **import 경계도 프레임으로 기록**한다(`Op::Use`의 실패 경로). 그리고 모듈 실행이
+    임포터의 공유 trace를 물려받도록 `import_file → load → load_inner → load_file`로
+    `Option<Traces>`를 전달 — 모듈 내부의 호출 경계도 같은 트레이스에 쌓인다.
+    모듈의 `frames` 스택 자체는 기존대로 신선하게 유지(depth 불변). 모듈의 Parse
+    에러는 `LangError::with_source(모듈 소스)`를 붙여 모듈 기준으로 표시된다.
+  - **반복 프레임 접기**: 연속으로 동일한 (source, span, name) 프레임은 한 줄로 접고
+    `... (repeated N more times)`만 출력한다. `maximum recursion depth` 에러 출력이
+    2007줄 → 10줄로 줄었다.
+  - **형식 재설계 ("출력 예시가 너무 파이썬 같으니깐 un스럽게 새롭게 만들자")**:
+    Python식 출력을 `un: error trace` 헤더 + `-> <함수> <파일>, line [N]` 체인
+    (이름 컬럼 정렬, 소스 라인 동반)으로 교체. 프레임 순서는 바깥→안쪽 유지,
+    프레임의 위치 표기는 에러 캐럿 블록의 `<파일>, line [N]` 규칙과 통일.
+    세 negative 핀의 expected substring을 `Traceback (most recent call last):`에서
+    `un: error trace`로 갱신.
+  - **웹 플레이그라운드도 동일 출력** ("웹 플레이그라운드에서는 왜 안돼?"):
+    `report()`는 CLI 전용이고 플레이그라운드는 `PlaygroundResult.error` 문자열을
+    직접 만들기 때문에 트레이스가 빠져 있었다. 트레이스 렌더링을 `unvm`의
+    `runtime::context::trace_string`으로 뽑아 CLI(`report()`)와
+    플레이그라운드(`render_error`)가 같은 렌더러를 공유한다. 각 Outcome 팔에서
+    `context::take_trace`로 버퍼를 드레인해 에러 텍스트 앞에 붙인다.
+    `catch` 경로는 보상 없이 그대로 — 잡힌 에러는 트레이스가 클리어되므로
+    플레이그라운드도 `error: null` + exit 0 유지. 모듈 경계 체인도 동일하게 동작.
+    WASM smoke(`rust/playground/smoke.mjs`) 64/64 OK, 미처 panic 전용 케이스는
+    `panic_display` + (있을시) 트레이스 병합.
+  - 추가 핀: `test/negative/traceback_toplevel.un`,
+    `test/fixtures/traceback_import/{main.un,mod.un}`. Negative 48, differential
+    **95** files, roundtrip compilable Negative **39/39**.
+- **요청자 발언** (2026-11-19 "에러 나올때 에러를 전파해서 이너 예외도 에러 출력할때 나오게 해줘",
+  같은 날 "출력 예시가 너무 파이썬 같으니깐 un스럽게 새롭게 만들자" — 형식 A(`un:` 접두 +
+  `->` 체인), 바깥→안쪽 순서, 소스 라인 표시 선택).

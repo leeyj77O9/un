@@ -1981,12 +1981,14 @@ No action items. No regression against the 2026-11-18 baseline; the 17 commits s
 - scripts/differential.ps1: 92 files, 0 differences.
 - UV_JIT=2 strict Int/Float canaries: OK. WASM playground build: OK.
 
-## 2026-11-19 - Pass 40: Python-style traceback for uncaught errors (D-091)
+## 2026-11-19 - Pass 40: `un: error trace` for uncaught errors (D-091)
 
 ### Trigger
 
 - User (2026-11-19): "에러 나올때 에러를 전파해서 이너 예외도 에러 출력할때 나오게 해줘"
   (이어서 "Python traceback 완전판" + "Python식 (여러 줄, 헤더 있음)" 선택)
+  (같은 날 후속 "출력 예시가 너무 파이썬 같으니깐 un스럽게 새롭게 만들자" →
+  형식 A `un:` 접두 + `->` 체인, 바깥→안쪽, 소스 라인 표시로 재설계)
 
 ### Changes
 
@@ -2004,11 +2006,12 @@ No action items. No regression against the 2026-11-18 baseline; the 17 commits s
   - `error()`/`header_error()` attach `context::source(&self.ctx)` to the `LangError`.
 - `error.rs`: `LangError.source: Option<Rc<Source>>` + `with_source()`; `display()` prefers the
   attached source — fixes module-raised errors being displayed against the main file.
-- `main.rs`: `report()` now prints `Traceback (most recent call last):` + frames
-  (outermost first) before the existing error block; the old dead `trace:` block is removed
-  (at top level the frame stack is always empty by then, so it could never print).
-- `test/negative/traceback.un` + manifest line: pins the traceback format (exit 1 +
-  `Traceback (most recent call last):`).
+- `main.rs`: `report()` now prints the trace rows before the existing error block
+  (format chosen after a same-day redesign, see amendment); the old dead `trace:`
+  block is removed (at top level the frame stack is always empty by then, so it
+  could never print).
+- `test/negative/traceback.un` + manifest line: pins the trace format (exit 1 +
+  `un: error trace`).
 - Docs: DECISIONS.md D-091; README.md / docs/README.md semantic notes; counts synced
   (Negative 45→46, differential 92→93, roundtrip compilable Negative 36→37).
 
@@ -2023,3 +2026,37 @@ No action items. No regression against the 2026-11-18 baseline; the 17 commits s
 - Bench (unjit lanes unchanged): dict5000 3.62 ms, class1000 0.58 ms (trace work is
   error-path-only).
 - Multi-file module errors now display against the module's own file/line.
+
+### Amendment (same day, user report "트레이스백 안되는거 같은데?")
+
+- Three gaps fixed on top of the initial pass:
+  1. Top-level / import-time errors printed no `Traceback` header at all
+     (no call boundary is crossed). `report()` now synthesizes a `<module>`
+     frame from the LangError span when the trace buffer is empty.
+  2. `Op::Use` failure pushes a trace entry for the import line itself, and the
+     module loader (`import_file → load → load_inner → load_file`) now threads
+     `Option<context::Traces>` so the module's internal call boundaries join the
+     importer's traceback. Module parse errors get `with_source(module source)`.
+  3. Consecutive identical frames collapse to one line with
+     `... (repeated N more times)`; the recursion-depth error output went from
+     2007 lines to 10.
+- New pins: `test/negative/traceback_toplevel.un` and the
+  `test/fixtures/traceback_import/` pair. Negative **48**, differential
+  **95 files**, roundtrip compilable Negative **39/39**.
+- Format redesign (same day, user report "출력 예시가 너무 파이썬 같으니깐 un스럽게
+  새롭게 만들자"): the Python-style output was replaced with the Un-style
+  `un: error trace` format chosen by the user — `->` frame chain with
+  name-column alignment, frame position in the error caret block's
+  `<file>, line [N]` convention, the source line shown per frame,
+  outermost-first order kept, repeated identical frames collapsed to
+  `... (repeated N more times)`. The three negative pins' substring was
+  updated to `un: error trace`.
+- Web playground parity (same day, user report "웹 플레이그라운드에서는 왜 안돼?"):
+  the trace renderer moved into `unvm::runtime::context::trace_string` so the
+  CLI (`report()`) and the WASM playground (`render_error`) share one
+  implementation. Every `Outcome` arm in the playground now prepends the
+  `un: error trace` block when the trace buffer is non-empty (root-hint
+  synthesis still applies for boundary-free errors). WASM smoke.mjs 64/64
+  passed; caught errors still yield `error: null`, exit 0.
+- `main.un`, bench lanes and WASM untouched; `cargo test` 213/213, UV_JIT=2
+  canaries OK.

@@ -285,29 +285,33 @@ fn run(args: &[String]) {
         }
         Outcome::Error(e) => {
             world::flush_stdout();
-            report(&vm.ctx, e.display(&source));
+            let root = Some((
+                e.source.clone().unwrap_or_else(|| source.clone()),
+                e.start,
+            ));
+            report(&vm.ctx, e.display(&source), root);
         }
         Outcome::Propagate(err, start, length) => {
 
             world::flush_stdout();
             let e = LangError::new(start, length, err_message(&err)).with_header(err_header(&err));
-            report(&vm.ctx, e.display(&source));
+            report(&vm.ctx, e.display(&source), Some((source.clone(), start)));
         }
         Outcome::Return(_, start, length) => {
             world::flush_stdout();
-            report(&vm.ctx, LangError::new(start, length, "'->' outside function").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'->' outside function").display(&source), Some((source.clone(), start)));
         }
         Outcome::Break(start, length) => {
             world::flush_stdout();
-            report(&vm.ctx, LangError::new(start, length, "'break' outside loop").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'break' outside loop").display(&source), Some((source.clone(), start)));
         }
         Outcome::Skip(start, length) => {
             world::flush_stdout();
-            report(&vm.ctx, LangError::new(start, length, "'skip' outside loop").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'skip' outside loop").display(&source), Some((source.clone(), start)));
         }
         Outcome::Panic(o) => {
             world::flush_stdout();
-            report(&vm.ctx, panic_display(&o));
+            report(&vm.ctx, panic_display(&o), None);
         }
     }
 }
@@ -373,51 +377,41 @@ fn run_bytecode(path: &str) {
         }
         Outcome::Error(e) => {
             world::flush_stdout();
-            report(&vm.ctx, e.display(&source));
+            let root = Some((
+                e.source.clone().unwrap_or_else(|| source.clone()),
+                e.start,
+            ));
+            report(&vm.ctx, e.display(&source), root);
         }
         Outcome::Propagate(err, start, length) => {
             world::flush_stdout();
             let e = LangError::new(start, length, err_message(&err)).with_header(err_header(&err));
-            report(&vm.ctx, e.display(&source));
+            report(&vm.ctx, e.display(&source), Some((source.clone(), start)));
         }
         Outcome::Return(_, start, length) => {
             world::flush_stdout();
-            report(&vm.ctx, LangError::new(start, length, "'->' outside function").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'->' outside function").display(&source), Some((source.clone(), start)));
         }
         Outcome::Break(start, length) => {
             world::flush_stdout();
-            report(&vm.ctx, LangError::new(start, length, "'break' outside loop").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'break' outside loop").display(&source), Some((source.clone(), start)));
         }
         Outcome::Skip(start, length) => {
             world::flush_stdout();
-            report(&vm.ctx, LangError::new(start, length, "'skip' outside loop").display(&source));
+            report(&vm.ctx, LangError::new(start, length, "'skip' outside loop").display(&source), Some((source.clone(), start)));
         }
         Outcome::Panic(o) => {
             world::flush_stdout();
-            report(&vm.ctx, panic_display(&o));
+            report(&vm.ctx, panic_display(&o), None);
         }
     }
 }
-fn report(ctx: &context::Context, text: String) {
+fn report(ctx: &context::Context, text: String, root: Option<(Rc<Source>, usize)>) {
     world::flush_stdout();
     unvm::jit_cache::clear();
-    // Python-style traceback: the frames the error crossed on its way out,
-    // outermost first (the innermost boundary was recorded first).
-    let trace = context::take_trace(ctx);
-    if !trace.is_empty() {
-        print!("Traceback (most recent call last):{}", nl());
-        for entry in trace.iter().rev() {
-            let file = &entry.source.path;
-            let line = entry.source.get_line(entry.start);
-            let name = if entry.name.is_empty() {
-                "<module>"
-            } else {
-                entry.name.as_str()
-            };
-            print!("  File \"{file}\", line {line}, in {name}{}", nl());
-            let line_text = entry.source.get_line_text(entry.start);
-            print!("    {}{}", line_text.trim(), nl());
-        }
+    let root_hint = root.as_ref().map(|(source, start)| (source.as_ref(), *start));
+    if let Some(trace) = context::trace_string(ctx, root_hint) {
+        print!("{trace}");
     }
     print!("{text}{}", nl());
     exit(1);

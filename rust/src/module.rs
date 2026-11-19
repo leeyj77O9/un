@@ -25,6 +25,7 @@ pub fn import_file(
     source_path: &str,
     module_alias: Option<String>,
     imports: Option<Vec<(String, String)>>,
+    trace: Option<context::Traces>,
 ) -> Result<(), ModuleError> {
     let mut joined = std::path::PathBuf::new();
     for part in parts {
@@ -44,13 +45,13 @@ pub fn import_file(
             )));
         }
     };
-    let map = load(&full)?;
+    let map = load(&full, trace)?;
     let module_name = parts.join(".");
     let object_name = parts.last().cloned().unwrap_or_default();
     modules::import_map(&map, &module_name, &object_name, module_alias, imports)
         .map_err(ModuleError::Panic)
 }
-pub fn load(full_path: &str) -> Result<Vec<(String, Obj)>, ModuleError> {
+pub fn load(full_path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, Obj)>, ModuleError> {
     let cache_key = cache_key(full_path);
     if let Some(cached) = world::module_cache_get(&cache_key) {
         return Ok(cached);
@@ -62,27 +63,27 @@ pub fn load(full_path: &str) -> Result<Vec<(String, Obj)>, ModuleError> {
             format!("circular import detected: '{full_path}'"),
         )));
     }
-    let result = load_inner(full_path);
+    let result = load_inner(full_path, trace);
     world::loading_remove(&cache_key);
     if let Ok(map) = &result {
         world::module_cache_set(&cache_key, map.clone());
     }
     result
 }
-fn load_inner(full_path: &str) -> Result<Vec<(String, Obj)>, ModuleError> {
+fn load_inner(full_path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, Obj)>, ModuleError> {
     let file_path = if full_path.ends_with(".un") {
         full_path.to_owned()
     } else {
         format!("{full_path}.un")
     };
     if std::path::Path::new(&file_path).is_file() {
-        return load_file(&file_path);
+        return load_file(&file_path, trace);
     }
     let dir = std::path::Path::new(full_path);
     if dir.is_dir() {
         let mod_path = dir.join("mod.un");
         if mod_path.is_file() {
-            return load_file(&mod_path.display().to_string());
+            return load_file(&mod_path.display().to_string(), trace);
         }
         let mut map: Vec<(String, Obj)> = Vec::new();
         let mut files: Vec<String> = Vec::new();
@@ -103,7 +104,7 @@ fn load_inner(full_path: &str) -> Result<Vec<(String, Obj)>, ModuleError> {
         }
         files.sort();
         for file in files {
-            for (name, value) in load_file(&file)? {
+            for (name, value) in load_file(&file, trace.clone())? {
                 match map.iter_mut().find(|(k, _)| *k == name) {
                     Some(entry) => entry.1 = value,
                     None => map.push((name, value)),
@@ -117,7 +118,7 @@ fn load_inner(full_path: &str) -> Result<Vec<(String, Obj)>, ModuleError> {
         format!("module '{full_path}' not found"),
     )))
 }
-fn load_file(path: &str) -> Result<Vec<(String, Obj)>, ModuleError> {
+fn load_file(path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, Obj)>, ModuleError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) => {
@@ -131,8 +132,13 @@ fn load_file(path: &str) -> Result<Vec<(String, Obj)>, ModuleError> {
 
     let module_scope = scope::new(Some(world::global_scope()), false);
     let ctx = context::new(module_scope.clone(), source.clone(), context::new_frames());
+    if let Some(trace) = trace {
+        ctx.borrow_mut().trace = trace;
+    }
     let program = compile_source(&source).map_err(|error| match error {
-        RunError::Parse(error) => ModuleError::Error(error),
+        RunError::Parse(error) => {
+            ModuleError::Error(error.with_source(source.clone()))
+        }
         RunError::Panic(panic) => ModuleError::Panic(obj::panic("panic", panic.message)),
     })?;
     // The module path bypasses `VM::new` (which validates), so validate here

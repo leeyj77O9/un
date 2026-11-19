@@ -173,7 +173,7 @@ symbol with exactly one occurrence in its own definition file is reported as
 
 (as of 2026-11-16/17. Several counts have since moved — current figures are maintained in
 `README.md` / `docs/TEST_GUIDE.md` / `docs/ARCHITECTURE.md`: Positive 47 files / **1538 passed** /
-0 failed, Negative **46 matched**, differential **93 files / 0 differences**. The numbers below
+0 failed, Negative **48 matched**, differential **95 files / 0 differences**. The numbers below
 are kept as the historical record of the audit run.)
 
 - Build: `cargo build --release` → **exit 0, 0 warnings**.

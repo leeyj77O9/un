@@ -1382,9 +1382,27 @@ impl VM {
                     modules::include(&last, alias, imports).map_err(module::ModuleError::Panic)
                 } else {
                     let source_path = self.ctx.borrow().source.path.clone();
-                    module::import_file(&parts, &source_path, alias, imports)
+                    module::import_file(&parts, &source_path, alias, imports, Some(context::traces(&self.ctx)))
                 };
                 if let Err(error) = result {
+                    // The import line is a boundary too: record it so a
+                    // traceback from inside an imported module points at
+                    // the `use` statement that triggered it.
+                    let name = self
+                        .program
+                        .names
+                        .get(self.proto().name)
+                        .cloned()
+                        .unwrap_or_default();
+                    context::push_trace(
+                        &self.ctx,
+                        context::TraceEntry {
+                            source: context::source(&self.ctx),
+                            start: span.0,
+                            length: span.1,
+                            name,
+                        },
+                    );
                     return Err(error.into());
                 }
             }

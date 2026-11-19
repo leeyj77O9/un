@@ -303,7 +303,7 @@ Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
 The current baseline is Positive 47 files / 1538 passed / 0 failed / 0 crashed,
-Negative 46 checks matched + 0 documented divergences, and Known 0 files.
+Negative 48 checks matched + 0 documented divergences, and Known 0 files.
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
 statistics, and saved to `bench/results/<timestamp>/results.csv` and `results.md`.
@@ -608,7 +608,7 @@ Chaining `iter` methods (`(0..10).map(fn(x) -> x * 2).take(3)`) is lazy: nothing
 - `http.get/post/put/patch/head/options/delete`: redirects (301/302/303/307/308) are followed up to 8 hops. 301/302/303 rewrite the method to GET and drop the body (.NET behaviour); 307/308 preserve method and body. A missing Location header makes the redirect response the final one. `get` keeps the 404-style exception contract; the other verbs return status and body as-is.
 - `time`'s `date(str)` constructor validates year/month/day (including leap years), hour/minute/second and millisecond strictly; `date("2024-02-30")` is an error.
 - `use a.*` is sugar for `use a { * }` (wildcard import of every public member).
-- An error that propagates out of the program prints a Python-style traceback: a `Traceback (most recent call last):` header followed by one `File "<file>", line <N>, in <function>` entry per frame the error crossed, then the error location (line/span/caret) and `error: <message>`. Errors raised inside imported modules are displayed against the module's own file/line.
+- An error that propagates out of the program prints an Un-style trace: an `un: error trace` header followed by one `-> <function> <file>, line [N]` row plus the source line per frame the error crossed, then the error location (line/span/caret) and `error: <message>`. Repeated frames (deep recursion) collapse to `... (repeated N more times)`. Errors raised inside imported modules are displayed against the module's own file/line, and the `use` line itself is recorded as a frame.
 
 ## Architecture
 

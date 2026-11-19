@@ -50,6 +50,7 @@ use std::rc::Rc;
 
 use unvm::native;
 use unvm::runner;
+use unvm::runtime::context;
 use unvm::runtime::obj::{self, Payload};
 use unvm::runtime::world;
 use unvm::source::Source;
@@ -73,6 +74,21 @@ pub struct PlaygroundResult {
 
 fn is_need_input(o: &obj::Obj) -> bool {
     matches!(obj::payload(o), Payload::Panic { name, .. } if name == "need_input")
+}
+
+/// Prepend the `un: error trace` block (if any) to the error text shown in
+/// the browser, reusing the exact renderer the CLI uses. `root` is the
+/// synthetic module frame position used when no call boundary was crossed.
+fn render_error(
+    ctx: &context::Context,
+    text: String,
+    root: Option<(Rc<Source>, usize)>,
+) -> String {
+    let root_hint = root.as_ref().map(|(source, start)| (source.as_ref(), *start));
+    match context::trace_string(ctx, root_hint) {
+        Some(trace) => format!("{trace}{text}"),
+        None => text,
+    }
 }
 
 /// Runs `code` against the sandbox, mirrors `PlaygroundRunner.RunCode`.
@@ -122,28 +138,37 @@ pub fn run(
             Ok(mut vm) => match vm.run() {
                 Outcome::Value(_) => {}
                 Outcome::Error(e) => {
-                    error = Some(e.display(&source));
+                    let root = Some((
+                        e.source.clone().unwrap_or_else(|| source.clone()),
+                        e.start,
+                    ));
+                    let text = e.display(&source);
+                    error = Some(render_error(&vm.ctx, text, root));
                     exit_code = 1;
                 }
                 Outcome::Propagate(err, start, length) => {
                     // the header is preserved, as in `catch (PropagateFlow pf)`
                     let e = LangError::new(start, length, err_message(&err)).with_header(err_header(&err));
-                    error = Some(e.display(&source));
+                    let text = e.display(&source);
+                    error = Some(render_error(&vm.ctx, text, Some((source.clone(), start))));
                     exit_code = 1;
                 }
                 Outcome::Return(_, start, length) => {
                     let e = LangError::new(start, length, "'->' outside function");
-                    error = Some(e.display(&source));
+                    let text = e.display(&source);
+                    error = Some(render_error(&vm.ctx, text, Some((source.clone(), start))));
                     exit_code = 1;
                 }
                 Outcome::Break(start, length) => {
                     let e = LangError::new(start, length, "'break' outside loop");
-                    error = Some(e.display(&source));
+                    let text = e.display(&source);
+                    error = Some(render_error(&vm.ctx, text, Some((source.clone(), start))));
                     exit_code = 1;
                 }
                 Outcome::Skip(start, length) => {
                     let e = LangError::new(start, length, "'skip' outside loop");
-                    error = Some(e.display(&source));
+                    let text = e.display(&source);
+                    error = Some(render_error(&vm.ctx, text, Some((source.clone(), start))));
                     exit_code = 1;
                 }
                 Outcome::Panic(o) => {
@@ -152,7 +177,8 @@ pub fn run(
                         // stdin; the error stays hidden, as `NeedInputException` was
                         needs_input = true;
                     } else {
-                        error = Some(panic_display(&o));
+                        let text = panic_display(&o);
+                        error = Some(render_error(&vm.ctx, text, None));
                     }
                     exit_code = 1;
                 }

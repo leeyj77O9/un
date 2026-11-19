@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use crate::ast::Node;
+use crate::error::nl;
 use crate::runtime::obj;
 use crate::runtime::obj::Obj;
 use crate::runtime::scope::Scope;
@@ -108,6 +109,109 @@ pub fn take_trace(ctx: &Context) -> Vec<TraceEntry> {
 pub fn clear_trace(ctx: &Context) {
     traces(ctx).borrow_mut().clear();
 }
+// --- Un-style error trace rendering ---
+
+enum TraceRow {
+    Frame {
+        name: String,
+        file: String,
+        line: usize,
+        source_line: String,
+    },
+    Repeated(usize),
+}
+
+fn trace_frame_name(name: &str) -> &str {
+    if name.is_empty() { "<module>" } else { name }
+}
+
+/// Render the shared trace buffer to an `un: error trace` text block
+/// (every line newline-terminated). Frame positions use the
+/// `<file>, line [N]` convention of the error caret block.
+///
+/// When no call boundary was crossed (`trace` is empty), `root` supplies
+/// the source position used to synthesize a `<module>` frame; `None`
+/// then yields no output. Repeated identical frames collapse into
+/// `... (repeated N more times)`. The shared buffer is drained.
+pub fn trace_string(ctx: &Context, root: Option<(&Source, usize)>) -> Option<String> {
+    let trace = take_trace(ctx);
+    let mut rows: Vec<TraceRow> = Vec::new();
+    if trace.is_empty() {
+        if let Some((source, start)) = root {
+            rows.push(TraceRow::Frame {
+                name: "<module>".to_string(),
+                file: format!("<{}>", source.name()),
+                line: source.get_line(start),
+                source_line: source.get_line_text(start).trim().to_string(),
+            });
+        }
+    } else {
+        let entries: Vec<_> = trace.into_iter().rev().collect();
+        let mut i = 0;
+        while i < entries.len() {
+            let mut count = 1;
+            while i + count < entries.len()
+                && entries[i + count].source.path == entries[i].source.path
+                && entries[i + count].start == entries[i].start
+                && entries[i + count].name == entries[i].name
+            {
+                count += 1;
+            }
+            rows.push(TraceRow::Frame {
+                name: trace_frame_name(&entries[i].name).to_string(),
+                file: format!("<{}>", entries[i].source.name()),
+                line: entries[i].source.get_line(entries[i].start),
+                source_line: entries[i]
+                    .source
+                    .get_line_text(entries[i].start)
+                    .trim()
+                    .to_string(),
+            });
+            if count > 1 {
+                rows.push(TraceRow::Repeated(count - 1));
+            }
+            i += count;
+        }
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    let width = rows
+        .iter()
+        .map(|row| match row {
+            TraceRow::Frame { name, .. } => name.chars().count(),
+            TraceRow::Repeated(_) => 0,
+        })
+        .max()
+        .unwrap_or(0);
+    let mut out = String::new();
+    out.push_str("un: error trace");
+    out.push_str(nl());
+    for row in &rows {
+        match row {
+            TraceRow::Frame {
+                name,
+                file,
+                line,
+                source_line,
+            } => {
+                out.push_str(&format!("    -> {name:<width$}  {file}, line [{line}]"));
+                out.push_str(nl());
+                if !source_line.is_empty() {
+                    out.push_str("         ");
+                    out.push_str(source_line);
+                    out.push_str(nl());
+                }
+            }
+            TraceRow::Repeated(count) => {
+                out.push_str(&format!("    ... (repeated {count} more times)"));
+                out.push_str(nl());
+            }
+        }
+    }
+    Some(out)
+}
+
 pub fn call_depth(ctx: &Context) -> usize {
     ctx.borrow().call_depth
 }
