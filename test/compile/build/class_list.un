@@ -1,0 +1,28 @@
+use io
+
+class Point(x: int, y: int)
+    fn total() -> int
+        -> self.x + self.y
+
+fn sum_points(pts: list[Point]) -> int
+    total = 0
+    for p in pts
+        total += p.total()
+    -> total
+
+fn main() -> int
+    xs = [Point(1, 2), Point(10, 20)]
+    xs[0].x = 5
+    t = 0
+    for p in xs
+        t = t + p.total()
+    io.write(t)
+    xs.add(Point(100, 200))
+    io.write(sum_points(xs))
+    io.write(len(xs))
+    p = xs.pop()
+    io.write(p.total())
+    io.write(len(xs))
+    -> 0
+
+main()
