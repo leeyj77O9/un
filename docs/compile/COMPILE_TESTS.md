@@ -4,7 +4,7 @@
 > 세 축으로 구성된다: (A) `un native`/`un check` 결과 테스트, (B) 결과면 안 되는 실패
 > 테스트, (C) 인터프리터 vs 컴파일 모드 cross-validation.
 
-## 현재 상태 (2026-11-19)
+## 현재 상태 (2026-11-20)
 
 | 구분 | 상태 |
 |---|---|
@@ -12,7 +12,8 @@
 | `scripts/differential.ps1` (UV_JIT=0 vs JIT 바이트 비교) | **green** — 95 files, 0 differences |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | **green** — 47 identical, 0 mismatched (negative 39 identical) |
 | `cargo test --release` (lib) | **green** — 213 passed |
-| `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 6 positive fixture passed + 11 error cases rejected as expected (17 checks total) |
+| `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 6 fixture + untyped-source-rejected + errors 11 (18 checks total) |
+| `scripts/exe-diff.ps1` (exe ↔ `un run` 바이트 비교) | **green** — embed 6 fixture + plain build 1 fixture (7 checks) |
 | `un native` 바이너리 정확성 (native 실행 vs interpreter 실행) | **검증됨** — typed_pass.un, loop/recursion/collatz 벤치필, div-zero·재귀 bail 경로 포함 |
 
 ## 실행 방법
@@ -20,6 +21,8 @@
 ```powershell
 # compile-mode cross-validation (test/compile/*.un)
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-check.ps1
+# exe 검증 — --embed exe와 plain native exe가 un run과 바이트 동일한지
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\exe-diff.ps1
 # compile-mode 벤치마크 측정
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-bench.ps1
 # 기존 회귀 (반드시 green 유지)
@@ -34,6 +37,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | `test/compile/exceptions.un` | `try`/`catch`/`finally`/`throw` + dict missing-key + int/int · `//` div-zero(catchable) + INT_MIN // -1 wrap — interpreter와 `un native`가 바이트 동일한지를 검증하는 예외 경로 픽스처 |
 | `test/compile/classes.un` | 클래스 생성/접근/메서드/`__init__`/상속 — `un native`/`un run` 양쪽에서 동일하게 통과하는 클래스 경로 픽스처 (plain `un build`에서도 exe로 빌드되는지 scripts/obj-demo.ps1가 게이트) |
 | `test/compile/classes_list.un` | `list[Point]` 요소 타입의 클래스 리스트 — 리터럴/for-in/`xs[i]` read+write/`pop`/`pop(i)`/`add`/`insert`/`index_of`/`contains`/`len` · 함수 파라미터/반환(`-> list[point]`) — interpreter와 `un native`가 바이트 동일 |
+| `test/compile/build/class_list.un` | plain native exe 게이트 — assert 모듈 없이 `use io`만 import하는 클래스 리스트 프로그램을 `scripts/exe-diff.ps1`이 plain `un build` exe로 링크해 `un run`과 바이트 비교 |
+| `scripts/exe-diff.ps1` | `test/compile/*.un` → `--embed` exe 바이트 비교 + `test/compile/build/*.un` → plain exe 바이트 비교 (exit/stdout/stderr 전부) |
 | `test/compile/matches.un` | match exhaustiveness 분석 — bool true/false arm·int arm·`_` wildcard·none arm을 포함한 exhaustive match 표기; interpreter와 `un native`가 바이트 동일 |
 | `bench/native_fib.un` | 어노테이션된 fib 벤치마크 (native 경로 확인 및 `scripts/compile-bench.ps1` 입력) |
 | `test/assert.un` | 어설트 모듈 (`assert_eq` / `assert_true` / `summary()`) |

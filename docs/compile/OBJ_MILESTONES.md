@@ -67,6 +67,12 @@ plain `un build`도 임의의 annotated 클래스를 지원한다(`<classes_init
 (현재 18 checks, errors/* 11개 + untyped-source-rejected 포함). 거부 케이스를 추가하려면 픽스처 + `test/compile/errors/manifest.txt`
 한 행만 추가하면 된다.
 
+`scripts\exe-diff.ps1`은 **exe 검증**을 담당한다 — `test/compile/*.un`을 `un build --embed`로
+링크한 exe와, `test/compile/build/*.un`(plain native 빌드 가능 프로그램만 두는 디렉터리)을
+plain `un build`로 링크한 exe가 각각 `un run`과 stdout/stderr/exit code 바이트 동일한지
+검사한다 (현재 7 checks). 새 코어 기능을 지원할 때마다 이 디렉터리에 빌드 가능 픽스처를
+추가하면 plain exe 회귀를 잡을 수 있다.
+
 ## 제한 사항
 
 - 상수: `Int`/`Bool`/`Str` 리터럴을 지원한다 (`Float`/딕셔너리/집합/튜플/클래스/클로저/예외/모듈 로딩은 skip).

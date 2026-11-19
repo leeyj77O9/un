@@ -2,6 +2,12 @@
 
 > `COMPILE_DESIGN.md`의 결정이 나온 근거나, 설계와 코드가 어긋날 때의 기록.
 
+해결됨 (2026-11-19): **F-014** — bool/none arm 필수 + 그 외 타입 `_` wildcard
+필수 방식의 exhaustiveness 분석을 구현했다 (`typeck` match 분석; `test/compile/matches.un`
+이 검증 픽스처). **F-020 / F-021** — Cranelift seal 순서/빈 블록 버그는 이미 수정되어
+`COMPILE_PROGRESS.md`와 이 문서에 기록되어 있음. **F-022** — flake는 반복 관측되나
+수정은 하지 않음(기존 테스트, 본 변경과 무관).
+
 ## F-001. 기존 CLI와의 충돌 — `un compile`은 이미 `.unbc` 산출이다
 
 - 사실: `main.rs:318 print_help() unpacks`, `compile()` (main.rs:318)은 `.unbc` 파일을 쓴다 (`runner::compile_source` → `unbc::write`).
@@ -73,6 +79,7 @@
 
 - 사실: Union의 구체 분해·`is` narrowing·match 패턴의 도달 가능 분석이 모두 필요하다. v1에서 잘못 구현하면 거짓 양성으로 정상 프로그램을 거부해 검증 가치를 해친다.
 - 결정: v1은 match arm 타입을 "union 후보 → 그 타입으로 좁혀지는" 정도의 좁히기만 하고(실제: arm body는 scrutinee 타입 그대로 + 패턴 바인딩은 해당 후보 타입), exhaustiveness는 검사하지 않는다. v2 항목으로 명문화. (`COMPILE_DESIGN.md` §4.6)
+- **해결 (2026-11-19, `dee5ab6`)**: bool은 `true`/`false` arm(또는 wildcard), none은 `none` arm(또는 wildcard), 스칼라/튜플/list/class tag는 `_` wildcard arm을 필수로 하는 match exhaustiveness 분석을 구현했다. 진단의 span은 scrutinee에 붙는다. 픽스처: `test/compile/matches.un`. (Union 구체 분해·`is` narrowing 기반 정밀 분석은 여전히 미구현 — 현재 규칙은 거짓 양성 없이 위 arm 조합만 요구한다.)
 
 ## F-015. `/`/`pow` 결과 타입과 인터프리터의 err 객체
 

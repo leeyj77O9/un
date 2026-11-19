@@ -3,7 +3,7 @@
 > 세션이 끊겨도 이 파일과 `COMPILE_DESIGN.md`, `COMPILE_FINDINGS.md`만 읽으면
 > 이어서 작업할 수 있어야 한다. 각 단계 완료 시 갱신한다.
 
-## 마지막 갱신: 2026-11-19 (native 실행 검증 완료)
+## 마지막 갱신: 2026-11-19 (v2 마무리: list[class] + exe-diff 하네스)
 
 ## 단계별 상태
 
@@ -14,7 +14,7 @@
 | 3 | `tir` (Typed IR + 검증기) | **완료** | core 판정 통과 함수 5개(add/square/mixed/id_bool/fib) native 실행 |
 | 4 | `natcode` (Cranelift 코드젠) | **완료** | `un native` 바이너리 fib(24) native 실행, bail 경로 interpreter와 출력 동일 |
 | 5 | 런타임 통합 (jit_cache 등록, VM 경로) | **완료** | TIR entries는 `UV_JIT` 우회 등록(`get_tir_entry`), `try_call_jit`에서 최우선 조회 |
-| 6 | 고급 기능 (class/union 네이티브) | 보류 (설계만) | core 부분집합 밖 — interpreter fallback으로 정상 동작 |
+| 6 | 고급 기능 (class/collection/union/any) | **완료** — union/any는 설계대로 interpreter fallback (Vm 모드) | core 부분집합: Int/Float/Bool/Str/None/Class + `list[int]`/`list[float]`/`list[class]` + `dict[str, int]`/`dict[str, float]`; class는 plain `un build`에서 native (`<classes_init>` 등록 + VM 브릿지); union/any는 bail로 안전 동작 |
 | 7 | 테스트/벤치마크/문서 | **완료** | `scripts/compile-check.ps1`, `compile-bench.ps1`, 문서 |
 
 ## 완료 항목 (이번 세션)
@@ -58,7 +58,11 @@
 - `scripts/unbc-roundtrip.ps1 -IncludeNegative`: 47 files identical, negative 39 — **green**.
 - `cargo test --release`: 213 passed (1회 `a_cleared_jit_program_runs_identically`가
   flake로 1회 실패했으나 재실행 green; 기존 테스트 순서 경쟁, 본 변경과 무관 — F-022 참조).
-- `scripts/compile-check.ps1`: 2 passed.
+- `scripts/compile-check.ps1`: 18 passed (fixture 6 + untyped-source-rejected + errors 11).
+- `scripts/exe-diff.ps1`: **신규** — `test/compile/*.un`을 `un build --embed`로 링크한 exe가
+  `un run`과 stdout/stderr/exit code 바이트 동일인지, `test/compile/build/*.un`은 plain
+  `un build` exe가 동일한지 검사. plain build 불가 fixture(assert 모듈 사용 등)는
+  embed로만 검증한다.
 - `scripts/compile-bench.ps1`: un native fib(24) ≈ 169-174ms (un run ≈ 194-240ms).
 
 ## 진행 로그
@@ -67,14 +71,22 @@
 - 2026-11-19 10:xx — typeck Pass-1 globals leak 버그 발견·수정, DotDot/Any 추론 수정.
 - 2026-11-19 11:xx — Cranelift 블록 seal/머지 수정 (fib 네이티브 컴파일 성공 → 무한루프 수정).
 - 2026-11-19 11:5x — 전체 검증 green, 문서 갱신.
+- 2026-11-19 (오후) — v2 마무리: TIR에 ListClass(`list[class]`) 도입(리터럴/for-in/xs[i]/pop/insert/add/reverse/sort/index_of/contains/len), plain `un build` exe가 `un run`과 바이트 동일. class exe 게이트(`obj-demo (un build class list)`) 추가, `scripts/exe-diff.ps1` 신설(embed/plain exe 바이트 비교).
 
-## 다음 작업 (v2 이후)
+## 완료 (v2)
 
-1. class/collection/union/`any` native 지원 (core 부분집합 확장).
-2. TIR 검증기에 class intrinsic / Float math intrinsic 포함 (jit_bc 재사용 검토).
-3. 실패 테스트 프레임워크 (`test/compile/errors/` + manifest) 구축.
-4. 벤치마크의 compile-mode 열을 `scripts/bench.ps1`에 정식 편입.
-5. exhaustiveness 분석 (match 도달 가능성) — `COMPILE_DESIGN.md` §4.6.
+1. class/collection native 지원 — Int/Float 코어 + 클래스 생성·메서드·필드·상속 (plain `un build`, `<classes_init>` 임베드 등록) + `dict[str, int]`/`dict[str, float]` + `list[int]`/`list[float]` + `list[class]`. union/`any`의 narrowing 결과는 Vm 모드에서 interpreter fallback이 의도된 설계.
+2. TIR 인트린직 — class intrinsic (`unrt_*` VM 브릿지), Float math intrinsics, `int(x)`/`float(x)` 언어 cast 인라인.
+3. 실패 테스트 프레임워크 — `test/compile/errors/` + manifest (11 fixtures), `compile-check.ps1`가 `un check`/`un native` 양쪽 exit 1 + 부분문자열 검사.
+4. 벤치마크 compile-mode 열 — `scripts/bench.ps1 -Group native` (fib(24) 정수; un native ≈ 167ms vs un run ≈ 200ms vs unjit ≈ 230ms).
+5. exhaustiveness 검사 — bool/none 은 해당 arm(또는 wildcard) 필수, 그 외 타입은 `_` arm 필수 (F-014 해결). 픽스처 `test/compile/matches.un`.
+
+## 다음 작업 (v3 후보)
+
+1. `scripts/exe-diff.ps1`를 CI(`.github/workflows/build.yml`)에 편입 검토 — 현재는 수동 게이트.
+2. `dict[str, Class]` 값 지원, `list[list[T]]` 중첩 컬렉션 — 현재 `--embed` 전용.
+3. native exe의 소스 컨텍스트 traceback.
+4. union/tuple/class tag 기반 exhaustiveness 정밀화 (F-014 잔여; 거짓 양성 없어야 함).
 
 ## 완료 (v1.5)
 
