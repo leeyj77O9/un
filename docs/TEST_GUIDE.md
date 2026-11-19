@@ -22,7 +22,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1 -Group know
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1 -File test/unit/native/str.un
 ```
 
-The runner shells out to `rust\target\release\unvm.exe run <file>` and aggregates:
+The runner shells out to `rust\target\release\un.exe run <file>` and aggregates:
 
 - the `=== Result: N passed, M failed ===` line that each script prints through
   `assert.summary()`,
@@ -36,7 +36,7 @@ expectation matches, and no known failure has been fixed silently.
 Direct single-file runs work too. Build once with `-Rebuild` (or by hand) and run:
 
 ```powershell
-.\rust\target\release\unvm.exe run test\unit\native\str.un
+.\rust\target\release\un.exe run test\unit\native\str.un
 ```
 
 Rebuild the release binary with
@@ -150,7 +150,7 @@ Overall exit code: 0
 runners compare execution shapes: `scripts/differential.ps1` runs every
 manifest file with `UV_JIT=0` and default JIT and diffs stdout + exit code
 (93 files, 0 differences), and `scripts/unbc-roundtrip.ps1 -IncludeNegative`
-byte-compares `unvm run` against `unvm compile` + `unvm run <file>.unbc`
+byte-compares `un run` against `un compile` + `un run <file>.unbc`
 (Positive 47/47, compilable Negative 37/37).
 
 All previously known failures are fixed: negative-step slicing, `upper_bound`,

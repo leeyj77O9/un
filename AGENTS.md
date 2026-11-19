@@ -57,7 +57,7 @@ C:\dev\un/
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
 
 # 스크립트 실행
-.\rust\target\release\unvm.exe run test\test_suite.un
+.\rust\target\release\un.exe run test\test_suite.un
 
 # WASM 산출물 (un-playground용)
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --target wasm32-unknown-unknown --manifest-path rust/Cargo.toml -p unvm-playground
@@ -76,7 +76,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 # Un VM과 JIT을 각각 측정한다. -Report는 BENCHMARK.md도 갱신한다.
 ```
 
-- Windows에서 `unvm.exe`는 `rust\target\release\`에 빌드된다. PATH에 추가해서 쓸 수 있다.
+- Windows에서 `un.exe`는 `rust\target\release\`에 빌드된다. PATH에 추가해서 쓸 수 있다.
 - `.github/workflows/build.yml`이 GNU toolchain 빌드 + `scripts/test.ps1` + `cargo test --release` + `scripts/differential.ps1`(JIT on/off 바이트 비교) + `scripts/unbc-roundtrip.ps1 -IncludeNegative` + `JIT Float strict canary (UV_JIT=2)` 스텝( `test/jit/strict.un`, `test/jit/strict_float.un` )을 실행한다(`rust-toolchain.toml`이 툴체인을 고정한다). 2026-11-17에 두 번 실행되어 모두 green이다 (`build #1` 4m 0s, `build #2` 3m 28s).
 - `stable-x86_64-pc-windows-gnu` toolchain을 쓴다(MSVC linker가 없는 개발 머신).
 - `wasm32-unknown-unknown` 타겟도 같은 toolchain으로 빌드된다(link가 필요 없다).
@@ -152,7 +152,7 @@ C:\dev\un
   `.un` 스크립트를 실행한다: `scripts/test.ps1`(test), `scripts/bench.ps1`(bench),
   `scripts/differential.ps1`(JIT on/off 비교), `scripts/unbc-roundtrip.ps1`(.unbc 왕복 검증).
 - `scripts/unbc-roundtrip.ps1`은 Positive manifest 전체와 negative 중 컴파일 가능한
-  파일을 `unvm run` vs `unvm compile` + `unvm run <file>.unbc`로 실행해 stdout/stderr/
+  파일을 `un run` vs `un compile` + `un run <file>.unbc`로 실행해 stdout/stderr/
   exit code를 바이트 비교한다. `-IncludeNegative`를 쓰면 negative manifest도 포함한다.
 - `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 47 files /

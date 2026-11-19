@@ -68,7 +68,7 @@ fn read_source(path: &str) -> Source {
 }
 fn tokens(args: &[String]) {
     if args.is_empty() {
-        eprintln!("usage: unvm tokens <file>");
+        eprintln!("usage: un tokens <file>");
         exit(2);
     }
     let path = &args[0];
@@ -107,7 +107,7 @@ fn parse_file(path: &str) -> (Rc<Source>, Node) {
 }
 fn ast(args: &[String]) {
     if args.is_empty() {
-        eprintln!("usage: unvm ast <file>");
+        eprintln!("usage: un ast <file>");
         exit(2);
     }
     let (source, node) = parse_file(&args[0]);
@@ -115,7 +115,7 @@ fn ast(args: &[String]) {
 }
 fn desugar_cmd(args: &[String]) {
     if args.is_empty() {
-        eprintln!("usage: unvm desugar <file>");
+        eprintln!("usage: un desugar <file>");
         exit(2);
     }
     // Desugaring is folded into the optimizer as of 2026-11-16; printing the
@@ -131,7 +131,7 @@ fn desugar_cmd(args: &[String]) {
 }
 fn opt_cmd(args: &[String]) {
     if args.is_empty() {
-        eprintln!("usage: unvm opt <file>");
+        eprintln!("usage: un opt <file>");
         exit(2);
     }
     let (source, node) = parse_file(&args[0]);
@@ -148,7 +148,7 @@ fn opt_cmd(args: &[String]) {
 }
 fn dis_reg(args: &[String]) {
     if args.is_empty() {
-        eprintln!("usage: unvm dis-reg <file>");
+        eprintln!("usage: un dis-reg <file>");
         exit(2);
     }
     let (source, node) = parse_file(&args[0]);
@@ -174,7 +174,7 @@ fn dis_reg(args: &[String]) {
 
 fn dis(args: &[String]) {
     if args.is_empty() {
-        eprintln!("usage: unvm dis <file>");
+        eprintln!("usage: un dis <file>");
         exit(2);
     }
     let (source, node) = parse_file(&args[0]);
@@ -313,7 +313,7 @@ fn run(args: &[String]) {
 }
 fn compile(args: &[String]) {
     if args.is_empty() {
-        eprintln!("usage: unvm compile <file>");
+        eprintln!("usage: un compile <file>");
         exit(2);
     }
     let source = Rc::new(read_source(&args[0]));

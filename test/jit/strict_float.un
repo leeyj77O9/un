@@ -10,7 +10,7 @@ use math
 # computed wrong (a JIT miscompilation), the marker on the last line
 # is not printed.
 # Self-contained: no project modules needed.
-# Run: UV_JIT=2 unvm.exe run test/jit/strict_float.un
+# Run: UV_JIT=2 un.exe run test/jit/strict_float.un
 # ============================================================
 
 fn sin_sum(n)

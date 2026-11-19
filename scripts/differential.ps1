@@ -30,9 +30,9 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$Exe = Join-Path $Root "rust\target\release\unvm.exe"
+$Exe = Join-Path $Root "rust\target\release\un.exe"
 if (-not (Test-Path $Exe)) {
-    Write-Error "unvm.exe not found at $Exe — build it first: rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml"
+    Write-Error "un.exe not found at $Exe — build it first: rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml"
     exit 2
 }
 

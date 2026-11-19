@@ -1,4 +1,4 @@
-﻿# Un
+# Un
 
 A modern scripting language with concise syntax, explicit asynchronous execution, and pattern matching.
 
@@ -248,12 +248,12 @@ io.write(wait a)   # 10
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
 ```
 
-The Windows executable is `rust\target\release\unvm.exe`.
+The Windows executable is `rust\target\release\un.exe`.
 
 ### Run
 
 ```bash
-.\rust\target\release\unvm.exe run path/to/file.un
+.\rust\target\release\un.exe run path/to/file.un
 ```
 
 ### First program
@@ -270,7 +270,7 @@ main()
 Save as `hello.un` and run:
 
 ```bash
-.\rust\target\release\unvm.exe run hello.un
+.\rust\target\release\un.exe run hello.un
 ```
 
 ### Tests and Benchmarks
@@ -279,7 +279,7 @@ Build and run a script directly:
 
 ```bash
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
-.\rust\target\release\unvm.exe run test/test_suite.un
+.\rust\target\release\un.exe run test/test_suite.un
 ```
 
 The full suite runs through a runner. It executes the `group|path` rows of

@@ -25,10 +25,10 @@ byte-identical 출력을 내는 것만 목표로 한다.
 `math.*` 호출이 포함된 proto는 전부 JIT 후보에서 탈락한다. 실측:
 
 ```
-$ UV_JIT_DEBUG=1 unvm.exe run bench/floatmath.un
+$ UV_JIT_DEBUG=1 un.exe run bench/floatmath.un
 JITREJECT emit_ins ip=21 op=LoadName
 JITREJECT proto[1] sin_sum (panic in JIT codegen, fallback stub)
-$ UV_JIT_DEBUG=1 unvm.exe run bench/math.un
+$ UV_JIT_DEBUG=1 un.exe run bench/math.un
 JITREJECT proto[1] math_work (panic in JIT codegen, fallback stub)
 ```
 
@@ -68,7 +68,7 @@ semantics를 바꾸지 않고 그 회귀를 되돌린다.
 
 ## 3. 확인된 사실 (증거)
 
-Bytecode 형태 — `fn t(n) ... total += math.sin(i)` 의 proto 1 (`unvm.exe dis`):
+Bytecode 형태 — `fn t(n) ... total += math.sin(i)` 의 proto 1 (`un.exe dis`):
 
 ```
 21 LoadName 3 (math)     22 GetAttr 4 (sin)    23 Unwrap    24 ArgBegin

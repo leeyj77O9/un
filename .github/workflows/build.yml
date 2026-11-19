@@ -56,7 +56,7 @@ jobs:
         env:
           UV_JIT: "2"
         run: |
-          $out = & .\rust\target\release\unvm.exe run test\jit\strict.un
+          $out = & .\rust\target\release\un.exe run test\jit\strict.un
           $out
           if ($LASTEXITCODE -ne 0) { throw "strict canary exited with $LASTEXITCODE" }
           if ($out -notmatch 'jit-strict canary OK') { throw "strict canary marker not found (a value was computed wrong)" }
@@ -66,7 +66,7 @@ jobs:
         env:
           UV_JIT: "2"
         run: |
-          $out = & .\rust\target\release\unvm.exe run test\jit\strict_float.un
+          $out = & .\rust\target\release\un.exe run test\jit\strict_float.un
           $out
           if ($LASTEXITCODE -ne 0) { throw "float strict canary exited with $LASTEXITCODE" }
           if ($out -notmatch 'jit-float-strict canary OK') { throw "float strict canary marker not found (a value was computed wrong)" }

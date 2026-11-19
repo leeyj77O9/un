@@ -1,7 +1,7 @@
 # Rust
 /rust/target/
 
-# Build outputs of `unvm compile`
+# Build outputs of `un compile`
 *.unbc
 
 # Local benchmark measurement dumps (scripts/bench.ps1 - results.csv/md per run)

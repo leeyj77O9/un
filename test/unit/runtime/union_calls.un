@@ -5,7 +5,7 @@ use test.assert as assert
 # 이종 반환(union) 함수 - 같은 프로토가 Int 또는 리스트를 반환할 때
 # JIT 호출 경로가 두 경우 모두를 받아내고, 인터프리터와 동일한
 # 결과를 내는지 검증한다 (UV_JIT=0 과 기본 JIT 모두에서 실행됨).
-# 실행: unvm run test/unit/runtime/union_calls.un  (C:\dev\un 에서)
+# 실행: un run test/unit/runtime/union_calls.un  (C:\dev\un 에서)
 # ============================================================
 
 fn pick(x)

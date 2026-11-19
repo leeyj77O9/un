@@ -1,4 +1,4 @@
-﻿# BENCHMARK.md
+# BENCHMARK.md
 
 Un 벤치마크 결과입니다. 실행: `scripts\bench.ps1 -Group all -Report` (Windows)
 
@@ -24,7 +24,7 @@ bench/python/<name>.py의 세 파일이 **같은 알고리즘, 같은 입력, �
 - ENV|python|os=Windows-10-10.0.19045-SP0|plat=win32|arch=AMD64|cpu=16|64=True|impl=CPython|version=3.13.17
 - ENV|un_commit|4b4440d
 - 측정 커밋: 4b4440d
-- Un 실행 파일: `rust\target\release\unvm.exe` (UV_JIT=0은 VM, 기본은 JIT)
+- Un 실행 파일: `rust\target\release\un.exe` (UV_JIT=0은 VM, 기본은 JIT)
 
 ## 3. Executive Summary
 

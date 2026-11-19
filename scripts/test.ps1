@@ -41,7 +41,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 $rustup = Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe"
 $cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
-$Exe = Join-Path $Root "rust\target\release\unvm.exe"
+$Exe = Join-Path $Root "rust\target\release\un.exe"
 $Toolchain = "stable-x86_64-pc-windows-gnu"
 $Manifest = Join-Path $Root "rust\Cargo.toml"
 

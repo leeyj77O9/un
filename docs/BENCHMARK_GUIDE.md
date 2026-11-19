@@ -34,9 +34,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1 -Group all
 A single benchmark can be run directly:
 
 ```powershell
-.\rust\target\release\unvm.exe run bench\sort.un
-.\rust\target\release\unvm.exe run bench\sort.un            # Un JIT (default)
-$env:UV_JIT = "0"; .\rust\target\release\unvm.exe run bench\sort.un  # Un VM only
+.\rust\target\release\un.exe run bench\sort.un
+.\rust\target\release\un.exe run bench\sort.un            # Un JIT (default)
+$env:UV_JIT = "0"; .\rust\target\release\un.exe run bench\sort.un  # Un VM only
 node bench\node\sort.mjs
 python bench\python\sort.py
 ```
@@ -117,7 +117,7 @@ The runner pairs results by label, prints a table, and saves `results.csv`,
 Rules:
 
 - Only tools actually installed and runnable on this machine are used: Un
-  (this repository, release `unvm.exe`), Node.js v26.13.0 (`v26.x` ships
+  (this repository, release `un.exe`), Node.js v26.13.0 (`v26.x` ships
   V8 14), and Python 3.13.17 (CPython, verified working on this machine).
 - Same algorithm, same input, same expected values, validated in each script.
 - Same warmup, same number of repeats, same median definition.

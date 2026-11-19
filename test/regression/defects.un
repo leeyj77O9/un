@@ -5,7 +5,7 @@ use test.assert as assert
 # ============================================================
 # regression - 이전에 "문서에 있는 동작"과 구현이 달랐던 항목들.
 # 이 항목들은 표준 semantics에 맞춰 수정되었으며, 회귀를 막기 위해 계속 검증한다.
-# 실행: unvm run test/regression/defects.un  (C:\dev\un 에서)
+# 실행: un run test/regression/defects.un  (C:\dev\un 에서)
 # ============================================================
 
 # ---------- list reverse slice ----------

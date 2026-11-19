@@ -1,4 +1,4 @@
-﻿# Un
+# Un
 
 간결한 문법, 명시적 비동기 실행, 패턴 매칭을 제공하는 현대적인 스크립팅 언어.
 
@@ -243,12 +243,12 @@ io.write(wait a)   # 10
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
 ```
 
-Windows 산출물은 `rust\target\release\unvm.exe`이다.
+Windows 산출물은 `rust\target\release\un.exe`이다.
 
 ### 실행
 
 ```bash
-.\rust\target\release\unvm.exe run path/to/file.un
+.\rust\target\release\un.exe run path/to/file.un
 ```
 
 ### 첫 프로그램
@@ -265,7 +265,7 @@ main()
 `hello.un`으로 저장한 뒤 실행한다.
 
 ```bash
-.\rust\target\release\unvm.exe run hello.un
+.\rust\target\release\un.exe run hello.un
 ```
 
 ### 테스트와 벤치마크
@@ -274,7 +274,7 @@ main()
 
 ```bash
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml
-.\rust\target\release\unvm.exe run test/test_suite.un
+.\rust\target\release\un.exe run test/test_suite.un
 ```
 
 전체 테스트는 runner로 실행한다. runner는 `test/MANIFEST.txt`의 `group|path` 행을

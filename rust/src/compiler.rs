@@ -49,7 +49,7 @@ impl<'a> Compiler<'a> {
             // Store the full path as passed (not just the file stem): the
             // VM resolves `use` modules relative to the importing file's
             // directory, and `.unbc` re-runs must resolve modules exactly
-            // like a direct `unvm run` from the same cwd. Error display
+            // like a direct `un run` from the same cwd. Error display
             // still shows the stem via `Source::name()`, so messages keep
             // their current shape.
             source_path: source.path.clone(),

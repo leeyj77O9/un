@@ -8,7 +8,7 @@ name = "unvm"
 path = "src/lib.rs"
 
 [[bin]]
-name = "unvm"
+name = "un"
 path = "src/main.rs"
 
 [workspace]

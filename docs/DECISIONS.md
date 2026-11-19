@@ -1,4 +1,4 @@
-﻿# DECISIONS.md — 결정 로그
+# DECISIONS.md — 결정 로그
 
 형식: `D-NNN | 제목 | 상태 | 결정 | 영향`
 - 상태: **Accepted** = 채택되어 코드에 반영, **Proposed** = 채택되었으나 코드 반영 전, **Pending** = 검증 필요
@@ -115,7 +115,7 @@ reference에 맞춤**(`start`, `length`, `typ`)해서 error/AST 매핑이 추적
 
 ## D-017 | Rust CLI는 reference CLI와 `run` 출력만 정합한다 | Accepted
 
-`unvm tokens`/`unvm ast`/`unvm desugar`/`unvm opt`/`unvm dis`는 Rust 전용 진단 명령이고
+`un tokens`/`un ast`/`un desugar`/`un opt`/`un dis`는 Rust 전용 진단 명령이고
 `un run <file>`의 stdout/exit/stderr가 정합 대상이다. reference에 `ast` dump가 없으므로
 Phase 2 정합은 parse 성공/오류 문자열 일치 + 17개 probe로 확인했다(치환 전 분석 문서 기준).
 
@@ -881,8 +881,8 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   에러 디스플레이는 `Source::name()`(stem)을 쓰므로 메시지 모양은 그대로다.
   `.unbc` 포맷과 opcode ABI는 바뀌지 않았다.
 - **검증 하니스**: `scripts/unbc-roundtrip.ps1`(신규). Positive manifest 전체 +
-  negative manifest 중 컴파일 가능한 파일을 `unvm run` vs
-  `unvm compile` 후 `unvm run <file>.unbc`로 실행해 stdout/stderr/종료 코드를
+  negative manifest 중 컴파일 가능한 파일을 `un run` vs
+  `un compile` 후 `un run <file>.unbc`로 실행해 stdout/stderr/종료 코드를
   바이트 비교한다. 파싱 단계에서 거부되는 negative 파일(6개)은 바이트코드를
   만들 수 없으므로 skip으로 집계한다. 수정 후 Positive **40/40 identical**,
   negative compilable **33/33 identical**(수정 전 0/40→2건 불일치: 위 두 건이

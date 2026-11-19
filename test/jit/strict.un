@@ -8,7 +8,7 @@ use iter
 # aborts the process with exit code 2. If a value is computed
 # wrong (a JIT miscompilation), the marker on the last line
 # is not printed. Self-contained: no project modules needed.
-# 실행: UV_JIT=2 unvm.exe run test/jit/strict.un
+# 실행: UV_JIT=2 un.exe run test/jit/strict.un
 # ============================================================
 
 fn fib(n)

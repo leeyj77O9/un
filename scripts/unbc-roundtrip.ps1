@@ -6,9 +6,9 @@
     Positive 매니페스트(test/MANIFEST.txt, known/negative 제외)에 등록된
     스크립트마다 다음 순서로 실행하고 결과를 바이트 단위로 비교한다.
 
-      1. unvm run <file>              → stdout/stderr 바이트, 종료 코드
-      2. unvm compile <file>          → <file>.unbc 생성
-      3. unvm run <file>.unbc         → stdout/stderr 바이트, 종료 코드
+      1. un run <file>              → stdout/stderr 바이트, 종료 코드
+      2. un compile <file>          → <file>.unbc 생성
+      3. un run <file>.unbc         → stdout/stderr 바이트, 종료 코드
 
     1과 3이 다르면 FAIL이다. Positive 파일이 컴파일되지 않아도 FAIL이다.
     생성된 <file>.unbc 는 비교 직후 삭제한다(.gitignore에도 *.unbc 등록됨).
@@ -43,7 +43,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 $rustup = Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe"
 $cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
-$Exe = Join-Path $Root "rust\target\release\unvm.exe"
+$Exe = Join-Path $Root "rust\target\release\un.exe"
 $Toolchain = "stable-x86_64-pc-windows-gnu"
 $Manifest = Join-Path $Root "rust\Cargo.toml"
 

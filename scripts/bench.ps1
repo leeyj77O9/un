@@ -61,7 +61,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 $rustup = Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe"
 $cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
-$Exe = Join-Path $Root "rust\target\release\unvm.exe"
+$Exe = Join-Path $Root "rust\target\release\un.exe"
 $Toolchain = "stable-x86_64-pc-windows-gnu"
 $Manifest = Join-Path $Root "rust\Cargo.toml"
 $Culture = [System.Globalization.CultureInfo]::InvariantCulture
@@ -580,7 +580,7 @@ if ($Report) {
     $out += "- 측정 일시: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')"
     foreach ($line in $EnvLines) { $out += "- $line" }
     $out += "- 측정 커밋: $commit"
-    $out += "- Un 실행 파일: ``rust\target\release\unvm.exe`` (UV_JIT=0은 VM, 기본은 JIT)"
+    $out += "- Un 실행 파일: ``rust\target\release\un.exe`` (UV_JIT=0은 VM, 기본은 JIT)"
     $out += ""
     $out += "## 3. Executive Summary"
     $out += ""
