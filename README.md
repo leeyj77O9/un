@@ -288,6 +288,11 @@ Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일�
   이 경로는 **모든 Un 프로그램**(class, collection, IO, 문자열 보간 등 Int core
   부분집합에 속하지 않는 것 포함)에서 완전하게 동작하며, 소스는 물론 공유 런타임
   없이도 단일 실행형이다.
+- plain `un build`(`--embed` 없이)도 클래스와 예외를 네이티브로 지원한다.
+  클래스는 `.unbc`와 함께 exe에 박혀 시작 시 한 번 등록되며, Int/Float/Bool 필드
+  (annotated)와 메서드, `__init__`, 상속, 프로퍼티 접근은 VM 브릿지를 통해
+  인터프리터와 동일하게 동작한다. 순수 getter property(any 반환 타입)는 거부되며
+  `un build --embed`를 써야 한다.
 
 ### 첫 프로그램
 

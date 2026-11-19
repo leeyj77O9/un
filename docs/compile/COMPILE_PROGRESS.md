@@ -75,3 +75,10 @@
 3. 실패 테스트 프레임워크 (`test/compile/errors/` + manifest) 구축.
 4. 벤치마크의 compile-mode 열을 `scripts/bench.ps1`에 정식 편입.
 5. exhaustiveness 분석 (match 도달 가능성) — `COMPILE_DESIGN.md` §4.6.
+
+## 완료 (v1.5)
+
+- class 네이티브 지원 (plain `un build`, `<classes_init>` 실행 등록·브릿지).
+- `int / int`·`//` 0 나누기·`int % 0` — 인터프리터와 바이트 동일한 catch 동작.
+- Int/Float math intrinsic + `int(x)`/`float(x)` cast를 TIR에 인라인.
+- match exhaustiveness 분석 — bool/none 은 해당 arm만, 그 외 타입은 `_` wildcard arm 필수.

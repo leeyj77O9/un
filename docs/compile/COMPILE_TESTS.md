@@ -12,7 +12,7 @@
 | `scripts/differential.ps1` (UV_JIT=0 vs JIT 바이트 비교) | **green** — 95 files, 0 differences |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | **green** — 47 identical, 0 mismatched (negative 39 identical) |
 | `cargo test --release` (lib) | **green** — 213 passed |
-| `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 2 passed |
+| `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 6 positive fixture passed + 11 error cases rejected as expected (17 checks total) |
 | `un native` 바이너리 정확성 (native 실행 vs interpreter 실행) | **검증됨** — typed_pass.un, loop/recursion/collatz 벤치필, div-zero·재귀 bail 경로 포함 |
 
 ## 실행 방법
@@ -32,8 +32,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 |---|---|
 | `test/compile/typed_pass.un` | `un native`/`un run` 양쪽에서 동일하게 통과하는 컴파일-모드 코어 시맨틱 스모크 (alias/union/higher-order/closure capture bail/bool ops) |
 | `test/compile/exceptions.un` | `try`/`catch`/`finally`/`throw` + dict missing-key + int/int · `//` div-zero(catchable) + INT_MIN // -1 wrap — interpreter와 `un native`가 바이트 동일한지를 검증하는 예외 경로 픽스처 |
+| `test/compile/classes.un` | 클래스 생성/접근/메서드/`__init__`/상속 — `un native`/`un run` 양쪽에서 동일하게 통과하는 클래스 경로 픽스처 (plain `un build`에서도 exe로 빌드되는지 scripts/obj-demo.ps1가 게이트) |
+| `test/compile/matches.un` | match exhaustiveness 분석 — bool true/false arm·int arm·`_` wildcard·none arm을 포함한 exhaustive match 표기; interpreter와 `un native`가 바이트 동일 |
 | `bench/native_fib.un` | 어노테이션된 fib 벤치마크 (native 경로 확인 및 `scripts/compile-bench.ps1` 입력) |
 | `test/assert.un` | 어설트 모듈 (`assert_eq` / `assert_true` / `summary()`) |
+| `test/compile/errors/*.un` | 거부가 예정된 프로그램 예제 — `un check`/`un native` 양쪽이 exit 1이며 `manifest.txt`의 기대 부분문자열이 에러 출력에 있어야 하는 부정 케이스 (`member call on list/str`, `undefined name`, `unassignable property`, `return type mismatch`, `untyped params`, syntax error 등) | 
 
 ## 알려진 차이 (문서화된, 의도적)
 
@@ -43,6 +46,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
    최대 50개의 진단을 출력한다.
 2. `un run`(인터프리터)과 `un native`는 `test/compile/*.un`에서 **바이트 동일**한
    stdout/stderr/exit code를 내야 한다. `scripts/compile-check.ps1`이 이를 검사한다.
+3. `test/compile/errors/`의 `.un` 픽스처는 `un check`/`un native` 양쪽 모두 exit 1과
+   `manifest.txt`에 고정한 부분문자열 진단(예: `'list' object has no attribute 'a'`)
+   이 나오는지 검증한다. 에러 케이스를 추가하려면 픽스처를 추가하고 `manifest.txt`에
+   `path|substring` 한 행을 더하면 된다.
 3. 네이티브 실행 중 bail이 일어나면(예: `//` 제수 0, `INT_MIN // -1`, 네이티브 재귀
    깊이 초과) VM이 해당 호출을 interpreter로 재실행한다. 이 경로는 interpreter와
    출력/종료 코드가 바이트 동일하며, 그것이 측정·검증의 근거다.

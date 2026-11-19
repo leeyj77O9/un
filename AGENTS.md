@@ -150,8 +150,12 @@ C:\dev\un
   `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write), `len(x)`까지
   지원하며 VM 런타임을 `unrt_*` C ABI로 호출한다. 등록된 list/dict 멤버 시그니처는
   정적 체크에도 반영된다.
-  class/예외는 네이티브 미지원이며, plain `un obj`/`un build`는 클래스 타입 함수를
-  빌드 시점에 명확한 오류와 함께 거부한다(`un build --embed`는 임의의 클래스 프로그램을 지원).
+  class/예외(`try`/`catch`/`finally` + `catch`할 수 없는 int `%` 0 포함) 역시
+  네이티브로 컴파일된다. 클래스는 소스에 있으면 `<classes_init>` 프로토가 exe에
+  같이 박히고, 시작 시 `unrt_register_classes`가 실행 전 한 번 등록한다.
+  필드는 annotated 되어 있어야 하고, 순수 getter property(타입 `any`)는 plain
+  native에서 거부된다(`--embed`). `un native`(Vm 모드)는 클래스를 인터프리터로
+  fallback시킨다.
   `.unbc` 경로는 Int 코어만 지원한다.
   `un build <file.un> [-o out.exe]`는 소스 → .obj → 링크 → 실행형까지 단일 명령으로
   수행한다 (rustup self-contained mingw gcc 경유 rustc). 검증은 `scripts\obj-demo.ps1`,

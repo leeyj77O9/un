@@ -293,6 +293,12 @@ runs in the interpreter with identical semantics.
   (the whole VM runtime, statically). This works for **any** Un program —
   classes, collections, IO, string interpolation — not just the Int core
   subset, and the binary is fully self-contained.
+- Plain `un build` (without `--embed`) supports classes and exceptions natively
+  too: classes in the source are baked into the object and registered once at
+  startup, and Int/Float/Bool fields (annotated) plus methods, `__init__`,
+  inheritance and property access run through the VM bridge with exactly the
+  interpreter's semantics. Computed property getters with `any` return types
+  are rejected and need `un build --embed`.
 
 ### First program
 

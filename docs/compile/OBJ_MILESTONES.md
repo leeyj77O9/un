@@ -33,7 +33,7 @@ self-contained mingw gcc를 경유한 `rustc`가 담당한다.
 |---|---|---|
 | 1 | 수직 슬라이스: core 부분집합(Int 상수/지역변수/산술/비교/`JmpIf`/직접 호출/`Return`) → COFF `.obj`, fib 데모 | **완료** |
 | 2 | `for i in a..b` / `while` 반복 하강 | **완료** (소스 경로: TIR ForRange/While을 그대로 하강; 루프 경계 가드 포함) |
-| 3 | VM 정적 링크 ABI — 생성 코드가 VM 런타임을 정적 링크해 Object 호출 | **3b 진행 중** (3a: `unvm`이 `staticlib`로 빌드되고 `unrt`(`rust/src/unrt.rs`)가 C ABI 제공. `un build --embed`는 임의의 Un 프로그램을 독립 exe로 빌드 — class/예외 포함. 3b: 생성 코드가 `unrt_call_native`/`unrt_obj_int` 등으로 VM 런타임을 직접 호출 — `io.write`, Str 리터럴/concat/`str == str`, `list[int]`/`list[float]`(리터럴, `for ... in`, `-> list[int]`, `io.write` 인자, `xs[i]` read/write, `len`)와 `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write, 함수 인자/반환), **`try`/`catch`/`finally`와 `throw`**까지 네이티브 컴파일. 인터프리터와 출력 바이트 동일(보통 함수 body에서 `->`/`break`/`skip`이 안 쓰일 때). 클래스를 사용하는 함수는 plain native에서 명시적으로 거부되며 `un build --embed`로 빌드) |
+| 3 | VM 정적 링크 ABI — 생성 코드가 VM 런타임을 정적 링크해 Object 호출 | **3b 진행 중** (3a: `unvm`이 `staticlib`로 빌드되고 `unrt`(`rust/src/unrt.rs`)가 C ABI 제공. `un build --embed`는 임의의 Un 프로그램을 독립 exe로 빌드 — class/예외 포함. 3b: 생성 코드가 `unrt_call_native`/`unrt_obj_int` 등으로 VM 런타임을 직접 호출 — `io.write`, Str 리터럴/concat/`str == str`, `list[int]`/`list[float]`(리터럴, `for ... in`, `-> list[int]`, `io.write` 인자, `xs[i]` read/write, `len`)와 `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write, 함수 인자/반환), **`try`/`catch`/`finally`와 `throw`와 클래스**까지 네이티브 컴파일. 인터프리터와 출력 바이트 동일(보통 함수 body에서 `->`/`break`/`skip`이 안 쓰일 때). 클래스는 `<classes_init>` 스파인을 exe에 임베드해 시작 시 한 번 등록(`unrt_register_classes`); 임의 annotation 기본값/모듈 데코레이터도 동작) |
 | 4 | `.un` 소스에서 바로 `un obj` (typeck/TIR 재사용) | **완료** |
 | 5 | `un build` — 링크까지 자동화 (self-contained mingw gcc 자동 탐지) | **완료** |
 
@@ -55,10 +55,16 @@ $env:TEMP\embed_test.exe
 ```
 
 `un build --embed`는 클래스를 사용하는 프로그램도 원본과 동일한 출력을 낸다.
+plain `un build`도 임의의 annotated 클래스를 지원한다(`<classes_init>`을 exe 초기화 시 한 번 등록).
 
-`scripts\obj-demo.ps1`가 PASS(`obj-demo: fib = 55` + `obj-demo (un build): 55`)를
+`scripts\obj-demo.ps1`가 PASS(`obj-demo: fib = 55` + `obj-demo (un build): 55` + `obj-demo (un build class): 37`)를
 반환한다. 오브젝트 심볼은 `llvm-nm`으로 확인할 수 있다: `un_main`(export),
 `un_proto_<i>`/`un_tir_<i>`(Local).
+
+`scripts\compile-check.ps1`도 함께 쓴다 — `test/compile/errors/*.un` 부정 픽스처가
+`un check`/`un native` 양쪽에서 exit 1 + 기대 진단 문자열을 내는지 검사한다
+(13 checks). 거부 케이스를 추가하려면 픽스처 + `test/compile/errors/manifest.txt`
+한 행만 추가하면 된다.
 
 ## 제한 사항
 
@@ -110,13 +116,25 @@ $env:TEMP\embed_test.exe
   항상 인터프리터와 동일하게 동작한다.
 - `unrt_dump_uncaught`는 인터프리터의 `report()`와 마찬가지로 stdout에 출력한다
   (소스 컨텍스트 traceback은 frozen exe에 없다).
-- class/프로퍼티/동적 디스패치는 네이티브 미지원이며, plain `un obj`/`un build`는
-  클래스 타입을 사용하는 함수를 **셋 엔트리보다 먼저** (`skipped`에 등재하지 않고)
-  폐기하고 빌드를 거부한다:
-  `un build: class-typed functions are not supported in a native executable yet; rebuild with un build --embed`.
-  `--embed`는 전체 VM을 정적 링크하므로 임의의 클래스 프로그램이 동작한다.
-  (plain 경로로 클래스를 지원하려면 exe에 클래스 등록 테이블 + `Body::Native` 디스패치
-  기계 장치가 필요하다 — 별도 단계로 보고 있다.)
+- 클래스 지원 (Obj 경로): plain `un build`(`un obj`)가 클래스도 네이티브로
+  지원한다. 프로그램 시작 시 exe에 박혀 있는 `<classes_init>` 프로토가 VM의
+  `unrt_register_classes`에 의해 실행되어 인터프리터와 동일하게 클래스 템플릿을
+  world에 등록한다(한 번만 실행). 네이티브 코드의 클래스 연산은 전부 VM
+  브릿지 경유: `ClassNew`→`tobj_call`(clone_obj + `__init__`), field get/set과
+  method call은 `get_attr`/`set_attr`과 동일한 의미론(프로퍼티, `__getattr__`,
+  super/parent 체인 포함)으로 `unrt_obj_int`류 브릿지처럼 수행된다. 상속받은
+  메서드/필드도 base 체인 lookup을 통해 정적 체커가 인지한다.
+  class/property/method dispatch는 전부 VM 런타임으로 재진입하는 브릿지이므로
+  Int-catchable 외의 mis-run 위험이 없다.
+  - 임의 기본값은 항상 바인딩된 클래스의 등록 스파인(임의 표현식 허용)을 쓰므로
+    `@decorator`류 참조도 동작한다(기본값 표현식/데코레이터가 쓰는 모듈 함수는
+    `bind_module_functions`가 미리 바인딩).
+  - 한계: plain native exe의 클래스 프로퍼티는 getter의 반환 타입이 정적 타입
+    (`Int`/`Float`/`Bool`)으로 단정되지 않으므로(`any`), 순수 getter 읽기는
+    거부된다(annotate된 backing field는 정상). 목록 원소 또는 dict 값의
+    class 타입, 중첩된 클래스 선언, 클래스 등록 스파인의 기본값 표현식이
+    모듈 전역 변수를 참조하는 경우는 지원하지 않고 `--embed`를 써야 한다.
+  - 클래스를 쓰는 함수는 Vm(`un native`)에서는 여전히 인터프리터 fallback.
 - `str == str`은 VM의 `key_eq`로 네이티브 비교한다.
 - `//` 및 `Int / Int`에서 제수가 0이면 **catchable exception**이며, int `%` 0은
   **uncatchable Panic**이다 (위 예외 항목 참고). 두 경우 모두 exit code는 1이고
