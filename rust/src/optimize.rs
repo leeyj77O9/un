@@ -192,6 +192,9 @@ fn desugar_if(node: &Node) -> Node {
                     child.children.clone(),
                 ));
             }
+            // Already-desugared IfCase arms (nested `if` children are
+            // desugared bottom-up): keep them as-is instead of dropping.
+            NodeKind::IfCase => cases.push(child.clone()),
             NodeKind::Else => {
                 else_node = Some(child.clone());
             }
