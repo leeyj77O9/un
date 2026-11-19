@@ -752,7 +752,12 @@ pub fn init(o: &Obj, args: &[Obj]) -> Obj {
         Payload::AtomicBool(_) => return crate::native::atomic::atomic_bool_init(o, args),
         _ => {}
     }
-    if try_method(o, "__init__", args).is_some() {
+    if let Some(v) = try_method(o, "__init__", args) {
+        // A missing/invalid argument list makes `fn_call` return an error
+        // object wrapped in `Some`; don't swallow it as "init ran fine".
+        if is_err(&v) {
+            return v;
+        }
         return o.clone();
     }
     if let Some(s) = valid_super(o) {
