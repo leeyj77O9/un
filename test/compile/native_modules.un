@@ -1,0 +1,77 @@
+use io
+use test.assert as assert
+use math
+use os
+use sys
+use fs
+use codes
+use re
+
+fn main() -> int
+    assert.assert_eq(math.sign(42), 1, "math.sign positive")
+    assert.assert_eq(math.sign(-42), -1, "math.sign negative")
+    assert.assert_eq(math.sign(0), 0, "math.sign zero")
+    assert.assert_eq(math.isqrt(81), 9, "math.isqrt")
+    assert.assert_eq(math.is_nan(2.5), false, "math.is_nan")
+    assert.assert_eq(math.is_infinite(2.5), false, "math.is_infinite")
+    assert.assert_eq(math.is_finite(2.5), true, "math.is_finite")
+
+    assert.assert_true(os.pid() > 0, "os.pid")
+    assert.assert_true(os.cpuCount() >= 1, "os.cpuCount")
+    assert.assert_true(os.is64bit(), "os.is64bit")
+    assert.assert_true(len(os.name()) > 0, "os.name")
+    assert.assert_true(len(os.arch()) > 0, "os.arch")
+    assert.assert_true(len(os.hostname()) > 0, "os.hostname")
+    assert.assert_true(len(os.username()) > 0, "os.username")
+    assert.assert_true(len(os.version()) > 0, "os.version")
+    assert.assert_true(len(os.sep()) > 0, "os.sep")
+    assert.assert_true(os.tickCount() > 0, "os.tickCount")
+
+    assert.assert_true(sys.pid() > 0, "sys.pid")
+    assert.assert_true(sys.cpuCount() >= 1, "sys.cpuCount")
+    assert.assert_true(sys.is64bit(), "sys.is64bit")
+    assert.assert_true(len(sys.name()) > 0, "sys.name")
+    assert.assert_true(len(sys.arch()) > 0, "sys.arch")
+    assert.assert_true(len(sys.hostname()) > 0, "sys.hostname")
+    assert.assert_true(len(sys.username()) > 0, "sys.username")
+    assert.assert_true(len(sys.version()) > 0, "sys.version")
+    assert.assert_true(sys.getcalldepth() >= 1, "sys.getcalldepth")
+    assert.assert_true(sys.getrecursionlimit() >= 1, "sys.getrecursionlimit")
+
+    assert.assert_eq(fs.exists("test"), true, "fs.exists")
+    assert.assert_eq(fs.file("test"), false, "fs.file on a directory")
+    assert.assert_eq(fs.dir("test"), true, "fs.dir")
+    assert.assert_true(fs.size("test\\MANIFEST.txt") > 0, "fs.size")
+    assert.assert_true(len(fs.join(".", "x")) > 0, "fs.join")
+    assert.assert_true(len(fs.parent("a\\b")) > 0, "fs.parent")
+    assert.assert_true(len(fs.name("a\\b.txt")) > 0, "fs.name")
+    assert.assert_true(len(fs.stem("a\\b.txt")) > 0, "fs.stem")
+    assert.assert_true(len(fs.ext("a\\b.txt")) > 0, "fs.ext")
+    assert.assert_true(len(fs.absolute(".")) > 0, "fs.absolute")
+    assert.assert_true(len(fs.normalize(".")) > 0, "fs.normalize")
+    assert.assert_true(len(fs.cwd()) > 0, "fs.cwd")
+    assert.assert_true(len(fs.temp()) > 0, "fs.temp")
+    assert.assert_true(len(fs.home()) > 0, "fs.home")
+    assert.assert_true(len(fs.exe()) > 0, "fs.exe")
+    assert.assert_true(len(fs.app()) > 0, "fs.app")
+    assert.assert_eq(fs.readonly("test\\MANIFEST.txt"), false, "fs.readonly")
+    assert.assert_eq(fs.hidden("test\\MANIFEST.txt"), false, "fs.hidden")
+    assert.assert_true(len(fs.created("test\\MANIFEST.txt")) > 0, "fs.created")
+    assert.assert_true(len(fs.modified("test\\MANIFEST.txt")) > 0, "fs.modified")
+    assert.assert_true(len(fs.accessed("test\\MANIFEST.txt")) > 0, "fs.accessed")
+
+    assert.assert_eq(codes.bin(11), "0b1011", "codes.bin")
+    assert.assert_eq(codes.oct(11), "0o13", "codes.oct")
+    assert.assert_eq(codes.hex(11), "0xb", "codes.hex")
+    assert.assert_eq(codes.chr(65), "A", "codes.chr")
+    assert.assert_eq(codes.ord("A"), 65, "codes.ord")
+    assert.assert_eq(codes.ascii("c"), 99, "codes.ascii")
+
+    assert.assert_eq(re.test("a+", "abbb"), true, "re.test")
+    assert.assert_eq(re.test("x+", "abbb"), false, "re.test false")
+    assert.assert_eq(re.escape("a.b"), "a\\.b", "re.escape")
+
+    assert.summary()
+    -> 0
+
+main()

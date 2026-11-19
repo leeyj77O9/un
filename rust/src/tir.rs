@@ -151,6 +151,9 @@ pub enum TirExpr {
     DictGet(Box<TirExpr>, Box<TirExpr>),
     /// `list[idx]` where `idx` is an int expression. Negative indices wrap.
     ListGet(Box<TirExpr>, Box<TirExpr>),
+    /// `mod.member(args...)` lowered to the VM's native module table with a
+    /// statically known scalar/string result (see `native_module_ret_type`).
+    NativeCallExpr { module: Box<str>, member: Box<str>, args: Vec<TirExpr>, ret: TirTy },
     /// `Name(args...)` where `Name` resolves to a class constructor.
     ClassNew { name: Box<str>, args: Vec<TirExpr>, ret: TirTy },
     /// `receiver.member` where `receiver` is class-typed.
@@ -553,6 +556,7 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
             expr_uses_classes(lhs) || expr_uses_classes(rhs)
         }
         TirExpr::Call(_, args) => args.iter().any(expr_uses_classes),
+        TirExpr::NativeCallExpr { args, .. } => args.iter().any(expr_uses_classes),
         TirExpr::List(elements) => elements.iter().any(expr_uses_classes),
         TirExpr::Math(_, args) => args.iter().any(expr_uses_classes),
         TirExpr::ListRepeat { .. } => false,
@@ -631,6 +635,7 @@ fn expr_uses_heap(e: &TirExpr) -> bool {
             expr_uses_heap(lhs) || expr_uses_heap(rhs)
         }
         TirExpr::Call(_, args) => args.iter().any(expr_uses_heap),
+        TirExpr::NativeCallExpr { args, .. } => args.iter().any(expr_uses_heap),
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_) | TirExpr::Local(_) => false,
         TirExpr::Math(_, _) => false,
         TirExpr::CastInt(inner) | TirExpr::CastFloat(inner) => {
@@ -708,6 +713,7 @@ fn expr_uses_str(e: &TirExpr) -> bool {
         }
         TirExpr::Un(_, inner) => expr_uses_str(inner),
         TirExpr::Call(_, args) => args.iter().any(expr_uses_str),
+        TirExpr::NativeCallExpr { args, ret, .. } => *ret == TirTy::Str || args.iter().any(expr_uses_str),
         TirExpr::Len(inner) => expr_uses_str(inner),
         // List method results never contain Str (element types are int/float).
         TirExpr::ListPop(_)
@@ -1420,6 +1426,21 @@ fn native_call_shape<'a>(
     let args_tuple = node.children.get(1)?;
     let args = args_tuple.children.iter().collect();
     Some((module, member, args))
+}
+
+/// `native_module_ret_type` lives in typeck.rs but is surfaced here for
+/// lowering; a result type logically requires the member to be registered
+/// in that table, or it is rejected up front by the checker.
+pub(crate) use crate::typeck::native_module_ret_type;
+
+fn core_ty_of(ty: &Ty) -> Option<CoreTy> {
+    match ty {
+        Ty::Int => Some(CoreTy::Int),
+        Ty::Float => Some(CoreTy::Float),
+        Ty::Bool => Some(CoreTy::Bool),
+        Ty::Str => Some(CoreTy::Str),
+        _ => None,
+    }
 }
 
 fn lower_block(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<(), String> {
@@ -2734,7 +2755,31 @@ fn lower_math_call(
                 return Err(format!("math.log expects 1 or 2 arguments, got {arity}"));
             }
         }
-        _ => return Err(format!("math.{name} is not supported in the core")),
+        _ => {
+            // Not a built-in intrinsic — fall back to the generic bridge for
+            // members with a whitelisted static result type (e.g. `sign`).
+            if let Some(ret_ty) = native_module_ret_type("math", name) {
+                let core = core_ty_of(&ret_ty)
+                    .ok_or_else(|| format!("math.{name} return type is not core-supported"))?;
+                let args = lower_arg_list(args_tuple, ctx)?;
+                return Ok((
+                    TirExpr::NativeCallExpr {
+                        module: "math".into(),
+                        member: name.into(),
+                        args,
+                        ret: match ret_ty {
+                            Ty::Int => TirTy::Int,
+                            Ty::Float => TirTy::Float,
+                            Ty::Bool => TirTy::Bool,
+                            Ty::Str => TirTy::Str,
+                            _ => unreachable!(),
+                        },
+                    },
+                    core,
+                ));
+            }
+            return Err(format!("math.{name} is not supported in the core"));
+        }
     };
     let idx = math_fn;
     if arity != idx.1 {
@@ -2782,9 +2827,9 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         if args_tuple.kind != NodeKind::Tuple {
             return Err("call arguments must be positional in the core".to_string());
         }
-        // `math.sin(v)` etc — single/double-precision float intrinsics.
         if head.kind == NodeKind::Identifier {
             let module = ctx.source.span(head.start, head.length).to_string();
+            // `math.sin(v)` etc — single/double-precision float intrinsics.
             if module == "math" {
                 return lower_math_call(&member, args_tuple, ctx);
             }
@@ -2792,6 +2837,28 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             // list[int], float list[float].
             if module == "iter" && member == "array" {
                 return lower_iter_array(&args_tuple, ctx);
+            }
+            // `mod.member(v...)` for native members with a statically known
+            // core result type — dispatch through the VM runtime bridge.
+            if let Some(ret_ty) = native_module_ret_type(&module, &member) {
+                if let Some(core_ret) = core_ty_of(&ret_ty) {
+                    let args = lower_arg_list(args_tuple, ctx)?;
+                    return Ok((
+                        TirExpr::NativeCallExpr {
+                            module: module.clone().into_boxed_str(),
+                            member: member.clone().into_boxed_str(),
+                            args,
+                            ret: match ret_ty {
+                                Ty::Int => TirTy::Int,
+                                Ty::Float => TirTy::Float,
+                                Ty::Bool => TirTy::Bool,
+                                Ty::Str => TirTy::Str,
+                                _ => unreachable!(),
+                            },
+                        },
+                        core_ret,
+                    ));
+                }
             }
         }
         let (recv, rty) = lower_expr(head, ctx)?;
@@ -3167,6 +3234,12 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                 let _ = expr_ty(arg, f, program, locals)?;
             }
             Ok(TirTy::Float)
+        }
+        TirExpr::NativeCallExpr { args, ret, .. } => {
+            for arg in args {
+                let _ = expr_ty(arg, f, program, locals)?;
+            }
+            Ok(*ret)
         }
         TirExpr::ListRepeat { value, len, ty } => {
             match (expr_ty(value, f, program, locals)?, expr_ty(len, f, program, locals)?) {

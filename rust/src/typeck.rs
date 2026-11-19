@@ -3167,6 +3167,14 @@ impl<'a> Checker<'a> {
                         if let Some(ty) = self.iter_array_sig(node, env) {
                             return ty;
                         }
+                        if let Some(member_node) = callee.children.get(1) {
+                            let member = self.text_of(member_node);
+                            let module = self.text_of(&callee.children[0]);
+                            if let Some(ty) = native_module_ret_type(&module, &member) {
+                                self.check_call_args_any(node.children.get(1), env);
+                                return ty;
+                            }
+                        }
                         self.check_call_args_any(node.children.get(1), env);
                         Ty::Any
                     }
@@ -3721,6 +3729,55 @@ pub fn assignable(target: &Ty, value: &Ty, classes: &HashMap<String, ClassInfo>)
         // int flows to float (numeric widening).
         (Ty::Float, Ty::Int) => true,
         _ => false,
+    }
+}
+
+/// Static result types for native modules whose members compile mode can
+/// lower. Anything not listed here stays dynamic (interpreter fallback
+/// in `un native`, rejection in `un build`). Each entry reports a single
+/// monomorphic result type — no overloads.
+pub(crate) fn native_module_ret_type(module: &str, member: &str) -> Option<Ty> {
+    let int = Ty::Int;
+    let float = Ty::Float;
+    let boolean = Ty::Bool;
+    let string = Ty::Str;
+    match (module, member) {
+        // math
+        ("math", "sign") | ("math", "isqrt") => Some(int.clone()),
+        ("math", "is_nan") | ("math", "is_infinite") | ("math", "is_finite") => Some(boolean.clone()),
+        // os
+        ("os", "pid") | ("os", "cpuCount") | ("os", "tickCount") => Some(int.clone()),
+        ("os", "is64bit") => Some(boolean.clone()),
+        ("os", "name") | ("os", "arch") | ("os", "hostname") | ("os", "username") | ("os", "version")
+        | ("os", "sep") | ("os", "pathsep") | ("os", "linesep") => Some(string.clone()),
+        // sys
+        ("sys", "pid") | ("sys", "cpuCount") | ("sys", "tickCount")
+        | ("sys", "getcalldepth") | ("sys", "getrecursionlimit") => Some(int.clone()),
+        ("sys", "is64bit") => Some(boolean.clone()),
+        ("sys", "name") | ("sys", "arch") | ("sys", "hostname") | ("sys", "username") | ("sys", "version")
+        | ("sys", "sep") | ("sys", "pathsep") | ("sys", "linesep") => Some(string.clone()),
+        // time
+        ("time", "epoch") | ("time", "epoch_ms") | ("time", "monotonic_ms") => Some(int.clone()),
+        ("time", "monotonic") => Some(float.clone()),
+        // fs
+        ("fs", "exists") | ("fs", "file") | ("fs", "dir") | ("fs", "readonly") | ("fs", "hidden") => Some(boolean.clone()),
+        ("fs", "size") => Some(int.clone()),
+        ("fs", "created") | ("fs", "modified") | ("fs", "accessed")
+        | ("fs", "join") | ("fs", "parent") | ("fs", "name") | ("fs", "stem") | ("fs", "ext")
+        | ("fs", "absolute") | ("fs", "relative") | ("fs", "normalize")
+        | ("fs", "cwd") | ("fs", "temp") | ("fs", "home") | ("fs", "exe") | ("fs", "app") => Some(string.clone()),
+        // codes
+        ("codes", "ord") | ("codes", "ascii") => Some(int.clone()),
+        ("codes", "bin") | ("codes", "oct") | ("codes", "hex") | ("codes", "chr") => Some(string.clone()),
+        // random
+        ("random", "int") => Some(int.clone()),
+        ("random", "float") => Some(float.clone()),
+        ("random", "bool") | ("random", "chance") => Some(boolean.clone()),
+        ("random", "uuid") => Some(string.clone()),
+        // re
+        ("re", "test") => Some(boolean.clone()),
+        ("re", "escape") => Some(string.clone()),
+        _ => None,
     }
 }
 

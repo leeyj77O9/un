@@ -40,6 +40,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | `test/compile/build/class_list.un` | plain native exe 게이트 — assert 모듈 없이 `use io`만 import하는 클래스 리스트 프로그램을 `scripts/exe-diff.ps1`이 plain `un build` exe로 링크해 `un run`과 바이트 비교 |
 | `test/compile/build/bare_for.un` | plain native exe 게이트 — 로컬 어노테이션 초기화(`dp: list[int] = [0]`)와 반복 변수 없는 `for 0..100`을 쓰는 프로그램을 `scripts/exe-diff.ps1`이 plain `un build` exe로 링크해 `un run`과 바이트 비교 |
 | `test/compile/iter_array.un` | `iter.array(v, n)` intrinsic — v가 int/float이면 `list[int]`/`list[float]`, `dp: list[int] = iter.array(...)`까지 포함해 interpreter와 `un native`/`un build --embed`가 바이트 동일 |
+| `test/compile/build/native_modules.un` | plain native exe 게이트 — Int/Float/Bool/Str 결과 네이티브 모듈 멤버(math/os/sys/time/fs/codes/random/re)를 native exe로 링크해 `un run`과 stdout/stderr/exit code 바이트 비교 (60여 assert) |
+| `test/compile/native_modules.un` | 같은 내용의 interpreter ↔ `un native` 교차 검증 (assert 모듈 사용) |
 | `test/compile/build/iter_array.un` | `iter_array.un`의 plain exe 게이트 — `iter.array` + 인덱스 write + `len`/`xs[i]` 읽기 — `scripts/exe-diff.ps1`이 plain `un build` exe로 링크해 `un run`과 바이트 비교 |
 | `scripts/exe-diff.ps1` | `test/compile/*.un` → `--embed` exe 바이트 비교 + `test/compile/build/*.un` → plain exe 바이트 비교 (exit/stdout/stderr 전부) |
 | `test/compile/matches.un` | match exhaustiveness 분석 — bool true/false arm·int arm·`_` wildcard·none arm을 포함한 exhaustive match 표기; interpreter와 `un native`가 바이트 동일 |

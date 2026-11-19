@@ -1,0 +1,73 @@
+use io
+use math
+use os
+use sys
+use fs
+use codes
+use re
+
+fn main() -> int
+    io.write(math.sign(42))
+    io.write(math.sign(-42))
+    io.write(math.isqrt(81))
+    io.write(math.is_nan(2.5))
+    io.write(math.is_infinite(2.5))
+    io.write(math.is_finite(2.5))
+
+    io.write(os.pid() > 0)
+    io.write(os.cpuCount() >= 1)
+    io.write(os.is64bit())
+    io.write(len(os.name()) > 0)
+    io.write(len(os.arch()) > 0)
+    io.write(len(os.hostname()) > 0)
+    io.write(len(os.username()) > 0)
+    io.write(len(os.version()) > 0)
+    io.write(os.tickCount() > 0)
+
+    io.write(sys.pid() > 0)
+    io.write(sys.cpuCount() >= 1)
+    io.write(sys.is64bit())
+    io.write(len(sys.name()) > 0)
+    io.write(len(sys.arch()) > 0)
+    io.write(len(sys.hostname()) > 0)
+    io.write(len(sys.username()) > 0)
+    io.write(len(sys.version()) > 0)
+    io.write(sys.getcalldepth() >= 1)
+    io.write(sys.getrecursionlimit() >= 1)
+
+    io.write(fs.exists("test"))
+    io.write(fs.file("test"))
+    io.write(fs.dir("test"))
+    io.write(fs.size("test\\MANIFEST.txt") > 0)
+    io.write(len(fs.join(".", "x")) > 0)
+    io.write(len(fs.parent("a\\b")) > 0)
+    io.write(len(fs.name("a\\b.txt")) > 0)
+    io.write(len(fs.stem("a\\b.txt")) > 0)
+    io.write(len(fs.ext("a\\b.txt")) > 0)
+    io.write(len(fs.absolute(".")) > 0)
+    io.write(len(fs.normalize(".")) > 0)
+    io.write(len(fs.cwd()) > 0)
+    io.write(len(fs.temp()) > 0)
+    io.write(len(fs.home()) > 0)
+    io.write(len(fs.exe()) > 0)
+    io.write(len(fs.app()) > 0)
+    io.write(fs.readonly("test\\MANIFEST.txt"))
+    io.write(fs.hidden("test\\MANIFEST.txt"))
+    io.write(len(fs.created("test\\MANIFEST.txt")) > 0)
+    io.write(len(fs.modified("test\\MANIFEST.txt")) > 0)
+    io.write(len(fs.accessed("test\\MANIFEST.txt")) > 0)
+
+    io.write(codes.bin(11))
+    io.write(codes.oct(11))
+    io.write(codes.hex(11))
+    io.write(codes.chr(65))
+    io.write(codes.ord("A"))
+    io.write(codes.ascii("c"))
+
+    io.write(re.test("a+", "abbb"))
+    io.write(re.test("x+", "abbb"))
+    io.write(re.escape("a.b"))
+
+    -> 0
+
+main()

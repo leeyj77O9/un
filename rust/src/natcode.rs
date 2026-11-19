@@ -2428,6 +2428,61 @@ fn emit_expr<M: Module>(
                 _ => unreachable!("iter.array element type"),
             }
         }
+        TirExpr::NativeCallExpr { module: mod_name, member: member_name, args, ret } => {
+            // `mod.member(args)` via `unrt_call_native` with a typed result.
+            let id = emitter
+                .unrt_call_native
+                .expect("unrt import required for native calls");
+            let mod_gv = embed_str_bytes(emitter, module, builder, mod_name.as_bytes());
+            let member_gv = embed_str_bytes(emitter, module, builder, member_name.as_bytes());
+            let arg_count = args.len();
+            let slot_data = cranelift_codegen::ir::StackSlotData::new(
+                cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                (8 * arg_count) as u32,
+                8,
+            );
+            let slot = builder.create_sized_stack_slot(slot_data);
+            for (i, arg) in args.iter().enumerate() {
+                let (v, vty) = emit_expr(arg, emitter, builder, module, f);
+                let wrapped = wrap_as_obj(v, vty, emitter, builder, module);
+                let addr = builder.ins().stack_addr(types::I64, slot, 8 * i as i32);
+                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), wrapped, addr, 0);
+            }
+            let sp = builder.ins().stack_addr(types::I64, slot, 0);
+            let mod_ptr = builder.ins().symbol_value(types::I64, mod_gv);
+            let mod_len = builder.ins().iconst(types::I64, mod_name.as_bytes().len() as i64);
+            let member_ptr = builder.ins().symbol_value(types::I64, member_gv);
+            let member_len = builder.ins().iconst(types::I64, member_name.as_bytes().len() as i64);
+            let argc = builder.ins().iconst(types::I64, arg_count as i64);
+            let call_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(call_ref, &[mod_ptr, mod_len, member_ptr, member_len, sp, argc]);
+            let raw = builder.inst_results(res)[0];
+            emit_error_gate(emitter, builder, module, raw);
+            match ret {
+                TirTy::Int => {
+                    let ub = emitter.unrt_int_from_obj.expect("unrt import required to unbox ints");
+                    let ub_ref = module.declare_func_in_func(ub, builder.func);
+                    let r = builder.ins().call(ub_ref, &[raw]);
+                    (builder.inst_results(r)[0], TirTy::Int)
+                }
+                TirTy::Float => {
+                    let ub = emitter.unrt_float_from_obj.expect("unrt import required to unbox floats");
+                    let ub_ref = module.declare_func_in_func(ub, builder.func);
+                    let r = builder.ins().call(ub_ref, &[raw]);
+                    (builder.inst_results(r)[0], TirTy::Float)
+                }
+                TirTy::Bool => {
+                    let ub = emitter.unrt_bool_from_obj.expect("unrt import required to unbox bools");
+                    let ub_ref = module.declare_func_in_func(ub, builder.func);
+                    let r = builder.ins().call(ub_ref, &[raw]);
+                    let ub_val = builder.inst_results(r)[0];
+                    let narrowed = builder.ins().ireduce(types::I8, ub_val);
+                    (narrowed, TirTy::Bool)
+                }
+                TirTy::Str => (raw, TirTy::Str),
+                _ => unreachable!("bridged native call result must be Int, Float, Bool or Str"),
+            }
+        }
         TirExpr::Len(arg) => {            let (arg_v, _) = emit_expr(arg, emitter, builder, module, f);
             let id = emitter.unrt_len.expect("unrt import required for len()");
             let len_ref = module.declare_func_in_func(id, builder.func);
