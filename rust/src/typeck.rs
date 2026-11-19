@@ -474,17 +474,31 @@ impl<'a> Checker<'a> {
 
     fn resolve_type_atom(&mut self, name: &str, span: (usize, usize), depth: usize) -> Ty {
         match name {
-            "int" | "i64" => Ty::Int,
-            "float" | "f64" => Ty::Float,
-            // Fixed-width aliases: the runtime has one i64 Int and one f64
-            // Float, so these are documentation-level aliases with range
-            // checks available via the `types` module.
-            "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" => Ty::Int,
-            "f32" => Ty::Float,
+            "int" => Ty::Int,
+            "float" => Ty::Float,
             "bool" => Ty::Bool,
             "str" => Ty::Str,
             "none" => Ty::None_,
             "any" => Ty::Any,
+            n if is_fixed_width_alias(n) => {
+                // Fixed-width aliases belong to the `types`-imported
+                // namespace; without the `use types` import they are unknown.
+                if self.import_names.iter().any(|i| i == "types") {
+                    match n {
+                        "f32" | "f64" => Ty::Float,
+                        _ => Ty::Int,
+                    }
+                } else {
+                    if depth == 0 {
+                        self.error_span(
+                            span.0,
+                            span.1,
+                            format!("unknown type '{n}' (fixed-width aliases require 'use types')"),
+                        );
+                    }
+                    Ty::Unknown
+                }
+            }
             _ => {
                 if let Some(alias) = self.aliases.get(name) {
                     return alias.clone();
@@ -511,6 +525,15 @@ impl<'a> Checker<'a> {
     fn parse_annotation_node(&mut self, node: &Node) -> Ty {
         self.parse_type_text(&self.text_of(node), self.span(node), 0)
     }
+}
+
+/// The fixed-width alias namespace owned by the `types` module: these
+/// names are only known as type annotations when the file does `use types`.
+fn is_fixed_width_alias(name: &str) -> bool {
+    matches!(
+        name,
+        "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "f32" | "f64"
+    )
 }
 
 fn split_union(text: &str) -> Vec<&str> {
