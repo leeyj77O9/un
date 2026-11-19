@@ -324,6 +324,7 @@ impl VM {
                 }
                 ExcKind::Catch => {
                     self.tries.remove(index);
+                    context::clear_trace(&self.ctx);
                     self.args.truncate(entry.acc_depth);
 
                     let parent = context::scope(&self.ctx);
@@ -366,13 +367,18 @@ impl VM {
     }
 
     fn error(&self, message: impl Into<String>, span: (usize, usize)) -> Outcome {
-        Outcome::Error(LangError::new(span.0, span.1, message))
+        Outcome::Error(
+            LangError::new(span.0, span.1, message).with_source(context::source(&self.ctx)),
+        )
     }
 
     fn header_error(&self, err: &Obj, span: (usize, usize)) -> Outcome {
+        let source = context::source(&self.ctx);
         match obj::payload(err) {
             Payload::Error { header, message } => {
-                Outcome::Error(LangError::new(span.0, span.1, message).with_header(header))
+                Outcome::Error(
+                    LangError::new(span.0, span.1, message).with_header(header).with_source(source),
+                )
             }
             _ => self.error(obj::display(err), span),
         }
@@ -991,6 +997,37 @@ impl VM {
                 );
                 let outcome = self.call_value(&callable, &Args::named(values, names), span);
                 let popped = context::pop_frame(&self.ctx);
+                // An error is crossing this call boundary: remember the call
+                // site (callee name + source position) on the shared trace
+                // buffer so the top-level report can print a Python-style
+                // traceback. Break/Skip/Return are not errors and record
+                // nothing.
+                let crosses_error = match &outcome {
+                    Err(Outcome::Error(_)) | Err(Outcome::Propagate(..)) | Err(Outcome::Panic(_)) => true,
+                    Ok(result) => obj::is_err(&result) || obj::is_panic(&result),
+                    _ => false,
+                };
+                if crosses_error {
+                    if let Ok(frame) = &popped {
+                        // Python names each frame after the function that was
+                        // executing the line (the caller), not the callee.
+                        let name = self
+                            .program
+                            .names
+                            .get(self.proto().name)
+                            .cloned()
+                            .unwrap_or_default();
+                        context::push_trace(
+                            &self.ctx,
+                            context::TraceEntry {
+                                source: frame.source.clone(),
+                                start: frame.start,
+                                length: frame.length,
+                                name,
+                            },
+                        );
+                    }
+                }
                 match outcome {
                     Ok(result) => {
                         if obj::is_err(&result) {
@@ -1258,11 +1295,12 @@ impl VM {
                             .clone()
                             .expect("pending work");
                         let scope = scope::new(Some(captured), false);
-                        let (source, frames) = {
+                        let (source, frames, trace) = {
                             let c = self.ctx.borrow();
-                            (c.source.clone(), c.frames.clone())
+                            (c.source.clone(), c.frames.clone(), c.trace.clone())
                         };
                         let ctx = context::new(scope, source, frames);
+                        ctx.borrow_mut().trace = trace;
                         match execute_proto(&program, &ctx, index, plan_for(&program)) {
                             function::Flow::Return(v) => v,
                             function::Flow::Propagate(v) => {

@@ -1166,3 +1166,48 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
     역류가 있을 수 있어 보류. 향후 `class Point(x=0.0, y=0.0)`의 기본값 배선을
     지원하려면 별도의 결정이 필요하다.
 - **사용자 결정** (2026-11-19 "클래스 내부의 멤버 변수에 타입 어노테이션이 안되는데 가능하게 해줘").
+
+## D-091 | 미처리 오류는 Python식 트레이스백을 출력한다 | Accepted
+
+- **문제**: 미처리 에러가 최상위에 도달할 때 함수 경계들의 호출 위치가 출력되지 않았다.
+  에러가 콜 프레임을 넘어가는 순간 `pop_frame`으로 프레임이 버려져서 `report()`에는
+  프레임이 0개였고(`trace:` 블록은 사실상 dead code), 출력은 raise 지점의 한 줄짜리
+  헤더뿐이었다. 모듈에서 발생한 에러의 span은 main 파일 좌표로 해석되어 엉뚱한 줄이
+  찍히는 잠재 버그도 있었다.
+- **결정**:
+  - 에러가 콜 경계를 넘을 때마다 공유 trace 버퍼에 `TraceEntry`
+    (call-site의 `Rc<Source>` + span + **콜러** 함수명)를 푸시한다. 출력은
+    `Traceback (most recent call last):` 뒤에 outermost-first로
+    `File "<파일>", line <줄>, in <함수>`와 소스 라인 한 줄씩 표시하고,
+    마지막에 기존 LangError 블록(파일/라인/캐럿 + `error: <msg>`)을 그대로 이어 쓴다.
+  - `catch`는 trace를 클리어한다(잡힌 에러의 잔재가 이후의 무관한 에러에 섞이지 않게).
+    `finally`를 통과하는 에러는 계속 누적된다.
+  - `?`로 전파되는 Err(`Outcome::Propagate`) 경로도 기록한다.
+    `Break`/`Skip`/`Return`은 에러가 아니므로 기록하지 않는다.
+  - `LangError`에 `source: Option<Rc<Source>>`를 추가하고, VM이 에러를 만들 때 현재
+    ctx의 소스를 첨부한다. `display()`는 첨부된 소스를 우선 사용한다 — import 모듈의
+    에러가 모듈 기준 파일/라인으로 표시된다(기존 잠재 버그 수정).
+  - 루트 프로토는 `<module>`로 등록된다. 프레임의 함수명은 caller(현재 프로토)의
+    이름을 사용한다 — Python이 각 프레임을 그 프레임을 실행 중인 함수로 명명하는 것과 동일하다.
+- **형식**: 요청자 선택 — "traceback 완전판", "Python식(여러 줄, 헤더 있음)". 예시:
+
+  ```
+  Traceback (most recent call last):
+    File "temp.un", line 12, in <module>
+      main()
+    File "temp.un", line 10, in main
+      outer()
+    File "temp.un", line 7, in outer
+      inner()
+
+  <temp>, line [4], column [8]
+      -> 1 / 0
+         ^^^^^
+  error: int division by zero
+  ```
+- **알려진 한계**: Python의 "During handling of the above exception" 식 중첩 예외 체인은
+  없다. catch 안에서 새 에러를 throw하면 새 트레이스로 시작한다(의도된 단순화).
+  CLI/`.unbc` 경로에만 적용되며, WASM 플레이그라운드의 오류 표시는 기존 방식을 유지한다.
+- **검증**: Negative 46(신규 `test/negative/traceback.un` 핀), differential 93 files,
+  roundtrip compilable Negative 37/37, cargo test 213. 벤치 영향 없음(에러 경로에서만 호출).
+- **요청자 발언** (2026-11-19 "에러 나올때 에러를 전파해서 이너 예외도 에러 출력할때 나오게 해줘").

@@ -1946,6 +1946,7 @@ No action items. No regression against the 2026-11-18 baseline; the 17 commits s
 
 ---
 
+
 ## 2026-11-19 - Pass 39: class member type annotation (D-090)
 
 ### Trigger
@@ -1979,3 +1980,46 @@ No action items. No regression against the 2026-11-18 baseline; the 17 commits s
 - scripts/test.ps1: Positive 47 / 1538 passed / 0 failed / 0 crashed; Negative 45 matched.
 - scripts/differential.ps1: 92 files, 0 differences.
 - UV_JIT=2 strict Int/Float canaries: OK. WASM playground build: OK.
+
+## 2026-11-19 - Pass 40: Python-style traceback for uncaught errors (D-091)
+
+### Trigger
+
+- User (2026-11-19): "에러 나올때 에러를 전파해서 이너 예외도 에러 출력할때 나오게 해줘"
+  (이어서 "Python traceback 완전판" + "Python식 (여러 줄, 헤더 있음)" 선택)
+
+### Changes
+
+- `runtime/context.rs`: new `TraceEntry` (call-site `Rc<Source>` + span + caller fn name)
+  and a shared `Traces` buffer on `ContextData`; `push_trace`/`take_trace`/`clear_trace`.
+  The buffer is shared between parent/callee exactly like `frames` (callee ctx inherits it
+  from the closure in `begin_call`).
+- `runtime/function.rs`: `begin_call` clones the closure's `trace` into the callee ctx.
+- `vm/mod.rs`:
+  - `Op::Call` boundary: when the call outcome crosses an error (`Err(Error|Propagate|Panic)`,
+    or `is_err`/`is_panic` on the returned value), push the popped frame (call site) plus the
+    **caller's** proto name onto the trace buffer before unwinding further.
+  - `ExcKind::Catch`: `clear_trace` — a caught error stops accumulating frames.
+  - Deferred-proto ctx shares the same trace buffer.
+  - `error()`/`header_error()` attach `context::source(&self.ctx)` to the `LangError`.
+- `error.rs`: `LangError.source: Option<Rc<Source>>` + `with_source()`; `display()` prefers the
+  attached source — fixes module-raised errors being displayed against the main file.
+- `main.rs`: `report()` now prints `Traceback (most recent call last):` + frames
+  (outermost first) before the existing error block; the old dead `trace:` block is removed
+  (at top level the frame stack is always empty by then, so it could never print).
+- `test/negative/traceback.un` + manifest line: pins the traceback format (exit 1 +
+  `Traceback (most recent call last):`).
+- Docs: DECISIONS.md D-091; README.md / docs/README.md semantic notes; counts synced
+  (Negative 45→46, differential 92→93, roundtrip compilable Negative 36→37).
+
+### Verification
+
+- cargo build --release: 0 errors / 0 warnings.
+- cargo test --release: 213 passed / 0 failed.
+- scripts/test.ps1: Positive 47 / 1538 passed / 0 failed / 0 crashed; Negative **46 matched**.
+- scripts/differential.ps1: **93 files, 0 differences**.
+- scripts/unbc-roundtrip.ps1 -IncludeNegative: Positive 47/47; compilable Negative **37/37**.
+- UV_JIT=2 strict canaries (Int/Float): OK. WASM playground build: OK.
+- Bench (unjit lanes unchanged): dict5000 3.62 ms, class1000 0.58 ms (trace work is
+  error-path-only).
+- Multi-file module errors now display against the module's own file/line.

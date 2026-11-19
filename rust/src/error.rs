@@ -1,4 +1,5 @@
 ﻿use crate::source::Source;
+use std::rc::Rc;
 pub fn nl() -> &'static str {
     if cfg!(windows) {
         "\r\n"
@@ -39,6 +40,9 @@ pub struct LangError {
     pub length: usize,
     pub message: String,
     pub header: String,
+    /// File the span belongs to, when the error crosses proto boundaries.
+    /// `None` means the span is relative to the caller-provided source.
+    pub source: Option<Rc<Source>>,
 }
 impl LangError {
     pub fn new(start: usize, length: usize, message: impl Into<String>) -> Self {
@@ -47,7 +51,12 @@ impl LangError {
             length,
             message: message.into(),
             header: "error".to_string(),
+            source: None,
         }
+    }
+    pub fn with_source(mut self, source: Rc<Source>) -> Self {
+        self.source = Some(source);
+        self
     }
     pub fn with_header(mut self, header: impl Into<String>) -> Self {
         self.header = header.into();
@@ -55,6 +64,7 @@ impl LangError {
     }
 
     pub fn display(&self, source: &Source) -> String {
+        let source: &Source = self.source.as_ref().map(|s| s.as_ref()).unwrap_or(source);
         let line_text = source.get_line_text(self.start);
         let line_start = source.get_line_start(self.start);
 

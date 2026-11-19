@@ -212,11 +212,12 @@ pub fn begin_call(f: &Obj, args: &Args) -> Result<CallFrame, Obj> {
         return Err(error);
     }
     context::set_call_depth(&closure, depth + 1);
-    let (source, frames) = {
+    let (source, frames, trace) = {
         let c = closure.borrow();
-        (c.source.clone(), c.frames.clone())
+        (c.source.clone(), c.frames.clone(), c.trace.clone())
     };
     let ctx = context::new(scope.clone(), source, frames);
+    ctx.borrow_mut().trace = trace;
     Ok(CallFrame {
         ctx,
         scope,

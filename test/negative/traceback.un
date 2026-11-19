@@ -1,0 +1,11 @@
+use io
+
+# An uncaught error must print a Python-style traceback listing every
+# frame the error crossed on its way out.
+fn inner()
+    -> 1 / 0
+
+fn outer()
+    inner()
+
+outer()

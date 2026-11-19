@@ -51,3 +51,4 @@ test/negative/dict_add_duplicate.un|1|System.ArgumentException
 test/negative/ord_multiple_chars.un|1|ord: expected a single character, got multiple characters
 test/negative/multi_catch.un|1|multiple 'catch' clauses
 test/negative/same_line.un|1|expected a newline after the previous statement
+test/negative/traceback.un|1|Traceback (most recent call last):

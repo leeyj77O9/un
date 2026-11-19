@@ -401,17 +401,24 @@ fn run_bytecode(path: &str) {
 fn report(ctx: &context::Context, text: String) {
     world::flush_stdout();
     unvm::jit_cache::clear();
+    // Python-style traceback: the frames the error crossed on its way out,
+    // outermost first (the innermost boundary was recorded first).
+    let trace = context::take_trace(ctx);
+    if !trace.is_empty() {
+        print!("Traceback (most recent call last):{}", nl());
+        for entry in trace.iter().rev() {
+            let file = &entry.source.path;
+            let line = entry.source.get_line(entry.start);
+            let name = if entry.name.is_empty() {
+                "<module>"
+            } else {
+                entry.name.as_str()
+            };
+            print!("  File \"{file}\", line {line}, in {name}{}", nl());
+            let line_text = entry.source.get_line_text(entry.start);
+            print!("    {}{}", line_text.trim(), nl());
+        }
+    }
     print!("{text}{}", nl());
-    let (lines, truncated) = context::trace_lines(ctx);
-    if lines.is_empty() {
-        exit(1);
-    }
-    print!("    trace:{}", nl());
-    for line in lines {
-        print!("\t{line}{}", nl());
-    }
-    if truncated > 0 {
-        print!("\t... (truncated [{truncated}+]){}", nl());
-    }
     exit(1);
 }

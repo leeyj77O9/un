@@ -1,4 +1,4 @@
-# Un
+﻿# Un
 
 간결한 문법, 명시적 비동기 실행, 패턴 매칭을 제공하는 현대적인 스크립팅 언어.
 
@@ -298,7 +298,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
 포함하지 않는다. 현재 기준은 Positive 47 파일 / 1538 passed / 0 failed / 0 crashed,
-Negative 45 checks 매칭 + 0 documented divergences, Known 0 파일이다.
+Negative 46 checks 매칭 + 0 documented divergences, Known 0 파일이다.
 
 벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`와 `results.md`에 저장한다.
@@ -589,6 +589,7 @@ work()    # start done
 - `http.get/post/put/patch/head/options/delete`: 301/302/303/307/308 리다이렉트를 최대 8회 따라간다. 301/302/303은 메서드를 GET으로 바꾸고 본문을 버린다(.NET 동작); 307/308은 메서드와 본문을 유지한다. Location 헤더가 없으면 리다이렉트 응답 자체가 최종 응답이다. `get`은 404식 예외 계약을 유지하고, 나머지 verb는 상태와 본문을 그대로 반환한다.
 - `time`의 `date(str)` 생성자는 연/월/일(윤년 포함), 시/분/초/밀리초를 모두 엄격하게 검증한다. `date("2024-02-30")`은 에러다.
 - `use a.*`는 `use a { * }`의 축약형이다(공개 멤버 전부를 와일드카드 import).
+- 닫히지 않은 에러가 프로그램 밖으로 전파되면 Python식 트레이스백을 출력한다: `Traceback (most recent call last):` 헤더 아래 에러가 지나온 각 프레임을 `File "<파일>", line <줄>, in <함수>`로 나열하고, 마지막에 에러 위치(라인/스팬/캐럿)와 `error: <메시지>`를 찍는다. import한 모듈에서 발생한 에러도 모듈 기준 파일/라인으로 표시된다.
 
 ## 아키텍처
 

@@ -15,6 +15,25 @@ pub type Frames = Rc<RefCell<Vec<Frame>>>;
 pub fn new_frames() -> Frames {
     Rc::new(RefCell::new(Vec::new()))
 }
+/// One frame of an uncaught error's traceback.
+///
+/// Unlike [`Frame`] (which records the call site for the live stack),
+/// a `TraceEntry` is copied onto the shared trace buffer at the moment
+/// an error crosses a call boundary, before the frame is popped. It is
+/// what the top-level error report prints as the Python-style
+/// `Traceback (most recent call last):` list. `name` is the callee's
+/// function name (empty for anonymous natives).
+#[derive(Clone)]
+pub struct TraceEntry {
+    pub source: Rc<Source>,
+    pub start: usize,
+    pub length: usize,
+    pub name: String,
+}
+pub type Traces = Rc<RefCell<Vec<TraceEntry>>>;
+pub fn new_trace() -> Traces {
+    Rc::new(RefCell::new(Vec::new()))
+}
 #[derive(Clone)]
 pub enum Defer {
 
@@ -31,6 +50,11 @@ pub struct ContextData {
 
     pub usings: Vec<Obj>,
     pub call_depth: usize,
+
+    /// Errors in flight (most recent call last pushed first: the innermost
+    /// boundary is pushed first, so printing iterates in reverse). Shared
+    /// between the parent and every callee like `frames`.
+    pub trace: Traces,
 }
 pub type Context = Rc<RefCell<ContextData>>;
 pub fn new(scope: Scope, source: Rc<Source>, frames: Frames) -> Context {
@@ -41,6 +65,7 @@ pub fn new(scope: Scope, source: Rc<Source>, frames: Frames) -> Context {
         defers: Vec::new(),
         usings: Vec::new(),
         call_depth: 0,
+        trace: new_trace(),
     }))
 }
 pub fn scope(ctx: &Context) -> Scope {
@@ -68,6 +93,20 @@ pub fn pop_frame(ctx: &Context) -> Result<Frame, Obj> {
 }
 pub fn frame_count(ctx: &Context) -> usize {
     frames(ctx).borrow().len()
+}
+pub fn traces(ctx: &Context) -> Traces {
+    ctx.borrow().trace.clone()
+}
+pub fn push_trace(ctx: &Context, entry: TraceEntry) {
+    traces(ctx).borrow_mut().push(entry);
+}
+/// Drain every entry recorded for the error currently unwinding.
+pub fn take_trace(ctx: &Context) -> Vec<TraceEntry> {
+    std::mem::take(&mut traces(ctx).borrow_mut())
+}
+/// An error was caught: drop the trace accumulated so far.
+pub fn clear_trace(ctx: &Context) {
+    traces(ctx).borrow_mut().clear();
 }
 pub fn call_depth(ctx: &Context) -> usize {
     ctx.borrow().call_depth
