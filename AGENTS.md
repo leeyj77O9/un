@@ -10,14 +10,14 @@
 - **파이프라인**: `Source -> Lexer -> Parser -> Optimizer (desugar+fold) -> Bytecode Compiler -> Register VM`
 - **규모**: Rust 84개 파일 / 40,766줄(wc 기준), `test/` 아래 `.un` 스크립트 101개.
 - **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을 읽을 때 Int 부분집합(i64 파라미터·지역변수, `iter.range` 루프, 정수 산술과 비트연산 `&` `|` `^`, `FusedIntMulAdd`)과 IntDict/IntVec/class intrinsic와 math Float intrinsic에 속하는 proto를 native로 컴파일하고 `jit_cache`에 등록한다. 결과는 hidden pointer로 (value, tag)를 기록하는데 tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2는 런타임 bail(엔진 오류가 아니라 의미론 보존을 위한 인터프리터 fallback)이다. 나머지는 전부 인터프리터로 fallback. **클래스 메서드는 JIT 대상이다**: receiver는 hidden pointer 형태의 raw `Rc<ObjData>` 포인터로 전달되고, 클래스 메서드는 receiver를 local slot 0에 바인딩한다. `self.<Int필드>`의 직접 read/write는 layout 인덱스와 `[이름 == 필드이름, payload == Int]`를 **호출 시점에 name-checked**하는 intrinsic으로 수행하고, 검증 실패 시 bail → 인터프리터로 fallback한다. `UV_JIT=0`으로 런타임에 opt-out. `UV_JIT=2`는 strict canary로, JIT 후보가 하나라도 fallback stub이 되면 exit code 2로 즉시 죽는다(`.github/workflows/build.yml`의 `JIT strict canary` 스텝이 `test/jit/strict.un`(Int)과 `test/jit/strict_float.un`(Float math intrinsic)으로 검증).
-- **기준 문서**: `docs/REFACTOR_SUMMARY.md`(전체 요약), `docs/PROJECT_AUDIT.md`(감사 결과), `docs/REFACTOR_LOG.md`(변경 이력), `docs/ARCHITECTURE.md`(구조), `docs/TECHNICAL_DEBT.md`(부채 목록)가 현재 상태의 기준 문서다.
+- **기준 문서**: `docs/project/REFACTOR_SUMMARY.md`(전체 요약), `docs/project/PROJECT_AUDIT.md`(감사 결과), `docs/project/REFACTOR_LOG.md`(변경 이력), `docs/spec/ARCHITECTURE.md`(구조), `docs/project/TECHNICAL_DEBT.md`(부채 목록)가 현재 상태의 기준 문서다.
 - **이전 역사**: 원래 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었다. Rust 포트가
   differential 검증으로 C# 구현과 byte-identical임을 확인한 뒤 대체했고, C# 소스는
   `git` 이력에만 남아 있다.
 
 ## Rust 포트 (`rust/`)
 
-원래 C#으로 작성됐다가 Rust로 대체된 경위와 설계 판단은 `docs/DECISIONS.md`와
+원래 C#으로 작성됐다가 Rust로 대체된 경위와 설계 판단은 `docs/project/DECISIONS.md`와
 git 이력에 남아 있다. 현재 디렉터리를 참고:
 
 ```text
@@ -119,15 +119,20 @@ C:\dev\un
 ├─ vendor/                   (패치된 외부 crate: region, cranelift-jit, icache-coherence — vendor/README.md 참고)
 ├─ docs/                     # 문서 전체
 │  ├─ README.md              # 영어 user doc (docs/README.md ↔ README.md 쌍)
-│  ├─ ARCHITECTURE.md        # 구조                  ┐
-│  ├─ PROJECT_AUDIT.md       # 감사 결과              │ 현재 상태의 기준 문서
-│  ├─ REFACTOR_LOG.md        # 변경 이력              │
-│  ├─ TECHNICAL_DEBT.md      # 부채 목록              ┘
-│  ├─ REFACTOR_SUMMARY.md    # 전체 작업 요약 (감사 → pass 10)
-│  ├─ DECISIONS.md           # D-001…D-072
-│  ├─ TEST_GUIDE.md          # 테스트 가이드
-│  ├─ BYTECODE.md            # .unbc 포맷
-│  ├─ BENCHMARK_GUIDE.md     # 벤치마크
+│  ├─ spec/                  # 명세
+│  │  ├─ ARCHITECTURE.md     # 구조                  ┐
+│  │  └─ BYTECODE.md         # .unbc 포맷            ┘ 현재 상태의 기준 문서
+│  ├─ guides/                # 사용/운영 가이드
+│  │  ├─ CLI.md              # `un` CLI 설명서 (명령, 종료 코드, 오류/트레이스)
+│  │  ├─ CLI.ko.md           # CLI 설명서 한국어 버전
+│  │  ├─ TEST_GUIDE.md       # 테스트 가이드
+│  │  └─ BENCHMARK_GUIDE.md  # 벤치마크
+│  ├─ project/               # 기준 문서 + 이력
+│  │  ├─ REFACTOR_SUMMARY.md # 전체 작업 요약 (감사 → pass 10)
+│  │  ├─ PROJECT_AUDIT.md    # 감사 결과
+│  │  ├─ REFACTOR_LOG.md     # 변경 이력
+│  │  ├─ TECHNICAL_DEBT.md   # 부채 목록
+│  │  └─ DECISIONS.md        # D-001…D-072+
 │  └─ compile/               # Compile Mode 문서 (COMPILE_DESIGN/PROGRESS/FINDINGS/TESTS/BENCHMARK/OBJ_MILESTONES)
 ```
 
@@ -204,7 +209,7 @@ C:\dev\un
 - 벤치마크 스크립트는 `bench/`에 있고, 언어별 대응은 `bench/node/`(Node.js)와 `bench/python/`(Python)에 있다.
   측정은 웜업 + 반복 + 통계(최솟값·중위값·평균·최댓값·표준편차·연산 수)를 사용한다.
   Un은 VM(UV_JIT=0)과 JIT 모두를 측정한다.
-  결과와 측정 한계는 `docs/BENCHMARK_GUIDE.md`를 참고한다.
+  결과와 측정 한계는 `docs/guides/BENCHMARK_GUIDE.md`를 참고한다.
 - 변경 후 최소한 다음을 수행한다.
   1. `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml`
      — 오류 0, 새 경고 0.

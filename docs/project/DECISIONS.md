@@ -100,7 +100,7 @@ differential test로 검증하고, 실패하면 plain chain lookup으로 되돌�
 
 ## D-014 | `.unbc` layout은 count-prefixed + little-endian + fixed-size instruction | Accepted
 
-`BYTECODE.md` §13. 재구축 없이 field append 가능. magic `UNB1`. load 시 validation 실패는
+`docs/spec/BYTECODE.md` §13. 재구축 없이 field append 가능. magic `UNB1`. load 시 validation 실패는
 침묵하지 않는다.
 
 ## D-015 | 초기 단계에 JIT 없음 | Accepted
@@ -781,7 +781,7 @@ compiler는 file module path를 항상 compile하고 `Op::Use`가 run time에
 - 검증: `scripts/test.ps1` Positive **40 files / 1391 passed / 0 failed / 0
   crashed**, Negative 39 matched / 0 documented divergences, Known 0, exit 0.
   (이후 negative 셋 수리로 현재 기준도 같다 — see D-067의 주석과
-  docs/REFACTOR_LOG.md.)
+  docs/project/REFACTOR_LOG.md.)
 
 ## D-069 | `chr`의 surrogate range는 inner .NET 문자열만 재현한다 | Accepted
 
@@ -887,7 +887,7 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   만들 수 없으므로 skip으로 집계한다. 수정 후 Positive **40/40 identical**,
   negative compilable **33/33 identical**(수정 전 0/40→2건 불일치: 위 두 건이
   잡혔다). CI(`.github/workflows/build.yml`)에도 같은 step을 추가했다.
-  `test.ps1`/`cargo test` 기준은 그대로 green(아래 docs/REFACTOR_LOG.md 참고).
+  `test.ps1`/`cargo test` 기준은 그대로 green(아래 docs/project/REFACTOR_LOG.md 참고).
 - **교훈**: 음성(negative) 픽스처 셋은 "모듈 해석의 명세"였는데, 지금까지는
   source 경로만 통해서만 실행됐다. `.unbc` 경로도 동일 명세로 검증해야
   컴파일 아티팩트가 1급 실행 경로로 유지된다.
@@ -1030,7 +1030,7 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   포함)은 정확성 우선으로 프로그램 전체 JIT veto. `self.pow = 3`처럼 math와 무관한 instance
   속성을 math 사용 프로그램에서 재정의하면 JIT가 꺼진다(interpreter가 정확). 런타임 probe
   정밀화는 plan 타임에 program global scope에 접근이 필요해 별도 엔진 설계.
-- **상세**: `docs/JIT_FLOAT_MATH_INTRINSIC.md`(설계 문서).
+- **상세**: 설계 문서는 2026-11-19에 레거시로 분류되어 삭제됨 (git 이력에 보존).
 
 
 ## D-079 | JIT: unary `Op::Neg` lowering (ineg/fneg); TD-53 closed | Accepted

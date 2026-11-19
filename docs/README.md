@@ -350,10 +350,11 @@ statistics, and saved to `bench/results/<timestamp>/results.csv` and `results.md
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```
 
-`docs/BENCHMARK_GUIDE.md` defines the comparison rules (equal input, algorithm,
+`docs/guides/BENCHMARK_GUIDE.md` defines the comparison rules (equal input, algorithm,
 warmup, repeated runs, recorded environment). Measured values are not checked in;
-re-measure on your machine with `scripts/bench.ps1`. `docs/TEST_GUIDE.md` describes
-the test layout and rules.
+re-measure on your machine with `scripts/bench.ps1`. `docs/guides/TEST_GUIDE.md` describes
+the test layout and rules. `docs/guides/CLI.md` documents the `un` command-line interface
+(`docs/guides/CLI.ko.md` is the Korean translation).
 
 ## Language Overview
 
@@ -784,7 +785,7 @@ class Heap
 
 More examples are available in `test/test_suite.un`, `test/integration/algorithms.un`,
 `test/unit/runtime/classes.un`, and `bench/`. The procedures for running them are in
-`docs/TEST_GUIDE.md` and `docs/BENCHMARK_GUIDE.md`.
+`docs/guides/TEST_GUIDE.md` and `docs/guides/BENCHMARK_GUIDE.md`.
 
 ## Roadmap
 

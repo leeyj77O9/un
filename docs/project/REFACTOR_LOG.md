@@ -1,4 +1,4 @@
-﻿# docs/REFACTOR_LOG.md
+# docs/project/REFACTOR_LOG.md
 
 Dated log of the changes applied to the Rust implementation, with the
 commands used to verify them and the numbers they produced. Only verified
@@ -28,7 +28,7 @@ Format: one section per work session, newest first.
 1. The six documented defects are fixed to **standard semantics**. The C#
    reference and the differential harness are gone, so the language
    specification — not the old C# quirks — is the ground truth. Recorded as
-   `docs/DECISIONS.md` **D-067**; D-027 and D-035 are marked superseded.
+   `docs/project/DECISIONS.md` **D-067**; D-027 and D-035 are marked superseded.
 2. The uncommitted class-layout JIT work is **hardened conservatively**, not
    deleted and not left as-is: the failure modes that produced silently wrong
    values are removed, the infrastructure stays for a later phase, and the
@@ -122,7 +122,7 @@ Format: one section per work session, newest first.
 
 - `README.md` / `docs/README.md`: new "컬렉션과 슬라이싱" / "Collections and
   slicing" section documenting the slice rules, `==` on collections and `in`.
-- `docs/DECISIONS.md`: D-067 added; D-027 and D-035 marked superseded with a
+- `docs/project/DECISIONS.md`: D-067 added; D-027 and D-035 marked superseded with a
   pointer to D-067.
 
 ### Verification
@@ -165,11 +165,11 @@ repeatable interpreter speed-up should be claimed from a single run.
 Two follow-up depth audits were completed (the earlier attempts had failed
 with a network error): one over the native/stdlib layer, one over the
 build/docs/workspace layer. The 13 native-layer defects fixed in that pass
-are recorded as S1-9 … S1-21 in `docs/PROJECT_AUDIT.md`; the build/docs findings
-are recorded there as S2-build. A decision entry **D-068** in `docs/DECISIONS.md`
+are recorded as S1-9 … S1-21 in `docs/project/PROJECT_AUDIT.md`; the build/docs findings
+are recorded there as S2-build. A decision entry **D-068** in `docs/project/DECISIONS.md`
 records the same fixes in the decision log.
 
-### Native/stdlib fixes (see `docs/PROJECT_AUDIT.md` S1-9 … S1-21 and D-068)
+### Native/stdlib fixes (see `docs/project/PROJECT_AUDIT.md` S1-9 … S1-21 and D-068)
 
 - `lower_bound` now returns a true insertion point (the sibling of the
   `upper_bound` fix); `extend_insert` inserts in order and reports bad
@@ -188,7 +188,7 @@ records the same fixes in the decision log.
 
 - `test/negative/manifest.txt`: the two absolute-path substrings now match on
   any checkout location (`io\write' not found`, `nosuchmod' not found`).
-- `docs/DECISIONS.md`: duplicate `D-033`/`D-034` second uses renumbered to
+- `docs/project/DECISIONS.md`: duplicate `D-033`/`D-034` second uses renumbered to
   **D-069**/**D-070**; `D-066` moved back into numeric order.
 - `AGENTS.md`: counts corrected to the measured state (76 files / 34,166
   wc-lines), JIT eligibility description includes the `math.sin` intrinsic
@@ -196,7 +196,7 @@ records the same fixes in the decision log.
   tracking is documented, and the tree lists the new audit documents.
 - The Korean/English benchmarks, gap analysis, and tracking state were checked
   against `scripts/bench.ps1` (13 `$Pairs`, untracked files listed in
-  `docs/PROJECT_AUDIT.md` S2-12).
+  `docs/project/PROJECT_AUDIT.md` S2-12).
 
 ### Verification
 
@@ -323,7 +323,7 @@ w true             type(none) is none
 x <type: int>      type(1)
 ```
 
-### Open items carried into `docs/TECHNICAL_DEBT.md`
+### Open items carried into `docs/project/TECHNICAL_DEBT.md`
 
 TD-01 … TD-50 (see that file). The most important ones: the eager JIT
 compilation cost, the IntDict arena that never frees, the f-string source
@@ -551,7 +551,7 @@ and `.unbc` re-run:
 Fix: `Program.source_path` stores the full path as passed at compile time
 (`source.path.clone()`). Error display still shows the stem via
 `Source::name()`, so message shape is unchanged; `.unbc` format and opcode
-ABI untouched. Documented as decision **D-072** in `docs/DECISIONS.md`.
+ABI untouched. Documented as decision **D-072** in `docs/project/DECISIONS.md`.
 
 ### Verification
 
@@ -571,7 +571,7 @@ ABI untouched. Documented as decision **D-072** in `docs/DECISIONS.md`.
 All engineering docs now live under `docs/`: `ARCHITECTURE.md`,
 `PROJECT_AUDIT.md`, `REFACTOR_LOG.md`, `TECHNICAL_DEBT.md` moved from
 the repository root (`git mv`, history preserved); `REFACTOR_PLAN.md` was
-deleted (its open items are tracked in `docs/TECHNICAL_DEBT.md`).
+deleted (its open items are tracked in `docs/project/TECHNICAL_DEBT.md`).
 `docs/archive/` (the C#→Rust migration records) was removed entirely;
 the content survives in `git` history. Every bare mention of the moved
 files across the tracked tree was rewritten to `docs/<name>.md`;
@@ -579,12 +579,12 @@ AGENTS.md tree section, audit-docs line and quick commands were updated
 accordingly; AGENTS.md scale counters refreshed
 (81 files / 33,633 lines / 86 `.un` scripts).
 
-New `docs/REFACTOR_SUMMARY.md`: one-page index of the whole audit →
+New `docs/project/REFACTOR_SUMMARY.md`: one-page index of the whole audit →
 refactor → optimization effort — commit timeline, structural changes,
 current verified baseline, intentional limits, and a document map.
 
 Root keeps only what belongs there: `README.md`, `AGENTS.md`, `LICENSE`.
-Stable cross-references (`docs/DECISIONS.md` etc.) are unchanged.
+Stable cross-references (`docs/project/DECISIONS.md` etc.) are unchanged.
 
 ### Verification
 
@@ -597,27 +597,27 @@ No code changes; documentation moves only. Gates assumed green from pass 8.
 ### Deleted
 
 - `docs/REFACTOR_PLAN.md` — the phased plan was fully worked through;
-  every checkbox was closed or is tracked in `docs/TECHNICAL_DEBT.md`.
+  every checkbox was closed or is tracked in `docs/project/TECHNICAL_DEBT.md`.
 - `docs/archive/` (`MIGRATION_AUDIT.md`, `MIGRATION_PROGRESS.md`,
   `REGISTER_VM_ROADMAP.md`) — the C#→Rust migration records,
   superseded since the 2026-11-16 audit; content survives in `git` history.
 
 ### Pruned and corrected
 
-- `docs/TECHNICAL_DEBT.md` — resolved rows removed (they are enumerated in
+- `docs/project/TECHNICAL_DEBT.md` — resolved rows removed (they are enumerated in
   the new "Resolved in 2026-11" summary); stale Notes sections dropped;
   open items sorted by severity. TD-05 stays **high** (unbounded native-code
   growth outside teardown).
-- `docs/ARCHITECTURE.md` — pipeline reflects `parse → optimize
+- `docs/spec/ARCHITECTURE.md` — pipeline reflects `parse → optimize
   (desugar+fold) → compile`; `PLAN_CACHE`/`program.id` keying; lazy-compile
   eligibility; `clear_program`; stale `jit.rs` rows removed; `cargo test`
   count 204; new runner rows (differential.ps1, unbc-roundtrip.ps1).
-- `docs/PROJECT_AUDIT.md`, `docs/REFACTOR_SUMMARY.md` — dead references to
+- `docs/project/PROJECT_AUDIT.md`, `docs/project/REFACTOR_SUMMARY.md` — dead references to
   the deleted files removed; audit-time baseline table kept (dated evidence).
-- `docs/TEST_GUIDE.md` — counts updated (1395), `KnownDivergent.txt` now
+- `docs/guides/TEST_GUIDE.md` — counts updated (1395), `KnownDivergent.txt` now
   described as empty, harness list includes differential/round-trip runners.
 - `README.md` / `docs/README.md` — baseline 1391 → 1395.
-- `docs/BYTECODE.md` — flags bit 0 (source embed) documented; `source path`
+- `docs/spec/BYTECODE.md` — flags bit 0 (source embed) documented; `source path`
   is stored as the full compile-time path (D-072).
 - AGENTS.md — pipeline diagram (no more Desugarer stage), audit-docs line,
   tree section (archive removed, summary listed), scale counters already
@@ -813,7 +813,7 @@ before); negative manifest is now **41 checks**.
   destroyed socket mid-stream → `Unable to connect to the remote server`
   (no hang); `https://…` → scheme message. 4xx/5xx still return the body
   by design (.NET parity; Un's http client does not throw on unsuccessful
-  status — unchanged, documented in `docs/TECHNICAL_DEBT.md`).
+  status — unchanged, documented in `docs/project/TECHNICAL_DEBT.md`).
 
 ### Verification
 
@@ -962,7 +962,7 @@ Docs: README/docs-README member tables, BENCHMARK_GUIDE resolution note.
   analysis, performance regression (vs the previous run), historical
   comparison (10 %+ significant rows only), methodology, known limitations.
 - `bench/harness.un`: stale comment fixed (`tick` is 100 ns, not 0.1 ms).
-- `docs/BENCHMARK_GUIDE.md` rewritten for the 3-language workflow;
+- `docs/guides/BENCHMARK_GUIDE.md` rewritten for the 3-language workflow;
   `AGENTS.md` bench section updated (VM + JIT lanes, python lane, counters).
 
 ### Measured (Ryzen 7 9800X3D, 16 threads, Windows 10, CPython 3.13.17, Node 26.13.0)
@@ -1025,9 +1025,9 @@ Docs: README/docs-README member tables, BENCHMARK_GUIDE resolution note.
   Un JIT / Node.js 0.037x (was 0.004x); Un JIT now beats Python on the Int arithmetic/
   intrinsic rows (`int_ops` 794x, `math10000` 271x, `call200000` 201x, `nested_sum_200`
   1237x) and even Node.js on 4 rows.
-- `docs/BENCHMARK_GUIDE.md`, `docs/REFACTOR_SUMMARY.md`, `AGENTS.md` (bitwise support),
-  `docs/TECHNICAL_DEBT.md` (new TD-51: silent JIT death is undetectable by current
-  gates), `docs/DECISIONS.md` (**D-073**).
+- `docs/guides/BENCHMARK_GUIDE.md`, `docs/project/REFACTOR_SUMMARY.md`, `AGENTS.md` (bitwise support),
+  `docs/project/TECHNICAL_DEBT.md` (new TD-51: silent JIT death is undetectable by current
+  gates), `docs/project/DECISIONS.md` (**D-073**).
 - `scripts/bench.ps1`: Executive Summary binary-choice fix for JIT-beats-Python,
   performance-analysis bullets rewritten to computed ratios (no stale claims), and the
   "VM ≈ JIT" wording replaced with the actual interpreter/native split.
@@ -1180,7 +1180,7 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - Tests fixture updates: `builtins.un` (`use codes`, `codes.*`), negative
   `chr_space`/`ord_space`/`multi_space_arg` (`codes.chr()`/`codes.ord()`).
 - Docs: `docs/README.md` (Korean `README.md`쌍) 모듈 표에 `codes` 행 추가 + built-in 목록
-  갱신; `docs/DECISIONS.md` **D-076**; SUMMARY/LOG 갱신.
+  갱신; `docs/project/DECISIONS.md` **D-076**; SUMMARY/LOG 갱신.
 - User's `main.un` uses none of the moved functions (checked, unchanged).
 
 ### Verification
@@ -1253,7 +1253,8 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - The removed intrinsics were rejected for *matching call-sequence shapes
   by name text*. The replacement must be a general, always-honest lowering:
   any Float argument, any call site, no input-value-dependent decisions.
-- Design doc: `docs/JIT_FLOAT_MATH_INTRINSIC.md` (Accepted after review;
+- Design doc: `docs/JIT_FLOAT_MATH_INTRINSIC.md` (Accepted after review; since
+  removed as legacy on 2026-11-19, preserved in git history).
   open questions resolved: `pow` = both-Int args bail (Int semantics owned
   by the interpreter - nameless registers cannot express Int|Float poly
   tagging); `log` keeps base with `un_math_log(v, b) = v.ln() / b.ln()`;
@@ -1326,7 +1327,7 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   to be of type 'iter'" vs "counter is infinite"). Verified:
   iter-heavy paths (test_suite, algorithms.un) and all gates
   (Positive 1493, differential 88/0, unbc-roundtrip, cargo test 205).
-- `docs/ARCHITECTURE.md` gained the "Resource lifecycle" section: arenas are
+- `docs/spec/ARCHITECTURE.md` gained the "Resource lifecycle" section: arenas are
   process-lifetime and grow monotonically, only `jit_cache::clear()` releases
   (incl. why `unsafe impl Send for JitEntry` is sound today), PLAN_CACHE
   (TD-03) bounds, recursion-depth atomic + cached bound, tag=2 bail as the
@@ -1496,7 +1497,7 @@ Checked and left unchanged (each verified in the VM, reasons noted):
 - Gates: Positive 1493, Negative 41 matched, differential 88/0,
   unbc-roundtrip 47/47+34/34, cargo test 205, test_suite 109.
   WASM target (`-p unvm-playground`) builds clean.
-- No high-severity debt items remain in `docs/TECHNICAL_DEBT.md`
+- No high-severity debt items remain in `docs/project/TECHNICAL_DEBT.md`
   (TD-08 mitigated, TD-05 closed).
 
 
@@ -1594,7 +1595,8 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   cached (None until first `x is T` read). `x is T` consumers unchanged;
   gate: Positive 1504 / differential 90 files 0 differences / unbc-roundtrip
   47/47+36/36 / cargo test 205 / test_suite 109 / UV_JIT=2 strict canary OK.
-  Design doc: docs/REFACTOR_TYPES.md (Proposed).
+  Design doc: docs/REFACTOR_TYPES.md (Proposed; since removed as legacy on
+  2026-11-19, preserved in git history).
 
 ### Result
 
@@ -1626,7 +1628,8 @@ Checked and left unchanged (each verified in the VM, reasons noted):
   (one interned lookup per borrow instead of one string scan).
 - `collections.rs`: `strueq` StruEq comparison and `Enu` Lt/Eq arms plus the
   Stru `!==` arm route through `type_name_eq`.
-- Debt doc: TD-18 closed (design reference: docs/REFACTOR_TYPES.md).
+- Debt doc: TD-18 closed (design reference: docs/REFACTOR_TYPES.md, since
+  removed as legacy on 2026-11-19; preserved in git history).
 
 ### Result
 

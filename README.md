@@ -346,8 +346,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```
 
 Un과 Node.js를 같은 입력·알고리즘·측정 절차로 비교하는 규칙은
-`docs/BENCHMARK_GUIDE.md`에 있다. 측정은 `scripts/bench.ps1`로 직접 수행한다.
-테스트 구조와 규칙은 `docs/TEST_GUIDE.md`에 있다.
+`docs/guides/BENCHMARK_GUIDE.md`에 있다. 측정은 `scripts/bench.ps1`로 직접 수행한다.
+테스트 구조와 규칙은 `docs/guides/TEST_GUIDE.md`에 있다. `un` CLI 설명서는 `docs/guides/CLI.md`(영어)와 `docs/guides/CLI.ko.md`(한국어)에 있다.
 
 ## 언어 개요
 
@@ -761,7 +761,7 @@ class Heap
 
 더 많은 예제는 `test/test_suite.un`, `test/integration/algorithms.un`,
 `test/unit/runtime/classes.un`, `bench/`에서 확인할 수 있다. 예제를 실행하는 절차는
-`docs/TEST_GUIDE.md`와 `docs/BENCHMARK_GUIDE.md`에 있다.
+`docs/guides/TEST_GUIDE.md`와 `docs/guides/BENCHMARK_GUIDE.md`에 있다.
 
 ## 로드맵
 

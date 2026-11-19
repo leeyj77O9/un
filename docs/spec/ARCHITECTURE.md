@@ -1,8 +1,8 @@
-# docs/ARCHITECTURE.md
+# docs/spec/ARCHITECTURE.md
 
 How the Rust implementation of Un is put together. This document describes
-the code as it is today; `docs/PROJECT_AUDIT.md` records the audit findings
-and `docs/REFACTOR_LOG.md` records what landed.
+the code as it is today; `docs/project/PROJECT_AUDIT.md` records the audit findings
+and `docs/project/REFACTOR_LOG.md` records what landed.
 
 ## 1. Overview
 
@@ -22,7 +22,7 @@ and `docs/REFACTOR_LOG.md` records what landed.
 ```
 
 The runtime is single-threaded and cooperative: `go`/`wait`, `pool` and `lock`
-all execute on the calling thread (see `docs/DECISIONS.md` D-012, D-054).
+all execute on the calling thread (see `docs/project/DECISIONS.md` D-012, D-054).
 
 ## 2. Pipeline
 
@@ -72,7 +72,7 @@ pub struct ObjData {
 ### Collections
 
 `rust/src/runtime/collections.rs` implements the `KeyMap` (insertion-ordered
-bucket-chained hash table, `docs/DECISIONS.md` D-065) which backs `dict` and
+bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict` and
 `set`, plus `list`, `tuple`, `struct`, `enum`, `json` and `TObj` payloads.
 
 ## 4. VM

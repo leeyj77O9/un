@@ -28,7 +28,7 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | `a9849b9` | 7 | Lazy compile (first `try_call_jit` call compiles); IntDict `BuildDict` accepts inline Int-entry literals. |
 | `5bc0b80` | 7 | JIT cache redesign: opaque monotone `Program.id` replaces all pointer-identity keys (PLAN_CACHE, JIT_FNS/MODULES/LAZY_ATTEMPTED); per-program `clear_program()`; stale-entry/ABA hazard eliminated. |
 | `d580a8b` | 8 | `.unbc` round-trip harness (`scripts/unbc-roundtrip.ps1`, byte-compared, wired into CI); caught and fixed `Program.source_path` storing only the file stem — `.unbc` re-runs resolved modules cwd-relative instead of source-dir-relative (D-072). |
-| `b8f1088` | 9 | Docs consolidation under `docs/` (git mv), `docs/REFACTOR_SUMMARY.md` index added. |
+| `b8f1088` | 9 | Docs consolidation under `docs/` (git mv), `docs/project/REFACTOR_SUMMARY.md` index added. |
 | `4048761` | 10 | Legacy removal: `REFACTOR_PLAN.md` and `docs/archive/` deleted; `TECHNICAL_DEBT.md` pruned to open items; stale counters/diagrams refreshed. |
 | `dcb3ef9` | 11 | Benchmark-driven fix: `RegisterClass` no longer clobbers the seeded class field layout — class-method JIT actually engages (`norm()` compiles; `class1000` 5.59 → 4.73 ms). |
 | (pass 12) | 12 | Debt closures: TD-46 (`iter.range` swap), TD-12 (dead `TryEntry.depth`), TD-42 (`rw` read_line UTF-8/EOF), TD-07 (IntDict arena: free-on-exit, poison-tolerant lock) + IntDict id escape fix. |
@@ -36,16 +36,16 @@ JIT — and grew out of a full architecture audit of the Rust tree (76 files,
 | (pass 14) | 14 | TD-36 (regex 10M-step budget; error instead of infinite hang, negative fixture) and TD-37 (HTTP/WS 10 s connect + 30 s IO timeouts, 64 MiB response cap with exact `Content-Length` validation, consistent scheme-guard messages, case-insensitive `set_header`). |
 | `aad0f42` | 15 | Pass 14 follow-through for the playground WASM CI (52× red at `Test un`): native depth underflow in `transfer.rs` debug builds and a Cranelift prologue partial-block panic in `jit_bc.rs`; `RUSTUP_TOOLCHAIN=stable` in `un-playground/update-wasm.yml`. Update WASM CI is now green. |
 | (pass 16) | 16 | Stopwatch `ms`/`ns` are now read-only native properties (no call syntax); writes raise `cannot assign to a read-only property`. Native property plumbing fixed (original-class table routing on read and write; `SetAttr` yields `LangError` like `Call`). |
-| (pass 17) | 17 | Benchmark overhaul: Python lane added (winget CPython 3.13.17; PATH `python` is the broken WindowsApps stub, exit 9009) with 16 mirrored `bench/python/*.py`; two new 3-language benchmarks (`int_ops`, `mergesort1000`); `scripts/bench.ps1` rewritten (Un VM + Un JIT + Python + Node lanes, `-Group all|unvm|unjit|node|python`, `-Only <labels>`, auto Python/Node detection, header-indexed CSV compare vs the previous run, `-Report` regenerates root `BENCHMARK.md`, `-Compare <csv>` advisory regression detection, `results.json`); `BENCHMARK.md` generated at root; `docs/BENCHMARK_GUIDE.md` rewritten. Measured: JIT ≈ VM (Int-subset JIT only), Un JIT/Python geomean **0.224x**, Un JIT/Node.js **0.005x**; Un wins Python at `nested_sum_200` (1.12x) and `dict5000` (1.37x). |
+| (pass 17) | 17 | Benchmark overhaul: Python lane added (winget CPython 3.13.17; PATH `python` is the broken WindowsApps stub, exit 9009) with 16 mirrored `bench/python/*.py`; two new 3-language benchmarks (`int_ops`, `mergesort1000`); `scripts/bench.ps1` rewritten (Un VM + Un JIT + Python + Node lanes, `-Group all|unvm|unjit|node|python`, `-Only <labels>`, auto Python/Node detection, header-indexed CSV compare vs the previous run, `-Report` regenerates root `BENCHMARK.md`, `-Compare <csv>` advisory regression detection, `results.json`); `BENCHMARK.md` generated at root; `docs/guides/BENCHMARK_GUIDE.md` rewritten. Measured: JIT ≈ VM (Int-subset JIT only), Un JIT/Python geomean **0.224x**, Un JIT/Node.js **0.005x**; Un wins Python at `nested_sum_200` (1.12x) and `dict5000` (1.37x). |
 | (pass 18) | 18 | **The JIT was silently dead** (Pass 15 regression, `aad0f42`): prologue/block layout made the parameterless prologue the layout entry block, so Cranelift's verifier rejected every proto and `define_function` failed → silent interpreter fallback with all gates green. Fixed: prologue carries the signature parameters (it is the layout entry), body is parameterless, prologue jumps into it. Also added `Band`/`Bor`/`Bxor` to the Int subset and a `UV_JIT_DEBUG` log for `define_function` failures. **`int_ops`: 3226 ms → 0.08 s** (~400x); geomean Un JIT/Python **0.224x → 1.987x**; Un JIT now beats Python on Int/intrinsic rows and beats Node.js on 4 rows. All gates re-verified: 1406/41/205; differential 81/0; round-trip 40+34; `BENCHMARK.md` regenerated. |
 | (pass 19) | 19 | User-facing semantics (`D-074`): `str.split()` now defaults the separator to `' '`; every `map` native accepts Func **or a TObj** (`["3","1"].map(int)` as converter) and dispatches arity-adaptively — 2-arg callee gets `(value, index)`, 1-arg callee gets just `(value)`. `io.read().split().map(int)` works. Positive assertions 1406→**1414**; all gates re-verified (41/81/205/40+34). |
 | (pass 20) | 20 | Ergonomics sweep + fix: `str.trim()` now defaults `chars` to Unicode whitespace (Python `strip()` parity; `missing required argument` gone). Rest of the probe sweep found nothing else broken: `int(" 42")`/`float()`, `dict.get`, `list.pop()` (last element), `index_of` miss=-1, `sort`/`reverse`/`keys`/`values` all idiomatic already. Positive **1414→1415**; all gates re-verified. |
 | (pass 21) | 21 | Global namespace shrink: `bin`/`oct`/`hex`/`ascii`/`chr`/`ord` moved verbatim to the new `codes` module (`use codes`); globals now exactly `len`/`exit`/`type`/`hash`/`throw`/`throw_if`/`throw_unless`/`repr` (+ constructors and `true`/`false`/`none`/`null`). Tests/fixtures updated; D-076; all gates re-verified (1415/41/205/81/40+34/109). |
 | (pass 22) | 22 | fib benchmark: 150k recursive calls at ~3.4 ms (CPython parity), asking to catch up. Root cause: `un_jit_depth_enter` did an atomic RMW *and* a `WORLD.with(|w| w.borrow()...)` `max_recursion_depth()` lookup on every call. Fix: cached `AtomicUsize` (Relaxed) `JIT_MAX_DEPTH`, plain shared-memory `AtomicUsize` (Relaxed) `JIT_DEPTH`; `sync_max_jit_depth()` refreshes after `sys.setrecursionlimit`. **fib24: 3.39 → 1.32 ms** (~2.4x faster than Python); D-077; all gates re-verified. |
 
-Pass-by-pass evidence is in `docs/REFACTOR_LOG.md`; the audit findings with
-fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
-`docs/TECHNICAL_DEBT.md`.
+Pass-by-pass evidence is in `docs/project/REFACTOR_LOG.md`; the audit findings with
+fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt in
+`docs/project/TECHNICAL_DEBT.md`.
 
 ## What changed structurally
 
@@ -100,13 +100,13 @@ fix mapping in `docs/PROJECT_AUDIT.md`; the register of remaining debt in
 | File | Role |
 | --- | --- |
 | `docs/README.md` ↔ `README.md` | User docs (English / Korean), kept in sync |
-| `docs/ARCHITECTURE.md` | Current architecture: pipeline, VM, JIT, module layout |
-| `docs/PROJECT_AUDIT.md` | Audit findings (S1/S2/S3) with fix mapping |
-| `docs/REFACTOR_LOG.md` | Per-pass verification records |
-| `docs/TECHNICAL_DEBT.md` | Debt register (open items + closed summary) |
-| `docs/DECISIONS.md` | D-001 … D-077, append-only |
-| `docs/BYTECODE.md` | `.unbc` format specification |
-| `docs/TEST_GUIDE.md` | Test authoring and runner guide |
-| `docs/BENCHMARK_GUIDE.md` | Benchmark methodology and caveats |
+| `docs/spec/ARCHITECTURE.md` | Current architecture: pipeline, VM, JIT, module layout |
+| `docs/project/PROJECT_AUDIT.md` | Audit findings (S1/S2/S3) with fix mapping |
+| `docs/project/REFACTOR_LOG.md` | Per-pass verification records |
+| `docs/project/TECHNICAL_DEBT.md` | Debt register (open items + closed summary) |
+| `docs/project/DECISIONS.md` | D-001 … D-077, append-only |
+| `docs/spec/BYTECODE.md` | `.unbc` format specification |
+| `docs/guides/TEST_GUIDE.md` | Test authoring and runner guide |
+| `docs/guides/BENCHMARK_GUIDE.md` | Benchmark methodology and caveats |
 | `BENCHMARK.md` | Generated benchmark report at the repository root; regenerate with `scripts\bench.ps1 -Group all -Report` |
-| `docs/REFACTOR_SUMMARY.md` | This file |
+| `docs/project/REFACTOR_SUMMARY.md` | This file |
