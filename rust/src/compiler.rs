@@ -1265,6 +1265,16 @@ impl<'a> Compiler<'a> {
                     let member_name = self.text(&member.children[0]);
                     let slot = self.name_index(&member_name);
 
+                    // Defaults are compiled into the enclosing proto before the
+                    // member's own proto starts (same as free functions); the
+                    // MakeFunc opcode then reads `flags >> 8` values off the stack.
+                    let defaults = self.compile_defaults(&member.children[1])?;
+                    if defaults > 255 {
+                        return Err(Panic::named(
+                            "error",
+                            "function has more than 255 default parameters",
+                        ));
+                    }
                     let saved_raises = self.raises;
                     let saved_groups = std::mem::take(&mut self.groups);
                     self.begin_proto(&member_name, Some(&class_name));
@@ -1278,7 +1288,8 @@ impl<'a> Compiler<'a> {
                     let proto_slot = self.end_proto();
                     self.groups = saved_groups;
                     self.raises = saved_raises;
-                    self.emit(Op::MakeFunc, 0, proto_slot as i32, span);
+                    let member_flags = (defaults as u16) << 8;
+                    self.emit(Op::MakeFunc, member_flags, proto_slot as i32, span);
                     self.emit(Op::AddMethod, 0, slot as i32, span);
                 }
                 NodeKind::Assign => {

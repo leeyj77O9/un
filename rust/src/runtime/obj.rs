@@ -964,7 +964,12 @@ pub fn set_attr_from(o: &Obj, name: &str, value: &Obj, receiver: &Obj) -> Obj {
     // an instance-own `__setattr__` handler exists.
     if let Some(m) = find_bound(o, "__setattr__") {
         let arg = str(name);
-        if invoke(&m, &[arg, value.clone()]).is_some() {
+        if let Some(v) = invoke(&m, &[arg, value.clone()]) {
+            // A handler that raises an error object must not be treated as a
+            // successful write; propagate it like any other runtime error.
+            if is_err(&v) {
+                return v;
+            }
             return value.clone();
         }
     }
