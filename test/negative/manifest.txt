@@ -52,5 +52,5 @@ test/negative/ord_multiple_chars.un|1|ord: expected a single character, got mult
 test/negative/multi_catch.un|1|multiple 'catch' clauses
 test/negative/same_line.un|1|expected a newline after the previous statement
 test/negative/traceback.un|1|un: error trace
-test/negative/traceback_toplevel.un|1|un: error trace
+test/negative/traceback_toplevel.un|1|int division by zero
 test/fixtures/traceback_import/main.un|1|un: error trace

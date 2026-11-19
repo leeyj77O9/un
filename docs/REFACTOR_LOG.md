@@ -2058,5 +2058,22 @@ No action items. No regression against the 2026-11-18 baseline; the 17 commits s
   `un: error trace` block when the trace buffer is non-empty (root-hint
   synthesis still applies for boundary-free errors). WASM smoke.mjs 64/64
   passed; caught errors still yield `error: null`, exit 0.
+- Single-frame suppression (same day, user report "추가로 트레이스가 1개 이면
+  안나오게 바꿔줘"): `trace_string()` now returns `None` whenever the rendered
+  row count is <= 1 — a lone hop duplicates the caret block, so shallow
+  errors print just the caret block + `error: <msg>`. `traceback_toplevel.un`'s
+  expected substring changed to `int division by zero` (exit code pin kept;
+  Negative still 48). Verified in an isolated worktree at 06a1ddd + this
+  change because the main working tree has the user's uncommitted
+  type-checker WIP in flight (`union_strict` compile error) — all gates
+  green there (Positive 47/1538, Negative 48, differential 95,
+  roundtrip 47/47 + 39/39, cargo test 213, UV_JIT=2 canaries, WASM smoke 64/64).
+- Compact mode (same day, user report "추가로 트레이스가 너무 길어지면 코드 부분을
+  지우고 그냥 그 라인정보만 주게 만들어줘"): when the collapsed frame row count
+  exceeds `COMPACT_FRAME_THRESHOLD` (10), the per-frame source line is dropped
+  and only `-> <fn> <file>, line [N]` is printed. The `... (repeated N more
+  times)` collapse marker is kept. Verified live in the main tree after the
+  user's type-checker WIP built (Positive 47/1538, Negative 48,
+  differential 95, cargo test 213, roundtrip 47/47 + 39/39, WASM smoke 64/64).
 - `main.un`, bench lanes and WASM untouched; `cargo test` 213/213, UV_JIT=2
   canaries OK.

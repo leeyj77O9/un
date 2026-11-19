@@ -111,6 +111,11 @@ pub fn clear_trace(ctx: &Context) {
 }
 // --- Un-style error trace rendering ---
 
+/// When a trace grows past this many frame rows, the per-frame source
+/// line is dropped: each row carries only `-> <fn> <file>, line [N]`.
+/// The collapse marker (`... (repeated N more times)`) is unaffected.
+const COMPACT_FRAME_THRESHOLD: usize = 10;
+
 enum TraceRow {
     Frame {
         name: String,
@@ -122,7 +127,13 @@ enum TraceRow {
 }
 
 fn trace_frame_name(name: &str) -> &str {
-    if name.is_empty() { "<module>" } else { name }
+    match name {
+        // module root proto
+        "" => "<module>",
+        // anonymous `fn ... ->` expressions compile to a `lambda` proto
+        "lambda" => "<lambda>",
+        _ => name,
+    }
 }
 
 /// Render the shared trace buffer to an `un: error trace` text block
@@ -173,7 +184,9 @@ pub fn trace_string(ctx: &Context, root: Option<(&Source, usize)>) -> Option<Str
             i += count;
         }
     }
-    if rows.is_empty() {
+    if rows.len() <= 1 {
+        // A single frame duplicates the caret block's raise site — the
+        // reader learns nothing from one hop. Suppress the whole trace.
         return None;
     }
     let width = rows
@@ -184,6 +197,11 @@ pub fn trace_string(ctx: &Context, root: Option<(&Source, usize)>) -> Option<Str
         })
         .max()
         .unwrap_or(0);
+    let frame_rows = rows
+        .iter()
+        .filter(|row| matches!(row, TraceRow::Frame { .. }))
+        .count();
+    let compact = frame_rows > COMPACT_FRAME_THRESHOLD;
     let mut out = String::new();
     out.push_str("un: error trace");
     out.push_str(nl());
@@ -197,7 +215,7 @@ pub fn trace_string(ctx: &Context, root: Option<(&Source, usize)>) -> Option<Str
             } => {
                 out.push_str(&format!("    -> {name:<width$}  {file}, line [{line}]"));
                 out.push_str(nl());
-                if !source_line.is_empty() {
+                if !compact && !source_line.is_empty() {
                     out.push_str("         ");
                     out.push_str(source_line);
                     out.push_str(nl());

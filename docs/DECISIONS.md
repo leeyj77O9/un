@@ -1244,6 +1244,25 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
     플레이그라운드도 `error: null` + exit 0 유지. 모듈 경계 체인도 동일하게 동작.
     WASM smoke(`rust/playground/smoke.mjs`) 64/64 OK, 미처 panic 전용 케이스는
     `panic_display` + (있을시) 트레이스 병합.
+  - **익명 함수 프레임 이름 ("플레이그라운드에서 만든 함수는 왜 <function name>의
+    형태로 안나와? 그냥 함수 이름만 덜렁 나오네")**: 익명 `fn ... ->` 표현식의
+    프로토 이름은 컴파일러가 `lambda`로 고정한다. 프레임 명명 규칙에
+    `"" → "<module>"`에 더해 `"lambda" → "<lambda>"`를 추가 — 이름 있는 함수는
+    이름만, 모듈 스코프는 `<module>`, 익명 함수는 `<lambda>`로 표시한다.
+    raise 지점 프레임은 trace에 넣지 않고 caret 블록으로 표시하는 현행을 유지하고
+    (요청자 선택: "raise 지점 프레임은 현행 유지"), 익명 함수만 `<lambda>`로 감싼다.
+  - **프레임이 1개면 트레이스를 생략한다** ("추가로 트레이스가 1개 이면 안나오게
+    바꿔줘"): 얕은 에러는 caret 블록 한 줄이 트레이스보다 읽기 쉽다 —
+    `trace_string()`은 행이 1개뿐이면(`rows.len() <= 1`) `un:` 블록을 아예
+    출력하지 않는다. 예: `fn f() -> 1 / 0` + `f()` → caret + `error: int division by zero`뿐.
+    `traceback_toplevel.un` 핀의 substring을 `un: error trace` →
+    `int division by zero`로 갱신(48 유지).
+  - **트레이스가 너무 길어지면 소스 라인을 생략한다** ("추가로 트레이스가 너무 길어지면
+    코드 부분을 지우고 그냥 그 라인정보만 주게 만들어줘"): 접힌 뒤 프레임 행이
+    10개(`COMPACT_FRAME_THRESHOLD`)를 넘으면 compact 모드 — 각 행은
+    `-> <fn> <file>, line [N]`만 출력하고 소스 라인은 버린다. 치환 마커
+    (`... (repeated N more times)`)는 그대로. 교차 재귀(a ↔ b) 1000단 에러 출력이
+    소스 라인 포함 약 2000줄 → compact 약 1006줄.
   - 추가 핀: `test/negative/traceback_toplevel.un`,
     `test/fixtures/traceback_import/{main.un,mod.un}`. Negative 48, differential
     **95** files, roundtrip compilable Negative **39/39**.
