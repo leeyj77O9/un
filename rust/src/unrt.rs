@@ -612,6 +612,19 @@ pub extern "C" fn unrt_list_from_floats(ptr: *const f64, len: i64) -> u64 {
     to_raw(crate::runtime::collections::list(items))
 }
 
+/// Build a list from an array of raw Obj pointers, all expected to belong to
+/// a common type (e.g. class instances). Elements cross the FFI boundary as
+/// raw pointers; this bridge re-wraps them as VM Obj values.
+#[no_mangle]
+pub extern "C" fn unrt_list_from_elems(ptr: *const u64, len: i64) -> u64 {
+    if ptr.is_null() || len < 0 {
+        return to_raw(crate::runtime::obj::err("unrt_list_from_elems: bad pointer"));
+    }
+    let slice = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let items: Vec<crate::runtime::obj::Obj> = slice.iter().map(|&o| borrow_obj(o).unwrap_or_else(crate::runtime::obj::none)).collect();
+    to_raw(crate::runtime::collections::list(items))
+}
+
 /// Unbox an Obj to i64. Returns 0 for non-Int payloads.
 #[no_mangle]
 pub extern "C" fn unrt_int_from_obj(o: u64) -> i64 {

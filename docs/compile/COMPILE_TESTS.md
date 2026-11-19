@@ -33,6 +33,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | `test/compile/typed_pass.un` | `un native`/`un run` 양쪽에서 동일하게 통과하는 컴파일-모드 코어 시맨틱 스모크 (alias/union/higher-order/closure capture bail/bool ops) |
 | `test/compile/exceptions.un` | `try`/`catch`/`finally`/`throw` + dict missing-key + int/int · `//` div-zero(catchable) + INT_MIN // -1 wrap — interpreter와 `un native`가 바이트 동일한지를 검증하는 예외 경로 픽스처 |
 | `test/compile/classes.un` | 클래스 생성/접근/메서드/`__init__`/상속 — `un native`/`un run` 양쪽에서 동일하게 통과하는 클래스 경로 픽스처 (plain `un build`에서도 exe로 빌드되는지 scripts/obj-demo.ps1가 게이트) |
+| `test/compile/classes_list.un` | `list[Point]` 요소 타입의 클래스 리스트 — 리터럴/for-in/`xs[i]` read+write/`pop`/`pop(i)`/`add`/`insert`/`index_of`/`contains`/`len` · 함수 파라미터/반환(`-> list[point]`) — interpreter와 `un native`가 바이트 동일 |
 | `test/compile/matches.un` | match exhaustiveness 분석 — bool true/false arm·int arm·`_` wildcard·none arm을 포함한 exhaustive match 표기; interpreter와 `un native`가 바이트 동일 |
 | `bench/native_fib.un` | 어노테이션된 fib 벤치마크 (native 경로 확인 및 `scripts/compile-bench.ps1` 입력) |
 | `test/assert.un` | 어설트 모듈 (`assert_eq` / `assert_true` / `summary()`) |

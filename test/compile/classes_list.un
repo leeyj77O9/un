@@ -1,0 +1,50 @@
+use io
+use test.assert as assert
+
+class point
+    x: int
+    y: int
+
+    fn __init__(x: int = 0, y: int = 0)
+        self.x = x
+        self.y = y
+
+    fn sum() -> int
+        -> self.x + self.y
+
+fn sum_pts(pts: list[point]) -> int
+    total = 0
+    for p in pts
+        total += p.sum()
+    -> total
+
+fn mk(a: int, b: int) -> list[point]
+    -> [point(a), point(b)]
+
+fn first_sum(pts: list[point]) -> int
+    -> pts[0].sum()
+
+fn main() -> int
+    a = point(3, 4)
+    b = point(10, 20)
+    xs = [a, b]
+    assert.assert_eq(sum_pts(xs), 37, "class list iteration")
+    io.write(xs[0].sum())
+    xs[0].x = 7
+    assert.assert_eq(xs[0].sum(), 11, "class list index write")
+    c = xs.pop()
+    assert.assert_eq(c.sum(), 30, "class list pop")
+    assert.assert_eq(len(xs), 1, "pop shrinks the list")
+    xs.add(c)
+    assert.assert_eq(sum_pts(xs), 41, "class list re-add")
+    xs.insert(a, 0)
+    assert.assert_eq(sum_pts(xs), 52, "class list insert")
+    assert.assert_eq(xs.index_of(c), 2, "class list index_of")
+    assert.assert_eq(xs.contains(c), true, "class list contains")
+    m = mk(1, 2)
+    assert.assert_eq(sum_pts(m), 3, "class list returned from a function")
+    assert.assert_eq(first_sum(xs), 11, "class list element read")
+    assert.summary()
+    -> 0
+
+main()

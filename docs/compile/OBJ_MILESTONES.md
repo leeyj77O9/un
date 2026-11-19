@@ -33,7 +33,7 @@ self-contained mingw gcc를 경유한 `rustc`가 담당한다.
 |---|---|---|
 | 1 | 수직 슬라이스: core 부분집합(Int 상수/지역변수/산술/비교/`JmpIf`/직접 호출/`Return`) → COFF `.obj`, fib 데모 | **완료** |
 | 2 | `for i in a..b` / `while` 반복 하강 | **완료** (소스 경로: TIR ForRange/While을 그대로 하강; 루프 경계 가드 포함) |
-| 3 | VM 정적 링크 ABI — 생성 코드가 VM 런타임을 정적 링크해 Object 호출 | **3b 진행 중** (3a: `unvm`이 `staticlib`로 빌드되고 `unrt`(`rust/src/unrt.rs`)가 C ABI 제공. `un build --embed`는 임의의 Un 프로그램을 독립 exe로 빌드 — class/예외 포함. 3b: 생성 코드가 `unrt_call_native`/`unrt_obj_int` 등으로 VM 런타임을 직접 호출 — `io.write`, Str 리터럴/concat/`str == str`, `list[int]`/`list[float]`(리터럴, `for ... in`, `-> list[int]`, `io.write` 인자, `xs[i]` read/write, `len`)와 `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write, 함수 인자/반환), **`try`/`catch`/`finally`와 `throw`와 클래스**까지 네이티브 컴파일. 인터프리터와 출력 바이트 동일(보통 함수 body에서 `->`/`break`/`skip`이 안 쓰일 때). 클래스는 `<classes_init>` 스파인을 exe에 임베드해 시작 시 한 번 등록(`unrt_register_classes`); 임의 annotation 기본값/모듈 데코레이터도 동작) |
+| 3 | VM 정적 링크 ABI — 생성 코드가 VM 런타임을 정적 링크해 Object 호출 | **3b 진행 중** (3a: `unvm`이 `staticlib`로 빌드되고 `unrt`(`rust/src/unrt.rs`)가 C ABI 제공. `un build --embed`는 임의의 Un 프로그램을 독립 exe로 빌드 — class/예외 포함. 3b: 생성 코드가 `unrt_call_native`/`unrt_obj_int` 등으로 VM 런타임을 직접 호출 — `io.write`, Str 리터럴/concat/`str == str`, `list[int]`/`list[float]`/`list[class]`(리터럴, `for ... in`, `-> list[int]`, `io.write` 인자, `xs[i]` read/write, `len`, list 메서드)와 `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write, 함수 인자/반환), **`try`/`catch`/`finally`와 `throw`와 클래스**까지 네이티브 컴파일. 인터프리터와 출력 바이트 동일(보통 함수 body에서 `->`/`break`/`skip`이 안 쓰일 때). 클래스는 `<classes_init>` 스파인을 exe에 임베드해 시작 시 한 번 등록(`unrt_register_classes`); 임의 annotation 기본값/모듈 데코레이터도 동작) |
 | 4 | `.un` 소스에서 바로 `un obj` (typeck/TIR 재사용) | **완료** |
 | 5 | `un build` — 링크까지 자동화 (self-contained mingw gcc 자동 탐지) | **완료** |
 
@@ -57,13 +57,14 @@ $env:TEMP\embed_test.exe
 `un build --embed`는 클래스를 사용하는 프로그램도 원본과 동일한 출력을 낸다.
 plain `un build`도 임의의 annotated 클래스를 지원한다(`<classes_init>`을 exe 초기화 시 한 번 등록).
 
-`scripts\obj-demo.ps1`가 PASS(`obj-demo: fib = 55` + `obj-demo (un build): 55` + `obj-demo (un build class): 37`)를
+`scripts\obj-demo.ps1`가 PASS(`obj-demo: fib = 55` + `obj-demo (un build): 55` + `obj-demo (un build class): 37` + `obj-demo (un build class list): 37`)를
 반환한다. 오브젝트 심볼은 `llvm-nm`으로 확인할 수 있다: `un_main`(export),
 `un_proto_<i>`/`un_tir_<i>`(Local).
 
-`scripts\compile-check.ps1`도 함께 쓴다 — `test/compile/errors/*.un` 부정 픽스처가
+`scripts\compile-check.ps1`도 함께 쓴다 — `test/compile/*.un` 픽스처 6개가 `un run`/`un native` 바이트 동일 + exit 0인지,
+그리고 `test/compile/errors/*.un` 부정 픽스처가
 `un check`/`un native` 양쪽에서 exit 1 + 기대 진단 문자열을 내는지 검사한다
-(13 checks). 거부 케이스를 추가하려면 픽스처 + `test/compile/errors/manifest.txt`
+(현재 18 checks, errors/* 11개 + untyped-source-rejected 포함). 거부 케이스를 추가하려면 픽스처 + `test/compile/errors/manifest.txt`
 한 행만 추가하면 된다.
 
 ## 제한 사항
@@ -77,6 +78,11 @@ plain `un build`도 임의의 annotated 클래스를 지원한다(`<classes_init
   `un build`는 exit 1로 실패하고 프로그램은 인터프리터에서 계속 실행된다.
   **인덱싱**: `xs[i]` read, `xs[i] = v` write(음수 인덱스 wrap), 범위 밖이면
   Obj 경로는 user trap `user2`로 프로세스를 종료한다(`un run`은 exit 1 + traceback).
+- `list[class]`: `list[int]`/`list[float]`와 같은 모든 위치(리터럴, 파라미터/렛/대입,
+  `for v in xs`, 호출 인자/반환, `xs[i]` read/write, `add`/`insert`/`reverse`/`sort`/`pop`/`pop(i)`/
+  `contains`/`index_of`, `len(xs)`)에서 native 컴파일된다. 정적 타입이 element 타입이므로
+  list 조작은 VM 런타임 브릿지를 거치고, `for v in xs`의 `v`는 Class Obj 핸들이다.
+  `list[int]`/`list[float]`가 거부하는 것(빈 리스트, 중첩 리스트, 비 str 키 등)은 동일하게 거부한다.
 - `list[int]`/`list[float]` 메서드: `add(v)`(append), `insert(v, i)`(인덱스 clamp),
   `reverse()`, `sort()`(VM comparator), `pop()`/`pop(i)`(원소 반환),
   `contains(v)`, `index_of(v)`까지 네이티브 지원한다. 나머지 리스트 메서드는
@@ -90,7 +96,7 @@ plain `un build`도 임의의 annotated 클래스를 지원한다(`<classes_init
   user trap `user1`으로 프로세스를 종료한다
   (`un run`은 `error: key '{key}' not found in dictionary`를 내며 exit 1).
 - `len(x)`: `str`(UTF-16 코드 유닛, 인터프리터와 동일)과 `list[int]`/`list[float]`/
-  `dict[str, int]`/`dict[str, float]`의 크기를 반환한다. 다른 타입은 인터프리터로 넘긴다.
+  `list[class]`/`dict[str, int]`/`dict[str, float]`의 크기를 반환한다. 다른 타입은 인터프리터로 넘긴다.
   `un native`에서는 len 포함 함수도 모두 인터프리터 fallback.
 - 예외(`try`/`catch`/`finally`): 네이티브 exe가 `unrt_*`로 연결하는 **모든** VM 오류를
   현재 함수의 활성 `catch`로 전달한다. 없는 키(`d[missing]`), 범위 밖 리스트 인덱스,
@@ -131,9 +137,12 @@ plain `un build`도 임의의 annotated 클래스를 지원한다(`<classes_init
     `bind_module_functions`가 미리 바인딩).
   - 한계: plain native exe의 클래스 프로퍼티는 getter의 반환 타입이 정적 타입
     (`Int`/`Float`/`Bool`)으로 단정되지 않으므로(`any`), 순수 getter 읽기는
-    거부된다(annotate된 backing field는 정상). 목록 원소 또는 dict 값의
-    class 타입, 중첩된 클래스 선언, 클래스 등록 스파인의 기본값 표현식이
-    모듈 전역 변수를 참조하는 경우는 지원하지 않고 `--embed`를 써야 한다.
+    거부된다(annotate된 backing field는 정상). dict 값의 class 타입, 중첩된
+    클래스 선언, 클래스 등록 스파인의 기본값 표현식이 모듈 전역 변수를
+    참조하는 경우는 지원하지 않고 `--embed`를 써야 한다.
+    `list[ClassName]`은 native로 지원된다(리터럴/`for v in xs`/`xs[i]` read+write/
+    `add`·`insert`·`pop`·`pop(i)`·`reverse`·`sort`·`contains`·`index_of`/`len(xs)`);
+    중첩된 클래스 리스트(`list[list[Point]]`)와 빈 리스트는 거부하므로 `--embed`가 필요하다.
   - 클래스를 쓰는 함수는 Vm(`un native`)에서는 여전히 인터프리터 fallback.
 - `str == str`은 VM의 `key_eq`로 네이티브 비교한다.
 - `//` 및 `Int / Int`에서 제수가 0이면 **catchable exception**이며, int `%` 0은

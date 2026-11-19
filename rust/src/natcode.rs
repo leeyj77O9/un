@@ -268,7 +268,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
                 // Str/List args are never passed to a VM-JIT candidate
                 // (those are filtered out up front); reaching here is a
                 // no-op mapping.
-                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => ArgKind::Int,
+                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => ArgKind::Int,
             })
             .collect();
         jit_cache::register_tir_entry(
@@ -335,7 +335,7 @@ fn emit_internal_bail<M: Module>(
         Some(TirTy::Bool) => {
             b.ins().return_(&[zero_i8, one_i8]);
         }
-        Some(TirTy::Str) | Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => {
+        Some(TirTy::Str) | Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => {
             b.ins().return_(&[zero_i64, one_i8]);
         }
         None => {
@@ -474,7 +474,7 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
             TirTy::Int => types::I64,
             TirTy::Float => types::F64,
             TirTy::Bool => types::I8,
-            TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => types::I64,
+            TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => types::I64,
         }));
     }
     match &f.ret {
@@ -482,7 +482,7 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
         Some(TirTy::Float) => sig.returns.push(AbiParam::new(types::F64)),
         Some(TirTy::Bool) => sig.returns.push(AbiParam::new(types::I8)),
         Some(TirTy::Str) => sig.returns.push(AbiParam::new(types::I64)),
-        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => sig.returns.push(AbiParam::new(types::I64)),
+        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => sig.returns.push(AbiParam::new(types::I64)),
         None => {}
     }
     if mode == NativeMode::Vm {
@@ -563,6 +563,7 @@ struct FnEmit<'a> {
     unrt_list_get: Option<cranelift_module::FuncId>,
     unrt_list_from_ints: Option<cranelift_module::FuncId>,
     unrt_list_from_floats: Option<cranelift_module::FuncId>,
+    unrt_list_from_elems: Option<cranelift_module::FuncId>,
     unrt_int_from_obj: Option<cranelift_module::FuncId>,
     unrt_float_from_obj: Option<cranelift_module::FuncId>,
     unrt_dict_from_pairs: Option<cranelift_module::FuncId>,
@@ -737,6 +738,16 @@ fn emit_internal<M: Module>(
     };
     let unrt_list_from_floats = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_list_from_floats", vec![types::I64, types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
+    let unrt_list_from_elems = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_list_from_elems",
+            vec![types::I64, types::I64],
+            Some(types::I64),
+        )?)
     } else {
         None
     };
@@ -924,7 +935,7 @@ fn emit_internal<M: Module>(
                 TirTy::Int => types::I64,
                 TirTy::Float => types::F64,
                 TirTy::Bool => types::I8,
-                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => types::I64,
+                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => types::I64,
             })
         })
         .collect();
@@ -963,7 +974,7 @@ fn emit_internal<M: Module>(
                 };
                 builder.def_var(*var, v);
             }
-            TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
+            TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
                 let v = match unrt_none {
                     Some(id) => {
                         let none_ref = module.declare_func_in_func(id, builder.func);
@@ -1038,6 +1049,7 @@ fn emit_internal<M: Module>(
         unrt_list_get,
         unrt_list_from_ints,
         unrt_list_from_floats,
+        unrt_list_from_elems,
         unrt_int_from_obj,
         unrt_float_from_obj,
         unrt_dict_from_pairs,
@@ -1156,7 +1168,7 @@ fn emit_internal_return<M: Module>(
         (Some(TirTy::Float), Some(v)) => returns.push(v),
         (Some(TirTy::Bool), Some(v)) => returns.push(v),
         (Some(TirTy::Str), Some(v)) => returns.push(v),
-        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj), Some(v)) => returns.push(v),
+        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj), Some(v)) => returns.push(v),
         (Some(TirTy::Int), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
@@ -1166,7 +1178,7 @@ fn emit_internal_return<M: Module>(
         (Some(TirTy::Str), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
-        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj), None) => {
+        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
         (Some(TirTy::Bool), None) => {
@@ -1386,7 +1398,8 @@ fn emit_stmt<M: Module>(
                     let res = builder.ins().call(ub_ref, &[elem_v]);
                     builder.inst_results(res)[0]
                 }
-                _ => panic!("list iteration requires an int/float element type"),
+                TirTy::Class(_) => elem_v,
+                _ => panic!("list iteration requires an int/float/class element type"),
             };
             builder.def_var(var_var, elem_val);
             emitter.terminated = false; // fresh reachable block
@@ -1488,7 +1501,7 @@ fn emit_stmt<M: Module>(
                 // Native calls take Obj arguments — wrap raw values first.
                 let wrapped = match vty {
                     TirTy::Str => v,
-                    TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => v,
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => v,
                     TirTy::Int => {
                         let id = emitter.unrt_obj_int.expect("unrt import required for native calls");
                         let int_ref = module.declare_func_in_func(id, builder.func);
@@ -1541,7 +1554,7 @@ fn emit_stmt<M: Module>(
                     let res = builder.ins().call(float_ref, &[v_v]);
                     builder.inst_results(res)[0]
                 }
-                _ => panic!("list elements must be int or float"),
+                _ => wrap_as_obj(v_v, v_ty, emitter, builder, module),
             };
             let set_id = emitter.unrt_list_set.expect("unrt import required for list assignment");
             let set_ref = module.declare_func_in_func(set_id, builder.func);
@@ -1748,7 +1761,8 @@ fn list_elem_unbox<M: Module>(
             let res = builder.ins().call(ub_ref, &[raw]);
             (builder.inst_results(res)[0], TirTy::Float)
         }
-        _ => panic!("list method requires a list[int] or list[float]"),
+        TirTy::ListClass(id) => (raw, TirTy::Class(id)),
+        _ => panic!("list method requires a list[int], list[float] or list[class]"),
     }
 }
 
@@ -2081,7 +2095,7 @@ fn wrap_as_obj<M: Module>(
             let res = builder.ins().call(bool_ref, &[v]);
             builder.inst_results(res)[0]
         }
-        TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat
+        TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
         | TirTy::Class(_) | TirTy::ErrorObj => v,
     }
 }
@@ -2158,8 +2172,14 @@ fn emit_expr<M: Module>(
                 if elem_ty.is_none() {
                     elem_ty = Some(ty);
                 }
-                let addr = builder.ins().stack_addr(types::I64, slot_t, (8 * i) as i32);
-                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), v, addr, 0);
+                if matches!(ty, TirTy::Class(_)) {
+                    let v = wrap_as_obj(v, ty, emitter, builder, module);
+                    let addr = builder.ins().stack_addr(types::I64, slot_t, (8 * i) as i32);
+                    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), v, addr, 0);
+                } else {
+                    let addr = builder.ins().stack_addr(types::I64, slot_t, (8 * i) as i32);
+                    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), v, addr, 0);
+                }
             }
             let elem_ty = elem_ty.expect("non-empty list");
             let ptr = builder.ins().stack_addr(types::I64, slot_t, 0);
@@ -2173,7 +2193,11 @@ fn emit_expr<M: Module>(
                     emitter.unrt_list_from_floats.expect("unrt import required for lists"),
                     TirTy::ListFloat,
                 ),
-                _ => panic!("core lists require int/float elements"),
+                TirTy::Class(id) => (
+                    emitter.unrt_list_from_elems.expect("unrt import required for class lists"),
+                    TirTy::ListClass(id),
+                ),
+                _ => panic!("core lists require int/float/class elements"),
             };
             let from_ref = module.declare_func_in_func(from_fid, builder.func);
             let res = builder.ins().call(from_ref, &[ptr, len]);
@@ -2444,7 +2468,8 @@ fn emit_expr<M: Module>(
                     let res = builder.ins().call(ub_ref, &[raw]);
                     (builder.inst_results(res)[0], TirTy::Float)
                 }
-                _ => panic!("indexing requires a list[int] or list[float]"),
+                TirTy::ListClass(id) => (raw, TirTy::Class(id)),
+                _ => panic!("indexing requires a list[int], list[float] or list[class]"),
             }
         }
         TirExpr::Bool(v) => (builder.ins().iconst(types::I8, *v as i64), TirTy::Bool),
@@ -2470,7 +2495,7 @@ fn emit_expr<M: Module>(
                     TirTy::Int => (builder.ins().ineg(value), TirTy::Int),
                     TirTy::Float => (builder.ins().fneg(value), TirTy::Float),
                     TirTy::Str => unreachable!("validator forbids neg of str"),
-                    TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
                         unreachable!("validator forbids neg of collection")
                     }
                     TirTy::Bool => unreachable!("validator forbids neg of bool"),
@@ -2485,7 +2510,7 @@ fn emit_expr<M: Module>(
                     }
                     TirTy::Float => unreachable!("validator forbids not of float"),
                     TirTy::Str => unreachable!("validator forbids not of str"),
-                    TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
                         unreachable!("validator forbids not of collection")
                     }
                 },
@@ -2670,7 +2695,7 @@ fn ensure_float(
         TirTy::Int => builder.ins().fcvt_from_sint(types::F64, v),
         TirTy::Str => unreachable!("validator forbids str arithmetic"),
         TirTy::Bool => unreachable!("validator forbids bool arithmetic"),
-        TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => unreachable!("validator forbids collection-class arithmetic"),
+        TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => unreachable!("validator forbids collection-class arithmetic"),
     }
 }
 
@@ -2788,7 +2813,7 @@ fn emit_ffi(
                 TirTy::Float => builder.ins().bitcast(types::F64, MemFlagsData::new(), v),
                 TirTy::Bool => builder.ins().ireduce(types::I8, v),
                 TirTy::Str => v,
-                TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => v,
+                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => v,
             }
         })
         .collect();
@@ -2829,7 +2854,7 @@ fn emit_ffi(
             builder.ins().store(MemFlagsData::new(), zero, hp, 0);
             builder.ins().store(MemFlagsData::new(), two, hp, 8);
         }
-        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => {
+        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => {
             // Same conservatism: heap collections and classes never cross the Vm boundary natively.
             let zero = builder.ins().iconst(types::I64, 0);
             let two = builder.ins().iconst(types::I64, TAG_BAIL);

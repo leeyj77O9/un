@@ -148,6 +148,55 @@ main()
         exit 1
     }
 
+    # Plain `un build` on a program whose core functions use class-typed
+    # lists: the exe must produce the same output as `un run`.
+    $classListSrc = Join-Path $Tmp "class_list.un"
+    Set-Content -Path $classListSrc -Value @'
+use io
+
+class Point(x: int, y: int)
+    fn total() -> int
+        -> self.x + self.y
+
+fn sum_points(pts: list[Point]) -> int
+    total = 0
+    for p in pts
+        total += p.total()
+    -> total
+
+fn main() -> int
+    xs = [Point(1, 2), Point(10, 20)]
+    xs[0].x = 5
+    t = 0
+    for p in xs
+        t = t + p.total()
+    io.write(t)
+    xs.add(Point(100, 200))
+    io.write(sum_points(xs))
+    io.write(len(xs))
+    -> 0
+
+main()
+'@ -Encoding ascii
+    $runOut = & $Exe run $classListSrc
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "obj-demo (un build class list): FAILED (un run exited $LASTEXITCODE)" -ForegroundColor Red
+        exit 1
+    }
+    & $Exe build $classListSrc -o class_list_plain.exe *> $null
+    $plainCode = $LASTEXITCODE
+    if ($plainCode -ne 0) {
+        Write-Host "obj-demo (un build class list): FAILED (expected exit 0, got $plainCode)" -ForegroundColor Red
+        exit 1
+    }
+    $out6 = (& .\class_list_plain.exe) -join "`n"
+    $run6 = $runOut -join "`n"
+    Write-Host "obj-demo (un build class list): $out6"
+    if ($out6 -ne $run6) {
+        Write-Host "obj-demo (un build class list): FAILED (un run printed '$run6')" -ForegroundColor Red
+        exit 1
+    }
+
     Write-Host "obj-demo: PASS" -ForegroundColor Green
     exit 0
 } finally {
