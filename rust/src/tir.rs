@@ -800,16 +800,28 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             | NodeKind::Branch
             | NodeKind::IfCase
             | NodeKind::While
-            | NodeKind::For
             | NodeKind::Return
             | NodeKind::Break
             | NodeKind::Skip
-            | NodeKind::Assign
-            | NodeKind::Typed => {
+            | NodeKind::Assign => {
                 for child in &node.children {
                     visit(child, checked, source, locals, out);
                 }
             }
+            // `for 0..n` — a bare wildcard loop variable is the discard
+            // slot; the iterator expression and the body are checked here,
+            // the target itself is not a name.
+            NodeKind::For => {
+                let skip = node.children.first().is_some_and(|c| c.kind == NodeKind::Wildcard);
+                for child in node.children.iter().skip(if skip { 1 } else { 0 }) {
+                    visit(child, checked, source, locals, out);
+                }
+            }
+            // `x: T = e` — the bound name is in locals already (see
+            // collect_locals); the annotation child is type text and needs
+            // no name check. The value child is visited via the parent
+            // Assign. A bare `x: T` without a value is rejected at lowering.
+            NodeKind::Typed => {}
             NodeKind::Integer | NodeKind::Float | NodeKind::Boolean | NodeKind::None | NodeKind::String => {}
             NodeKind::Unary => {
                 let Some(op) = node.op else {
@@ -1137,6 +1149,12 @@ fn collect_binding_target(target: &Node, source: &Source, out: &mut HashMap<Stri
         NodeKind::Identifier => {
             let name = source.span(target.start, target.length).to_string();
             out.insert(name, ());
+        }
+        NodeKind::Typed => {
+            // `x: T = v` — the binding name is the Typed's first child.
+            if let Some(first) = target.children.first() {
+                collect_binding_target(first, source, out);
+            }
         }
         NodeKind::Tuple | NodeKind::List => {
             for child in &target.children {
@@ -1622,10 +1640,32 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
         .ok_or_else(|| "assignment without value".to_string())?;
     match target.kind {
         NodeKind::Identifier => {
-            let name = ctx.source.span(target.start, target.length);
+            let name = ctx.source.span(target.start, target.length).to_string();
             let (expr, ty) = lower_expr(value, ctx)?;
             if let Some(slot) = slot_of(ctx, &name) {
                 // Re-assignment: declared type is invariant (checker enforced it).
+                out.push(TirStmt::Set(slot, expr));
+            } else {
+                let tty = tir_ty_of(ty)?;
+                let slot = declare(ctx, &name, tty);
+                out.push(TirStmt::Let(slot, expr));
+            }
+            Ok(())
+        }
+        NodeKind::Typed => {
+            // `dp: list[int] = [0]` — an annotated initializer statement; the
+            // checker already validated the annotation and the value. Lower
+            // it exactly like a plain `name = value` binding.
+            let name_node = target
+                .children
+                .first()
+                .ok_or_else(|| "typed assignment without a name".to_string())?;
+            if name_node.kind != NodeKind::Identifier {
+                return Err("typed assignment target must be a plain variable in the core".to_string());
+            }
+            let name = ctx.source.span(name_node.start, name_node.length).to_string();
+            let (expr, ty) = lower_expr(value, ctx)?;
+            if let Some(slot) = slot_of(ctx, &name) {
                 out.push(TirStmt::Set(slot, expr));
             } else {
                 let tty = tir_ty_of(ty)?;
@@ -1861,10 +1901,16 @@ fn lower_for(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
         .children
         .get(2)
         .ok_or_else(|| "for without body".to_string())?;
-    let NodeKind::Identifier = target.kind else {
-        return Err("for loop target must be a plain variable in the core".to_string());
+    let name = match target.kind {
+        NodeKind::Identifier => ctx.source.span(target.start, target.length).to_string(),
+        NodeKind::Wildcard => {
+            // `for 0..100` — the counter is never referenced; synthesize a
+            // name that cannot collide with any source identifier ('$' is not
+            // a valid Un identifier start).
+            format!("${}", ctx.locals.len())
+        }
+        _ => return Err("for loop target must be a plain variable in the core".to_string()),
     };
-    let name = ctx.source.span(target.start, target.length);
     // `for v in xs` where xs is a local list[int]/list[float].
     if let Some(slot) = slot_of(ctx, &ctx.source.span(iter.start, iter.length).to_string()) {
         let list_ty = ctx.locals[slot as usize];

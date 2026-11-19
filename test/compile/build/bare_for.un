@@ -1,0 +1,21 @@
+use io
+
+fn fib(n: int, dp: list[int]) -> int
+    if dp[n] != 0
+        -> dp[n]
+    v = fib(n - 2, dp) + fib(n - 1, dp)
+    dp[n] = v
+    -> v
+
+fn main() -> int
+    dp: list[int] = [0]
+
+    for 0..100
+        dp.add(0)
+
+    dp[0] = 1
+    dp[1] = 1
+    io.write(fib(24, dp))
+    -> 0
+
+main()

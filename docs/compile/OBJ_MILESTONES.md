@@ -155,6 +155,10 @@ plain `un build`로 링크한 exe가 각각 `un run`과 stdout/stderr/exit code 
   **uncatchable Panic**이다 (위 예외 항목 참고). 두 경우 모두 exit code는 1이고
   출력은 인터프리터와 바이트 동일하다.
 - 재귀는 Depth 가드 없이 그냥 스택 재귀다 (스택 오버플로는 프로세스를 죽인다). VM 경로는 VM depth 가드가 있다.
+- 로컬 변수 어노테이션 초기화(`dp: list[int] = [0]` 같은 `x: T = e` 문장)와 반복 변수 없는
+  `for 0..n`(디스카드 슬롯에는 `'$'` 접두 합성 이름을 씀)은 compile mode에서 지원된다
+  (2026-11-20). interpreter와 동작이 같다. `x: T`만 단독으로 쓰는 어노테이션 문장은 여전히
+  거부된다.
 - `un build`의 드라이버는 `unrt_init()` → `un_main()` → `unrt_flush_stdout()` 순서로
   호출한다. Str 출력은 VM runtime의 stdout 버퍼를 통해 나간다. 엔트리 반환이
   float/bool이면 값을 출력하지 않고 숫자 그대로/0으로 출력한다.
