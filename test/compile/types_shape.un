@@ -1,0 +1,40 @@
+use io
+use test.assert as assert
+
+# Fixed-width alias annotations (u8/u16/u32/u64, i8/i16/i32/i64, f32/f64) are
+# documentation-level aliases: the runtime has one i64 Int and one f64 Float,
+# so these map to int/float in the checker and the native pipeline treats
+# them identically. Range checks live in the `types` module
+# (test/unit/native/types.un).
+
+fn sum_u32(x: u32, y: u32) -> u32
+    -> x + y
+
+fn min_u32(x: u32, y: u32) -> u32
+    if x < y
+        -> x
+    -> y
+
+fn mask_i32(bits: i32) -> i32
+    -> bits & 255
+
+fn to_f32(x: int) -> f32
+    -> float(x)
+
+fn negate_i8(x: i8) -> i8
+    -> -x
+
+fn shift_i16(bits: i16, n: int) -> i16
+    -> bits << n
+
+fn main() -> int
+    assert.assert_eq(sum_u32(3, 4), 7, "u32 aliases accepted")
+    assert.assert_eq(min_u32(10, 2), 2, "u32 branch")
+    assert.assert_eq(mask_i32(0xABF0), 240, "i32 bit ops")
+    assert.assert_eq(to_f32(3), 3.0, "f32 cast")
+    assert.assert_eq(negate_i8(8), -8, "i8 negate")
+    assert.assert_eq(shift_i16(1, 4), 16, "i16 shift")
+    assert.summary()
+    -> 0
+
+main()

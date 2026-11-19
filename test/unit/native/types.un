@@ -1,0 +1,72 @@
+use io
+use types
+use test.assert as assert
+
+# ============================================================
+# types - fixed-width integer/float constructors
+# Range checks run at conversion time; arithmetic stays wrapping i64/f64.
+# Run: un.exe run test/unit/native/types.un  (from C:\dev\un)
+# ============================================================
+
+# ---------- u8 ----------
+assert.assert_eq(types.u8(0), 0, "u8 zero")
+assert.assert_eq(types.u8(255), 255, "u8 max")
+assert.assert_eq(types.u8(255.9), 255, "u8 float truncates")
+assert.assert_eq(types.u8(true), 1, "u8 bool")
+assert.assert_eq(types.u8(false), 0, "u8 false")
+assert.assert_err(fn() -> types.u8(256), "u8: value 256 out of range")
+assert.assert_err(fn() -> types.u8(-1), "u8: value -1 out of range")
+assert.assert_err(fn() -> types.u8("255"), "types: expected an integer or floating-point value")
+assert.assert_err(fn() -> types.u8(float("nan")), "types: cannot convert NaN")
+
+# ---------- u16 / u32 ----------
+assert.assert_eq(types.u16(65535), 65535, "u16 max")
+assert.assert_err(fn() -> types.u16(65536), "u16: value 65536 out of range")
+assert.assert_eq(types.u32(4294967295), 4294967295, "u32 max")
+assert.assert_eq(types.u32(0), 0, "u32 zero")
+assert.assert_err(fn() -> types.u32(4294967296), "u32: value 4294967296 out of range")
+assert.assert_err(fn() -> types.u32(-1), "u32: value -1 out of range")
+
+# ---------- u64 (capped at i64::MAX, Un ints are signed 64-bit) ----------
+assert.assert_eq(types.u64(9223372036854775807), 9223372036854775807, "u64 i64-max")
+assert.assert_eq(types.u64(0), 0, "u64 zero")
+assert.assert_err(fn() -> types.u64(-1), "u64: value -1 out of range")
+# 2^63 does not fit Un's signed int and is rejected (no silent wrap).
+assert.assert_err(fn() -> types.u64(9223372036854775808.0), "types: cannot convert")
+
+# ---------- i8 / i16 / i32 (signed) ----------
+assert.assert_eq(types.i8(127), 127, "i8 max")
+assert.assert_eq(types.i8(-128), -128, "i8 min")
+assert.assert_err(fn() -> types.i8(128), "i8: value 128 out of range")
+assert.assert_err(fn() -> types.i8(-129), "i8: value -129 out of range")
+assert.assert_eq(types.i16(32767), 32767, "i16 max")
+assert.assert_eq(types.i16(-32768), -32768, "i16 min")
+assert.assert_err(fn() -> types.i16(32768), "i16: value 32768 out of range")
+assert.assert_err(fn() -> types.i16(-32769), "i16: value -32769 out of range")
+assert.assert_eq(types.i32(2147483647), 2147483647, "i32 max")
+assert.assert_eq(types.i32(-2147483648), -2147483648, "i32 min")
+assert.assert_eq(types.i32(2147483647.9), 2147483647, "i32 float boundary truncates")
+assert.assert_err(fn() -> types.i32(2147483648), "i32: value 2147483648 out of range")
+assert.assert_err(fn() -> types.i32(-2147483649), "i32: value -2147483649 out of range")
+assert.assert_err(fn() -> types.i32(9223372036854775807.0), "i32: value 9223372036854775807 out of range")
+
+# ---------- i64 (full range) ----------
+assert.assert_eq(types.i64(9223372036854775807), 9223372036854775807, "i64 max")
+assert.assert_eq(types.i64(-9223372036854775808.0), types.i64(-9223372036854775808.0), "i64 min")
+assert.assert_eq(types.i64(7.9), 7, "i64 truncates toward zero")
+assert.assert_eq(types.i64(-7.9), -7, "i64 truncates toward zero negative")
+assert.assert_err(fn() -> types.i64(9223372036854775808.0), "types: cannot convert")
+
+# ---------- f32 / f64 ----------
+assert.assert_eq(types.f64(1.5), 1.5, "f64 float")
+assert.assert_eq(types.f64(2), 2.0, "f64 int")
+assert.assert_eq(types.f32(1.5), 1.5, "f32 one-point-five")
+assert.assert_eq(types.f64(true), 1.0, "f64 bool")
+assert.assert_eq(types.f32(-3.25), -3.25, "f32 negative")
+assert.assert_eq(type(types.f32(1)), float, "f32 returns float")
+assert.assert_eq(type(types.f64(1)), float, "f64 returns float")
+
+# ---------- out-of-range is an error object, not a silent wrap ----------
+assert.assert_err(fn() -> types.u8(1000), "u8: value 1000 out of range (0..=255)")
+
+assert.summary()

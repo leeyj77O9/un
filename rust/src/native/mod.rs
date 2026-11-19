@@ -1,4 +1,4 @@
-﻿use std::rc::Rc;
+use std::rc::Rc;
 use crate::runtime::context::{self, Context};
 use crate::runtime::function::{self, ArgData};
 use crate::runtime::modules;
@@ -27,6 +27,7 @@ pub mod stopwatch;
 pub mod stream;
 pub mod sys;
 pub mod time;
+pub mod types;
 pub mod ws;
 pub mod http;
 pub fn init(path: &str) {
@@ -44,6 +45,7 @@ pub fn init(path: &str) {
     world::register_native("os", os::members(&closure));
     world::register_native("sys", sys::members(&closure));
     world::register_native("fs", fs::members(&closure));
+    world::register_native("types", types::members(&closure));
     world::register_native("time", time::members(&closure));
     world::register_native("random", random::members(&closure));
     world::register_native("flow", flow::members(&closure));

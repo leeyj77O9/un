@@ -57,6 +57,7 @@ unit|test/unit/native/os.un
 unit|test/unit/native/sys.un
 unit|test/unit/native/fs.un
 unit|test/unit/native/io.un
+unit|test/unit/native/types.un
 
 # ---------- integration ----------
 integration|test/integration/modules.un

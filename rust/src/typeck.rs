@@ -1,4 +1,4 @@
-﻿//! Compile-mode static analysis: semantic analysis, type checking, inference.
+//! Compile-mode static analysis: semantic analysis, type checking, inference.
 //!
 //! This is the stage that runs after the optimizer and before code
 //! generation. It walks the same optimized AST the bytecode compiler
@@ -474,8 +474,13 @@ impl<'a> Checker<'a> {
 
     fn resolve_type_atom(&mut self, name: &str, span: (usize, usize), depth: usize) -> Ty {
         match name {
-            "int" => Ty::Int,
-            "float" => Ty::Float,
+            "int" | "i64" => Ty::Int,
+            "float" | "f64" => Ty::Float,
+            // Fixed-width aliases: the runtime has one i64 Int and one f64
+            // Float, so these are documentation-level aliases with range
+            // checks available via the `types` module.
+            "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" => Ty::Int,
+            "f32" => Ty::Float,
             "bool" => Ty::Bool,
             "str" => Ty::Str,
             "none" => Ty::None_,
