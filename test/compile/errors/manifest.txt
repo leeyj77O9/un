@@ -12,3 +12,4 @@ test/compile/errors/field_type_mismatch.un|cannot assign value of type 'str' to 
 test/compile/errors/match_missing_wildcard.un|match exhaustiveness: expected a wildcard '_' arm
 test/compile/errors/match_bool_partial.un|match exhaustiveness: expected 'true' and 'false' arms
 test/compile/errors/fixed_width_builtin.un|fixed-width aliases require 'use types'
+test/compile/errors/fixed_width_range.un|out of range for

@@ -536,6 +536,99 @@ fn is_fixed_width_alias(name: &str) -> bool {
     )
 }
 
+/// Map the fixed-width annotation text to its inclusive range `[lo, hi]`.
+/// The range is expressed in `i128` so the u64 upper bound is representable.
+/// f32/f64 are not tracked (no meaningful literal-only bound).
+fn fixed_width_bounds(name: &str) -> Option<(&'static str, (i128, i128))> {
+    Some(match name {
+        "u8" => ("u8", (0, 255)),
+        "u16" => ("u16", (0, u16::MAX as i128)),
+        "u32" => ("u32", (0, u32::MAX as i128)),
+        "u64" => ("u64", (0, i64::MAX as i128)),
+        "i8" => ("i8", (i8::MIN as i128, i8::MAX as i128)),
+        "i16" => ("i16", (i16::MIN as i128, i16::MAX as i128)),
+        "i32" => ("i32", (i32::MIN as i128, i32::MAX as i128)),
+        "i64" => ("i64", (i64::MIN as i128, i64::MAX as i128)),
+        _ => return None,
+    })
+}
+
+/// Evaluate a literal-evaluable integer expression. Returns `None` when the
+/// expression references anything dynamic (argument, local, call, ...).
+/// Only integer types are folded; float expressions are not.
+fn const_int_value(node: &Node, source: &Source) -> Option<i128> {
+    match node.kind {
+        NodeKind::Integer => {
+            // The optimizer folds literal constants in place: the folded node
+            // keeps its original span (`255 + 1`) but carries the resolved
+            // value in `value`. Prefer that over re-parsing the span text.
+            if let Some(crate::ast::Const::Int(v)) = &node.value {
+                return Some(*v as i128);
+            }
+            let text = source.span(node.start, node.length).replace('_', "");
+            let (unsigned, negative) = match text.chars().next() {
+                Some('-') => (text[1..].to_string(), true),
+                _ => (text, false),
+            };
+            let value = if let Some(hex) = unsigned.strip_prefix("0x").or_else(|| unsigned.strip_prefix("0X")) {
+                i128::from_str_radix(hex, 16).ok()?
+            } else if let Some(bin) = unsigned.strip_prefix("0b").or_else(|| unsigned.strip_prefix("0B")) {
+                i128::from_str_radix(bin, 2).ok()?
+            } else if let Some(oct) = unsigned.strip_prefix("0o").or_else(|| unsigned.strip_prefix("0O")) {
+                i128::from_str_radix(oct, 8).ok()?
+            } else {
+                unsigned.parse::<i128>().ok()?
+            };
+            Some(if negative { -value } else { value })
+        }
+        NodeKind::Unary => match node.op? {
+            TokenType::Minus => const_int_value(node.children.first()?, source).map(|v| -v),
+            TokenType::Positive => const_int_value(node.children.first()?, source),
+            TokenType::BNot => const_int_value(node.children.first()?, source).map(|v| !v),
+            _ => None,
+        },
+        NodeKind::Binary => {
+            let lhs = const_int_value(node.children.first()?, source)?;
+            let rhs = const_int_value(node.children.get(1)?, source)?;
+            match node.op? {
+                TokenType::Plus => Some(lhs + rhs),
+                TokenType::Minus => Some(lhs - rhs),
+                TokenType::Asterisk => Some(lhs * rhs),
+                TokenType::LeftShift => lhs.checked_shl(u32::try_from(rhs).ok()?),
+                TokenType::RightShift => lhs.checked_shr(u32::try_from(rhs).ok()?),
+                TokenType::BAnd => Some(lhs & rhs),
+                TokenType::BOr => Some(lhs | rhs),
+                TokenType::BXor => Some(lhs ^ rhs),
+                TokenType::DoubleSlash => {
+                    if rhs == 0 {
+                        return None;
+                    }
+                    // Truncating division (matches Un's documented semantics).
+                    let (mut q, r) = (lhs / rhs, lhs % rhs);
+                    if r != 0 && ((lhs < 0) != (rhs < 0)) {
+                        q -= 1;
+                    }
+                    Some(q)
+                }
+                TokenType::Percent => {
+                    if rhs == 0 {
+                        return None;
+                    }
+                    let div = lhs / rhs;
+                    let mut q = div;
+                    let r = lhs % rhs;
+                    if r != 0 && ((lhs < 0) != (rhs < 0)) {
+                        q -= 1;
+                    }
+                    Some(lhs - rhs * q)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn split_union(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0i32;
@@ -1121,6 +1214,10 @@ struct Env {
     /// True when the current body provably ends with return/break/skip on
     /// every path (used for branch merging and return analysis).
     terminated: bool,
+    /// Local names bound with a fixed-width annotation (`u8 = 200`, `i32 = ...`),
+    /// mapped to the annotation text and inclusive (lo, hi) range. Used to
+    /// reject constant-foldable out-of-range assignments into those locals.
+    fixed_width: HashMap<String, (String, (i128, i128))>,
 }
 
 impl Env {
@@ -1131,6 +1228,7 @@ impl Env {
             loop_depth: 0,
             in_function: false,
             terminated: false,
+            fixed_width: HashMap::new(),
         }
     }
 
@@ -1141,6 +1239,7 @@ impl Env {
             loop_depth: self.loop_depth,
             in_function: self.in_function,
             terminated: self.terminated,
+            fixed_width: self.fixed_width.clone(),
         }
     }
 
@@ -1333,6 +1432,7 @@ impl<'a> Checker<'a> {
         // `order` records only this body's bindings (params first, then
         // body-local declarations); captured names stay in the scope layers.
         env.order.clear();
+        env.fixed_width.clear();
         let sig = self
             .sigs_by_span
             .get(&decl.node.start)
@@ -1831,15 +1931,42 @@ impl<'a> Checker<'a> {
                 let Some(inner) = target.children.first() else {
                     return;
                 };
-                let ty = target
-                    .children
-                    .get(1)
+                let annotation_node = target.children.get(1);
+                let annotation_text = annotation_node.map(|t| self.text_of(t));
+                let ty = annotation_node
                     .map(|t| self.parse_annotation_node(t))
                     .unwrap_or(Ty::Unknown);
+                // Fixed-width annotated bindings reject foldable constants
+                // outside their range (`a: u8 = 1111`).
+                let annotation_text_str = annotation_text.as_deref();
+                let fixed_width = annotation_text_str.and_then(fixed_width_bounds);
+                if let Some((fw_name, range)) = fixed_width {
+                    if let Some(constant) = const_int_value(value, self.source) {
+                        if constant < range.0 || constant > range.1 {
+                            self.error(
+                                value,
+                                format!(
+                                    "value {constant} out of range for {fw_name} ({0}..={1})",
+                                    range.0, range.1
+                                ),
+                            );
+                        }
+                    }
+                }
                 match inner.kind {
                     NodeKind::Identifier => {
                         let vty = self.check_expr(value, env);
                         self.bind_annotated(inner, ty, vty, env);
+                        let name = self.text_of(inner);
+                        if let Some((fw_name, range)) = fixed_width {
+                            // Track the range for re-assignments into this local
+                            // below (`a = 300` after `a: u8 = 10`). Dropped when
+                            // the local is rebound with a non-fixed annotation.
+                            env.fixed_width
+                                .insert(name, (fw_name.to_string(), range));
+                        } else {
+                            env.fixed_width.remove(&self.text_of(inner));
+                        }
                     }
                     NodeKind::Tuple => {
                         let vty = self.check_expr(value, env);
@@ -1853,6 +1980,16 @@ impl<'a> Checker<'a> {
             NodeKind::Identifier => {
                 let vty = self.check_expr(value, env);
                 let name = self.text_of(target);
+                if let Some((fw_name, (lo, hi))) = env.fixed_width.get(&name).cloned() {
+                    if let Some(constant) = const_int_value(value, self.source) {
+                        if constant < lo || constant > hi {
+                            self.error(
+                                value,
+                                format!("value {constant} out of range for {fw_name} ({lo}..={hi})"),
+                            );
+                        }
+                    }
+                }
                 self.bind_name(&name, vty, env, target);
             }
             NodeKind::Tuple => {

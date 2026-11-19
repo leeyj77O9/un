@@ -1,0 +1,9 @@
+use types
+
+fn main() -> int
+    a: u8 = 300
+    b: u8 = 256 + 0
+    c: i16 = -32768 - 1
+    -> 0
+
+main()
