@@ -1,0 +1,3 @@
+use io
+use types
+io.write(types.i64(9223372036854775808.0))

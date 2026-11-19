@@ -1,0 +1,3 @@
+use io
+use types
+io.write(types.u8(300))
