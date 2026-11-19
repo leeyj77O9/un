@@ -483,7 +483,13 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
         Some(TirTy::Bool) => sig.returns.push(AbiParam::new(types::I8)),
         Some(TirTy::Str) => sig.returns.push(AbiParam::new(types::I64)),
         Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => sig.returns.push(AbiParam::new(types::I64)),
-        None => {}
+        None => {
+            if mode == NativeMode::Obj {
+                // Match the Obj-mode un_main ABI: `() -> i64` even for a
+                // void entry (emit_internal_return pushes the 0).
+                sig.returns.push(AbiParam::new(types::I64));
+            }
+        }
     }
     if mode == NativeMode::Vm {
         // Hidden bail flag, returned as the last i8 always.
@@ -1184,7 +1190,14 @@ fn emit_internal_return<M: Module>(
         (Some(TirTy::Bool), None) => {
             returns.push(builder.ins().iconst(types::I8, 0));
         }
-        (None, _) => {}
+        (None, _) => {
+            // Obj mode always exports `un_main` as a C ABI `() -> i64`; a
+            // void entry must still hand back a live register (0) or the
+            // driver reads garbage as the exit code.
+            if mode == NativeMode::Obj {
+                returns.push(builder.ins().iconst(types::I64, 0));
+            }
+        }
     }
     if mode == NativeMode::Vm {
         let bail_v = if bail {
