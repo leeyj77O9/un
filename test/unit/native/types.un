@@ -5,7 +5,7 @@ use test.assert as assert
 # ============================================================
 # types - fixed-width integer/float constructors
 # Range checks run at conversion time; arithmetic stays wrapping i64/f64.
-# Out-of-range values raise the uncatchable System.OverflowException
+# Out-of-range values raise the uncatchable error panic
 # (covered by test/negative/types_overflow.un + types_overflow_f64.un).
 # Run: un.exe run test/unit/native/types.un  (from C:\dev\un)
 # ============================================================

@@ -116,7 +116,7 @@ plain `un build`로 링크한 exe가 각각 `un run`과 stdout/stderr/exit code 
   `int / int`는 `Float`으로 승격되어 `Float`을 반환하지만
   (VM과 동일), 나누기 전 0 검사는 유지된다.
 - int `%` 0 나누기는 **catch 불가**다. 인터프리터는 `divide_by_zero()`로
-  `Payload::Panic`(`System.DivideByZeroException: Attempted to divide by zero.`)을 만들고
+  `Payload::Panic`(`error: Attempted to divide by zero.`)을 만들고
   `try`/`Unwrap`은 `Payload::Error`만 잡으므로 항상 프로세스가 종료된다.
   Obj 경로도 `emit_mod_zero_guard`가 활성 핸들러를 무시하고
   `unrt_make_mod_zero_panic` → `unrt_dump_uncaught`로 stdout 한 줄 출력 + exit 1을

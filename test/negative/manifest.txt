@@ -18,9 +18,9 @@ test/negative/use_missing2.un|1|undefined variable 'os'
 test/negative/panic_probe.un|1|undefined variable 'panic'
 # 2026-11-16에 order_crash.un, depth_limit_crash.un, go_loop_var.un을 제거했다.
 # 세 파일 모두 현재 구현을 검증할 수 없었다(변경된 동작은 단위 테스트로 이관).
-test/negative/mod_zero.un|1|System.DivideByZeroException
-test/negative/replace_missing.un|1|System.NullReferenceException
-test/negative/replace_empty.un|1|System.ArgumentException
+test/negative/mod_zero.un|1|Attempted to divide by zero.
+test/negative/replace_missing.un|1|Object reference not set to an instance of an object.
+test/negative/replace_empty.un|1|String cannot be of zero length.
 test/negative/uncaught.un|1|int division by zero
 test/negative/stack_overflow.un|1|maximum recur
 test/negative/property_recursion.un|1|maximum recur
@@ -47,12 +47,12 @@ test/negative/range_float.un|1|unsupported operand type(s) for ..: 'float' and '
 test/negative/range_str.un|1|unsupported operand type(s) for ..: 'str' and 'int'
 test/negative/empty_index.un|1|expected an index expression
 test/negative/regex_limit.un|1|regex backtracking limit exceeded
-test/negative/dict_add_duplicate.un|1|System.ArgumentException
+test/negative/dict_add_duplicate.un|1|An item with the same key has already been added.
 test/negative/ord_multiple_chars.un|1|ord: expected a single character, got multiple characters
 test/negative/multi_catch.un|1|multiple 'catch' clauses
 test/negative/same_line.un|1|expected a newline after the previous statement
 test/negative/traceback.un|1|un: error trace
 test/negative/traceback_toplevel.un|1|int division by zero
 test/fixtures/traceback_import/main.un|1|un: error trace
-test/negative/types_overflow.un|1|System.OverflowException
-test/negative/types_overflow_f64.un|1|System.OverflowException
+test/negative/types_overflow.un|1|u8: value 300 out of range
+test/negative/types_overflow_f64.un|1|is too large for an i64

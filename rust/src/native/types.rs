@@ -7,9 +7,9 @@
 //! usual wrapping i64/f64 behaviour, identical to `int`/`float`.
 //!
 //! Constructors accept Int, Float (truncated toward zero) and Bool. Range
-//! violations raise the uncatchable `System.OverflowException` panic (like
-//! other fixed-width runtime exceptions such as `chr()`); non-numeric input
-//! produces a catchable error object.
+//! violations raise the uncatchable `error` panic (like other fixed-width
+//! runtime exceptions such as `chr()`); non-numeric input produces a
+//! catchable error object.
 //!
 //! - `u8`, `u16`, `u32`, `u64` — 0..=255 / 0..=65535 / 0..=4294967295 /
 //!   0..=9223372036854775807 (Un ints are signed 64-bit, so `u64` caps at
@@ -59,7 +59,7 @@ fn int_value(scope: &Scope) -> Result<i64, Obj> {
             }
             if t >= 9223372036854775808.0 || t < -9223372036854775808.0 {
                 return Err(obj::panic(
-                    "System.OverflowException",
+                    "error",
                     format!("types: float value {f} is too large for an i64"),
                 ));
             }
@@ -74,7 +74,7 @@ fn int_ctor(name: &str, scope: &Scope, min: i64, max: i64) -> Obj {
         Ok(v) => {
             if v < min || v > max {
                 return obj::panic(
-                    "System.OverflowException",
+                    "error",
                     format!("{name}: value {v} out of range ({min}..={max})"),
                 );
             }

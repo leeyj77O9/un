@@ -42,7 +42,7 @@
 
 ## F-007. int `//`/`%`는 truncated(C 의미), 0 나누기는 panic 객체
 
-- 사실: `wrapping_div`/`wrapping_rem`은 truncation, div-zero → 인터프리터의 `System.DivideByZeroException`. `INT_MIN / -1`은 `wrapping_div`가 INT_MIN으로 순환.
+- 사실: `wrapping_div`/`wrapping_rem`은 truncation, div-zero → 인터프리터의 `System.DivideByZeroException`(현재는 `error: Attempted to divide by zero.` — D-092). `INT_MIN / -1`은 `wrapping_div`가 INT_MIN으로 순환.
 - 결정: TIR 코드젠에서 `//`/`%`는 (1) 상수 0 → bail(인터프리터가 정확한 에러 발생), (2) `b == -1` → wrapping 규칙으로 특별 처리, (3) 그 외 `sdiv`/`srem` 전 div-0 분기에서 bail. bail이면 인터프리터가 그대로 재실행하여 정확한 에러를 낸다.
 
 ## F-008. `iter.range(a, b)` 루프는 jit_bc의 핵심 지원 패턴이다

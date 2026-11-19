@@ -102,12 +102,12 @@ pub extern "C" fn unrt_make_int_div_zero() -> u64 {
     to_raw(crate::runtime::obj::err("int division by zero"))
 }
 
-/// Returns a fresh VM object carrying the `Panic { name:
-/// "System.DivideByZeroException", message: "Attempted to divide by zero." }`
-/// payload, exactly matching the interpreter's `divide_by_zero()`. The
-/// interpreter never catches Panic payloads with `try`, so Obj-mode `%` MUST
-/// NOT park this object into the catch path ??the emitted code must call
-/// `unrt_dump_uncaught` directly, unconditionally.
+/// Returns a fresh VM object carrying the `Panic { name: "error",
+/// message: "Attempted to divide by zero." }` payload, exactly matching the
+/// interpreter's `divide_by_zero()`. The interpreter never catches Panic
+/// payloads with `try`, so Obj-mode `%` MUST NOT park this object into the
+/// catch path — the emitted code must call `unrt_dump_uncaught` directly,
+/// unconditionally.
 /// Returns a fresh VM error Obj carrying `"expected value greater than 0"`,
 /// exactly matching the interpreter's `math.log*` boundary error. Used by
 /// Obj-mode Float math emission to park a catchable error into pending.

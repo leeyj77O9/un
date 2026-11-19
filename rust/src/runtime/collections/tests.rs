@@ -214,7 +214,7 @@ fn dict_add_rejects_a_duplicate_key() {
 
     assert_eq!(
         message(&km.borrow_mut().add(&s("a"), &obj::int(2))),
-        "System.ArgumentException: An item with the same key has already been added. Key: a"
+        "error: An item with the same key has already been added. Key: a"
     );
     assert_eq!(km.borrow().len(), 1);
 
@@ -222,14 +222,14 @@ fn dict_add_rejects_a_duplicate_key() {
 
     assert_eq!(
         message(&km.borrow_mut().add(&obj::int(5), &obj::int(2))),
-        "System.ArgumentException: An item with the same key has already been added. Key: 5"
+        "error: An item with the same key has already been added. Key: 5"
     );
 
     let boolkey = obj::boolean(true);
     km.borrow_mut().add(&boolkey, &obj::int(1));
     assert_eq!(
         message(&km.borrow_mut().add(&boolkey, &obj::int(2))),
-        "System.ArgumentException: An item with the same key has already been added. Key: True"
+        "error: An item with the same key has already been added. Key: True"
     );
     km.borrow_mut().remove(&boolkey);
     assert!(!km.borrow_mut().remove(&boolkey));
@@ -487,8 +487,9 @@ fn json_number_and_string_rules() {
     let bad = json_parse("{ \"a\": }");
     assert!(obj::is_panic(&bad));
     match obj::payload(&bad) {
-        Payload::Panic { name, .. } => {
-            assert_eq!(name, "System.Text.Json.JsonException");
+        Payload::Panic { name, message } => {
+            assert_eq!(name, "error");
+            assert!(message.contains("The input does not contain any JSON tokens"));
         }
         _ => panic!("json parse must yield a panic payload"),
     }
@@ -523,7 +524,7 @@ fn stru_display_len_and_init() {
     obj::set_attr(&r, "x", &obj::int(1));
     assert_eq!(
         message(&obj::to_str(&r)),
-        "System.Collections.Generic.KeyNotFoundException: The given key 'y' was not present in the dictionary."
+        "error: The given key 'y' was not present in the dictionary."
     );
 
     let c = obj::copy_obj(&p);

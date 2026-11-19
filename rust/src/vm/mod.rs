@@ -1496,7 +1496,7 @@ impl VM {
                 if ins.flags & FLAG_HOST_ERROR != 0 {
                     let (name, text) = match message.split_once(": ") {
                         Some((name, text)) => (name.to_owned(), text.to_owned()),
-                        None => ("System.Exception".to_owned(), message),
+                        None => ("error".to_owned(), message),
                     };
                     return Err(Outcome::Panic(obj::panic(name, text)));
                 }

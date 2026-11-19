@@ -45,12 +45,15 @@ Rust는 `Option<Node>`를 쓰지 않고 `NodeKind::Null` 노드를 쓴다. VM은
 `no match case`, `tuple unpack mismatch`, …)와 네이티브 오타(`invaild`, `invalid argumnets: index`)는
 그대로 재현한다. 테스트가 이 문자열에 의존한다.
 
-## D-008 | `.NET` 예외 이름을 재현해야 하는 케이스 | Accepted
+## D-008 | `.NET` 예외 이름을 재현해야 하는 케이스 | Superseded by D-092
 
 `test/negative/mod_zero.un`은 exit 1 + `System.DivideByZeroException`을 기대하고,
 `replace_missing.un`은 `System.NullReferenceException`, `replace_empty.un`은
 `System.ArgumentException`을 기대한다. Rust 네이티브/연산 구현은 이 문자열을
 **동일한 위치에서** 낸다(header는 `System.X` 형태로 ToString 형태를 유지).
+
+> 2026-11-20: D-092에서 `.NET`식 `System.*` 명칭 전체를 제거하고("전부 `error:`" 결정,
+> 이름은 untagged Un 오류로 통일) supersede됐다. 예외 문자열 계약은 D-092의 기준으로 대체.
 
 ## D-009 | stack overflow exit code | Proposed
 
@@ -1269,3 +1272,26 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **요청자 발언** (2026-11-19 "에러 나올때 에러를 전파해서 이너 예외도 에러 출력할때 나오게 해줘",
   같은 날 "출력 예시가 너무 파이썬 같으니깐 un스럽게 새롭게 만들자" — 형식 A(`un:` 접두 +
   `->` 체인), 바깥→안쪽 순서, 소스 라인 표시 선택).
+
+## D-092 | 내장 System.*Exception 명칭 제거 — catch 불가 Panic도 `error:` 로 통일 | Accepted
+
+- **배경**: D-008("예외 이름은 .NET 이름 재현")은 C# 포팅 검증기 시절의 잔재였다.
+  Rust 포팅 후 Un의 사용자-노출 오류 형식은 이미 `error: <msg>`(LangError header "error")
+  으로 통일되어 있었고, `int % 0` 같은 catch 불가한 Panic만 `System.DivideByZeroException`
+  같은 .NET 식 이름을 쓰는 불일치가 있었다. 2026-11-20 "이 형식말고 un 형식으로 바꿔줘"
+  지시로 통일 작업을 수행했다.
+- **결정**:
+  - 내장 런타임이 만드는 모든 Panic의 `name`을 `"error"`로 통일한다
+    (`divide_by_zero()` → `panic("error", "Attempted to divide by zero.")`).
+  - 출력은 기존 catchable 오류와 동일하게 `error: <msg>` 한 줄로 통일된다. catch 불가는
+    계속 `try`로 잡히지 않고 최상위에서 종료한다(D-091 트레이스 포함).
+  - Panic 특수 분기(`name == "panic"` → `\npanic : {msg}`)와 내부용 `need_input` 계통은 유지.
+  - `test/negative/manifest.txt`의 6개 substring이 System.*에서 메시지 자체로 바뀌었다.
+    Rust 단위 테스트의 expected 문자열도 동일하게 바뀌었다.
+  - D-008 / S4-10(PROJECT_AUDIT.md) / TD-48(TECHNICAL_DEBT.md)의 System.* 계약은 supersede된다.
+    catchable 여부·exit 1·메시지 내용은 변경 없고, 겉 이름만 바뀐다.
+- **검증**: `cargo build --release` 0 errors/0 warnings, `cargo test --release --lib` green,
+  `scripts\test.ps1` Positive·Negative 기준 유지, differential 기준 유지.
+- **주의**: `.NET` parity를 계약으로 삼던 부분(mod_zero / replace_missing / replace_empty /
+  dict_add_duplicate / types_overflow*)은 `error:` 기준으로 재작성됐다. 이후 내장 오류를
+  새로 추가할 때도 `System.*` 접두사는 쓰지 않는다.

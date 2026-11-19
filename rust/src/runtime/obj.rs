@@ -268,7 +268,7 @@ pub fn panic(name: impl Into<String>, message: impl Into<String>) -> Obj {
     )
 }
 pub fn divide_by_zero() -> Obj {
-    panic("System.DivideByZeroException", "Attempted to divide by zero.")
+    panic("error", "Attempted to divide by zero.")
 }
 pub fn type_name(o: &Obj) -> Rc<str> {
     o.borrow().type_name.clone()
@@ -397,7 +397,7 @@ pub fn types_of(o: &Obj) -> Types {
 }
 pub fn key_not_found(name: &str) -> Obj {
     panic(
-        "System.Collections.Generic.KeyNotFoundException",
+        "error",
         format!("The given key '{name}' was not present in the dictionary."),
     )
 }
@@ -2326,7 +2326,7 @@ mod tests {
     fn host_exceptions_travel_as_panic_values() {
         assert_eq!(
             message(&binop(&int(5), BinOp::Mod, &int(0))),
-            "System.DivideByZeroException: Attempted to divide by zero."
+            "error: Attempted to divide by zero."
         );
     }
     #[test]

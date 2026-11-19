@@ -110,7 +110,7 @@ fn zero_step_panics_lazily() {
 
     assert_eq!(
         message(&obj::len(&r)),
-        "System.DivideByZeroException: Attempted to divide by zero."
+        "error: Attempted to divide by zero."
     );
 }
 #[test]

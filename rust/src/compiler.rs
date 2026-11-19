@@ -1489,7 +1489,7 @@ impl<'a> Compiler<'a> {
             Some(child) => self.code(child)?,
             None => {
 
-                let message = "System.ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')";
+                let message = "error: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')";
                 let mi = self.msg_index(message);
                 self.emit(Op::Unsupported, FLAG_HOST_ERROR, mi as i32, span);
                 self.raises = true;

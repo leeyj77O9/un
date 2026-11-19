@@ -107,7 +107,7 @@ fn an_unsupported_operand_reports_the_reference_message() {
 fn a_host_exception_aborts_at_the_instruction_that_produced_it() {
     assert_abort(
         "use io\nio.write(\"m\", 7 % 0)",
-        "System.DivideByZeroException: Attempted to divide by zero.",
+        "error: Attempted to divide by zero.",
     );
 }
 #[test]
@@ -287,7 +287,7 @@ fn an_error_inside_a_function_keeps_its_position() {
 fn a_bare_return_is_the_host_exception() {
     assert_abort(
         "use io\nfn f()\n    ->\nf()",
-        "System.ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')",
+        "error: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')",
     );
 }
 #[test]

@@ -575,7 +575,7 @@ fn str_replace(scope: &Scope) -> Obj {
     let new = if obj::is_none(&new) {
 
         return obj::panic(
-            "System.NullReferenceException",
+            "error",
             "Object reference not set to an instance of an object.",
         );
     } else {
@@ -587,7 +587,7 @@ fn str_replace(scope: &Scope) -> Obj {
 
     if old.is_empty() {
         return obj::panic(
-            "System.ArgumentException",
+            "error",
             "String cannot be of zero length.",
         );
     }
@@ -1385,7 +1385,7 @@ fn dict_add(scope: &Scope) -> Obj {
     match collections::dict_add_item(&km, &key, &value) {
         Ok(true) => obj::none(),
         Ok(false) => obj::panic(
-            "System.ArgumentException",
+            "error",
             format!(
                 "An item with the same key has already been added. Key: {}",
                 obj::display(&key)

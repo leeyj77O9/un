@@ -313,7 +313,7 @@ impl KeyMap {
     pub fn add(&mut self, key: &Obj, value: &Obj) -> Obj {
         if self.find(key).is_some() {
             return obj::panic(
-                "System.ArgumentException",
+                "error",
                 format!(
                     "An item with the same key has already been added. Key: {}",
                     obj_to_string(key)
@@ -1378,7 +1378,7 @@ pub fn json_parse(text: &str) -> Obj {
 }
 fn json_exception(message: &str) -> Obj {
     obj::panic(
-        "System.Text.Json.JsonException",
+        "error",
         format!("The input does not contain any JSON tokens. {message}"),
     )
 }

@@ -63,7 +63,7 @@ fn chr_impl(scope: &Scope) -> Obj {
     match char::from_u32(code as u32) {
         Some(c) => obj::str(&c.to_string()),
         None => obj::panic(
-            "System.ArgumentOutOfRangeException",
+            "error",
             "A valid UTF32 value is between 0x000000 and 0x10ffff, inclusive, and should not \
              include surrogate codepoint values (0x00d800 ~ 0x00dfff). (Parameter 'utf32')",
         ),

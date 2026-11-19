@@ -1862,7 +1862,7 @@ fn emit_int_zero_guard<M: Module>(
 
 /// Guard against `a % b` with an Int divisor of zero. Unlike `//` and `/`,
 /// the interpreter reports int `%`-by-zero as a `Panic`-payload Obj
-/// (`divide_by_zero()` → `System.DivideByZeroException`), which `try` never
+/// (`divide_by_zero()` → an `"error"` panic), which `try` never
 /// catches — the interpreter always prints the report and exits 1.
 /// In Obj mode this code parks that exact panic object pending and calls
 /// `unrt_dump_uncaught` unconditionally (active handlers are bypassed), so
