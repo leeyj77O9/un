@@ -67,12 +67,18 @@ pub fn class_has_property(type_name: &str) -> bool {
         }
     })
 }
+/// Register `value` under `type_name`, creating the per-class table on
+/// first use. User-defined classes never get an `original_classes` entry
+/// from `RegisterClass` (only builtins and native module tables seed one),
+/// so an extension declared for such a class used to be dropped silently —
+/// upsert here instead, mirroring how native types appear on demand.
 pub fn try_set_original_class(type_name: &str, name: &str, value: Obj) -> bool {
     WORLD.with(|w| {
         let mut w = w.borrow_mut();
-        let Some(attrs) = w.original_classes.get_mut(type_name) else {
-            return false;
-        };
+        let attrs = w
+            .original_classes
+            .entry(type_name.to_owned())
+            .or_default();
         if let Some(entry) = attrs.iter_mut().find(|(k, _)| k == name) {
             entry.1 = value;
         } else {

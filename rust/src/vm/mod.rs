@@ -1227,6 +1227,15 @@ impl VM {
                     let merged = Types::create(&[created.borrow().types(), base_types]);
                     created.borrow_mut().set_types(merged);
                 }
+                // Keep the `original_classes` fallback chain in step with the
+                // class hierarchy: extensions declared on a base class resolve
+                // through derived instances via `original_base_types` (single
+                // base, mirroring the native tables).
+                if let Some(first) = bases.first() {
+                    let derived_name = obj::type_name(&created).to_string();
+                    let base_name = obj::type_name(first).to_string();
+                    world::register_original_base(&derived_name, &base_name);
+                }
             }
             Op::AddMember | Op::AddMethod => {
                 let value = self.regs[ins.b as usize].clone();
