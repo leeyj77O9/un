@@ -211,8 +211,6 @@ fn next(stage: &Stage) -> Step {
                         func,
                         &crate::runtime::function::Args::positional(args),
                     );
-                    // A mapper that threw must not yield a value: the error
-                    // object would become a list value instead of aborting.
                     if obj::is_err(&value) || obj::is_panic(&value) {
                         return Step::Panic(value);
                     }
@@ -230,8 +228,6 @@ fn next(stage: &Stage) -> Step {
                             func,
                             &crate::runtime::function::Args::positional(vec![o.clone()]),
                         );
-                        // A predicate that threw must abort iteration instead
-                        // of silently filtering the item out.
                         if obj::is_err(&keep) || obj::is_panic(&keep) {
                             return Step::Panic(keep);
                         }
@@ -353,8 +349,6 @@ pub struct IterState {
     pub head: Stage,
 }
 pub type IterCell = Rc<RefCell<IterState>>;
-/// Read the current cursor value of an iter and advance it by one step.
-/// Assumes `st` kind is Range; returns `Some(current)` or None if out of bounds/end.
 pub fn range_next(st: &IterCell) -> Option<i64> {
     let (stop, step, value) = {
         let def_cell = st.borrow();
@@ -372,7 +366,6 @@ pub fn range_next(st: &IterCell) -> Option<i64> {
     let value = cursor_val(value);
     let in_bound = if step > 0 { value < stop } else { value > stop };
     if !in_bound {
-        // mark as exhausted
         st.borrow_mut().head.borrow_mut().cursor = Cursor::Val(stop);
         return None;
     }
@@ -452,8 +445,6 @@ impl Enumerator {
         match next(&self.stage) {
             Step::Value(value) => Ok(Some(value)),
             Step::End => Ok(None),
-            // A predicate/mapper that threw must propagate the panic —
-            // never be delivered as an ordinary tuple/element value.
             Step::Panic(p) => Err(p),
         }
     }
@@ -729,12 +720,6 @@ pub fn count_of(st: &IterCell) -> Obj {
     count(&st.borrow().head.clone())
 }
 
-/// Materialise the values of an iterable. Fast path for plain lists (no
-/// iter object round-trip, no extra clone of an already-materialised list).
-/// Error contract shared by both the `iter.*` global functions and the
-/// `iter` method twins: a non-iter receiver is
-/// "expected 'iterable' argument to be of type 'iter'", and a failing
-/// to-list (e.g. an infinite range) is "counter is infinite".
 pub(crate) fn into_values(value: &Obj) -> Result<Vec<Obj>, Obj> {
     if let Payload::List(cell) = obj::payload(value) {
         return Ok(cell.borrow().clone());

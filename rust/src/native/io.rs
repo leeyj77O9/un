@@ -45,27 +45,18 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
     ]
 }
-/// Join `path` onto `base`, resolving `.` and `..` lexically. Returns
-/// `None` when the result would escape `base` (absolute path, drive/UNC
-/// prefix, or a `..` chain).
 fn normalize_under(base: &std::path::Path, path: &str) -> Option<String> {
     use std::path::Component;
-    // A Windows-style drive/UNC prefix is an absolute path on Windows;
-    // `Component::Prefix` only fires there, so reject it textually too.
-    // The sandbox confinement must hold identically on every host.
     let trimmed = path.trim_start();
     let bytes = trimmed.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return None; // C:/… or C:… (drive-absolute / drive-relative)
-    }
+        return None;    }
     if trimmed.starts_with("\\\\") {
-        return None; // \\server\share (UNC), even textually on a unix host
-    }
+        return None;    }
     let mut out = base.to_path_buf();
     for component in std::path::Path::new(path).components() {
         match component {
             Component::Prefix(_) | Component::RootDir => {
-                // Absolute path: outside the sandbox by definition.
                 return None;
             }
             Component::CurDir => {}
@@ -83,7 +74,6 @@ fn normalize_under(base: &std::path::Path, path: &str) -> Option<String> {
         None
     }
 }
-/// Component-wise prefix check, ASCII case-insensitive (Windows semantics).
 fn starts_with_case_insensitive(path: &std::path::Path, base: &std::path::Path) -> bool {
     let mut path_components = path.components();
     for base_component in base.components() {
@@ -124,9 +114,6 @@ fn open_impl(scope: &Scope) -> Obj {
     let full = {
         let base = world::path();
         let base_path = std::path::Path::new(&base);
-        // In a sandbox (an allow-list is installed), confine file access to
-        // the base directory: an absolute path would otherwise replace the
-        // base entirely and a `..` chain would escape it.
         if world::sandbox_active() {
             let normalized = normalize_under(base_path, &path);
             match normalized {

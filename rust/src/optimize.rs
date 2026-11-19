@@ -2,18 +2,11 @@
 use crate::error::Panic;
 use crate::token::TokenType;
 static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-/// A fresh synthetic identifier for desugaring temps. The leading control
-/// character can never appear in a source identifier (the lexer only accepts
-/// ASCII alphanumerics and `_`), so it cannot shadow a user variable. It
-/// carries its name in `value` because it has no source span to read.
 fn fresh_temp(node: &Node) -> Node {
     let n = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Node::new(node.start, 0, NodeKind::Identifier)
         .with_value(crate::ast::Const::Str(format!("\u{1}tmp{n}")))
 }
-/// A single bottom-up pass reaches the fixpoint: children are optimized
-/// before their parents, so every fold/elimination is applied to an
-/// already-final subtree. The counter only exists for diagnostics.
 pub struct OptimizationResult {
     pub root: Node,
     pub pass_count: usize,
@@ -25,11 +18,6 @@ pub fn optimize(root: &Node) -> Result<OptimizationResult, Panic> {
         pass_count: 1,
     })
 }
-/// Node-local desugaring applied to a node whose children are already
-/// desugared and optimized. Rewrites applied here: compound assignment
-/// wraps the value in a `Binary(op)`, and `Branch`/`ElIf` arms of an `If`
-/// become `IfCase` arms. The rewritten node is returned to `optimize_pass`,
-/// which folds it in the same step.
 fn desugar_local(node: &Node) -> Option<Node> {
     match node.kind {
         NodeKind::Assign => desugar_assign(node),
@@ -58,10 +46,6 @@ fn desugar_assign(node: &Node) -> Option<Node> {
     if node.children.len() != 2 {
         return None;
     }
-    // A typed compound assignment (`x: int += 1`) carries a `Typed` node on
-    // the LHS. Unwrap it for the *load* side and re-wrap the *store* target;
-    // otherwise the annotation reaches code generation as a value expression
-    // (unsupported node kind Typed) or breaks the stack discipline.
     let typed_ann: Option<Node> = if node.children[0].kind == NodeKind::Typed {
         Some(node.children[0].children[1].clone())
     } else {
@@ -85,16 +69,10 @@ fn desugar_assign(node: &Node) -> Option<Node> {
             None => target,
         }
     };
-    // A plain-identifier target re-reads the slot — free and side-effect
-    // free, so inline the binary directly.
     if lhs.kind == NodeKind::Identifier {
         let binary = Node::with_op(node.start, node.length, NodeKind::Binary, op2, vec![lhs.clone(), rhs]);
         return Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![wrap_typed(lhs), binary]));
     }
-    // Property/Index/Slice targets may have side effects in the receiver or
-    // subscript expressions (`make().v += 10`). Python evaluates the target
-    // once; we do the same by binding the receiver (and each subscript) to a
-    // synthetic temp, then writing through the temp.
     let span = (node.start, node.length);
     let start = node.start;
     let mk_assign = |t: Node, v: Node| {
@@ -139,9 +117,6 @@ fn desugar_assign(node: &Node) -> Option<Node> {
         }
         NodeKind::Slice if lhs.children.len() > 1 && lhs.children.len() <= 4 => {
             let obj_tmp = fresh_temp(node);
-            // A `Null` bound means "omitted" — keep the literal null child
-            // (the codegen skips null bounds) instead of routing it through
-            // a temp, which would turn it into a runtime value.
             let bound_tmps: Vec<(bool, Node)> = lhs.children[1..]
                 .iter()
                 .map(|bound| {
@@ -169,15 +144,11 @@ fn desugar_assign(node: &Node) -> Option<Node> {
             Some(Node::with_children(start, span.1, NodeKind::Block, None, statements))
         }
         _ => {
-            // Unsupported target shape: keep the previous expansion.
             let binary = Node::with_op(node.start, node.length, NodeKind::Binary, op2, vec![lhs.clone(), rhs]);
             Some(Node::with_children(node.start, node.length, NodeKind::Assign, None, vec![wrap_typed(lhs), binary]))
         }
     }
 }
-/// Rewrite `Branch`/`ElIf` arms into `IfCase` inside an `If` node. The
-/// `Else` arm is preserved; non-matching arms (absent here) follow through.
-/// The `Else` arm is kept last so codegen can identify it as the else-branch.
 fn desugar_if(node: &Node) -> Node {
     let mut cases: Vec<Node> = Vec::new();
     let mut else_node: Option<Node> = None;
@@ -192,8 +163,6 @@ fn desugar_if(node: &Node) -> Node {
                     child.children.clone(),
                 ));
             }
-            // Already-desugared IfCase arms (nested `if` children are
-            // desugared bottom-up): keep them as-is instead of dropping.
             NodeKind::IfCase => cases.push(child.clone()),
             NodeKind::Else => {
                 else_node = Some(child.clone());
@@ -210,9 +179,6 @@ fn desugar_if(node: &Node) -> Node {
 
 fn optimize_pass(node: &Node) -> Result<(Node, bool), Panic> {
     let (node, mut changed) = optimize_children(node)?;
-    // `desugar_local` may substitute the node tree (it always builds fresh
-    // nodes), which changes the subtree's identity for every parent above;
-    // the parents must be rebuilt so the new shape is not silently dropped.
     let node = match desugar_local(&node) {
         Some(desugared) => {
             changed = true;

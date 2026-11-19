@@ -429,7 +429,6 @@ fn str_split(scope: &Scope) -> Obj {
         return obj::err("expected 'str' object");
     };
     let sep_obj = scope::get(scope, "sep");
-    // No separator given -> split on a single space (`io.read().split()`).
     let sep = if obj::is_none(&sep_obj) {
         " ".to_owned()
     } else {
@@ -450,9 +449,6 @@ fn str_trim(scope: &Scope) -> Obj {
         return obj::err("expected 'str' object");
     };
     let chars = scope::get(scope, "chars");
-    // No chars given -> strip Unicode whitespace at both ends (Python's
-    // str.strip()). With `chars`, strip every character present in the set
-    // (a character-set trim, not a substring trim).
     let trimmed = if obj::is_none(&chars) {
         text.trim_matches(|c: char| c.is_whitespace()).to_string()
     } else {
@@ -554,9 +550,6 @@ fn str_pad(scope: &Scope, text: &str) -> Result<(i64, char), Obj> {
         }
     };
     let length = text.encode_utf16().count() as i64;
-    // Padding is written into a fresh String with `repeat`; an enormous
-    // width would overflow the allocation, so clamp the padding to a sane
-    // bound instead of letting the process die on a huge allocation.
     const MAX_PADDING: i64 = 10_000;
     let pad = (width - length).max(0).min(MAX_PADDING);
     let fill_char = fill.chars().next().unwrap_or(' ');
@@ -1008,8 +1001,6 @@ fn list_extend_insert(scope: &Scope) -> Obj {
         return obj::err("expected 'list' object");
     };
     let value = scope::get(scope, "obj");
-    // The insertion index is applied to every inserted element in order; an
-    // invalid index is an error, not a silent no-op.
     let index = match list_index(scope, "index") {
         Ok(index) => index,
         Err(e) => return e,
@@ -1152,9 +1143,6 @@ fn list_lower_bound(scope: &Scope) -> Obj {
     };
     let value = scope::get(scope, "obj");
     let items = list.borrow().clone();
-    // `lower_bound` returns the insertion point before the first element that
-    // is not less than the searched value. It can be the length of the list
-    // and is 0 for an empty list.
     let mut low = 0i64;
     let mut high = items.len() as i64;
     while low < high {
@@ -1175,9 +1163,6 @@ fn list_upper_bound(scope: &Scope) -> Obj {
     };
     let value = scope::get(scope, "obj");
     let items = list.borrow().clone();
-    // `upper_bound` returns the insertion point after every element that is
-    // less than or equal to the searched value, so the result may be the
-    // length of the list.
     let mut low = 0i64;
     let mut high = items.len() as i64;
     while low < high {
@@ -1278,8 +1263,6 @@ fn list_map(scope: &Scope) -> Obj {
         return obj::err("invalid argument: 'fn'");
     }
     let items = list.borrow().clone();
-    // 2-arg functions receive (value, index); 1-arg functions and type
-    // converters receive just the value.
     let wants_index = function::arg_count(&func) >= 2;
     let mut result = Vec::with_capacity(items.len());
     for (index, item) in items.into_iter().enumerate() {

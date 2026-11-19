@@ -372,9 +372,6 @@ fn an_unbc_round_trip_preserves_error_behavior() {
 }
 #[test]
 fn a_cleared_jit_program_runs_identically() {
-    // Clear this program's JIT state, then run the same source again: the
-    // output must be byte-identical. This fails loudly if the per-program
-    // clear frees entries that the re-run would otherwise read incorrectly.
     native::init(".");
     let text = "use io\nfn add(a, b)\n    -> a + b\nio.write(\"answer\", add(40, 2))\n";
     let (program, source) = compile_text(text);
@@ -397,8 +394,6 @@ fn a_cleared_jit_program_runs_identically() {
 }
 #[test]
 fn a_full_clear_lets_jit_run_again() {
-    // A whole-process clear is the strongest invalidation; the very next run
-    // must re-JIT correctly (lazy re-compile on the first call).
     native::init(".");
     let text = "use io\nio.write(\"value\", 3 * 5)\n";
     let (_outcome, out1) = run(text);
@@ -407,10 +402,6 @@ fn a_full_clear_lets_jit_run_again() {
     assert_eq!(out1, out2);
 }
 
-/// An Int-keyed dict literal lowers to the IntDict intrinsic at translation
-/// time. The raw arena id must never escape a JIT function as a tag=0 Int:
-/// `Return` with an id register declines JIT, the interpreter runs the
-/// function, and the caller gets a real `dict` back.
 #[test]
 fn an_int_dict_id_cannot_escape_as_a_tag0_int() {
     assert_out(

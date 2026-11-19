@@ -1,9 +1,4 @@
-﻿//! Interned type names and the scalar object caches (`int`, `str`, `bool`,
-//! `none`, `null`, `__uninitialized__`).
-//!
-//! Scalars are interned so that identity-based comparisons stay fast and the
-//! `Obj` cells are shared for process lifetime.
-
+﻿
 use super::WORLD;
 use crate::runtime::obj::{Obj, int_obj, plain, str_obj};
 
@@ -16,9 +11,6 @@ pub(crate) const REGISTERED_TYPES: &[&str] = &[
     "break", "__uninitialized__",
 ];
 
-/// Call `f` with the interned `Rc<str>` for `name` (or None for an
-/// unregistered type name) without cloning the Rc. Used on hot paths that
-/// only need a pointer comparison.
 pub(crate) fn with_intern_type<R>(
     name: &str,
     f: impl FnOnce(Option<&std::rc::Rc<str>>) -> R,

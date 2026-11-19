@@ -1,23 +1,7 @@
-//! Shared native support for Int-only dictionary intrinsics used by the
-//! JIT. The JIT-emitted code passes a raw i64 "dict id" between calls; the
-//! arena lives independently of the Un object model so there's no need to
-//! allocate Obj wrappers for transient tables.
-//!
-//! Arena slots index into an `i64` id where `0` means "uninitialised"; the
-//! real index is an offset by 1. Each `IntDict` allocates four tables
-//! (map, entries, etc.) — each id is unique.
-//!
-//! This module is **only** used by JIT-emitted code; the interpreter does
-//! not use it.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
-/// The arena is shared with JIT-native code, which must never unwind across
-/// the FFI boundary. A poisoned lock therefore cannot happen in practice
-/// (the intrinsics contain no panicking paths in release builds), but if it
-/// ever does, taking the guard via `into_inner` keeps the JIT callable
-/// instead of poisoning every subsequent dict operation for the process.
 fn arena() -> MutexGuard<'static, IntDictArena> {
     INT_DICT_ARENA
         .lock()
@@ -82,8 +66,6 @@ impl IntDictArena {
         }
         let idx = idx - 1;
         if idx < self.slots.len() {
-            // Tombstone: the slot stays allocated so ids remain dense, but
-            // the table is dropped. A second free is a no-op.
             self.slots[idx].take().is_some()
         } else {
             false
@@ -97,16 +79,11 @@ impl IntDictArena {
 
 static INT_DICT_ARENA: Mutex<IntDictArena> = Mutex::new(IntDictArena::new());
 
-/// Allocate a fresh empty Int→Int dictionary; returns its canonical i64 id
-/// (always ≥ 1; 0 means "invalid"). Called via inline JIT code.
 #[no_mangle]
 pub extern "C" fn un_dict_int_empty() -> i64 {
     arena().alloc()
 }
 
-/// Insert `value` into the `key` slot of the specified dict, returning the
-/// inserted value. No-ops (returning `0`) if id/key is inconsistent. JIT
-/// callsite arguments must be raw i64.
 #[no_mangle]
 pub extern "C" fn un_dict_int_set(d: i64, key: i64, value: i64) -> i64 {
     let mut slots = arena();
@@ -118,11 +95,6 @@ pub extern "C" fn un_dict_int_set(d: i64, key: i64, value: i64) -> i64 {
     }
 }
 
-/// Look up `key` in `d`; if found return the value (sentinel `-1` for
-/// "missing"). JIT callers never see the sentinel as a result: the
-/// IntDict `GetItem` fast path probes `un_dict_int_has` first and bails to
-/// the interpreter on a miss (the interpreter raises `key not found`).
-/// The sentinel stays for dead ids and defensive use.
 #[no_mangle]
 pub extern "C" fn un_dict_int_get(d: i64, key: i64) -> i64 {
     let slots = arena();
@@ -136,9 +108,6 @@ pub extern "C" fn un_dict_int_get(d: i64, key: i64) -> i64 {
     }
 }
 
-/// 1 when `key` is present in `d`, 0 otherwise. The JIT uses this to bail
-/// to the interpreter on a missing key — the interpreter raises the
-/// language's `key not found` error, which the JIT cannot raise itself.
 #[no_mangle]
 pub extern "C" fn un_dict_int_has(d: i64, key: i64) -> i64 {
     let slots = arena();
@@ -148,18 +117,11 @@ pub extern "C" fn un_dict_int_has(d: i64, key: i64) -> i64 {
     }
 }
 
-/// Free the dictionary behind `id`, dropping its table. Ids freed this way
-/// become tombstones; a second free is a no-op, and any stale id reads as
-/// "missing" (-1) from `un_dict_int_get`. JIT code calls this on its exit
-/// paths; the arena itself is process-lifetime.
 #[no_mangle]
 pub extern "C" fn un_dict_int_free(id: i64) {
     let _ = arena().free(id);
 }
 
-/// Drop every IntDict in the arena. Intended for whole-process teardown
-/// next to `jit_cache::clear()`; afterwards any in-flight JIT code is out
-/// of contract. Returns the number of tables dropped.
 pub(crate) fn clear() -> usize {
     let mut arena = arena();
     let n = arena.slots.iter().filter(|slot| slot.is_some()).count();

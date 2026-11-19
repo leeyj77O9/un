@@ -40,8 +40,6 @@ pub struct LangError {
     pub length: usize,
     pub message: String,
     pub header: String,
-    /// File the span belongs to, when the error crosses proto boundaries.
-    /// `None` means the span is relative to the caller-provided source.
     pub source: Option<Rc<Source>>,
 }
 impl LangError {

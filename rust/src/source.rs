@@ -5,9 +5,6 @@ pub struct Source {
     pub path: String,
     pub code: Vec<char>,
     pub ignored_new_lines: HashSet<usize>,
-    /// Char offset of every line start; index 0 is line 1. Built once at
-    /// construction (after CRLF normalisation) so `get_line` / `get_column`
-    /// are O(log lines) instead of O(offset).
     line_starts: Vec<usize>,
 }
 fn line_starts_of(code: &[char]) -> Vec<usize> {
@@ -38,9 +35,6 @@ impl Source {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default()
     }
-    /// Span lookup must stay total: a crafted `.unbc` can carry spans that
-    /// were checked against the embedded source but not against this exact
-    /// `Source` instance, and a miss must never panic the VM.
     pub fn span(&self, start: usize, length: usize) -> String {
         let start = start.min(self.code.len());
         let end = start.saturating_add(length).min(self.code.len());

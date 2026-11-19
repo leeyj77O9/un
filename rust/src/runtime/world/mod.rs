@@ -1,16 +1,3 @@
-//! Per-process global state for the runtime.
-//!
-//! `World` is the single thread-local cell every piece of runtime state
-//! lives in: interned type names, the scalar caches (`int`, `str`, `bool`,
-//! `none`), the class registries (classes, the metaclass `TObj`, original
-//! class attribute tables, per-class field layouts), the module cache,
-//! stdout/log/stdin, recursion depth, and the executor hooks used by the
-//! CLI and tests to run compiled protos.
-//!
-//! The module is split by responsibility; the submodules re-export their
-//! items so callers use `world::int_cached` and friends exactly as before.
-//! `World` itself stays private to this module: every field is owned by one
-//! submodule, which is the order in which the state is described below.
 
 mod caches;
 mod classes;
@@ -47,9 +34,6 @@ pub struct World {
 
     original_classes: HashMap<String, Vec<(String, crate::runtime::obj::Obj)>>,
     original_base_types: HashMap<String, String>,
-    /// Template member name order at class registration time.
-    /// Not authoritative for runtime field ordering (instances grow in
-    /// `__init__`), but a stable anchor for layout-related work.
     class_layouts: HashMap<String, Vec<String>>,
     classes: HashMap<String, crate::runtime::obj::Obj>,
     classes_tobj: HashMap<String, crate::runtime::obj::Obj>,
@@ -76,7 +60,6 @@ pub struct World {
 }
 
 thread_local! {
-    // Child modules access `super::WORLD`; private to the `world` module.
     static WORLD: RefCell<World> = RefCell::new(World::new());
 }
 

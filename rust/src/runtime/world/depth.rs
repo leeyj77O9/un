@@ -1,4 +1,3 @@
-//! Recursion depth limit for the VM and JIT.
 
 use super::WORLD;
 

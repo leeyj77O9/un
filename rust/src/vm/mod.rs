@@ -1,28 +1,4 @@
-﻿//! `vm2` ??a register-based interpreter for Un.
-//!
-//! Phase 3 (full integration). The frontend (lexer/parser/desugar/optimizer/
-//! stack compiler) is reused unchanged and emits the validated stack bytecode
-//! of `bytecode::Program`. At load time [`transfer`] lowers each proto 1:1 to
-//! register instructions; [`VM`] executes them on a per-frame `Vec<Obj>`
-//! register file.
-//!
-//! - Locals live in the scope slot table (same as the stack VM).
-//! - Temporaries live in scratch slots indexed by the *static* virtual stack
-//!   depth; the same value is always in the same slot, which is why jump
-//!   targets observe consistent state.
-//! - Calls are staged through a per-frame value/name buffer (used uniformly
-//!   for positional/keyword/spread arguments), which is what makes
-//!   dynamically-sized spreads work in a statically allocated frame.
-//! - Exceptions use the same `ExcEntry` tables as the stack VM. Handler
-//!   entry truncates the argument stack (`TryEntry::acc_depth`) only; the
-//!   scratch register file is not truncated. Scratch slots are expression
-//!   temporaries whose every read is dominated by a write in the register
-//!   plan, so handler paths never observe stale values; locals live in the
-//!   scope slot table regardless.
-//!
-//! The public surface mirrors the stack VM: `VM::new(program, source)`,
-//! `run() -> Outcome`, and the same outcome vocabulary.
-
+﻿
 pub(crate) mod transfer;
 
 pub use self::transfer::dump_register_plan;
@@ -47,10 +23,6 @@ use crate::runtime::types::{self, Types};
 use crate::runtime::world;
 use crate::source::Source;
 
-/// A register instruction. `a`/`b`/`c` index the frame's register file
-/// (locals first, then scratch). `d` holds an immediate: a jump target, a
-/// const index, a name index, a pattern index, or a call-names index, as
-/// appropriate for the opcode. `flags` reuses the stack-VM definitions.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Ins {
     pub(crate) op: Op,
@@ -61,13 +33,10 @@ pub(crate) struct Ins {
     pub(crate) flags: u16,
 }
 
-/// Load-time translated program. `code` lives per proto; everything else
-/// (names, consts, patterns, messages) stays in the original `Program`.
 pub struct ProtoPlan {
     pub(crate) scratch_base: usize,
     pub(crate) reg_count: usize,
     pub(crate) code: Vec<Ins>,
-    /// depth at every ip (len = code.len() + 1)
     pub(crate) depths: Vec<u8>,
 }
 
@@ -110,8 +79,6 @@ pub struct VM {
     regs: Vec<Obj>,
     args: Vec<ArgFrame>,
     tries: Vec<TryEntry>,
-    /// cached handle to the slot table this frame reads/writes through
-    /// (valid until `ctx.scope` changes; refreshed by `invalidate_slot_scope`).
     slot_scope: Option<scope::Scope>,
     pending: Option<LangError>,
     pending_finally_error: Option<LangError>,
@@ -119,13 +86,6 @@ pub struct VM {
     pending_propagate: Option<Outcome>,
 }
 
-/// Bind every module-level function (`FLAG_FUNC_BIND`) into the current
-/// scope, without executing any bytecode. The native exe calls this before
-/// running the `<classes_init>` spine: class decorators and class-def
-/// default expressions may reference module functions. Default parameter
-/// values themselves are not re-evaluated (the spine sees `null()` for
-/// omitted optional arguments); module variables assigned outside classes
-/// are not bound at this stage.
 pub fn bind_module_functions(program: &Rc<Program>, ctx: &Context) {
     let scope = context::scope(ctx);
     for (index, proto) in program.protos.iter().enumerate() {
@@ -182,10 +142,6 @@ impl VM {
         Self::build(program, source, root)
     }
 
-    /// Execute only `entry` (instead of the program root). Used by the
-    /// native exe's `unrt_register_classes` to run the `<classes_init>`
-    /// class-registration spine exactly once at startup — running the real
-    /// root would double-execute `main()`.
     pub fn run_proto(
         program: Rc<Program>,
         source: Rc<Source>,
@@ -277,7 +233,6 @@ impl VM {
     }
 
     fn cur_slot_scope(&mut self) -> scope::Scope {
-        // owner of the local slot table (children inherit it)
         if let Some(s) = &self.slot_scope {
             return s.clone();
         }
@@ -311,11 +266,6 @@ impl VM {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.step(&ins, depth_before)
             }));
-            // A Rust panic slipping out of user code (e.g. a re-entrant
-            // mutation of a collection inside its own `__str__`) would kill
-            // the worker thread with a raw panic instead of an Un error.
-            // RefCell drops release the borrows during unwinding, so turning
-            // it into an Un panic here leaves the VM consistent.
             let result = match result {
                 Ok(result) => result,
                 Err(payload) => {
@@ -494,7 +444,6 @@ impl VM {
 }
 
 fn slice_bounds_count(flags: u16) -> usize {
-    // validate-style count: the target object plus each bound flag
     1 + (flags & FLAG_SLICE_START != 0) as usize
         + (flags & FLAG_SLICE_END != 0) as usize
         + (flags & FLAG_SLICE_STEP != 0) as usize
@@ -619,8 +568,6 @@ impl VM {
                 if items.len() != count {
                     return Err(self.error("tuple unpack mismatch", span));
                 }
-                // items land on the stack in reverse order (last item deepest),
-                // same as the stack VM's push order
                 for (i, item) in items.iter().enumerate() {
                     self.regs[src(depth - 1 + (count - 1 - i))] = item.clone();
                 }
@@ -910,8 +857,6 @@ impl VM {
                 let value = self.regs[ins.c as usize].clone();
                 let name = self.name(ins.d as usize);
                 let outcome = obj::set_attr(&target, &name, &value);
-                // A native __setattr__/property setter reports failures with
-                // an Error payload; surface it like Op::Call does.
                 if obj::is_err(&outcome) {
                     return Err(self.error(err_message(&outcome), span));
                 }
@@ -923,10 +868,6 @@ impl VM {
                 self.regs[ins.a as usize] = obj::get_item(&target, &key);
             }
             Op::SetItem => {
-                // Fast lane: Dict + Int key + Int value — skip __setitem__
-                // dispatch and the intermediate payload clone by writing
-                // directly into the KeyMap. Outside the fast lane we keep
-                // the generic path.
                 let done = {
                     let idx = &self.regs[ins.c as usize];
                     let target = &self.regs[ins.b as usize];
@@ -1073,11 +1014,6 @@ impl VM {
                 );
                 let outcome = self.call_value(&callable, &Args::named(values, names), span);
                 let popped = context::pop_frame(&self.ctx);
-                // An error is crossing this call boundary: remember the call
-                // site (callee name + source position) on the shared trace
-                // buffer so the top-level report can print a Python-style
-                // traceback. Break/Skip/Return are not errors and record
-                // nothing.
                 let crosses_error = match &outcome {
                     Err(Outcome::Error(_)) | Err(Outcome::Propagate(..)) | Err(Outcome::Panic(_)) => true,
                     Ok(result) => obj::is_err(&result) || obj::is_panic(&result),
@@ -1085,8 +1021,6 @@ impl VM {
                 };
                 if crosses_error {
                     if let Ok(frame) = &popped {
-                        // Python names each frame after the function that was
-                        // executing the line (the caller), not the callee.
                         let name = self
                             .program
                             .names
@@ -1146,8 +1080,6 @@ impl VM {
             }
             Op::ForNext => {
                 let iter = self.regs[ins.b as usize].clone();
-                // fast path: a Range iterator ??avoid cloning + Obj::int allocation
-                // when the value fits in the cached small-int range.
                 let next = if let Payload::Iter(cell) = obj::payload(&iter) {
                     if cell.borrow().kind == crate::runtime::iters::Kind::Range {
                         if let Some(value) = crate::runtime::iters::range_next(&cell) {
@@ -1273,9 +1205,6 @@ impl VM {
                 let name = self.name(ins.d as usize);
                 let created = self.regs[ins.a as usize].clone();
                 world::set_class(&name, created);
-                // The class field layout is seeded once per program at load
-                // time (`seed_class_layouts`); refreshing it here would rescan
-                // every proto on each class registration.
             }
             Op::LoadBaseClass => {
                 let name = self.name(ins.d as usize);
@@ -1303,10 +1232,6 @@ impl VM {
                     let merged = Types::create(&[created.borrow().types(), base_types]);
                     created.borrow_mut().set_types(merged);
                 }
-                // Keep the `original_classes` fallback chain in step with the
-                // class hierarchy: extensions declared on a base class resolve
-                // through derived instances via `original_base_types` (single
-                // base, mirroring the native tables).
                 if let Some(first) = bases.first() {
                     let derived_name = obj::type_name(&created).to_string();
                     let base_name = obj::type_name(first).to_string();
@@ -1399,9 +1324,6 @@ impl VM {
                         }
                     }
                 };
-                // A pooled function that failed queues its error object as
-                // the future's value; propagate it like any other uncaught
-                // error instead of delivering it as a plain value.
                 if obj::is_err(&result) {
                     return Err(self.error(err_message(&result), span));
                 }
@@ -1470,9 +1392,6 @@ impl VM {
                     module::import_file(&parts, &source_path, alias, imports, Some(context::traces(&self.ctx)))
                 };
                 if let Err(error) = result {
-                    // The import line is a boundary too: record it so a
-                    // traceback from inside an imported module points at
-                    // the `use` statement that triggered it.
                     let name = self
                         .program
                         .names
@@ -1539,10 +1458,6 @@ impl VM {
         args: &Args,
         span: (usize, usize),
     ) -> Result<Obj, Outcome> {
-    // JIT fast-path: route through the shared helper. tag=2 will fall through
-    // to the interpreter below, exactly as if JIT were off.
-    // Class methods pass their bound receiver as the implicit `self` arg; Tree
-    // route via `try_call_jit` accepts an optional bound receiver slot.
     if let Some(result) = crate::jit_fast::try_call_jit(&program, proto_index, args, None) {
         return Ok(result);
     }
@@ -1687,45 +1602,19 @@ impl VM {
     }
 }
 
-/// Raw result of a JIT-compiled Un function: `value` is either an i64 Int
-/// bits or the raw IEEE-754 bits of a Float, distinguished by `tag`
-/// (`jit_cache::TAG_INT`, `jit_cache::TAG_FLOAT`, `jit_cache::TAG_BOOL`,
-/// `jit_cache::TAG_BAIL`). The Cranelift side writes this through a hidden
-/// pointer, so this is only a plain Rust struct (not an FFI type).
 #[derive(Clone, Copy)]
 pub(crate) struct UnJitResult {
     pub(crate) value: i64,
     pub(crate) tag: i64,
 }
 
-/// Invoke a JIT-compiled Un function with positional Int arguments.
-/// Returns the raw value and a tag: `TAG_INT` = the value is an i64 result;
-/// `TAG_FLOAT` = the value is the raw bits of a Float result; `TAG_BOOL` = the
-/// value is a Bool; `TAG_NONE` = the callee returned `None` (the value cell is
-/// meaningless); `TAG_BAIL` = the JIT declined at runtime (the caller must
-/// fall back to the interpreter exactly once).
-/// The JIT writes the (value, tag) pair through a hidden pointer so no
-/// aggregate-return ABI rules apply.
-/// `param_tags` is a bitmask: bit p is set iff argument p (in `ints` order)
-/// is a borrowed IntVec arena handle rather than a plain Int. The callee's
-/// prologue uses it to bail before consuming a handle as an Int.
 pub(crate) fn jit_call(
     entry: crate::jit_cache::JitEntry,
     ints: &[i64],
     param_tags: i64,
 ) -> UnJitResult {
     assert!(ints.len() == entry.arity as usize);
-    // Instances constructed by the JIT's un_class_make intrinsic are parked
-    // in a thread-local arena so raw `Rc<RefCell<ObjData>>` pointers stay
-    // valid for the native frame. Truncate it to the entry mark now; the
-    // native code below cannot nest `jit_call` (it makes direct native
-    // calls), so everything allocated past the mark was constructed during
-    // this call and is unreachable afterwards.
     let temp_mark = crate::runtime::int_class::temp_mark();
-    // SAFETY of callers further down (unchanged): the JIT-compiled entries
-    // registered behind the eligibility gate write exactly 16 bytes through
-    // the hidden pointer; the entry was generated by the JIT for this exact
-    // signature (hidden ptr first, then `param_tags`, then `arity` i64 Int/handle args).
     type F0 = unsafe extern "C" fn(*mut i64, i64);
     type F1 = unsafe extern "C" fn(*mut i64, i64, i64);
     type F2 = unsafe extern "C" fn(*mut i64, i64, i64, i64);
@@ -1739,10 +1628,6 @@ pub(crate) fn jit_call(
     type F10 = unsafe extern "C" fn(*mut i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64);
     let mut out = [0i64; 2];
     let ptr = out.as_mut_ptr();
-    // SAFETY: the JIT-compiled entries registered behind the eligibility gate
-    // write exactly 16 bytes through the hidden pointer; the entry was
-    // generated by the JIT for this exact signature (hidden ptr, param_tags,
-    // then `arity` i64 Int/handle args).
     unsafe {
         match ints.len() {
             0 => std::mem::transmute::<*const u8, F0>(entry.ptr)(ptr, param_tags),
@@ -1764,32 +1649,12 @@ pub(crate) fn jit_call(
 }
 
 thread_local! {
-    // Keyed by Program.id — never by pointer identity. Plan holders keep
-    // Rc<Program>, so the id is stable exactly as long as any clone of this
-    // program exists; no ABA can alias two distinct programs. The map is
-    // bounded: order is a FIFO of first inserts, and insertion beyond
-    // PLAN_CACHE_LIMIT evicts the oldest entry (a later hit just recompiles).
     static PLAN_CACHE: RefCell<(HashMap<u64, (Rc<Program>, Rc<Plan>)>, VecDeque<u64>)> =
         RefCell::new((HashMap::new(), VecDeque::new()));
 }
 
-/// Upper bound on cached plans per process. A few dozen loaded programs is
-/// typical for a CLI run; anything beyond that is an embedding doing heavy
-/// module loading, where an unbounded retained `Rc<Program>` per entry is
-/// what this bound prevents.
 const PLAN_CACHE_LIMIT: usize = 64;
 
-/// Statically scan the loaded program for class declarations and push a
-/// complete class layout entry into `world::class_layout(name)` — so the JIT
-/// sees the layout at registration time, even though class instantiation is
-/// emitted by `<module>` proto at runtime.
-///
-/// 1. Walk `<module>` for class construction order (MakeClass, AddMethod,
-///    AddMember, RegisterClass) to materialise the method list before any
-///    VM op runs — this reproduces `Op::RegisterClass -> Op::AddMethod` chains.
-/// 2. Walk all function protos tagged with `ext_type == class name` for
-///    `Op::SetAttr` instructions in bytecode order; append their operand
-///    fields to the layout.
 fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
     #[inline]
     fn proto_name(program: &Rc<Program>, proto: &crate::bytecode::Proto, slot: usize) -> Option<String> {
@@ -1815,17 +1680,10 @@ fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
                 class_regs.insert(ins.a as usize, name.clone());
                 layout_out.entry(name).or_default();
             }
-            // Method and class-member names are not instance members, so they
-            // never take part in the field layout.
             _ => {}
         }
     }
 
-    // Class template member order, straight from the bytecode stream: the
-    // member order at runtime is the order the `AddMethod`/`AddMember` ops
-    // execute in, so scanning the root proto's instruction stream reproduces
-    // it exactly. This is needed at plan time, before any class is actually
-    // registered.
     let mut class_template: HashMap<String, Vec<String>> = HashMap::new();
     let mut current: Option<String> = None;
     for ins in &plan.protos[program.root].code {
@@ -1848,9 +1706,6 @@ fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
         }
     }
 
-    // Field order must match the order the instance writes its members, so the
-    // `__init__` proto — which runs before any other method — contributes its
-    // fields first.
     let collect_fields = |only_init: bool, layout_out: &mut HashMap<String, Vec<String>>| {
         for proto in &program.protos {
             let ext = match proto.ext_type { Some(e) => e, None => continue };
@@ -1881,17 +1736,8 @@ fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
         eprintln!("JITDBG class_regs {:?}", class_regs);
         eprintln!("JITDBG layout_out {:?}", layout_out);
     }
-    // The seeded layout must match the LIVE instance layout exactly — the
-    // intrinsics index the member Vec positionally. The template member
-    // order comes first (methods etc., in class-body definition order),
-    // followed by the fields appended by `__init__` (and later protos) in
-    // their SetAttr order — exactly the order `un_instance_int_set_name`
-    // pushes them at runtime.
     for (class_name, fields) in layout_out {
         if world::class_has_property(&class_name) {
-            // The original class carries accessor properties somewhere along
-            // its ancestry; JIT intrinsics must bail here because property
-            // dispatch is inductive and cannot be specialised safely by name alone.
             if crate::jit_cache::jit_debug() {
                 eprintln!("JITDBG skip layout for {}: class has properties", class_name);
             }
@@ -1916,20 +1762,15 @@ fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
 }
 
 fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
-    // Keyed by the per-program opaque id, never by pointer identity.
     let key = program.id;
     let found = PLAN_CACHE.with(|cache| cache.borrow().0.get(&key).cloned());
     if let Some((_, cached_plan)) = found {
-        // Plan cache holds the only Rc<Program> that matters; id collision
-        // is impossible (`next_program_id` is monotonic).
         return cached_plan;
     }
     let plan = Rc::new(transfer::compile(program).expect(
         "validated program must translate; Program::validate was strengthened
         to enforce the 256-register limit for this reason",
     ));
-    // Seed class layouts so class methods can be specialised against a
-    // static layout extracted from the source.
     seed_class_layouts(&plan, program);
     PLAN_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -1989,12 +1830,6 @@ pub fn panic_display(o: &Obj) -> String {
     }
 }
 
-/// `left is right`.
-///
-/// When the right-hand side is a type object the question is "is `left` an
-/// instance of that type?". Two type objects compare by identity, a value
-/// compares against the types it carries. Otherwise the comparison falls back
-/// to the generic `__is__`/type-name rules.
 fn is_obj(left: &Obj, right: &Obj) -> Obj {
     match obj::payload(right) {
         Payload::TObj(t) => match obj::payload(left) {

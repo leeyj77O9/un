@@ -1,8 +1,3 @@
-//! Executor hooks.
-//!
-//! The VM registers closure executors here so tests and the WASM playground
-//! can run a single proto's body without going through the whole evaluator
-//! (`Flow::Normal` falls through when no executor is registered).
 
 use super::WORLD;
 use crate::ast::Node;

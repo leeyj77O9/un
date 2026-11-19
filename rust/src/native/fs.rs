@@ -290,19 +290,12 @@ fn move_impl(scope: &Scope) -> Obj {
     move_or_copy(Path::new(&source), Path::new(&destination))
 }
 
-/// Move a source onto a destination. The destination is never destroyed
-/// before the source is safely copied or renamed: when `rename` cannot
-/// replace an existing destination (Windows), the source is copied first and
-/// only then removed.
 fn move_or_copy(source: &Path, destination: &Path) -> Obj {
     if destination.is_dir() {
         return obj::err("destination is a directory");
     }
     if destination.exists() {
         if source.is_file() {
-            // `rename` fails on Windows when the destination exists. Copy
-            // first so the destination survives a partial failure; the
-            // source is only removed after the copy succeeded.
             if let Err(e) = std::fs::copy(source, destination) {
                 return obj::err(&e.to_string());
             }
@@ -311,19 +304,11 @@ fn move_or_copy(source: &Path, destination: &Path) -> Obj {
             }
             return obj::none();
         }
-        // Source is not a regular file (e.g. a directory): removing the
-        // existing destination before the rename would destroy it even if
-        // the rename then failed (or silently replaced a file — Windows
-        // allows rename(dir, file)). Refuse instead.
         return obj::err("destination exists");
     }
     match std::fs::rename(source, destination) {
         Ok(()) => obj::none(),
         Err(e) => {
-            // rename(2) cannot move across filesystems (EXDEV). Fall back to
-            // a copy + remove for regular files, mirroring the move
-            // semantics. The destination is known to not exist here (that
-            // case is handled above), so the copy cannot clobber anything.
             if source.is_file() {
                 if let Err(copy_err) = std::fs::copy(source, destination) {
                     return obj::err(&copy_err.to_string());
@@ -382,9 +367,6 @@ fn rmdir_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     let recursive = scope::get(scope, "recursive");
-    // `fs.rmdir(path)` must not destroy a non-empty directory by default;
-    // recursion is opt-in. (`fs.rmdir(dir, recursive=true)` is the explicit
-    // recursive form.)
     let mut value = false;
     if !obj::is_none(&recursive) {
         match obj::payload(&recursive) {
@@ -494,8 +476,6 @@ fn walk_dir(path: &Path, found: &mut Vec<PathBuf>, visited: &mut std::collection
     if depth > MAX_WALK_DEPTH {
         return;
     }
-    // Symlink cycles would recurse forever; track the canonical directory
-    // path so a loop is walked at most once.
     if let Ok(canonical) = path.canonicalize() {
         if !visited.insert(canonical) {
             return;
@@ -527,9 +507,6 @@ fn size_impl(scope: &Scope) -> Obj {
         Err(e) => obj::err(&e.to_string()),
     }
 }
-/// Format a SystemTime as an ISO-8601 Z string. Pre-1970 timestamps must not
-/// silently clamp to the epoch; compute their tick distance from the UNIX
-/// epoch with negative arithmetic instead.
 fn time_string(time: std::time::SystemTime) -> String {
     use std::time::UNIX_EPOCH;
     let unix_ticks: i64 = match time.duration_since(UNIX_EPOCH) {
@@ -539,8 +516,6 @@ fn time_string(time: std::time::SystemTime) -> String {
             back.checked_neg().unwrap_or(i64::MIN)
         }
     };
-    // The runtime calendar works in .NET 100-ns ticks since 0001-01-01;
-    // add the UNIX epoch offset so `parts` can decode it.
     let total = unix_ticks.checked_add(crate::runtime::date::unix_epoch_ticks());
     let Some(total) = total else {
         return "0001-01-01T00:00:00.000Z".to_owned();

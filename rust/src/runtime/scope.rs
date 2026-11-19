@@ -13,7 +13,6 @@ pub struct ScopeData {
     pub order: Vec<String>,
     pub slots: Vec<Obj>,
 
-    /// the scope that owns the function's slot table, if any; children inherit it
     pub slot_scope: Option<Scope>,
 }
 pub fn new(parent: Option<Scope>, is_function_scope: bool) -> Scope {
@@ -163,9 +162,6 @@ pub fn set_local(scope: &Scope, key: &str, value: Obj) {
         None => declare_new(scope, key, value),
     }
 }
-/// Declare a slot without overwriting an existing binding (idempotent
-/// declarator). Only the slot-scope unit tests use this; production scope
-/// population goes through `declare_new` and `set_local`.
 #[cfg(test)]
 pub(crate) fn declare(scope: &Scope, key: &str, initial: Option<Obj>) {
     if scope.borrow().symbols.contains_key(key) {
@@ -206,8 +202,6 @@ pub fn contains_key(scope: &Scope, key: &str) -> bool {
 pub fn contains_key_in_top(scope: &Scope, key: &str) -> bool {
     scope.borrow().symbols.contains_key(key)
 }
-/// Remove a top-level symbol. Only the slot-scope unit tests use this;
-/// production never removes slots.
 #[cfg(test)]
 pub(crate) fn remove(scope: &Scope, key: &str) -> bool {
     let mut d = scope.borrow_mut();

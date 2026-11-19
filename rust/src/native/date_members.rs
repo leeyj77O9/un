@@ -189,8 +189,6 @@ fn amount(scope: &Scope, name: &str) -> Option<i64> {
         _ => None,
     }
 }
-/// Checked `ticks + amount * per_tick` — date member arithmetic
-/// used to wrap silently on huge inputs (TD-41). Returns None on overflow.
 fn checked_ticks(ticks: i64, amount: i64, per_tick: i64) -> Option<i64> {
     ticks.checked_add(amount.checked_mul(per_tick)?)
 }
@@ -205,8 +203,6 @@ fn add_years(scope: &Scope) -> Obj {
     let Some(new_year) = year.checked_add(years) else {
         return obj::err("date arithmetic overflowed");
     };
-    // February 29 in a leap year must clamp to February 28 in a non-leap
-    // year (matching the add_months behaviour), not roll into March 1.
     let new_day = day.min(crate::runtime::date::days_in_month(new_year, month));
     let ticks = crate::runtime::date::ticks_from_civil(
         new_year,

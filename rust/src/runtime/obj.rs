@@ -158,10 +158,6 @@ pub struct ObjData {
     pub members: Vec<(String, Obj)>,
     pub annotations: Vec<(String, Obj)>,
     pub payload: Payload,
-    /// Lazily computed union of `obj` (the metatype) and this object's own
-    /// type name. `None` until first read — objects that never participate
-    /// in `x is T` checks (the overwhelming majority) never pay for the
-    /// `Types` allocation.
     pub(crate) types: std::cell::RefCell<Option<Types>>,
 }
 impl ObjData {
@@ -177,8 +173,6 @@ impl ObjData {
             types: std::cell::RefCell::new(None),
         }
     }
-    /// The eager union of this object's own type name and the `obj` metatype.
-    /// Computed on first read, then cached.
     pub(crate) fn types(&self) -> Types {
         if self.types.borrow().is_none() {
             let t = Types::create(&[
@@ -193,7 +187,6 @@ impl ObjData {
             .expect("types lazily filled on read")
             .clone()
     }
-    /// Overwrite the cached union (used when a class adds a base to its metatype).
     pub(crate) fn set_types(&self, types: Types) {
         *self.types.borrow_mut() = Some(types);
     }
@@ -276,19 +269,12 @@ pub fn type_name(o: &Obj) -> Rc<str> {
 pub fn payload(o: &Obj) -> Payload {
     o.borrow().payload.clone()
 }
-/// Compare two object type names by interned identity. Every object
-/// construction interns its name via `world::intern_type`, so equal names
-/// share an allocation and `Rc::ptr_eq` answers in O(1). The string compare
-/// is kept as a fallback for values that bypassed the intern path (unlikely
-/// at runtime but defensive).
 pub fn type_name_eq(a: &Obj, b: &Obj) -> bool {
     if Rc::ptr_eq(&type_name(a), &type_name(b)) {
         return true;
     }
     type_name(a) == type_name(b)
 }
-/// Interned-type check: `Rc::ptr_eq` against the registry, with a string
-/// fallback if the name was never interned.
 fn is_type(o: &Obj, name: &str) -> bool {
     world::with_intern_type(name, |interned| match interned {
         Some(t) => Rc::ptr_eq(&o.borrow().type_name, t),
@@ -299,10 +285,6 @@ pub fn is_none(o: &Obj) -> bool {
     is_type(o, "none")
 }
 
-/// Return a non-cloning `Ref<'_, Payload>` view of an object's payload.
-/// Useful on hot paths (key resolution, send `Copy`able scalars like Int,
-/// macro-dispatch into natives) since cloning `Payload` costs Rc bumps for
-/// every composite variant even when the caller only reads primitive fields.
 pub fn payload_ref(o: &Obj) -> std::cell::Ref<'_, Payload> {
     std::cell::Ref::map(o.borrow(), |d| &d.payload)
 }
@@ -316,8 +298,6 @@ pub fn is_bool(o: &Obj) -> bool {
     matches!(payload(o), Payload::Bool(_))
 }
 pub fn key_eq(a: &Obj, b: &Obj) -> bool {
-    // Identity fast path — also covers cycles (a cyclic structure compared
-    // with itself is equal without unfolding).
     if Rc::ptr_eq(a, b) {
         return true;
     }
@@ -336,13 +316,9 @@ pub fn hash_code(o: &Obj) -> u64 {
     hash_code_depth(o, 0)
 }
 fn hash_code_depth(o: &Obj, depth: u32) -> u64 {
-    // Cyclic values (`l = []; l.append(l)`) would recurse until the stack
-    // overflows. Give up and return 0 (a legal hash) past the limit.
     if depth >= MAX_RECURSION_DEPTH {
         return 0;
     }
-    // Fast scalar path — avoid cloning the payload just to inspect the tag.
-    // The hot path (int/bool int identity hash) is essentially one borrow.
     let o_own_ref = std::cell::Ref::map(o.borrow(), |d| &d.payload);
     match &*o_own_ref {
         Payload::Int(i) => return *i as u64,
@@ -350,12 +326,6 @@ fn hash_code_depth(o: &Obj, depth: u32) -> u64 {
         Payload::Enu(n) => return *n as u64,
         Payload::Date(t) => return *t as u64,
         Payload::Float(v) => {
-            // `key_eq` compares floats with `==`, so `-0.0` and `0.0` are the
-            // same key and must hash equal; `to_bits` does not. NaN never
-            // compares equal, so it needs no special case. Integral floats
-            // in i64 range compare equal to the matching int under `key_eq`
-            // (binop promotes to f64), so they must hash identically too —
-            // otherwise `d[1]` and `d[1.0]` land in different buckets.
             if *v == 0.0 {
                 return 0;
             }
@@ -431,14 +401,6 @@ pub fn member_set(o: &Obj, name: &str, value: &Obj) {
     }
     d.members.push((name.to_owned(), value.clone()));
 }
-/// Reports whether the member at `field_index` exists and holds an `Int`.
-///
-/// # Safety
-///
-/// `self_ptr` must be a live `*const RefCell<ObjData>` — the value obtained by
-/// `Rc::as_ptr(&obj)` — and the `Rc` backing it must stay alive for the whole
-/// call. The function never unwinds: a `RefCell` borrow conflict or any other
-/// panic is caught and reported as a miss.
 #[no_mangle]
 pub unsafe extern "C" fn un_instance_int_ok(self_ptr: i64, field_index: i64) -> i64 {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -458,16 +420,6 @@ pub unsafe extern "C" fn un_instance_int_ok(self_ptr: i64, field_index: i64) -> 
     }
 }
 
-/// Name-checked member probe for the Cranelift JIT. Returns 1 when
-/// `self_ptr` names a `RefCell<ObjData>` whose member table places a member
-/// at `field_index` with exactly the expected name AND an Int payload.
-/// Nothing is read here — the caller then reads (or writes) the slot under
-/// the exact same layout identity it just verified.
-///
-/// This is what lets the class-method intrinsic fall back gracefully when the
-/// member table does not match the compile-time-visible layout: a wrong
-/// field, a non-Int field, or a stale slot number all bail to the interpreter
-/// (tag = 2) rather than silently produce garbage.
 #[no_mangle]
 pub unsafe extern "C" fn un_instance_int_ok_name(
     self_ptr: i64,
@@ -486,9 +438,6 @@ pub unsafe extern "C" fn un_instance_int_ok_name(
                 if name.len() as i64 != name_len {
                     return false;
                 }
-                // SAFETY: the caller guarantees `name_ptr..name_ptr+name_len`
-                // names a live `&String` / `&str` buffer; we only read the
-                // bytes during the call.
                 let bytes = unsafe { std::slice::from_raw_parts(name_ptr as *const u8, name_len as usize) };
                 if name.as_bytes() != bytes {
                     return false;
@@ -504,13 +453,6 @@ pub unsafe extern "C" fn un_instance_int_ok_name(
     }
 }
 
-/// Direct Int member read for the Cranelift JIT.
-///
-/// # Safety
-///
-/// Same contract as [`un_instance_int_ok`]. Returns the member's `Int` value,
-/// or 0 when the member is missing or does not hold an `Int`; callers must
-/// check [`un_instance_int_ok`] first so a miss is never read as a value.
 #[no_mangle]
 pub unsafe extern "C" fn un_instance_int_get(self_ptr: i64, field_index: i64) -> i64 {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -533,17 +475,6 @@ pub unsafe extern "C" fn un_instance_int_get(self_ptr: i64, field_index: i64) ->
     }
 }
 
-/// Name-checked Int member write for the Cranelift JIT. Replaces the
-/// member at `field_index` with a fresh Int, or pushes a new member at
-/// exactly `members.len()` (the layout-seeded append position, so the
-/// seeded layout stays byte-identical to the live member table). Anything
-/// else — a name mismatch, a non-Int slot, a sparse index — returns 0
-/// and the caller bails to the interpreter.
-///
-/// # Safety
-///
-/// Same contract as [`un_instance_int_set`]: `self_ptr` must be a live
-/// `*const RefCell<ObjData>` whose `Rc` outlives the call.
 #[no_mangle]
 pub unsafe extern "C" fn un_instance_int_set_name(
     self_ptr: i64,
@@ -592,14 +523,6 @@ pub unsafe extern "C" fn un_instance_int_set_name(
     }
 }
 
-/// Direct Int member write for the Cranelift JIT. Replaces the member
-/// (matched by index) with a fresh Int Obj.
-///
-/// # Safety
-///
-/// Same contract as [`un_instance_int_get`]: `self_ptr` must be a live
-/// `*const RefCell<ObjData>` whose `Rc` outlives the call. Returns 1 when the
-/// member was written and 0 when the slot does not exist or the call panicked.
 #[no_mangle]
 pub unsafe extern "C" fn un_instance_int_set(
     self_ptr: i64,
@@ -753,8 +676,6 @@ pub fn init(o: &Obj, args: &[Obj]) -> Obj {
         _ => {}
     }
     if let Some(v) = try_method(o, "__init__", args) {
-        // A missing/invalid argument list makes `fn_call` return an error
-        // object wrapped in `Some`; don't swallow it as "init ran fine".
         if is_err(&v) {
             return v;
         }
@@ -856,11 +777,6 @@ pub fn get_attr(o: &Obj, name: &str) -> Obj {
     get_attr_from(o, name, o)
 }
 fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
-    // A `Type` object (`Color`, `Point`, …) is a proxy for the registered
-    // class object — attribute lookups must reach the class's members
-    // (`Color.RED` before this, `Color.RED` raised "'type' object has no
-    // attribute"). Delegate to the class object; its members hold the
-    // class's fields/methods/enum values.
     if let Payload::TObj(t) = payload(o) {
         if let Some(class_name) = t.name() {
             if let Some(class_obj) = world::get_class(&class_name) {
@@ -873,8 +789,6 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
             return property_get(&m, receiver);
         }
     }
-    // Inline the `find_bound` form — keeps the lazy `str(name)` allocation
-    // while avoiding a second call layer on the lookup path.
     if has_possible_method(o) {
         if let Some(m) = member(o, "__getattr__") {
             {
@@ -897,8 +811,6 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
         }
     }
     if let Some(v) = world::try_get_original_value(&type_name(o), name) {
-        // Native objects advertise their members through the original-class
-        // registry; a property member there must be invoked, not returned.
         if is_property(&v) {
             return property_get(&v, receiver);
         }
@@ -917,8 +829,6 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
 }
 fn bind_self(value: Obj, receiver: &Obj) -> Obj {
     if function::is_func(&value) {
-        // Rebinding the same shared class-method Fn to the same receiver is a
-        // no-op — skip the borrow_mut and Rc clones on the hot path.
         if already_bound_to(&value, receiver) {
             return value;
         }
@@ -960,13 +870,9 @@ pub fn set_attr_from(o: &Obj, name: &str, value: &Obj, receiver: &Obj) -> Obj {
             return property_set(&m, receiver, value);
         }
     }
-    // Same lazy form as `get_attr_from`: allocate the handler args only when
-    // an instance-own `__setattr__` handler exists.
     if let Some(m) = find_bound(o, "__setattr__") {
         let arg = str(name);
         if let Some(v) = invoke(&m, &[arg, value.clone()]) {
-            // A handler that raises an error object must not be treated as a
-            // successful write; propagate it like any other runtime error.
             if is_err(&v) {
                 return v;
             }
@@ -982,13 +888,9 @@ pub fn set_attr_from(o: &Obj, name: &str, value: &Obj, receiver: &Obj) -> Obj {
     }
     let tn = type_name(o);
     if let Some(v) = world::try_get_original_value(&tn, name) {
-        // Mirror get_attr_from: a property found on the native member table
-        // owns its writes — a read-only property must reject the write.
         if is_property(&v) {
             return property_set(&v, receiver, value);
         }
-        // Non-property native members keep the historical shadow-member
-        // behavior (instance writes shadow the shared table).
     }
     if matches!(&*tn, "int" | "float" | "str" | "bool" | "date" | "none" | "null") {
         return err(format!("'{tn}' object has no attribute '{name}'"));
@@ -1036,8 +938,6 @@ pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
         Payload::Dict(..) => collections::dict_in(o, other),
 
         Payload::Set(v) => {
-            // Snapshot before any `key_eq` — it can call user `__eq__`,
-            // which may re-enter and mutate the set.
             let keys = v.borrow().keys();
             boolean(keys.iter().any(|k| key_eq(k, other)))
         }
@@ -1302,8 +1202,6 @@ pub fn to_tuple(o: &Obj) -> Obj {
     unary(o, UnOp::ToTuple)
 }
 pub fn to_str(o: &Obj) -> Obj {
-    // Guard against cyclic values (`l = []; l.append(l); str(l)`), which
-    // would recurse until the stack overflows and abort the process.
     let Some(_guard) = DepthGuard::enter(&DISPLAY_DEPTH) else {
         return str("[...]");
     };
@@ -1348,8 +1246,7 @@ pub fn get_item(o: &Obj, key: &Obj) -> Obj {
             Payload::Tup(vals, names) => {
                 return collections::tup_get_item(vals, names, o, key)
             }
-            _ => {} // leave to fallback below
-        }
+            _ => {}        }
     }
     if let Some(v) = try_method(o, "__getitem__", &[key.clone()]) {
         return v;
@@ -1360,9 +1257,6 @@ pub fn get_item(o: &Obj, key: &Obj) -> Obj {
     match payload(o) {
         Payload::Str(s) => match payload(key) {
             Payload::Int(i) => {
-                // ASCII fast path: byte index == UTF-16 unit index, so a
-                // single byte slice is the whole job (O(1)). Non-ASCII text
-                // keeps the exact UTF-16 code-unit semantics below.
                 if s.is_ascii() {
                     let len = s.len() as i64;
                     let mut index = i as i64;
@@ -1401,8 +1295,7 @@ pub fn set_item(o: &Obj, key: &Obj, value: &Obj) -> Obj {
         match &*p {
             Payload::List(v) => return collections::list_set_item(v, key, value),
             Payload::Dict(km) => return collections::dict_set_item(km, key, value),
-            _ => {} // leave to fallback below (Set and other payload kinds)
-        }
+            _ => {}        }
     }
     if try_method(o, "__setitem__", &[key.clone(), value.clone()]).is_some() {
         return value.clone();
@@ -1628,10 +1521,6 @@ fn can_have_dunder(o: &Obj) -> bool {
     )
 }
 
-/// Fast path for `Int OP Int`: same observable behavior as the old
-/// `binop` (which went through dunder probe + builtin dispatch), minus the
-/// per-call borrow/open. Div still produces a Float, matching the old
-/// `IDiv` vs `/` semantics.
 fn int_int_binop(a: i64, op: BinOp, b: i64) -> Obj {
     use BinOp::{Add, Sub, Mul, Div, IDiv, Mod, Pow, BAnd, BOr, BXor, LShift, RShift, Eq, NEq, Lt, Gt, LtEq, GtEq, Range};
     match op {
@@ -1675,9 +1564,6 @@ thread_local! {
     static EQ_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static DISPLAY_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
-/// RAII guard for the depth counters above. On overflow we return a
-/// degenerate-but-safe answer instead of aborting the process; the guard
-/// restores the previous depth even when unwinding through user code.
 struct DepthGuard {
     cell: &'static std::thread::LocalKey<std::cell::Cell<u32>>,
     previous: u32,
@@ -1698,9 +1584,6 @@ impl Drop for DepthGuard {
     }
 }
 pub fn binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
-    // Cyclic values (`l = []; l.append(l); l == l`) would recurse until the
-    // stack overflows and abort the process. Bail out with the identity
-    // answer for self-similar values instead.
     if matches!(op, BinOp::Eq | BinOp::NEq) {
         let Some(_guard) = DepthGuard::enter(&EQ_DEPTH) else {
             return boolean(matches!(op, BinOp::Eq));
@@ -2108,12 +1991,6 @@ fn str_binop(o: &Obj, a: Rc<str>, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<s
             match payload(&s) {
                 Payload::Str(v) => {
                     if op == BinOp::Add {
-                        // Concatenated strings do not reuse the pool:
-                        // Python gets this for free via refcount==1
-                        // in-place appends; we can't mutate `a` here, but we
-                        // can at least avoid hashing the whole prefix and a
-                        // pool insert on every append (quadratic in the
-                        // accumulator size, e.g. `out += c` loops).
                         let mut out = String::with_capacity(a.len() + v.len());
                         out.push_str(a.as_ref());
                         out.push_str(v.as_ref());

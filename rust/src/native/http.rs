@@ -181,8 +181,6 @@ fn set_header_impl(scope: &Scope) -> Obj {
         Payload::Str(s) => s.to_string(),
         _ => return obj::err("expected value is string"),
     };
-    // Headers are written verbatim into the request — CR/LF would inject a
-    // header or split the request line.
     if key.is_empty()
         || key.contains('\r')
         || key.contains('\n')

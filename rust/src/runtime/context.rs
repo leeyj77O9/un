@@ -16,14 +16,6 @@ pub type Frames = Rc<RefCell<Vec<Frame>>>;
 pub fn new_frames() -> Frames {
     Rc::new(RefCell::new(Vec::new()))
 }
-/// One frame of an uncaught error's traceback.
-///
-/// Unlike [`Frame`] (which records the call site for the live stack),
-/// a `TraceEntry` is copied onto the shared trace buffer at the moment
-/// an error crosses a call boundary, before the frame is popped. It is
-/// what the top-level error report prints as the Python-style
-/// `Traceback (most recent call last):` list. `name` is the callee's
-/// function name (empty for anonymous natives).
 #[derive(Clone)]
 pub struct TraceEntry {
     pub source: Rc<Source>,
@@ -52,9 +44,6 @@ pub struct ContextData {
     pub usings: Vec<Obj>,
     pub call_depth: usize,
 
-    /// Errors in flight (most recent call last pushed first: the innermost
-    /// boundary is pushed first, so printing iterates in reverse). Shared
-    /// between the parent and every callee like `frames`.
     pub trace: Traces,
 }
 pub type Context = Rc<RefCell<ContextData>>;
@@ -101,19 +90,13 @@ pub fn traces(ctx: &Context) -> Traces {
 pub fn push_trace(ctx: &Context, entry: TraceEntry) {
     traces(ctx).borrow_mut().push(entry);
 }
-/// Drain every entry recorded for the error currently unwinding.
 pub fn take_trace(ctx: &Context) -> Vec<TraceEntry> {
     std::mem::take(&mut traces(ctx).borrow_mut())
 }
-/// An error was caught: drop the trace accumulated so far.
 pub fn clear_trace(ctx: &Context) {
     traces(ctx).borrow_mut().clear();
 }
-// --- Un-style error trace rendering ---
 
-/// When a trace grows past this many frame rows, the per-frame source
-/// line is dropped: each row carries only `-> <fn> <file>, line [N]`.
-/// The collapse marker (`... (repeated N more times)`) is unaffected.
 const COMPACT_FRAME_THRESHOLD: usize = 10;
 
 enum TraceRow {
@@ -128,22 +111,12 @@ enum TraceRow {
 
 fn trace_frame_name(name: &str) -> &str {
     match name {
-        // module root proto
         "" => "<module>",
-        // anonymous `fn ... ->` expressions compile to a `lambda` proto
         "lambda" => "<lambda>",
         _ => name,
     }
 }
 
-/// Render the shared trace buffer to an `un: error trace` text block
-/// (every line newline-terminated). Frame positions use the
-/// `<file>, line [N]` convention of the error caret block.
-///
-/// When no call boundary was crossed (`trace` is empty), `root` supplies
-/// the source position used to synthesize a `<module>` frame; `None`
-/// then yields no output. Repeated identical frames collapse into
-/// `... (repeated N more times)`. The shared buffer is drained.
 pub fn trace_string(ctx: &Context, root: Option<(&Source, usize)>) -> Option<String> {
     let trace = take_trace(ctx);
     let mut rows: Vec<TraceRow> = Vec::new();
@@ -185,8 +158,6 @@ pub fn trace_string(ctx: &Context, root: Option<(&Source, usize)>) -> Option<Str
         }
     }
     if rows.len() <= 1 {
-        // A single frame duplicates the caret block's raise site — the
-        // reader learns nothing from one hop. Suppress the whole trace.
         return None;
     }
     let width = rows

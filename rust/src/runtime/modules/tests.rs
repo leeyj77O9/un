@@ -160,7 +160,6 @@ fn the_global_scope_holds_the_builtin_functions_and_main_name() {
             "builtin '{name}' is not bound"
         );
     }
-    // The moved-away functions live behind the `codes` module now (D-076).
     for name in ["chr", "ord", "bin", "oct", "hex", "ascii"] {
         assert!(
             world::try_get_global(name).is_none(),

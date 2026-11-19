@@ -36,10 +36,6 @@ impl Types {
         Types::Union(members)
     }
 
-    /// `self`(대상 타입)이 `value`(값 타입)을 수용하는지.
-    /// `x is T` / `x in T` 판정용. 값이 여러 후보 타입을 가진 union(리터럴/
-    /// 인스턴스는 항상 `[obj, <concrete>…]`)이면 그 중 하나라도 속하면 참.
-    /// `contains`와 방향이 반대다: `value`는 값 쪽, `self`는 대상 쪽.
     pub fn accepts(&self, value: &Types) -> bool {
         match value {
             Types::Union(members) => members.iter().any(|m| self.accepts(m)),
@@ -47,7 +43,6 @@ impl Types {
                 Types::Single(any) if &**any == ANY => true,
                 Types::Single(other) => name == other,
                 Types::Union(members) => members.iter().any(|m| m.accepts(value)),
-                // `list`(param unparameterized) is accepted by `list[int]` etc.
                 Types::Collection(kind, _) => kind == name,
             },
             Types::Collection(kind, item) => match self {

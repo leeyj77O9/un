@@ -1,6 +1,3 @@
-//! Module loading and global registration: the import cache, the
-//! circular-import guard, the working path, the global scope, and the
-//! native module registry.
 
 use super::WORLD;
 use crate::runtime::obj::Obj;

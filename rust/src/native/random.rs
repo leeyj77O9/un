@@ -6,9 +6,6 @@ use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
 use super::{arg, native};
 thread_local! {
-    // Seed the shared generator from the OS clock like the `random.random()`
-    // constructor does — a fixed seed made every process produce the same
-    // sequence. Reproducibility stays available through `random.seed`.
     static RANDOM: RefCell<Rng> = RefCell::new(Rng::new(crate::runtime::clock::seed_nanos()));
 }
 pub struct Rng {
@@ -35,7 +32,6 @@ impl Rng {
         if bound == 0 {
             return 0;
         }
-        // Rejection sample to remove the modulo bias.
         let limit = u64::MAX / bound * bound;
         loop {
             let value = self.next_u64();
@@ -49,9 +45,6 @@ impl Rng {
         if max <= min {
             return min;
         }
-        // `max - min + 1` can overflow i64 when the range spans the whole
-        // integer space; compute the span in 128 bits. The full 2^64 span
-        // truncates to 0 in `as u64`, so handle it separately.
         let span = (max as i128) - (min as i128) + 1;
         if span > u64::MAX as i128 {
             return self.next_u64() as i64;
@@ -289,7 +282,6 @@ fn bytes_impl(scope: &Scope) -> Obj {
     if length < 0 {
         return obj::err("'length' cannot be negative");
     }
-    // Bound the allocation — an unbounded `length` would exhaust memory.
     const MAX_BYTES: i64 = 10 * 1024 * 1024;
     if length > MAX_BYTES {
         return obj::err("'length' exceeds the limit of 10 MiB");
@@ -348,7 +340,6 @@ fn choices_impl(scope: &Scope) -> Obj {
     if count < 0 {
         return obj::err("'count' cannot be negative");
     }
-    // Bound the output — an unbounded `count` would exhaust memory.
     const MAX_CHOICES: i64 = 1_000_000;
     if count > MAX_CHOICES {
         return obj::err("'count' exceeds the limit of 1000000");
@@ -443,7 +434,6 @@ fn str_impl(scope: &Scope) -> Obj {
     if length < 0 {
         return obj::err("'length' cannot be negative");
     }
-    // Bound the allocation — an unbounded `length` would exhaust memory.
     const MAX_STRING: i64 = 10 * 1024 * 1024;
     if length > MAX_STRING {
         return obj::err("'length' exceeds the limit of 10 MiB");
@@ -513,9 +503,6 @@ fn range_impl(scope: &Scope) -> Obj {
     if min > max {
         return obj::err("'start' cannot be greater than 'end'");
     }
-    // The whole range is materialised, so refuse an insane length instead
-    // of building an uninterruptible vector. Compute in 128 bits — `max -
-    // min + 1` overflows i64 when the range spans the whole integer space.
     let len = (max as i128) - (min as i128) + 1;
     const MAX_RANGE: i128 = 1_000_000;
     if len > MAX_RANGE {

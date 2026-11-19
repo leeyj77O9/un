@@ -158,8 +158,6 @@ pub fn read_line(state: &Rc<RefCell<StreamState>>) -> Result<Option<String>, Obj
                     Err(e) => return Err(obj::err(&e.to_string())),
                 }
             }
-            // EOF with nothing read at all → no more lines. An empty line
-            // ending with '\n' is Some(""), not None.
             if !saw_newline && !consumed_any {
                 return Ok(None);
             }

@@ -1,8 +1,3 @@
-//! `codes` — 문자 코드 / 기수 변환 모듈 (`use codes`).
-//!
-//! 종전에는 전역 빌트인이었다가 전역 네임스페이스를 줄이기 위해 모듈로 옮겼다
-//! (D-076). 전역은 `len`/`exit`/`type`/`hash`/`throw`/`throw_if`/`throw_unless`/
-//! `repr`와 타입 객체만 남겼다.
 
 use crate::runtime::context::Context;
 use crate::runtime::function::ArgData;

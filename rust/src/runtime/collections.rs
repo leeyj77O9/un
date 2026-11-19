@@ -8,9 +8,6 @@ use crate::runtime::prims;
 use crate::runtime::types::Types;
 use crate::runtime::world;
 
-/// Pure-scalar payload check: does the value's payload require user code
-/// to compare? Everything that is not a composite value dispatches through
-/// `Payload::binop` `__eq__`.
 fn primitive_payload(o: &Obj) -> bool {
     matches!(
         &*obj::payload_ref(o),
@@ -19,10 +16,6 @@ fn primitive_payload(o: &Obj) -> bool {
     )
 }
 
-/// Result of a probe that does not run user code under a map borrow:
-/// `Hit(idx)` = entry at `idx` compares equal; `Miss` = excluded;
-/// `Divergent` = some candidate (or the query) may carry user `__eq__`,
-/// so the caller must fall back to the snapshot path.
 enum ProbeOutcome {
     Hit(usize),
     Miss,
@@ -37,9 +30,6 @@ pub struct KeyMap {
     next: Vec<usize>,
     free_head: usize,
     live: usize,
-    /// Bumps on every structural change (insert/remove/clear/grow). Used by
-    /// the snapshot drivers to detect that re-entrant user code (`__eq__` /
-    /// `__hash__` touching the same map) invalidated a lookup in flight.
     gen: u64,
 }
 struct Entry {
@@ -77,9 +67,6 @@ impl KeyMap {
     fn bump_gen(&mut self) {
         self.gen = self.gen.wrapping_add(1);
     }
-    /// All used entries whose hash equals `h`, as (index, cloned key) pairs.
-    /// Cloning is cheap (Obj is an Rc) and lets user `__eq__` run without
-    /// holding any borrow of the map.
     pub fn candidates(&self, h: u64) -> Vec<(usize, Obj)> {
         self.entries
             .iter()
@@ -88,12 +75,9 @@ impl KeyMap {
             .map(|(i, e)| (i, e.key.clone()))
             .collect()
     }
-    /// Remove the entry at `idx` without re-checking anything. Callers must
-    /// already hold a generation-verified critical section.
     pub fn remove_index(&mut self, idx: usize) -> bool {
         self.remove_at_unchecked(idx)
     }
-    /// The value at `idx`, but only if the map has not changed since `gen`.
     pub fn value_at(&self, gen: u64, idx: usize) -> Option<Obj> {
         if self.gen != gen {
             return None;
@@ -103,15 +87,12 @@ impl KeyMap {
             .filter(|e| e.used)
             .map(|e| e.value.clone())
     }
-    /// The key at `idx`, but only if the map has not changed since `gen`.
     pub fn key_at(&self, gen: u64, idx: usize) -> Option<Obj> {
         if self.gen != gen {
             return None;
         }
         self.entries.get(idx).filter(|e| e.used).map(|e| e.key.clone())
     }
-    /// Overwrite the value at `idx`, but only if the map has not changed
-    /// since `gen`. Value-only assignments do not invalidate snapshots.
     pub fn assign_value_at(&mut self, gen: u64, idx: usize, value: Obj) -> bool {
         if self.gen != gen {
             return false;
@@ -124,7 +105,6 @@ impl KeyMap {
             _ => false,
         }
     }
-    /// Insert a fresh entry, but only if the map has not changed since `gen`.
     pub fn insert_new_entry_if_unchanged(
         &mut self,
         gen: u64,
@@ -138,8 +118,6 @@ impl KeyMap {
         self.insert_new_entry(hash, key, value);
         true
     }
-    /// Remove the entry at `idx`, but only if the map has not changed since
-    /// `gen`.
     pub fn remove_at(&mut self, gen: u64, idx: usize) -> Option<bool> {
         if self.gen != gen {
             return None;
@@ -510,12 +488,6 @@ pub fn list_remove_at(v: &Rc<RefCell<Vec<Obj>>>, index: &Obj) -> Result<(), Obj>
     data.pop();
     Ok(())
 }
-/// Resolve slice bounds into a concrete `(start, end, step)` triple.
-///
-/// The result follows the usual sequence-slicing rules: a negative bound is
-/// relative to the end of the sequence, an omitted bound depends on the sign of
-/// the step, and `end` is always exclusive. `end == -1` with a negative step
-/// means "walk down to and including index 0".
 pub fn slice_indices(
     len: i64,
     start: &Option<Obj>,
@@ -596,8 +568,6 @@ pub fn slice_indices(
     Ok((a, b, st))
 }
 
-/// Collect the indices selected by `slice_indices` for a sequence of `len`
-/// elements.
 pub fn slice_positions(len: i64, start: i64, end: i64, step: i64) -> Vec<usize> {
     let mut out = Vec::new();
     let mut i = start as i128;
@@ -744,19 +714,12 @@ pub fn list_init(o: &Obj, args: &[Obj]) -> Obj {
         _ => list(args.to_vec()),
     }
 }
-/// As [`find_index`] but also hands back the generation at the time of the
-/// scan so the caller can re-apply its mutation under one critical section.
-/// `None` means the retry budget was exhausted (the map structurally
-/// changed during comparison too many times in a row).
 pub(crate) fn find_index(
     km: &Rc<RefCell<KeyMap>>,
     key: &Obj,
 ) -> Option<(Option<usize>, u64)> {
     let h = obj::hash_code(key);
     {
-        // Fast no-allocation probe: every key that shares the hash AND the
-        // query key are primitive payloads (Int/Float/Bool/Str/None/Enum),
-        // so comparing them runs no user code at all.
         match km.borrow().probe(h, key) {
             (ProbeOutcome::Hit(idx), gen) => return Some((Some(idx), gen)),
             (ProbeOutcome::Miss, gen) => return Some((None, gen)),
@@ -768,7 +731,6 @@ pub(crate) fn find_index(
             let b = km.borrow();
             (b.candidates(h), b.generation())
         };
-        // No borrow held while user code runs.
         let target = candidates
             .iter()
             .filter(|(_, k)| obj::key_eq(k, key))
@@ -782,7 +744,6 @@ pub(crate) fn find_index(
     None
 }
 pub fn dict_get_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
-    // Bind first: the error path's `display` may run user `__str__`.
     let found = find_index(km, key).and_then(|(target, gen)| {
         target.map(|idx| km.borrow().value_at(gen, idx))
     });
@@ -794,9 +755,6 @@ pub fn dict_get_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
         )),
     }
 }
-/// Duplicate-checking insert used by `dict.add`. Returns `Ok(true)` when the
-/// entry was inserted, `Ok(false)` for a duplicate key, `Err` on race
-/// exhaustion. No map borrow is held while user `__eq__` runs.
 pub fn dict_add_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Result<bool, Obj> {
     let h = obj::hash_code(key);
     for _ in 0..64 {
@@ -823,8 +781,6 @@ pub fn dict_add_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Result
     }
     Err(obj::err("dictionary mutated during key comparison"))
 }
-/// Removal used by `dict.remove` / `set.remove`. `None` means the retry
-/// budget was exhausted (the map changed during comparison too often).
 pub fn map_remove_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Option<bool> {
     let h = obj::hash_code(key);
     for _ in 0..64 {
@@ -848,14 +804,9 @@ pub fn map_remove_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Option<bool> {
     }
     None
 }
-/// Re-entrant-safe membership test. `None` means the retry budget was
-/// exhausted.
 pub fn map_contains(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Option<bool> {
     find_index(km, key).map(|(target, _)| target.is_some())
 }
-/// Re-entrant-safe get-with-default used by `dict.get`. Outer `None` means
-/// the retry budget was exhausted (map kept changing during comparison);
-/// `Some(None)` means absent; `Some(Some(v))` means found.
 pub fn dict_get_default(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Option<Option<Obj>> {
     for _ in 0..64 {
         let (target, gen) = find_index(km, key)?;
@@ -879,7 +830,6 @@ pub fn dict_set_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Obj {
             let b = km.borrow();
             (b.candidates(h), b.generation())
         };
-        // No borrow held while user code runs.
         let target = candidates
             .iter()
             .filter(|(_, k)| obj::key_eq(k, key))
@@ -904,8 +854,6 @@ pub fn dict_set_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Obj {
 pub fn dict_in(o: &Obj, other: &Obj) -> Obj {
     match obj::payload(o) {
         Payload::Dict(km) => {
-            // Snapshot both maps up front; every comparison below may call
-            // user `__eq__`, which may re-enter and mutate either dict.
             let mine_pairs: Vec<(Obj, Obj)> = km
                 .borrow()
                 .iter_pairs()
@@ -935,8 +883,6 @@ pub fn dict_in(o: &Obj, other: &Obj) -> Obj {
     }
 }
 pub fn dict_to_str(km: &Rc<RefCell<KeyMap>>) -> String {
-    // Snapshot before calling `display` — it can run user `__str__`, which
-    // may re-enter and mutate this dict.
     let pairs: Vec<(Obj, Obj)> = km
         .borrow()
         .iter_pairs()
@@ -1002,7 +948,6 @@ pub fn dict_init(o: &Obj, args: &[Obj]) -> Obj {
     }
 }
 pub fn set_get_item(s: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
-    // Bind first: the error path's `display` may run user `__str__`.
     let found = find_index(s, key).and_then(|(target, gen)| {
         target.map(|idx| s.borrow().key_at(gen, idx))
     });
@@ -1062,9 +1007,6 @@ pub fn set_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> 
     }
 }
 
-/// Two sets are equal when they hold the same elements, regardless of order.
-/// Both sides are snapshotted before any `key_eq` call — user `__eq__` may
-/// re-enter and mutate either set.
 fn set_equals(mine: &Rc<RefCell<KeyMap>>, other: &Rc<RefCell<KeyMap>>) -> bool {
     let mine_keys = mine.borrow().keys();
     let other_keys = other.borrow().keys();
@@ -1075,8 +1017,6 @@ fn set_equals(mine: &Rc<RefCell<KeyMap>>, other: &Rc<RefCell<KeyMap>>) -> bool {
     mine_keys.into_iter().all(|k| other_map.contains_key(&k))
 }
 
-/// Two dicts are equal when they hold the same entries. Both sides are
-/// snapshotted before any user code runs.
 fn dict_equals(mine: &Rc<RefCell<KeyMap>>, other: &Rc<RefCell<KeyMap>>) -> bool {
     let mine_pairs: Vec<(Obj, Obj)> = mine
         .borrow()
@@ -1098,8 +1038,6 @@ fn dict_equals(mine: &Rc<RefCell<KeyMap>>, other: &Rc<RefCell<KeyMap>>) -> bool 
     })
 }
 
-/// Binary operations on dictionaries. Only equality is defined; every other
-/// operator reports the usual "unsupported operand type(s)" error.
 pub fn dict_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
     if matches!(op, BinOp::Eq | BinOp::NEq) {
         let mine = match obj::payload(o) {
@@ -1134,7 +1072,6 @@ fn intersect(a: &[Obj], b: &[Obj]) -> Vec<Obj> {
     a.iter().filter(|k| bmap.contains_key(k)).cloned().collect()
 }
 pub fn set_to_str(s: &Rc<RefCell<KeyMap>>) -> String {
-    // Snapshot before calling `display` — it can run user `__str__`.
     let keys = s.borrow().keys();
     let parts: Vec<String> = keys.iter().map(|i| obj::display(i)).collect();
     format!("{{{}}}", parts.join(", "))

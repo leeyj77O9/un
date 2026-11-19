@@ -10,24 +10,14 @@ const HOST: &str = "Invalid URI: The hostname could not be parsed.";
 const PORT: &str = "Invalid URI: Invalid port specified.";
 const SCHEME_HTTP: &str = "Only Uris starting with 'http://' are supported. (Parameter 'uri')";
 const SCHEME_WS: &str = "Only Uris starting with 'ws://' are supported. (Parameter 'uri')";
-/// Maximum accepted WebSocket frame payload (1 MiB). A hostile or broken peer
-/// could claim a huge length and exhaust the process before a single byte
-/// arrives.
 const MAX_FRAME_PAYLOAD: u64 = 1_048_576;
-/// Maximum accepted HTTP response (64 MiB). `read_to_end` without a cap lets a
-/// hostile peer stream an unbounded body into memory.
 const MAX_HTTP_RESPONSE: u64 = 64 * 1024 * 1024;
-/// Timeouts so a hung or never-answering peer aborts instead of freezing the
-/// process. Connect gets a shorter budget than the read/write phase.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub const CONNECT: &str = "Unable to connect to the remote server";
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-/// Resolve `host:port` and connect with a timeout; the returned stream has
-/// read/write timeouts set. DNS resolution itself is blocking (std does not
-/// expose a timeout there).
 fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, String> {
     let addrs = (host, port)
         .to_socket_addrs()
@@ -80,8 +70,6 @@ pub fn parse_uri(text: &str) -> Result<Uri, String> {
     if text.is_empty() {
         return Err(EMPTY.to_owned());
     }
-    // A raw CR/LF would be written verbatim into the HTTP request line and
-    // headers — reject them outright (a legal URI percent-encodes them).
     if text.contains('\r') || text.contains('\n') {
         return Err(FORMAT.to_owned());
     }
@@ -271,11 +259,6 @@ fn parse_response(method: &str, data: &[u8]) -> Result<Response, String> {
     let body = if chunked {
         decode_chunked(&data[split + 4..])?
     } else {
-        // If the peer declared a Content-Length, the body must be exactly that
-        // long — a shorter read means a truncated response, never a success.
-        // 1xx, 204 and 304 responses never carry a body, and a HEAD response
-        // declares the Content-Length of the *would-be* body without sending
-        // it — the strict equality check must not fire for those.
         let bodyless = (100..200).contains(&code) || code == 204 || code == 304
             || method.eq_ignore_ascii_case("HEAD");
         let declared = if bodyless {
@@ -301,8 +284,6 @@ fn parse_response(method: &str, data: &[u8]) -> Result<Response, String> {
         body,
     })
 }
-/// Send exactly one request/response round-trip. Redirect handling lives in
-/// `request_body`, never here.
 fn send_once(
     state: &HttpState,
     method: &str,
@@ -316,7 +297,6 @@ fn send_once(
     if write!(stream, "{}", build_request(state, method, uri, body)).is_err() {
         return Err(CONNECT.to_owned());
     }
-    // Bounded read: a hostile peer cannot stream an unbounded body into memory.
     let mut limited = stream.take(MAX_HTTP_RESPONSE + 1);
     let mut data = Vec::new();
     if limited.read_to_end(&mut data).is_err() {
@@ -328,7 +308,6 @@ fn send_once(
     parse_response(method, &data)
 }
 
-/// Resolve an RFC-7231 Location header value against the base URI.
 fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, String> {
     let location = location.trim();
     let lower = location.to_ascii_lowercase();
@@ -364,7 +343,6 @@ fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, String> {
         });
     }
     if location.starts_with('#') {
-        // Same resource, fragment changed — represent as the same path.
         return Ok(base.clone());
     }
     let mut base_path = base.path.clone();
@@ -381,7 +359,6 @@ fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, String> {
     })
 }
 
-/// Resolve `.`/`..` segments and collapse duplicate slashes in the path part.
 fn normalize_path(path: &str) -> String {
     let (path_part, query) = match path.find('?') {
         Some(i) => (&path[..i], Some(&path[i..])),
@@ -411,9 +388,6 @@ fn normalize_path(path: &str) -> String {
     }
 }
 
-/// Follow HTTP 301/302/303/307/308 redirects up to 8 hops.
-/// 301/302/303 rewrite the method to GET and drop the body (.NET
-/// HttpClient behaviour); 307/308 preserve method and body.
 pub fn request(state: &HttpState, method: &str, uri: &Uri) -> Result<Response, String> {
     request_body(state, method, uri, None)
 }
@@ -621,7 +595,6 @@ pub fn read_frame(stream: &mut TcpStream) -> Result<(u8, Vec<u8>, bool), String>
     let masked = header[1] & 0x80 != 0;
     let length = (header[1] & 0x7F) as u64;
     let length = match length {
-        // RFC 6455 §5.2: 126 = u16 extended length, 127 = u64 extended length.
         126 => {
             let mut buffer = [0u8; 2];
             stream
@@ -663,7 +636,6 @@ pub fn read_frame(stream: &mut TcpStream) -> Result<(u8, Vec<u8>, bool), String>
 }
 pub fn write_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> Result<(), String> {
     let mut out = vec![0x80 | opcode];
-    // RFC 6455 §5.2 markers: 126 = u16 extended length, 127 = u64 extended length.
     match payload.len() {
         len if len < 126 => out.push(len as u8 | 0x80),
         len if len < 65536 => {
@@ -685,9 +657,6 @@ pub fn write_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> Result
 
 #[cfg(test)]
 mod redirect_tests {
-    //! In-process HTTP server exercising the redirect follower. Each test
-    //! binds 127.0.0.1:0, speaks exactly the subset of HTTP/1.1 the client
-    //! emits, and asserts on the recorded requests.
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;

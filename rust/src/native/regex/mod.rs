@@ -52,14 +52,6 @@ pub struct Regex {
     capnumlist: Option<Vec<i32>>,
     fast: Option<FastRegex>,
 }
-/// Weak-DFA fast path. Eligible shapes produced by this writer are: a plain
-/// sequence of single-char atoms, possibly ending in one unbounded greedy
-/// loop of a single set/char atom (`[0-9]+`, `[^a]+`, `\d+`, `[0-9]{2}`,
-/// `a+b` is NOT eligible). Such a pattern is deterministic at every start
-/// position and greedy maximal length is the backtracking engine's result;
-/// `CAPTUREMARK` is only allowed in slot 0 (the full match). Anything
-/// outside the eligible shape returns `None` and keeps the normal engine,
-/// which is always correct.
 #[derive(Debug, Clone)]
 enum FastAtom {
     Class(usize),
@@ -91,13 +83,7 @@ impl FastRegex {
         if codes.len() < 4 {
             return None;
         }
-        // NOTE: no blanket scan over `codes` here — operand words (e.g. -1)
-        // are not opcodes. RTL/case-insensitive markers are rejected at the
-        // prefix and atom stages, which only touch opcode positions.
         let mut i = 0usize;
-        // Non-consuming prefix, same shape as the interpreter's prefilter:
-        // LAZYBRANCH at index 0 (its operand is patched to after the body),
-        // plus mark/count bookkeeping ops. Only slot-0 CAPTUREMARKs.
         for _ in 0..64 {
             let Some(&op) = codes.get(i) else { return None; };
             if (op & FAST_FLAG_MASK) != 0 {
@@ -205,7 +191,6 @@ impl FastRegex {
                     };
                     greedy = Some(atom);
                     i += 3;
-                    // trailing slot-0 CAPTUREMARKs and STOP only
                     for _ in 0..16 {
                         let Some(&op2) = codes.get(i) else { return None; };
                         if (op2 & FAST_FLAG_MASK) != 0 {
@@ -247,10 +232,6 @@ impl FastRegex {
         None
     }
 
-    // Index one past the end of the match that starts at `start`, or `None`
-    // when the pattern cannot match there. Greedy atoms run to the input
-    // end or the first char outside their set, which is exactly what the
-    // backtracking engine produces for these shapes.
     fn end_at(&self, sets: &[CharClass], text: &[char], start: usize) -> Option<usize> {
         if start > text.len() {
             return None;
@@ -283,8 +264,6 @@ impl FastRegex {
                     out.push(Match {
                         start: pos,
                         end,
-                        // Captures are (start, absolute end) everywhere else in
-                        // this module; keep slot 0 in the same shape.
                         captures: vec![vec![(pos, end)]],
                         capcount: vec![1],
                         matched: vec![true],
@@ -299,8 +278,6 @@ impl FastRegex {
                     }
                 }
                 None => {
-                    // No match starts at `pos`; advance to the next start,
-                    // mirroring the forward scan in `find_next`.
                     pos += 1;
                     continue;
                 }
@@ -369,9 +346,6 @@ impl Regex {
     }
 
     pub fn find_all(&self, text: &[char]) -> Result<Vec<Match>, String> {
-        // Weak-DFA fast path: eligible patterns are deterministic at every
-        // start position, so this produces exactly what the backtracking
-        // engine would produce (leftmost-first, greedy maximal tail).
         if let Some(fast) = &self.fast {
             return Ok(fast.find_all_direct(&self.code.sets, text));
         }

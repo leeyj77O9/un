@@ -1,28 +1,3 @@
-//! Compile-mode static analysis: semantic analysis, type checking, inference.
-//!
-//! This is the stage that runs after the optimizer and before code
-//! generation. It walks the same optimized AST the bytecode compiler
-//! consumes and:
-//!
-//! 1. collects declarations (functions, classes, enums, module variables,
-//!    type aliases, `use` imports),
-//! 2. resolves function signatures from annotations (missing annotations are
-//!    **errors** in compile mode),
-//! 3. checks bodies: argument counts, return types, local-variable type
-//!    invariance, operators, conditions, class members,
-//! 4. produces a `CheckedProgram` whose `FnCheck` per function carries the
-//!    signature and every tracked local with its final static type ??the
-//!    input of the TIR lowering (`tir.rs`).
-//!
-//! The checker never executes the program and never mutates the AST.
-//! Errors are collected (up to `MAX_ERRORS`) instead of aborting on the
-//! first one, and reported with source spans via `LangError`.
-//!
-//! What is deliberately **not** checked (documented in `docs/compile/COMPILE_DESIGN.md`):
-//! match exhaustiveness, union narrowing across `if` branches, and
-//! list/dict element variance. Everything unknown is `Ty::Any`, the
-//! documented dynamic boundary.
-
 use crate::ast::{Const, Node, NodeKind};
 use crate::error::LangError;
 use crate::source::Source;
@@ -31,15 +6,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-/// Maximum number of collected diagnostics; checking stops reporting after
-/// this many errors (the caller still gets exit code 1).
 const MAX_ERRORS: usize = 50;
-/// Maximum length of a resolved type-alias chain (cycles are an error).
 const MAX_ALIAS_DEPTH: usize = 8;
 
-// ---------------------------------------------------------------------------
-// Ty ??the compile-mode static type representation.
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, PartialEq)]
 pub enum Ty {
@@ -53,20 +22,13 @@ pub enum Ty {
     Set(Rc<Ty>),
     Tuple(Rc<[Ty]>),
     Union(Rc<[Ty]>),
-    /// The dynamic boundary. Everything may flow into `Any`; only explicit
-    /// conversion (`int(x)`, `float(x)`, `str(x)`, `bool(x)`) or a checked
-    /// union membership narrows out of it.
     Any,
     Class(Rc<str>),
-    /// A function value. `names` mirrors `params` and is used for keyword
-    /// argument binding; synthetic names are `arg0..` for signatures that
-    /// don't carry real names (builtins).
     Func {
         params: Rc<[Ty]>,
         names: Rc<[String]>,
         ret: Rc<Ty>,
     },
-    /// Error-recovery placeholder. Never escapes a successful check.
     Unknown,
 }
 
@@ -166,36 +128,23 @@ fn type_sort_key(t: &Ty) -> String {
     t.display()
 }
 
-// ---------------------------------------------------------------------------
-// Checked program output
-// ---------------------------------------------------------------------------
 
-/// Static signature of one function as seen by compile mode.
 #[derive(Clone, Debug)]
 pub struct FnSig {
     pub name: String,
-    /// Parameter types, including the implicit `self` of class methods.
     pub params: Vec<Ty>,
-    /// Parameter names, same order as `params`.
     pub param_names: Vec<String>,
     pub ret: Ty,
-    /// Essential (no default) parameter count; the rest are optional.
     pub required: usize,
-    /// True for class methods (first parameter is `self`).
     pub is_method: bool,
-    /// Number of leading parameters bound to the receiver (0 or 1).
     pub receiver: usize,
-    /// True when the last parameter is variadic (`*args` / `**kwargs`).
     pub variadic: bool,
 }
 
-/// Per-function analysis output used by the TIR lowering.
 #[derive(Clone)]
 pub struct FnCheck {
     pub sig: FnSig,
-    /// Every tracked local (declared or inferred), in insertion order.
     pub locals: Vec<(String, Ty)>,
-    /// Keyed by local name; mirrors `locals`.
     pub local_types: HashMap<String, Ty>,
 }
 
@@ -205,7 +154,6 @@ pub struct CheckedProgram {
     pub classes: HashMap<String, ClassInfo>,
     pub aliases: HashMap<String, Ty>,
     pub functions: Vec<FnCheck>,
-    /// Span of a `fn` node ??index into `functions`.
     pub fn_by_span: HashMap<usize, usize>,
 }
 
@@ -215,18 +163,13 @@ pub struct ClassInfo {
     pub methods: HashMap<String, Ty>,
     pub bases: Vec<String>,
     pub has_getattr: bool,
-    /// Member names declared with a `set` accessor on this class (or a base).
     pub setters: Vec<String>,
-    /// Header parameters (`class Point(x: int, y: int)`) as `(name, ty)`.
     pub ctor_params: Vec<(String, Ty)>,
     pub ctor_required: usize,
 }
 
 
 
-// ---------------------------------------------------------------------------
-// Declaration model (pass 1)
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 struct DeclFn<'a> {
@@ -240,7 +183,6 @@ pub struct Checker<'a> {
     source: &'a Source,
     root: &'a Node,
     errors: Vec<LangError>,
-    /// Type aliases collected from `T = <type expr>` at module level.
     aliases: HashMap<String, Ty>,
     functions: Vec<DeclFn<'a>>,
     classes: HashMap<String, ClassInfo>,
@@ -248,17 +190,10 @@ pub struct Checker<'a> {
     globals: HashMap<String, Ty>,
     import_names: Vec<String>,
     enums: Vec<String>,
-    /// Return type of the function currently being checked (for `check_return`).
     current_ret: Option<Ty>,
-    /// Signature table for the whole module; also used for value-position
-    /// function references. Keyed by function name (last definition wins).
     fn_sigs: HashMap<String, FnSig>,
-    /// Same table keyed by the declaration node's start offset, for binding
-    /// checking (two functions may share a name).
     sigs_by_span: HashMap<usize, FnSig>,
-    /// When non-zero, diagnostics are suppressed (global type inference pass).
     silence: u32,
-    /// Function bodies checked inline, in source order.
     checked_functions: Vec<FnCheck>,
     checked_by_span: HashMap<usize, usize>,
 }
@@ -322,26 +257,8 @@ impl<'a> Checker<'a> {
 }
 
 
-// ---------------------------------------------------------------------------
-// Type-annotation text parsing
-//
-// Annotations survive parsing as raw source text (possibly inside a Typed
-// node), so compile mode re-parses the text. Grammar:
-//
-//   union    := alternative (`|` alternative)*
-//   atom     := name | name `[` args `]`
-//   args     := union (`,` union)*
-//   name     := `int` | `float` | `bool` | `str` | `none` | `any`
-//             | <class> | <alias>
-//
-// Brackets nest; the top-level `|` is the union operator.
-// ---------------------------------------------------------------------------
 
 impl<'a> Checker<'a> {
-    /// Parse annotation text into a `Ty`. Total: unknown names produce a
-    /// diagnostic and resolve to `Ty::Unknown`.
-    /// Silent type-text parse for alias detection: succeeds only when the
-    /// text is a valid type expression built from known atoms.
     fn try_type_text(&self, text: &str) -> Option<Ty> {
         self.try_union_text(text.trim(), 0)
     }
@@ -458,7 +375,6 @@ impl<'a> Checker<'a> {
                 }
                 "tuple" => {
                     if args.len() == 1 {
-                        // tuple[T, ...] homogeneous form
                         return Ty::Tuple(Rc::from(vec![args[0].clone()]));
                     }
                     return Ty::tuple(args);
@@ -481,8 +397,6 @@ impl<'a> Checker<'a> {
             "none" => Ty::None_,
             "any" => Ty::Any,
             n if is_fixed_width_alias(n) => {
-                // Fixed-width aliases belong to the `types`-imported
-                // namespace; without the `use types` import they are unknown.
                 if self.import_names.iter().any(|i| i == "types") {
                     match n {
                         "f32" | "f64" => Ty::Float,
@@ -507,8 +421,6 @@ impl<'a> Checker<'a> {
                     return Ty::Class(Rc::from(name));
                 }
                 if self.enums.iter().any(|n| n == name) || self.import_names.iter().any(|n| n == name) {
-                    // Enums and module-qualified names have no static shape;
-                    // treat them as the dynamic boundary.
                     return Ty::Any;
                 }
                 if depth == 0 {
@@ -519,16 +431,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Parse the annotation attached to a node (`Typed` wrapper or a raw
-    /// Identifier/return-type node). Returns `Ty::Unknown` with a diagnostic
-    /// when missing or invalid.
     fn parse_annotation_node(&mut self, node: &Node) -> Ty {
         self.parse_type_text(&self.text_of(node), self.span(node), 0)
     }
 }
 
-/// The fixed-width alias namespace owned by the `types` module: these
-/// names are only known as type annotations when the file does `use types`.
 fn is_fixed_width_alias(name: &str) -> bool {
     matches!(
         name,
@@ -536,9 +443,6 @@ fn is_fixed_width_alias(name: &str) -> bool {
     )
 }
 
-/// Map the fixed-width annotation text to its inclusive range `[lo, hi]`.
-/// The range is expressed in `i128` so the u64 upper bound is representable.
-/// f32/f64 are not tracked (no meaningful literal-only bound).
 fn fixed_width_bounds(name: &str) -> Option<(&'static str, (i128, i128))> {
     Some(match name {
         "u8" => ("u8", (0, 255)),
@@ -553,15 +457,9 @@ fn fixed_width_bounds(name: &str) -> Option<(&'static str, (i128, i128))> {
     })
 }
 
-/// Evaluate a literal-evaluable integer expression. Returns `None` when the
-/// expression references anything dynamic (argument, local, call, ...).
-/// Only integer types are folded; float expressions are not.
 fn const_int_value(node: &Node, source: &Source) -> Option<i128> {
     match node.kind {
         NodeKind::Integer => {
-            // The optimizer folds literal constants in place: the folded node
-            // keeps its original span (`255 + 1`) but carries the resolved
-            // value in `value`. Prefer that over re-parsing the span text.
             if let Some(crate::ast::Const::Int(v)) = &node.value {
                 return Some(*v as i128);
             }
@@ -603,7 +501,6 @@ fn const_int_value(node: &Node, source: &Source) -> Option<i128> {
                     if rhs == 0 {
                         return None;
                     }
-                    // Truncating division (matches Un's documented semantics).
                     let (mut q, r) = (lhs / rhs, lhs % rhs);
                     if r != 0 && ((lhs < 0) != (rhs < 0)) {
                         q -= 1;
@@ -651,7 +548,6 @@ fn split_union(text: &str) -> Vec<&str> {
     out
 }
 
-/// Index of the first top-level `[` in `text`, if any.
 fn find_top_bracket(text: &str) -> Option<usize> {
     let mut depth = 0i32;
     for (index, ch) in text.char_indices() {
@@ -684,9 +580,6 @@ fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     parts
 }
 
-// ---------------------------------------------------------------------------
-// Pass 1: declaration collection
-// ---------------------------------------------------------------------------
 
 impl<'a> Checker<'a> {
     fn collect_block(&mut self, node: &'a Node) {
@@ -741,10 +634,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Pass-1 traversal for function bodies: collects only declarations
-    /// (functions, lambdas, classes, enums, use-directives). Assignments
-    /// inside a body bind locals and are never module-level globals; anything
-    /// else (if/while/for/block/match/...) is walked structurally.
     fn collect_nested_block(&mut self, node: &'a Node) {
         for child in &node.children {
             self.collect_nested_stmt(child);
@@ -801,8 +690,6 @@ impl<'a> Checker<'a> {
                 info.bases.push(self.text_of(base));
             }
         }
-        // Header parameters (`class Point(x: int, y: int)`) are fields and
-        // form the constructor signature.
         if let Some(params) = node.children.iter().find(|c| c.kind == NodeKind::Tuple) {
             for param in &params.children {
                 let pname = param_name_text(param, self.source).unwrap_or_default();
@@ -827,7 +714,6 @@ impl<'a> Checker<'a> {
                 info.ctor_params.push((pname, ty));
             }
         }
-        // Annotated members and fields with defaults.
         if let Some(body) = block_of_class(node) {
             for child in &body.children {
                 match child.kind {
@@ -844,14 +730,11 @@ impl<'a> Checker<'a> {
                     _ => {}
                 }
             }
-            // Pre-scan method bodies for `self.x = ...` so the field exists
-            // even if only ever introduced by assignment.
             for child in &body.children {
                 if child.kind == NodeKind::Function {
                     scan_self_assignments(child, &mut info.fields, self.source);
                 }
             }
-            // Methods are functions as far as the checker is concerned.
             for child in &body.children {
                 if child.kind == NodeKind::Function {
                     let name = first_identifier_text(child, self.source).unwrap_or_default();
@@ -882,7 +765,6 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // Merge base-class fields (own declarations win).
         let mut merged: HashMap<String, Ty> = HashMap::new();
         for base in &info.bases {
             if let Some(base_info) = self.classes.get(base) {
@@ -917,9 +799,6 @@ impl<'a> Checker<'a> {
     }
 
     fn collect_module_var(&mut self, node: &'a Node) {
-        // Type-alias detection: `T = <type expr>` at module level. The
-        // candidate is parsed silently; only if it parses cleanly is it
-        // accepted as an alias.
         if node.kind == NodeKind::Assign {
             if let Some(target) = node.children.first() {
                 if target.kind == NodeKind::Identifier {
@@ -1037,8 +916,6 @@ fn member_field(node: &Node, checker: &mut Checker) -> Option<(String, Ty)> {
         }
         NodeKind::Identifier => {
             let text = checker.source.span(target.start, target.length);
-            // Untyped `x = default`: start as Unknown; refined by the body
-            // check pass from the default expression's type.
             Some((text, Ty::Unknown))
         }
         _ => None,
@@ -1055,8 +932,6 @@ fn merge_field(fields: &mut HashMap<String, Ty>, name: String, ty: Ty) {
             if matches!(refined, Ty::Unknown | Ty::Any) {
                 fields.insert(name, ty);
             } else {
-                // Keep the first known type; a conflict is reported when the
-                // conflicting assignment is checked.
                 fields.insert(name, refined);
             }
         }
@@ -1159,7 +1034,6 @@ fn assigned_names(node: &Node, source: &Source) -> Vec<String> {
 
 fn use_bound_names(node: &Node, source: &Source) -> Vec<String> {
     let children = &node.children;
-    // Form 3: `use path {a, b}` → binds the member names.
     if let Some(tuple) = children.iter().find(|c| c.kind == NodeKind::Tuple) {
         return tuple
             .children
@@ -1168,7 +1042,6 @@ fn use_bound_names(node: &Node, source: &Source) -> Vec<String> {
             .map(|c| source.span(c.start, c.length))
             .collect();
     }
-    // Form 2: `use path as alias` → binds the alias.
     if children.len() >= 2 {
         if let Some(alias) = children.last() {
             if alias.kind == NodeKind::Identifier {
@@ -1176,7 +1049,6 @@ fn use_bound_names(node: &Node, source: &Source) -> Vec<String> {
             }
         }
     }
-    // Form 1: `use io` / `use a.b` → binds the last segment of the path.
     fn last_segment<'n>(node: &'n Node) -> &'n Node {
         let mut current = node;
         loop {
@@ -1198,25 +1070,14 @@ fn use_bound_names(node: &Node, source: &Source) -> Vec<String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pass 2: environments and checking
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 struct Env {
-    /// Function-local scopes; index 0 is the innermost. Globals are NOT in
-    /// here ??they live in `Checker::globals` and are consulted on misses.
     scopes: Vec<HashMap<String, Ty>>,
-    /// Insertion order of locals across all scopes, for `FnCheck.locals`.
     order: Vec<String>,
     loop_depth: u32,
     in_function: bool,
-    /// True when the current body provably ends with return/break/skip on
-    /// every path (used for branch merging and return analysis).
     terminated: bool,
-    /// Local names bound with a fixed-width annotation (`u8 = 200`, `i32 = ...`),
-    /// mapped to the annotation text and inclusive (lo, hi) range. Used to
-    /// reject constant-foldable out-of-range assignments into those locals.
     fixed_width: HashMap<String, (String, (i128, i128))>,
 }
 
@@ -1266,7 +1127,6 @@ impl Env {
         false
     }
 
-    /// Names declared in `self` that were not present in `base_scopes`.
     fn new_names_since(&self, base_scopes: &[HashMap<String, Ty>]) -> Vec<String> {
         let mut out = Vec::new();
         for scope in &self.scopes {
@@ -1283,9 +1143,6 @@ impl Env {
     }
 }
 
-/// Merge the environments of if/match arms. Names declared in *every* arm
-/// survive (types joined into a union); names declared in some arms only are
-/// dropped (they are not definitely bound afterwards).
 fn merge_arms(base: &Env, arms: &[Env]) -> Env {
     let mut out = base.clone();
     let sets: Vec<Vec<String>> = arms
@@ -1311,7 +1168,6 @@ fn merge_arms(base: &Env, arms: &[Env]) -> Env {
             .filter_map(|arm| arm.lookup(&name).cloned())
             .collect();
         let joined = Ty::union(types);
-        // The name exists in all arm forks but not in the merged env yet.
         if base.lookup(&name).is_none() {
             out.order.push(name.clone());
         }
@@ -1320,13 +1176,8 @@ fn merge_arms(base: &Env, arms: &[Env]) -> Env {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Pass 2: check bodies
-// ---------------------------------------------------------------------------
 
 impl<'a> Checker<'a> {
-    /// The first-class function type for the declaration at `start` (span of
-    /// the `fn` node). `Ty::Any` when unknown (error recovery).
     fn func_ty_for_span(&self, start: usize) -> Ty {
         match self.sigs_by_span.get(&start) {
             Some(sig) => Ty::Func {
@@ -1340,8 +1191,6 @@ impl<'a> Checker<'a> {
 
     fn check_all(&mut self) -> CheckedProgram {
         let decls = std::mem::take(&mut self.functions);
-        // 1. Build the signature table first ??bodies may call each other in
-        //    any order, and module statements may call functions too.
         let mut sigs: HashMap<String, FnSig> = HashMap::new();
         for decl in &decls {
             let sig = self.build_sig(decl);
@@ -1349,9 +1198,6 @@ impl<'a> Checker<'a> {
             sigs.insert(decl.name.clone(), sig);
         }
         self.fn_sigs = sigs;
-        // Class method lookup table (receiver pre-bound, params minus self),
-        // keyed span-accurately so same-named methods in different classes
-        // do not collide.
         for decl in &decls {
             if let Some(class_name) = &decl.class_name {
                 if let Some(sig) = self.sigs_by_span.get(&decl.node.start).cloned() {
@@ -1363,9 +1209,6 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // 2. Silent global type inference (no diagnostics). This makes the
-        //    globals table complete before any body is checked, so forward
-        //    references from functions to module-level variables resolve.
         self.silence += 1;
         let mut seed_env = Env::new();
         self.check_module_block(self.root, &mut seed_env);
@@ -1375,13 +1218,8 @@ impl<'a> Checker<'a> {
             }
         }
         self.silence -= 1;
-        // 3. Real pass, in source order, with the complete globals table and
-        //    closure capture (a function body is checked inline where its
-        //    declaration appears).
         let mut env = Env::new();
         for (name, ty) in self.globals.clone() {
-            // Seed the module env with the final global types; declarations
-            // in source order still shadow these when the statement runs.
             env.declare(&name, ty);
         }
         self.check_module_block(self.root, &mut env);
@@ -1408,7 +1246,6 @@ impl<'a> Checker<'a> {
                         class_name,
                     };
                     self.check_function_inline(&decl, env, false);
-                    // Bind the name as a first-class function value.
                     if env.lookup(&name).is_none() {
                         env.declare(&name, self.func_ty_for_span(child.start));
                     }
@@ -1420,17 +1257,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Check one function body inline; `captured` carries the environment at
-    /// the point where the function was defined (closure capture).
-    /// Class methods capture the class scope as well as the enclosing env.
     fn check_function_inline(&mut self, decl: &DeclFn<'a>, captured: &Env, _is_method_capture: bool) {
         if self.silence > 0 {
-            return; // global inference pass: no function bodies
-        }
+            return;        }
         let mut env = captured.fork();
         env.in_function = true;
-        // `order` records only this body's bindings (params first, then
-        // body-local declarations); captured names stay in the scope layers.
         env.order.clear();
         env.fixed_width.clear();
         let sig = self
@@ -1450,7 +1281,6 @@ impl<'a> Checker<'a> {
         for (i, name) in sig.param_names.iter().enumerate() {
             env.declare(name, sig.params[i].clone());
         }
-        // Accessor bodies see `field` (the stored member); setters see `value`.
         if decl.node.kind == NodeKind::Accessor {
             env.declare("field", Ty::Any);
             let is_set = decl.node.value.as_ref() == Some(&Const::Str("set".to_string()));
@@ -1464,9 +1294,6 @@ impl<'a> Checker<'a> {
             self.check_block_no_terminate_reset(body, &mut env);
             self.current_ret = saved;
         }
-        // Record FnCheck keyed by the function node's start offset — the same
-        // key the TIR uses (via `Proto::fn_span`). `env.order` holds only this
-        // body's bindings.
         let mut locals = Vec::with_capacity(env.order.len());
         let mut local_types = HashMap::new();
         let mut seen = std::collections::HashSet::new();
@@ -1496,8 +1323,6 @@ impl<'a> Checker<'a> {
         for child in &body.children {
             match child.kind {
                 NodeKind::Assign => {
-                    // `field = default`: check the default expr and record the
-                    // field's inferred type (refining an Unknown field).
                     let target = child.children.first().cloned();
                     if let (Some(target), Some(value)) = (target, child.children.get(1)) {
                         let vty = self.check_expr(value, env);
@@ -1534,11 +1359,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                NodeKind::Typed => {} // bare field, nothing to evaluate
-                NodeKind::Function | NodeKind::Accessor => {
-                    // Method/accessor bodies are checked inline, capturing the
-                    // enclosing environment (module-level names) plus the
-                    // implicit `self` binding.
+                NodeKind::Typed => {}                NodeKind::Function | NodeKind::Accessor => {
                     let decl = DeclFn {
                         name: match child.kind {
                             NodeKind::Function => {
@@ -1583,8 +1404,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Look up a class field through the inheritance chain. Own fields win,
-    /// then bases in declaration order.
     fn class_field(&self, class_name: &str, name: &str) -> Option<Ty> {
         let mut current = Some(class_name.to_string());
         let mut seen = Vec::new();
@@ -1603,7 +1422,6 @@ impl<'a> Checker<'a> {
     }
 
     fn class_method(&self, class_name: &str, name: &str) -> Option<Ty> {
-        // Ty here is `Ty::Func` with the receiver pre-bound.
         let mut current = Some(class_name.to_string());
         let mut seen = Vec::new();
         while let Some(name_c) = current {
@@ -1660,7 +1478,6 @@ impl<'a> Checker<'a> {
 
     fn build_sig(&mut self, decl: &DeclFn) -> FnSig {
         let node = decl.node;
-        // Accessor: synthetic signature. `get x` ??() -> field-ish; `set x` ??        // (value) -> none.
         if node.kind == NodeKind::Accessor {
             let is_set = node.value.as_ref() == Some(&Const::Str("set".to_string()));
             let mut params = vec![Ty::Class(Rc::from(decl.class_name.clone().unwrap_or_default()))];
@@ -1733,9 +1550,6 @@ impl<'a> Checker<'a> {
                 param_names.push(pname);
             }
         }
-        // Return type: the annotated `-> T` child, at a fixed position per
-        // function kind. Functions push it as the last child of `Function`;
-        // `Extension` puts it after the body.
         let ret_child = match node.kind {
             NodeKind::Function | NodeKind::Accessor => node.children.get(3),
             NodeKind::Extension => node.children.get(4),
@@ -1752,7 +1566,6 @@ impl<'a> Checker<'a> {
             Some(Ty::Unknown) => Ty::Unknown,
             Some(ty) => ty,
             None => {
-                // `__init__` implicitly returns none (matches runtime behavior).
                 if decl.name == "__init__" {
                     Ty::None_
                 } else {
@@ -1777,8 +1590,6 @@ impl<'a> Checker<'a> {
     }
 }
 
-/// The runtime binds a method's receiver as the implicit first parameter;
-/// compile mode does the same for analysis and strips it for direct calls.
 fn bind_method_ty(sig: &FnSig) -> Ty {
     Ty::Func {
         params: sig.params[sig.receiver..].into(),
@@ -1787,9 +1598,6 @@ fn bind_method_ty(sig: &FnSig) -> Ty {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pass 2b: function bodies, statements, expressions
-// ---------------------------------------------------------------------------
 
 impl<'a> Checker<'a> {
     fn check_block_no_terminate_reset(&mut self, node: &'a Node, env: &mut Env) {
@@ -1827,7 +1635,6 @@ impl<'a> Checker<'a> {
             }
             NodeKind::Try => self.check_try(node, env),
             NodeKind::Using => {
-                // `using x = expr` ??the resource is dynamic to the checker.
                 if let Some(assign) = node.children.first() {
                     self.check_stmt(assign, env);
                 }
@@ -1838,10 +1645,8 @@ impl<'a> Checker<'a> {
                 }
             }
             NodeKind::Use => {
-                // Module imports are dynamic to the checker (see `use_bound_names`).
             }
             NodeKind::Function | NodeKind::Extension => {
-                // Nested function: checked inline, capturing the current env.
                 let (name, is_method, class_name) = function_decl_name(node, self.source);
                 let decl = DeclFn {
                     name: name.clone(),
@@ -1850,14 +1655,11 @@ impl<'a> Checker<'a> {
                     class_name,
                 };
                 self.check_function_inline(&decl, env, false);
-                // Bind the name as a first-class function value.
                 if env.lookup(&name).is_none() {
                     env.declare(&name, self.func_ty_for_span(node.start));
                 }
             }
             NodeKind::Class => {
-                // Class expression at statement position: check member
-                // defaults and bodies inline, capturing the current env.
                 self.check_class_defaults(node, env);
                 if let Some(name) = first_identifier_text(node, self.source) {
                     if env.lookup(&name).is_none() {
@@ -1915,8 +1717,6 @@ impl<'a> Checker<'a> {
             self.check_expr(target, env);
             return;
         };
-        // Type alias statements are consumed by the alias subsystem; they
-        // bind no runtime value.
         if target.kind == NodeKind::Identifier {
             let value_text = self.text_of(value);
             if self.try_type_text(&value_text).is_some()
@@ -1927,7 +1727,6 @@ impl<'a> Checker<'a> {
         }
         match target.kind {
             NodeKind::Typed => {
-                // `x: T = v` (possibly from compound-assign desugaring).
                 let Some(inner) = target.children.first() else {
                     return;
                 };
@@ -1936,8 +1735,6 @@ impl<'a> Checker<'a> {
                 let ty = annotation_node
                     .map(|t| self.parse_annotation_node(t))
                     .unwrap_or(Ty::Unknown);
-                // Fixed-width annotated bindings reject foldable constants
-                // outside their range (`a: u8 = 1111`).
                 let annotation_text_str = annotation_text.as_deref();
                 let fixed_width = annotation_text_str.and_then(fixed_width_bounds);
                 if let Some((fw_name, range)) = fixed_width {
@@ -1959,9 +1756,6 @@ impl<'a> Checker<'a> {
                         self.bind_annotated(inner, ty, vty, env);
                         let name = self.text_of(inner);
                         if let Some((fw_name, range)) = fixed_width {
-                            // Track the range for re-assignments into this local
-                            // below (`a = 300` after `a: u8 = 10`). Dropped when
-                            // the local is rebound with a non-fixed annotation.
                             env.fixed_width
                                 .insert(name, (fw_name.to_string(), range));
                         } else {
@@ -1997,7 +1791,6 @@ impl<'a> Checker<'a> {
                 self.bind_tuple(target, None, vty, env, node);
             }
             NodeKind::Property => {
-                // `obj.member = v` / `self.member = v`
                 let vty = self.check_expr(value, env);
                 let Some(receiver) = target.children.first() else {
                     return;
@@ -2052,7 +1845,6 @@ impl<'a> Checker<'a> {
     }
 
     fn bind_name(&mut self, name: &str, vty: Ty, env: &mut Env, node: &Node) {
-        // Local wins over global (slot semantics).
         if let Some(current) = env.lookup(name).cloned() {
             if !assignable(&current, &vty, &self.classes) {
                 self.error(
@@ -2076,7 +1868,6 @@ impl<'a> Checker<'a> {
                     ),
                 );
             }
-            // Local shadows the global from here on.
             env.declare(name, current);
             return;
         }
@@ -2166,15 +1957,12 @@ impl<'a> Checker<'a> {
                 }
                 let is_self = receiver.kind == NodeKind::Identifier && self.text_of(receiver) == "self";
                 if is_self {
-                    // `self.new_field = expr` introduces a field; refine Unknown.
                     self.insert_class_field(&class, member, vty);
                     return;
                 }
                 if self.class_has_getattr(&class) {
                     return;
                 }
-                // A property declared with a `set` accessor accepts
-                // assignment; a plain method never does.
                 if self.class_has_setter(&class, member) {
                     return;
                 }
@@ -2227,7 +2015,6 @@ impl<'a> Checker<'a> {
                 None
             }
         };
-        // Check the index expression itself.
         if let Some(index) = target.children.get(1) {
             let _ = self.check_expr(index, env);
         }
@@ -2243,9 +2030,6 @@ impl<'a> Checker<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pass 2c: control flow, calls, expressions
-// ---------------------------------------------------------------------------
 
 impl<'a> Checker<'a> {
     fn check_return(&mut self, node: &'a Node, env: &mut Env) {
@@ -2301,12 +2085,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_if(&mut self, node: &'a Node, env: &mut Env) {
-        // If ??[Branch(If), Branch(ElIf)*, Else?]
-        // The optimizer rewrites If arms into Branch/ElIf/Else nodes; direct
-        // source `if` keeps the condition as children[0] and the body as
-        // children[1]. Handle both shapes.
         if node.kind == NodeKind::If && has_if_cases(node) {
-            // Optimized shape: If[Branch(If), ...]
             self.check_if_branches(node, env);
             return;
         }
@@ -2332,7 +2111,6 @@ impl<'a> Checker<'a> {
             self.check_stmt(else_branch, &mut arm);
             arm_envs.push(arm);
         } else {
-            // No else arm: names introduced in the then-arm are conditional.
             arm_envs.push(base.fork());
         }
         let merged = merge_arms(&base, &arm_envs);
@@ -2340,7 +2118,6 @@ impl<'a> Checker<'a> {
     }
 
     fn check_if_branches(&mut self, node: &'a Node, env: &mut Env) {
-        // If[Branch(If [cond, body]), ..., Else?[body]]
         let base = env.clone();
         let mut arm_envs: Vec<Env> = Vec::new();
         for child in &node.children {
@@ -2371,7 +2148,6 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // No else arm: only the "all-arms-fail" path contributes base env.
         let has_else = node.children.iter().any(|c| c.kind == NodeKind::Else);
         if !has_else {
             arm_envs.push(base.fork());
@@ -2391,7 +2167,6 @@ impl<'a> Checker<'a> {
         if let Some(body) = node.children.get(1) {
             self.check_block_no_terminate_reset(body, &mut arm);
         }
-        // Body-declared names are not definitely bound afterwards.
         *env = base;
     }
 
@@ -2413,8 +2188,6 @@ impl<'a> Checker<'a> {
     }
 
     fn check_iter_elem(&mut self, node: &'a Node, env: &mut Env) -> Ty {
-        // `iter.range(a, b[, step])` keeps the fast path; everything else is
-        // dynamic unless it has a static container shape.
         if let Some(call) = iter_range_call(node, self.source) {
             for arg in &call.children[1].children {
                 if arg.kind == NodeKind::Pair || arg.kind == NodeKind::Spread {
@@ -2430,8 +2203,6 @@ impl<'a> Checker<'a> {
             }
             return Ty::Int;
         }
-        // `for i in a..b` — the `..` Binary form iterates integers when the
-        // bounds are integer-ish (int or dynamic); otherwise stays dynamic.
         if node.kind == NodeKind::Binary && node.op == Some(TokenType::DotDot) {
             if let (Some(start), Some(end)) = (node.children.first(), node.children.get(1)) {
                 let lty = self.check_expr(start, env);
@@ -2455,9 +2226,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Special-case `iter.array(v, n)`: the module keeps fixed list
-    /// signatures so compile mode can type it (everything else on the iter
-    /// module stays dynamic).
     fn iter_array_sig(&mut self, node: &'a Node, env: &mut Env) -> Option<Ty> {
         let callee = node.children.first()?;
         if callee.kind != NodeKind::Property {
@@ -2495,9 +2263,6 @@ impl<'a> Checker<'a> {
         })
     }
 
-    /// Special-case `iter.min(list[x])` / `iter.max(list[x])`: returns the
-    /// element type for homogeneous int/float lists (same semantics as the
-    /// `iter_batch` family). Other shapes stay dynamic.
     fn iter_minmax_sig(&mut self, node: &'a Node, env: &mut Env) -> Option<Ty> {
         let callee = node.children.first()?;
         if callee.kind != NodeKind::Property {
@@ -2518,7 +2283,6 @@ impl<'a> Checker<'a> {
         }
         let args: Vec<&'a Node> = args_node.children.iter().collect();
         if args.len() != 1 {
-            // iter.min/max fall back to interpreter for rest-args.
             return Some(Ty::Any);
         }
         let arg_ty = self.check_expr(args[0], env);
@@ -2588,7 +2352,6 @@ impl<'a> Checker<'a> {
             arm_envs.push(arm);
         }
         if !any_arm {
-            // `match` with no cases evaluates to none and binds nothing.
             return;
         }
         let merged = merge_arms(&base, &arm_envs);
@@ -2663,10 +2426,8 @@ impl<'a> Checker<'a> {
     fn check_pattern(&mut self, pattern: &'a Node, scrut: &Ty, env: &mut Env) {
         match pattern.kind {
             NodeKind::Wildcard => {
-                // `_` ??matches anything, binds nothing.
             }
             NodeKind::Identifier => {
-                // A bare identifier pattern binds the scrutinee value.
                 env.declare(&self.text_of(pattern), scrut.clone());
             }
             NodeKind::Tuple => {
@@ -2684,8 +2445,6 @@ impl<'a> Checker<'a> {
                 }
             }
             _ => {
-                // Constants and other literal patterns show up as plain
-                // literal nodes (Integer/Float/String/Boolean/None).
                 let lit = literal_ty(pattern).unwrap_or(Ty::Any);
                 if !matches!(lit, Ty::Any) && !matches_pattern_ty(&lit, scrut) {
                     self.error(
@@ -2706,8 +2465,6 @@ impl<'a> Checker<'a> {
             match child.kind {
                 NodeKind::Catch => {
                     let mut arm = base.fork();
-                    // `catch e` binds the error value; `catch` alone binds
-                    // nothing (the error is dropped or re-thrown).
                     if let Some(var) = child.children.first() {
                         if var.kind == NodeKind::Identifier {
                             arm.declare(&self.text_of(var), Ty::Any);
@@ -2736,8 +2493,6 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // Control-flow of try is intentionally not merged: the try body may
-        // not have run, so only base-env members are guaranteed afterwards.
         *env = base;
     }
 }
@@ -2791,9 +2546,6 @@ fn matches_pattern_ty(lit: &Ty, scrut: &Ty) -> bool {
 }
 
 
-// ---------------------------------------------------------------------------
-// Pass 2d: expressions
-// ---------------------------------------------------------------------------
 
 impl<'a> Checker<'a> {
     fn check_expr(&mut self, node: &'a Node, env: &mut Env) -> Ty {
@@ -2802,7 +2554,6 @@ impl<'a> Checker<'a> {
             NodeKind::Float => Ty::Float,
             NodeKind::String => Ty::Str,
             NodeKind::FString => {
-                // Format parts are ordinary expressions; the result is Str.
                 for child in &node.children {
                     if child.kind != NodeKind::Identifier || child.value.is_none() {
                         let _ = self.check_expr(child, env);
@@ -2849,7 +2600,6 @@ impl<'a> Checker<'a> {
                 Ty::Unknown
             }
             NodeKind::Tagged => {
-                // Tagged enum values ??the checker treats them as ints.
                 for child in &node.children {
                     self.check_expr(child, env);
                 }
@@ -2875,7 +2625,6 @@ impl<'a> Checker<'a> {
                 Ty::None_
             }
             NodeKind::Class => {
-                // Class expression (rare) ??treat as the class object.
                 Ty::Class(Rc::from(first_identifier_text(node, self.source).unwrap_or_default()))
             }
             NodeKind::Extension => Ty::Any,
@@ -2896,12 +2645,10 @@ impl<'a> Checker<'a> {
         if let Some(ty) = self.globals.get(&name).cloned() {
             return ty;
         }
-        // Type aliases are not values.
         if self.aliases.contains_key(&name) {
             self.error(node, format!("'{name}' is a type alias, not a value"));
             return Ty::Unknown;
         }
-        // Class objects, enums and functions are first-class values.
         if self.classes.contains_key(&name) {
             return Ty::Class(Rc::from(name.as_str()));
         }
@@ -2926,9 +2673,6 @@ impl<'a> Checker<'a> {
     }
 
     fn lookup_fn(&self, name: &str) -> Option<FnSig> {
-        // Sig table entries are keyed by name; set during `check_all`.
-        // `sigs` is borrowed for the whole call; this lookup is only used
-        // for value-position references and returns a clone.
         self.fn_sigs.get(name).cloned()
     }
 
@@ -2969,7 +2713,6 @@ impl<'a> Checker<'a> {
     }
 
     fn check_dict_literal(&mut self, node: &'a Node, env: &mut Env) -> Ty {
-        // Dict built from Pair[key, value] children.
         let mut keys = Vec::new();
         let mut values = Vec::new();
         for child in &node.children {
@@ -2988,7 +2731,6 @@ impl<'a> Checker<'a> {
                     values.push(Ty::Any);
                 }
                 _ => {
-                    // Unusual shape; check it but don't mine it.
                     self.check_expr(child, env);
                 }
             }
@@ -3070,7 +2812,6 @@ impl<'a> Checker<'a> {
             return Ty::Any;
         };
         let obj_ty = self.check_expr(obj, env);
-        // The index expression itself must be an int (or any).
         if let Some(index) = node.children.get(1) {
             let _ = self.check_expr(index, env);
         }
@@ -3078,7 +2819,6 @@ impl<'a> Checker<'a> {
             Ty::List(elem) | Ty::Set(elem) => refine_unknown((*elem).clone()),
             Ty::Dict(_, value) => (*value).clone(),
             Ty::Tuple(items) => {
-                // Static tuple indexing when both index and tuple are static.
                 if let Some(index_node) = node.children.get(1) {
                     if let NodeKind::Integer = index_node.kind {
                         if let Some(Const::Int(i)) = index_node.value {
@@ -3101,7 +2841,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Typing for member access expressions (`obj.member`).
     fn check_property(&mut self, node: &'a Node, env: &mut Env) -> Ty {
         let Some(receiver) = node.children.first() else {
             return Ty::Any;
@@ -3139,8 +2878,6 @@ impl<'a> Checker<'a> {
                 }
             }
             Ty::Any | Ty::List(_) | Ty::Dict(..) | Ty::Set(_) | Ty::Tuple(_) | Ty::Str | Ty::Int | Ty::Float | Ty::Bool => {
-                // Native members (str.upper, list.len, ...) have dynamic
-                // signatures; they stay on the dynamic boundary.
                 Ty::Any
             }
             _ => Ty::Any,
@@ -3153,7 +2890,6 @@ impl<'a> Checker<'a> {
     }
 
     fn check_lambda(&mut self, node: &'a Node, env: &mut Env) -> Ty {
-        // Lambda params are dynamic (Any); body is checked with those bindings.
         let mut lambda_env = env.fork();
         if let Some(params) = node.children.first() {
             if params.kind == NodeKind::Tuple {
@@ -3177,13 +2913,9 @@ impl<'a> Checker<'a> {
     fn check_call(&mut self, node: &'a Node, env: &mut Env) -> Ty {        let Some(callee) = node.children.first() else {
             return Ty::Any;
         };
-        // Resolve the callee before checking arguments: class constructor,
-        // module function, builtin, local variable, or dynamic callable.
         match callee.kind {
             NodeKind::Identifier => {
                 let name = self.text_of(callee);
-                // A callable local/global wins over the declaration-site
-                // signature table (lexical binding beats hoisting).
                 let local_fn = env.lookup(&name).cloned().or_else(|| self.globals.get(&name).cloned());
                 if let Some(Ty::Func { params, names, ret }) = local_fn {
                     return self.apply_sig(
@@ -3203,7 +2935,6 @@ impl<'a> Checker<'a> {
                     );
                 }
                 if local_fn.is_some() {
-                    // A local/global with a non-function type shadows the call.
                     let ty = local_fn.unwrap();
                     if matches!(ty, Ty::Any | Ty::Unknown) {
                         self.check_call_args_any(node.children.get(1), env);
@@ -3212,11 +2943,9 @@ impl<'a> Checker<'a> {
                     self.error(callee, format!("'{name}' of type '{ty}' is not callable"));
                     return Ty::Unknown;
                 }
-                // Classes act as constructors.
                 if let Some(info) = self.classes.get(&name).cloned() {
                     let _ = info.ctor_required;
                     if info.ctor_params.is_empty() {
-                        // No header params: the constructor accepts __init__ args dynamically.
                         self.check_call_args_any(node.children.get(1), env);
                         return Ty::Class(Rc::from(name.as_str()));
                     }
@@ -3236,7 +2965,6 @@ impl<'a> Checker<'a> {
                     return self.apply_sig(&sig, node, 0, env);
                 }
                 if let Some(_) = self.enums.iter().find(|n| *n == &name) {
-                    // `Enum(...)` is not a call constructor; treat as dynamic.
                     self.check_call_args_any(node.children.get(1), env);
                     return Ty::Any;
                 }
@@ -3265,7 +2993,6 @@ impl<'a> Checker<'a> {
                     self.check_call_args_any(node.children.get(1), env);
                     return Ty::Any;
                 }
-                // A local variable of function type (or a dynamic value).
                 if let Some(ty) = env.lookup(&name).cloned() {
                     if let Ty::Func { params, names, ret } = ty {
                         return self.apply_sig(
@@ -3302,7 +3029,6 @@ impl<'a> Checker<'a> {
                     && (matches!(recv_ty, Ty::None_)
                         || matches!(&recv_ty, Ty::Union(m) if m.iter().any(|t| matches!(t, Ty::None_))))
                 {
-                    // Optional call on a possibly-none receiver: safe to skip.
                     self.check_call_args_any(node.children.get(1), env);
                     return Ty::None_;
                 }
@@ -3335,7 +3061,6 @@ impl<'a> Checker<'a> {
                         }
                         if let Some(method_ty) = self.class_method(&class_name, &member) {
                             if let Ty::Func { params, names, ret } = method_ty {
-                                // Receiver is pre-bound by the class typing.
                                 return self.apply_sig(
                                     &FnSig {
                                         name: member,
@@ -3379,9 +3104,6 @@ impl<'a> Checker<'a> {
                         Ty::Any
                     }
                     other => {
-                        // Native member signatures for collections: the member
-                        // lookup resolves at compile time to the exact shape
-                        // the VM dispatches to.
                         let member_sig = match &other {
                             Ty::List(elem) => list_member_sig(elem, &member),
                             Ty::Dict(key, value) => dict_member_sig(key, value, &member),
@@ -3415,7 +3137,6 @@ impl<'a> Checker<'a> {
                 }
             }
             NodeKind::Call => {
-                // `foo()(args)` ??the callee returns something callable.
                 let inner = self.check_expr(callee, env);
                 match inner {
                     Ty::Func { params, names, ret } => {
@@ -3470,7 +3191,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Check arguments against the (receiver-stripped) signature.
     fn apply_sig(&mut self, sig: &FnSig, node: &'a Node, receiver: usize, env: &mut Env) -> Ty {
         let args = node.children.get(1);
         let _ = receiver;
@@ -3508,8 +3228,6 @@ impl<'a> Checker<'a> {
                 _ => positional.push(arg),
             }
         }
-        // Positional argument count (spread suppresses the arity check, as it
-        // can supply any number of arguments).
         let argc = positional.len();
         if !has_spread {
             let required = sig.required.saturating_sub(sig.receiver);
@@ -3535,9 +3253,7 @@ impl<'a> Checker<'a> {
                 );
             }
         }
-        // Bind positional arguments in order (receiver-stripped sig).
         let mut bound = vec![false; sig.params.len()];
-        // Receiver slots are pre-bound; mark them as occupied.
         for slot in 0..sig.receiver {
             bound[slot] = true;
         }
@@ -3561,11 +3277,8 @@ impl<'a> Checker<'a> {
             bound[slot] = true;
             slot += 1;
         }
-        // Bind keyword arguments by name.
         for (name, value) in &kwargs {
             let vty = self.check_expr(value, env);
-            // Params are stored with the receiver included for methods; the
-            // stripped call signature keeps them aligned.
             let slot = sig
                 .param_names
                 .iter()
@@ -3574,7 +3287,6 @@ impl<'a> Checker<'a> {
                 .map(|(i, _)| i);
             let Some(slot) = slot else {
                 if sig.variadic {
-                    // `**kwargs` absorbs unknown names silently (dynamic).
                     continue;
                 }
                 self.error(value, format!("no parameter '{name}' in '{}'", sig.name));
@@ -3615,14 +3327,10 @@ impl<'a> Checker<'a> {
 
 
 
-// ---------------------------------------------------------------------------
-// Operators, assignability, builtin signature table
-// ---------------------------------------------------------------------------
 
 
 
 fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker, span: (usize, usize)) -> Ty {
-    // Unknown error-recovery operands propagate without noise.
     if matches!(lty, Ty::Unknown) || matches!(rty, Ty::Unknown) {
         return Ty::Unknown;
     }
@@ -3635,11 +3343,9 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
                 return Ty::Str;
             }
             if lty.is_numeric() && rty.is_numeric() {
-                // int op int → int; mixed or float op float → float.
                 if *lty == Ty::Int && *rty == Ty::Int {
                     return Ty::Int;
                 }
-                // A dynamic operand stays dynamic — do not guess float.
                 if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
                     return Ty::Any;
                 }
@@ -3652,7 +3358,6 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
             Ty::Unknown
         }
         Some(TokenType::Slash) => {
-            // `int / int` produces a float, matching the runtime.
             if lty.is_numeric() && rty.is_numeric() {
                 return Ty::Float;
             }
@@ -3664,8 +3369,7 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
         }
         Some(TokenType::DoubleSlash) => {
             if lty.is_numeric() && rty.is_numeric() {
-                return Ty::Int; // runtime: cast_long, truncating
-            }
+                return Ty::Int;            }
             if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
                 return Ty::Any;
             }
@@ -3724,8 +3428,6 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
             }
         }
         Some(TokenType::Xor) => {
-            // `^` as written on bools? The runtime treats bool operands as
-            // truthy ints; compile mode keeps bools strict.
             if matches!(lty, Ty::Bool | Ty::Any) && matches!(rty, Ty::Bool | Ty::Any) {
                 Ty::Bool
             } else if matches!(lty, Ty::Int) && matches!(rty, Ty::Int) {
@@ -3737,8 +3439,7 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
         Some(TokenType::DoubleQuestion) => Ty::union(vec![lty.clone(), rty.clone()]),
         Some(TokenType::DotDot) => {
             if (lty.is_integer_ish() || matches!(lty, Ty::Float)) && (rty.is_integer_ish() || matches!(rty, Ty::Float)) {
-                Ty::Any // range object ??no static name
-            } else if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
+                Ty::Any            } else if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
                 Ty::Any
             } else {
                 checker.binary_error(span, op.unwrap(), lty, rty);
@@ -3746,7 +3447,6 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
             }
         }
         _ => {
-            // Unknown operator shape: stay safe and dynamic.
             Ty::Any
         }
     }
@@ -3817,9 +3517,6 @@ impl Checker<'_> {
     }
 }
 
-/// Signature of a native member method on `Ty::List` values, as registered
-/// in `native::members.cpp` (`list_members`). Returns (params, required, ret)
-/// with `required` <= params.len() for optional arguments.
 fn list_member_sig(elem: &Ty, name: &str) -> Option<(Vec<Ty>, Vec<String>, usize, Ty)> {
     let e = elem.clone();
     let list_e = Ty::list(e.clone());
@@ -3853,8 +3550,6 @@ fn list_member_sig(elem: &Ty, name: &str) -> Option<(Vec<Ty>, Vec<String>, usize
     }
 }
 
-/// Signature of a native member method on `Ty::Dict` values, as registered
-/// in `native::members.cpp` (`dict_members`).
 fn dict_member_sig(key: &Ty, value: &Ty, name: &str) -> Option<(Vec<Ty>, Vec<String>, usize, Ty)> {
     let list_k = Ty::list(key.clone());
     let list_v = Ty::list(Ty::Any);
@@ -3877,27 +3572,16 @@ fn dict_member_sig(key: &Ty, value: &Ty, name: &str) -> Option<(Vec<Ty>, Vec<Str
     }
 }
 
-/// Overlap-aware assignability test.
-///
-/// Rules (see `docs/compile/COMPILE_DESIGN.md`):
-/// - `Any` is assignable both ways (the dynamic boundary).
-/// - Unions distribute pointwise.
-/// - Collections are invariant except against `Any` elements.
-/// - Classes are assignable within the declared hierarchy.
 pub fn assignable(target: &Ty, value: &Ty, classes: &HashMap<String, ClassInfo>) -> bool {
     if matches!(target, Ty::Any) || matches!(value, Ty::Any) {
         return true;
     }
     if matches!(target, Ty::Unknown) || matches!(value, Ty::Unknown) {
-        return true; // error recovery
-    }
+        return true;    }
     match (target, value) {
-        // Unions distribute pointwise on the value side: every member of the
-        // value union must be assignable to the target.
         (_, Ty::Union(members)) => {
             members.iter().all(|m| assignable(target, m, classes))
         }
-        // Otherwise, the target union accepts the value if some member does.
         (Ty::Union(members), value) => {
             members.iter().any(|m| assignable(m, value, classes))
         }
@@ -3913,7 +3597,6 @@ pub fn assignable(target: &Ty, value: &Ty, classes: &HashMap<String, ClassInfo>)
             if a == b {
                 return true;
             }
-            // Value may flow to a base class target.
             is_subclass_with(classes, b, a)
         }
         (Ty::Func { params: a_params, names: _, ret: a_ret }, Ty::Func { params: b_params, names: _, ret: b_ret }) => {
@@ -3926,55 +3609,42 @@ pub fn assignable(target: &Ty, value: &Ty, classes: &HashMap<String, ClassInfo>)
         }
         (Ty::Int, Ty::Int) | (Ty::Float, Ty::Float) | (Ty::Bool, Ty::Bool) | (Ty::Str, Ty::Str)
         | (Ty::None_, Ty::None_) => true,
-        // int flows to float (numeric widening).
         (Ty::Float, Ty::Int) => true,
         _ => false,
     }
 }
 
-/// Static result types for native modules whose members compile mode can
-/// lower. Anything not listed here stays dynamic (interpreter fallback
-/// in `un native`, rejection in `un build`). Each entry reports a single
-/// monomorphic result type — no overloads.
 pub(crate) fn native_module_ret_type(module: &str, member: &str) -> Option<Ty> {
     let int = Ty::Int;
     let float = Ty::Float;
     let boolean = Ty::Bool;
     let string = Ty::Str;
     match (module, member) {
-        // math
         ("math", "sign") | ("math", "isqrt") => Some(int.clone()),
         ("math", "is_nan") | ("math", "is_infinite") | ("math", "is_finite") => Some(boolean.clone()),
-        // os
         ("os", "pid") | ("os", "cpuCount") | ("os", "tickCount") => Some(int.clone()),
         ("os", "is64bit") => Some(boolean.clone()),
         ("os", "name") | ("os", "arch") | ("os", "hostname") | ("os", "username") | ("os", "version")
         | ("os", "sep") | ("os", "pathsep") | ("os", "linesep") => Some(string.clone()),
-        // sys
         ("sys", "pid") | ("sys", "cpuCount") | ("sys", "tickCount")
         | ("sys", "getcalldepth") | ("sys", "getrecursionlimit") => Some(int.clone()),
         ("sys", "is64bit") => Some(boolean.clone()),
         ("sys", "name") | ("sys", "arch") | ("sys", "hostname") | ("sys", "username") | ("sys", "version")
         | ("sys", "sep") | ("sys", "pathsep") | ("sys", "linesep") => Some(string.clone()),
-        // time
         ("time", "epoch") | ("time", "epoch_ms") | ("time", "monotonic_ms") => Some(int.clone()),
         ("time", "monotonic") => Some(float.clone()),
-        // fs
         ("fs", "exists") | ("fs", "file") | ("fs", "dir") | ("fs", "readonly") | ("fs", "hidden") => Some(boolean.clone()),
         ("fs", "size") => Some(int.clone()),
         ("fs", "created") | ("fs", "modified") | ("fs", "accessed")
         | ("fs", "join") | ("fs", "parent") | ("fs", "name") | ("fs", "stem") | ("fs", "ext")
         | ("fs", "absolute") | ("fs", "relative") | ("fs", "normalize")
         | ("fs", "cwd") | ("fs", "temp") | ("fs", "home") | ("fs", "exe") | ("fs", "app") => Some(string.clone()),
-        // codes
         ("codes", "ord") | ("codes", "ascii") => Some(int.clone()),
         ("codes", "bin") | ("codes", "oct") | ("codes", "hex") | ("codes", "chr") => Some(string.clone()),
-        // random
         ("random", "int") => Some(int.clone()),
         ("random", "float") => Some(float.clone()),
         ("random", "bool") | ("random", "chance") => Some(boolean.clone()),
         ("random", "uuid") => Some(string.clone()),
-        // re
         ("re", "test") => Some(boolean.clone()),
         ("re", "escape") => Some(string.clone()),
         _ => None,
@@ -4012,8 +3682,6 @@ fn is_subclass_with(classes: &HashMap<String, ClassInfo>, child: &str, base: &st
     false
 }
 
-/// The builtin global signature table. Every name is a dynamic boundary
-/// (`Any` parameters) except where noted.
 fn builtin_ty(name: &str) -> Option<Ty> {
     fn func(params: Vec<Ty>, ret: Ty) -> Ty {
         let names = (0..params.len()).map(|i| format!("arg{i}")).collect::<Vec<_>>();
@@ -4042,9 +3710,6 @@ fn builtin_ty(name: &str) -> Option<Ty> {
 
 
 
-/// Run the compile-mode static analysis on an already-optimized AST.
-/// Returns the checked program on success, or the collected diagnostics
-/// (capped at `MAX_ERRORS`) on failure.
 pub fn check_program(source: &Source, root: &Node) -> Result<CheckedProgram, Vec<LangError>> {
     Checker::new(source, root).run()
 }

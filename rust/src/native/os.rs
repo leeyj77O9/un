@@ -229,8 +229,6 @@ fn arch_impl(_scope: &Scope) -> Obj {
     }
 }
 fn version_impl(_scope: &Scope) -> Obj {
-    // Truthful host report: the OS family this build runs on, plus the Un
-    // runtime version — instead of a fabricated "Microsoft Windows NT 10.0.0".
     obj::str(&format!(
         "{} (Un {})",
         std::env::consts::OS,

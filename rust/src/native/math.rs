@@ -195,7 +195,6 @@ fn abs_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     if let Payload::Int(i) = obj::payload(&value) {
-        // i64::MIN has no positive Int; return the exact float like pow/lcm.
         if i == i64::MIN {
             return obj::float(9223372036854775808.0);
         }
@@ -300,8 +299,6 @@ fn pow_impl(scope: &Scope) -> Obj {
     let both_int = matches!(obj::payload(&value), Payload::Int(_))
         && matches!(obj::payload(&exponent), Payload::Int(_));
     if both_int && e >= 0.0 && result.fract() == 0.0 && result.is_finite()
-        // `as` saturates at i64::MAX/MIN. The exact boundary 2^63 is not
-        // representable as an Int; return the float instead of inventing one.
         && result >= -9223372036854775808.0 && result < 9223372036854775808.0
     {
         obj::int(result as i64)
@@ -478,7 +475,6 @@ fn gcd_impl(scope: &Scope) -> Obj {
         x = y;
         y = t;
     }
-    // gcd can be exactly 2^63 (e.g. gcd(MIN, MIN)); that is not a positive i64.
     if x > i64::MAX as u64 {
         obj::float(x as f64)
     } else {
@@ -508,7 +504,6 @@ fn lcm_impl(scope: &Scope) -> Obj {
         gcd = rem;
         rem = t;
     }
-    // The product can overflow i64. Return a catchable error rather than wrap.
     match (x / gcd).checked_mul(y) {
         Some(v) if v <= i64::MAX as u64 => obj::int(v as i64),
         _ => obj::err("integer overflow"),
@@ -548,13 +543,6 @@ fn tau_impl(_scope: &Scope) -> Obj {
     obj::float(std::f64::consts::TAU)
 }
 
-// --- JIT intrinsic FFI shims ---------------------------------------------
-// Thin `extern "C"` wrappers over the same f64 operations the native
-// intrinsics use. They are total functions (never panic, never raise an Un
-// error) so JIT code can call them directly. Domain errors never happen
-// here: the JIT emits guard branches for `sqrt`/`log` *before* calling,
-// and a guard miss bails the whole frame to the interpreter, which raises
-// the exact error message.
 
 #[no_mangle]
 pub extern "C" fn un_math_sin(x: f64) -> f64 { x.sin() }

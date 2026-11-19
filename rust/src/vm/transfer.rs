@@ -1,17 +1,4 @@
-﻿//! Translation of validated stack bytecode into register instructions.
-//!
-//! The translation is 1:1 ? one stack instruction becomes exactly one `Ins` ?
-//! so jump targets, exception handlers and `Break`/`Skip` offsets carry over
-//! unchanged (ip values are identical). A stack-depth analysis identical to
-//! the verifier's assigns static depth slots; the loaded program carries the
-//! table so the VM never tracks depth at runtime.
-//!
-//! Call arguments are *not* placed in registers at all: they are collected in
-//! a per-frame value/name buffer by the `Arg*` instructions, which is what
-//! allows dynamically-sized spreads. `Arg*` consume the argument values from
-//! the top of the virtual stack (`depth -= 1` each), so all argument values
-//! share one register per value at a time, freed immediately after movement.
-
+﻿
 use crate::bytecode::instr::*;
 use crate::bytecode::{Program, Proto};
 use crate::vm::{Ins, Plan, ProtoPlan};
@@ -99,7 +86,6 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             }
             Op::SetAttr => {
                 let a = s(depth - 2);
-                // [value][target] ? value deepest; the target (on top) is reused as the result slot
                 emit(op, a as u8, s(depth - 1) as u8, a as u8, operand, flags)
             }
             Op::SetItem => {
@@ -107,7 +93,6 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             }
 
             Op::FusedIntMulAdd => {
-                // operand packs dst/x/y slots (10 bits each); result also lands at s(depth)
                 emit(op, s(depth) as u8, 0, 0, operand, flags)
             }
 
@@ -123,7 +108,6 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             Op::Raise => emit(op, 0, 0, 0, 0, flags),
 
             Op::Slice => {
-                // result replaces the consumed [target] at depth+effect-1
                 let eff = crate::bytecode::stack_effect(op, flags, operand) as i64;
                 let dst = scratch_base as i64 + depth as i64 + eff - 1;
                 if dst < 0 || dst > 255 {
@@ -135,7 +119,6 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
                 emit(op, dst as u8, dst as u8, 0, operand, flags)
             }
             Op::SetSlice => {
-                // [value][target][bounds...]: value is re-pushed at depth+effect-1
                 let eff = crate::bytecode::stack_effect(op, flags, operand) as i64;
                 let dst = scratch_base as i64 + depth as i64 + eff - 1;
                 if dst < 0 || dst > 255 {
@@ -167,7 +150,6 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
 
             Op::MakeFunc => {
                 let defaults = (flags >> 8) as i64;
-                // result replaces the consumed default values
                 emit(op, s(depth - defaults) as u8, 0, 0, operand, flags)
             }
             Op::MakeClass => emit(op, s(depth) as u8, 0, 0, operand, flags),
@@ -175,7 +157,6 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             Op::LoadBaseClass => emit(op, s(depth) as u8, 0, 0, operand, flags),
             Op::SetBases => {
                 let count = operand as i64;
-                // [created][base0..baseN] ? bases consumed in reverse; class obj stays
                 emit(op, s(depth - 1 - count) as u8, 0, 0, operand, flags)
             }
             Op::AddMember | Op::AddMethod => {
@@ -204,7 +185,6 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
         };
         code.push(ins);
     }
-    // depth table for the runtime (one entry per ip, plus end)
     let depth_table: Vec<u8> = depths
         .iter()
         .map(|d| d.unwrap_or(0).max(0) as u8)
@@ -212,17 +192,11 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
     Ok(ProtoPlan { scratch_base, reg_count, code, depths: depth_table })
 }
 
-/// Stack depth analysis ? the same fixpoint as `Program::validate`, but
-/// returning the table instead of only checking consistency.
 pub(crate) fn analyze(proto: &Proto) -> Result<Vec<Option<i64>>, String> {
     let mut depths: Vec<Option<i64>> = vec![None; proto.code.len() + 1];
     let mut work = vec![0usize];
     depths[0] = Some(0);
     run_worklist(&mut depths, &mut work, proto)?;
-    // Exception handlers enter with the stack height recorded at the PushTry;
-    // they are never reached by normal jumps, so seed them here with the
-    // now-computed depth of each PushTry instruction. (Handlers are entered
-    // with the stack truncated to this depth, so a mismatch is impossible.)
     for ip in 0..proto.code.len() {
         if let Some((op, _flags, operand)) = proto.instruction(ip) {
             if op == Op::PushTry || op == Op::PushTryProp {
@@ -249,10 +223,6 @@ fn run_worklist(
         while ip < proto.code.len() {
             if let Some(seen) = depths[ip] {
                 if seen != depth {
-                    // Dump a bounded neighbourhood around the offending ip;
-                    // the mismatch is always local to it. (The previous
-                    // 744..=796 literal was stale for most protos and could
-                    // even index out of bounds.)
                     let lo = ip.saturating_sub(32);
                     let hi = proto.code.len().min(ip.saturating_add(32));
                     let dump = (lo..hi)

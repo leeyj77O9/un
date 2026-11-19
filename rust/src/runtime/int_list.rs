@@ -1,39 +1,8 @@
-//! Shared native support for Int-only list intrinsics used by the JIT.
-//! The JIT-emitted code passes a raw i64 handle between calls; the arena
-//! lives independently of the Un object model so there's no need to
-//! allocate Obj wrappers for transient lists.
-//!
-//! Handle namespace: valid handles are `idx + ID_BASE` where `idx` is a
-//! monotonically increasing arena slot (freed slots are never reused, so
-//! ids are unique for the process). Values below `ID_BASE` can never be
-//! live handles, so a bare Int is never misread as a list reference.
-//! `0` (as an idx or as an id) always means "invalid".
-//!
-//! Uniform-kind tracking: 0 = empty (nothing pushed yet), 1 = all Int,
-//! 2 = all Bool, 3 = poisoned (mixed). Materialisation at the FFI boundary
-//! inspects the kind; a poisoned list bails to the interpreter.
-//!
-//! Nested (homogeneous `List[List[Int|Bool]]`) lists enter as `kind == 4`
-//! (`KIND_OUTER`): `items` holds child IntVec handles instead of values.
-//! Reading `parent[i][j]` lowers to `un_list_int_get(parent, i)` (returns
-//! the child handle) followed by `un_list_int_get(child, j)` ??the same
-//! intrinsic, polymorphic on the slot kind. Pushing a child handle into an
-//! empty flat slot promotes the parent to `KIND_OUTER` and consumes the
-//! child (its slot is tombstoned). Snapshotting rebuilds the whole nested
-//! tree and `un_list_int_free` drops it recursively.
-//!
-//! This module is **only** used by JIT-emitted code; the interpreter does
-//! not use it.
 
 use std::sync::{Mutex, MutexGuard};
 
 use crate::runtime::obj::{self, Obj};
 
-/// The arena is shared with JIT-native code, which must never unwind across
-/// the FFI boundary. A poisoned lock therefore cannot happen in practice,
-/// but if it ever does, taking the guard via `into_inner` keeps the JIT
-/// callable instead of poisoning every subsequent list operation for the
-/// process.
 fn arena() -> MutexGuard<'static, IntListArena> {
     INT_LIST_ARENA
         .lock()
@@ -43,9 +12,6 @@ fn arena() -> MutexGuard<'static, IntListArena> {
 const ID_BASE: i64 = 1i64 << 62;
 const KIND_OUTER: u8 = 4;
 
-/// The lowest value that may ever be a live arena handle. Callers passing
-/// raw Ints into the JIT must reject `v >= id_base()` — otherwise the Int
-/// could alias an arena handle.
 pub(crate) const fn id_base() -> i64 {
     ID_BASE
 }
@@ -58,9 +24,6 @@ fn decode(v: i64) -> Option<usize> {
     (v >= ID_BASE).then(|| (v - ID_BASE) as usize)
 }
 
-/// Iterator arena: independent of the list arena so iterator ids never
-/// alias list ids. Handles are `idx + ID_BASE` like lists. The iterator
-/// borrows the list handle and an element index; no Un object is involved.
 struct IntListIter {
     handle: i64,
     idx: usize,
@@ -92,8 +55,6 @@ fn iter_decode(v: i64) -> Option<usize> {
     (v >= ID_BASE).then(|| (v - ID_BASE) as usize)
 }
 
-/// Outer-list iterator: yields child Flat IntVec handles (by index) for a
-/// `KIND_OUTER` list, so `for row in m` lowers to the same iterator family.
 struct IntOuterIter {
     handle: i64,
     idx: usize,
@@ -112,27 +73,20 @@ fn outer_iter_arena() -> MutexGuard<'static, IntOuterIterArena> {
     g
 }
 
-/// Outer iterators live in their own high-bit namespace so `iterated`
-/// handles can never alias an IntVec or IntDict value.
 fn outer_id_of(idx: usize) -> i64 {
-    idx as i64 + ID_BASE + (1i64 << 61) // disjoint from plain handles (idx + ID_BASE)
-}
+    idx as i64 + ID_BASE + (1i64 << 61)}
 
 fn outer_decode(v: i64) -> Option<usize> {
     let base = ID_BASE + (1i64 << 61);
     (v >= base).then(|| (v - base) as usize)?.checked_sub(1)
 }
 
-/// Allocate a new forward iterator over a `KIND_OUTER` list of row
-/// handles; 0 when the value is not an outer handle (the JIT bails and the
-/// interpreter rebuilds the loop).
 fn outer_iter_alloc(handle: i64, idx: usize) -> i64 {
     let mut a = outer_iter_arena();
     a.slots.push(Some(IntOuterIter { handle, idx }));
     outer_id_of(a.slots.len())
 }
 
-/// 1 while the iterator has more rows, 0 when exhausted/dead.
 fn outer_iter_has_next(iter: i64) -> i64 {
     let idx = match outer_decode(iter) {
         Some(i) => i,
@@ -151,7 +105,6 @@ fn outer_iter_has_next(iter: i64) -> i64 {
     }
 }
 
-/// Read and advance one row handle; returns 0 when exhausted/dead.
 fn outer_iter_next(iter: i64) -> i64 {
     let slot_idx = match outer_decode(iter) {
         Some(i) => i,
@@ -177,9 +130,6 @@ fn outer_iter_next(iter: i64) -> i64 {
     res.unwrap_or(0)
 }
 
-/// Allocate a new forward iterator over the IntVec `v`; returns its handle.
-/// 0 means "invalid" (dead list). `KIND_OUTER` lists create an outer
-/// iterator that yields child row handles instead.
 #[no_mangle]
 pub extern "C" fn un_list_int_iter_new(v: i64) -> i64 {
     match arena().get(v) {
@@ -198,7 +148,6 @@ pub extern "C" fn un_list_int_iter_new(v: i64) -> i64 {
     iter_id_of(a.slots.len())
 }
 
-/// 1 while the iterator has more elements, 0 when exhausted (or dead).
 #[no_mangle]
 pub extern "C" fn un_list_int_iter_has_next(iter: i64) -> i64 {
     if outer_decode(iter).is_some() {
@@ -221,13 +170,10 @@ pub extern "C" fn un_list_int_iter_has_next(iter: i64) -> i64 {
     }
 }
 
-/// Read and advance one element; returns i64::MAX when exhausted (callers
-/// never read past their own `has_next` guard, so this is only a safeguard).
 #[no_mangle]
 pub extern "C" fn un_list_int_iter_next(iter: i64) -> i64 {
     if outer_decode(iter).is_some() {
         let h = outer_iter_next(iter);
-        // Row handles are >= ID_BASE; values below it mean exhausted.
         return if h >= ID_BASE { h } else { i64::MAX };
     }
     let idx = match iter_decode(iter).and_then(|i| i.checked_sub(1)) {
@@ -254,7 +200,6 @@ pub extern "C" fn un_list_int_iter_next(iter: i64) -> i64 {
     }
 }
 
-/// Free the IntVec iterator behind `iter`.
 #[no_mangle]
 pub extern "C" fn un_list_int_iter_free(iter: i64) {
     if let Some(o) = outer_decode(iter) {
@@ -269,9 +214,6 @@ pub extern "C" fn un_list_int_iter_free(iter: i64) {
     a.slots.get_mut(idx).map(|s| s.take());
 }
 
-/// Drop every IntVec iterator in the arena. Intended for whole-process
-/// teardown; the lists themselves are flushed by `un_list_int_free`'s
-/// caller.
 pub(crate) fn iter_clear() -> usize {
     let mut a = iter_arena();
     let n = a.slots.iter().filter(|s| s.is_some()).count();
@@ -282,10 +224,6 @@ pub(crate) fn iter_clear() -> usize {
 struct IntList {
     items: Vec<i64>,
     kind: u8,
-    // Number of outer handles that own this slot (one per `out->add(row)`
-    // or `materialize_nested` reference). Bulk frees from the JIT bail
-    // path must not kill a row its parent still owns; dropped children are
-    // only released once the count reaches zero (or when the parent drops).
     refs: u32,
 }
 
@@ -330,21 +268,12 @@ impl IntListArena {
             return false;
         };
         if list.refs > 0 {
-            // Owned by at least one `KIND_OUTER` list; release this reference
-            // and keep the slot live for the other owners (and for parents
-            // whose items still hold the handle).
             self.slots[idx].as_mut().map(|l| l.refs -= 1);
             return true;
         }
         self.free_force(id)
     }
 
-    /// Drop the slot unconditionally, recurring into outer children. Used
-    /// when the caller (bulk teardown) knows no one else references it.
-    /// Children are dropped through the refcounted `free` — a row shared
-    /// with another outer must not vanish from under it (that would corrupt
-    /// the surviving parent's view; the refcounted path keeps the slot as a
-    /// valid tombstone for the interpreter fallback).
     fn free_force(&mut self, id: i64) -> bool {
         let Some(idx) = decode(id) else {
             return false;
@@ -356,9 +285,6 @@ impl IntListArena {
             Some(l) => {
                 if l.kind == KIND_OUTER {
                     for child in l.items {
-                        // Parent owns the children; drop through the
-                        // refcounted path so shared rows survive for
-                        // their other parents.
                         let _ = self.free(child);
                     }
                 }
@@ -375,17 +301,11 @@ impl IntListArena {
 
 static INT_LIST_ARENA: Mutex<IntListArena> = Mutex::new(IntListArena::new());
 
-/// Allocate a fresh empty IntVec; returns its canonical handle (??<<62;
-/// 0 means "invalid"). Called via inline JIT code.
 #[no_mangle]
 pub extern "C" fn un_list_int_empty() -> i64 {
     arena().alloc()
 }
 
-/// Is `v` a live IntVec handle? 1 for a flat Int/Bool list (including a
-/// row of a nested list), 2 for a `KIND_OUTER` list of lists, 0 when the
-/// value can never be a handle. The JIT checks this before any
-/// specialisation so an arbitrary Int never aliases a list.
 #[no_mangle]
 pub extern "C" fn un_list_int_is_handle(v: i64) -> i64 {
     let slots = arena();
@@ -399,7 +319,6 @@ pub extern "C" fn un_list_int_is_handle(v: i64) -> i64 {
     }
 }
 
-/// Kind transition for an element of kind `inc` (1 = Int, 2 = Bool).
 fn kind_join(cur: u8, inc: u8) -> u8 {
     match (cur, inc) {
         (0, i) => i,
@@ -408,23 +327,17 @@ fn kind_join(cur: u8, inc: u8) -> u8 {
     }
 }
 
-/// Is `value` a live handle in this arena? Used to decide outer-row push.
 fn live_handle_idx(slots: &IntListArena, v: i64) -> Option<usize> {
     decode(v).and_then(|i| i.checked_sub(1)).filter(|&i| {
         i < slots.slots.len() && slots.slots[i].is_some()
     })
 }
 
-/// Push `value` onto the back of the IntVec, returning the value itself.
-/// `value_may_be_row` distinguishes a possible row handle (an IntVec the
-/// caller produced) from a plain Int: a plain Int >= ID_BASE aliases a
-/// handle and must never trigger the outer-row promotion logic.
 fn push_impl(v: i64, value: i64, is_bool: i64, value_may_be_row: bool) -> i64 {
     let mut slots = arena();
     let Some(v_idx) = live_handle_idx(&slots, v) else {
         return 0;
     };
-    // Is `value` a live handle (a row)? Only if it doesn't alias `v`.
     let value_is_row = value_may_be_row
         && live_handle_idx(&slots, value).map(|ci| ci != v_idx).unwrap_or(false);
     let v_kind = slots.slots[v_idx].as_ref().map(|l| l.kind).unwrap_or(3);
@@ -439,7 +352,6 @@ fn push_impl(v: i64, value: i64, is_bool: i64, value_may_be_row: bool) -> i64 {
                 slots.slots[v_idx].as_mut().unwrap().items.push(value);
             }
             _ => {
-                // Scalar-populated flat list: a row can't go in. Poison.
                 slots.slots[v_idx].as_mut().unwrap().kind = 3;
                 return 0;
             }
@@ -450,7 +362,6 @@ fn push_impl(v: i64, value: i64, is_bool: i64, value_may_be_row: bool) -> i64 {
     } else {
         match v_kind {
             KIND_OUTER => {
-                // A scalar can't go into an outer list. Poison.
                 slots.slots[v_idx].as_mut().unwrap().kind = 3;
                 0
             }
@@ -464,30 +375,16 @@ fn push_impl(v: i64, value: i64, is_bool: i64, value_may_be_row: bool) -> i64 {
     }
 }
 
-/// Scalar-aware entry point. `value_may_be_row = false` when the caller
-/// proves the pushed value is a plain Int (never a row handle): a user Int
-/// >= ID_BASE aliases a handle and must not trigger the row machinery.
-/// A `KIND_OUTER` receiver pushes a row handle: if the receiver is a virgin
-/// (empty, kind == 0) flat slot, it is promoted to `KIND_OUTER` on the
-/// first row push. A row push into an already scalar-populated flat slot,
-/// or a scalar push into an outer list, poisons the receiver so the whole
-/// call falls back to the interpreter. `is_bool` is nonzero when the
-/// payload is a Bool (0/1), not an Int; ignored for outer pushes.
 #[no_mangle]
 pub extern "C" fn un_list_int_push(v: i64, value: i64, is_bool: i64) -> i64 {
     push_impl(v, value, is_bool, true)
 }
 
-/// See [`un_list_int_push`]; for call sites that know `value` is a plain Int.
 #[no_mangle]
 pub extern "C" fn un_list_int_push_scalar(v: i64, value: i64, is_bool: i64) -> i64 {
     push_impl(v, value, is_bool, false)
 }
 
-/// Copy `items[start..end]` into a fresh list; returns its handle (0 on
-/// failure). Window clamped to the list bounds. A `KIND_OUTER` receiver
-/// returns a fresh outer list pointing at the same rows (subclass may alias
-/// rows), with refs bumped accordingly.
 #[no_mangle]
 pub extern "C" fn un_list_int_slice(v: i64, start: i64, end: i64) -> i64 {
     let mut slots = arena();
@@ -514,23 +411,12 @@ pub extern "C" fn un_list_int_slice(v: i64, start: i64, end: i64) -> i64 {
     id_of(idx)
 }
 
-/// Snapshot an all-Int (or all-Bool) IntVec as owned Un values. Returns
-/// `None` for a poisoned (mixed) list or an invalid handle; the caller then
-/// falls back to the interpreter.
-/// Materialise an `Obj::List` whose every element is a homogeneous Int/Bool
-/// list of any length into a fresh `KIND_OUTER` handle. Lists of scalars
-/// (the `materialize` shape) decline with `None`; anything else declines
-/// too, so a misshapen outer argument falls back to the interpreter. Public
-/// to the FFI layer (`jit_fast`); used when the interpreter passes a nested
-/// homogeneous list into a JIT-eligible function.
 pub(crate) fn materialize_nested(list: &Obj) -> Option<i64> {
     let crate::runtime::obj::Payload::List(cell) = obj::payload(list) else {
         return None;
     };
     let items = cell.borrow();
     if items.is_empty() {
-        // An empty outer list would silently pass all the per-row checks
-        // below; decline and let the scalar path handle it.
         return None;
     }
     let mut handles = Vec::with_capacity(items.len());
@@ -572,8 +458,7 @@ pub(crate) fn snapshot(v: i64) -> Option<Vec<Obj>> {
     let bools = match list.kind {
         0 | 1 => false,
         2 => true,
-        _ => return None, // poisoned
-    };
+        _ => return None,    };
     Some(
         list.items
             .iter()
@@ -588,23 +473,10 @@ pub(crate) fn snapshot(v: i64) -> Option<Vec<Obj>> {
     )
 }
 
-/// Rebuild the entire tree behind `handle` into a fresh tree of Un objects.
-/// Used by the JIT argument write-back; `None` when any part is poisoned.
 fn snapshot_list(v: i64) -> Option<Obj> {
     snapshot(v).map(crate::runtime::collections::list)
 }
 
-/// Copy the contents of the arena list `handle` back into the Un list object
-/// `orig`, in place. Flat Int/Bool lists take their elements wholesale;
-/// `KIND_OUTER` lists merge row by row, recursing into inner Un lists when
-/// they are still lists, so identity of the caller's lists is preserved
-/// where the shape did not change. Inner positions the JIT cannot model
-/// (mixed rows, a scalar row spliced in, a list row replacing a scalar) are
-/// replaced with a freshly built list instead.
-///
-/// Call only after a successful `snapshot(handle)` preflight; the mutation
-/// step cannot fail afterwards (the tree was fully validated and no arena
-/// slot is re-read while mutating Un objects).
 fn write_back(orig: &Obj, handle: i64) -> bool {
     enum Level {
         Flat(bool, Vec<i64>),
@@ -618,8 +490,7 @@ fn write_back(orig: &Obj, handle: i64) -> bool {
                 0 => Level::Flat(false, Vec::new()),
                 1 => Level::Flat(false, l.items.clone()),
                 2 => Level::Flat(true, l.items.clone()),
-                _ => return false, // poisoned
-            },
+                _ => return false,            },
             None => return false,
         }
     };
@@ -654,14 +525,12 @@ fn write_back(orig: &Obj, handle: i64) -> bool {
                 }
                 match snapshot_list(row) {
                     Some(list) => items[i] = list,
-                    None => return false, // unreachable after preflight
-                }
+                    None => return false,                }
             }
             for &row in rows.iter().skip(common) {
                 match snapshot_list(row) {
                     Some(list) => items.push(list),
-                    None => return false, // unreachable after preflight
-                }
+                    None => return false,                }
             }
             items.truncate(rows.len());
             true
@@ -669,23 +538,13 @@ fn write_back(orig: &Obj, handle: i64) -> bool {
     }
 }
 
-/// Write the current contents of the arena list `handle` back into the Un
-/// list object `orig`. Returns `false` (leaving `orig` untouched) when the
-/// tree is no longer fully materialisable; callers must not use the JIT
-/// result in that case.
 pub(crate) fn sync_into(orig: &Obj, handle: i64) -> bool {
-    // Preflight: validate the whole tree before touching any Un object so a
-    // poisoned or dead subtree cannot leave `orig` half-written.
     if snapshot(handle).is_none() {
         return false;
     }
     write_back(orig, handle)
 }
 
-/// Materialise an `Obj::List` of all-Int/all-Bool values into a fresh
-/// IntVec handle; mixed elements decline with `None`. Public to the FFI
-/// layer (`jit_fast`); used when the interpreter passes a list into a
-/// JIT-eligible function.
 pub(crate) fn materialize(list: &Obj) -> Option<i64> {
     let crate::runtime::obj::Payload::List(cell) = obj::payload(list) else {
         return None;
@@ -716,8 +575,6 @@ pub(crate) fn materialize(list: &Obj) -> Option<i64> {
     Some(id_of(idx))
 }
 
-/// Read `items[idx]` (0-indexed; out-of-range returns i64::MIN sentinel).
-/// A `KIND_OUTER` slot indexes into its row handles instead of values.
 #[no_mangle]
 pub extern "C" fn un_list_int_get(v: i64, idx: i64) -> i64 {
     let slots = arena();
@@ -730,12 +587,6 @@ pub extern "C" fn un_list_int_get(v: i64, idx: i64) -> i64 {
     }
 }
 
-/// Write `items[idx] = value` (0-indexed; out-of-range is a no-op returning
-/// the "unwritten" sentinel). A `KIND_OUTER` receiver swaps row handles,
-/// releasing the old row reference and taking one on the new one.
-/// `value_may_be_row = false` when the caller proves `value` is a plain
-/// Int: a user Int >= ID_BASE aliases a handle and must be rejected by the
-/// outer path (poison), never swapped in as a row.
 fn set_impl(v: i64, idx: i64, value: i64, is_bool: i64, value_may_be_row: bool) -> i64 {
     let mut slots = arena();
     if idx < 0 {
@@ -778,28 +629,22 @@ fn set_impl(v: i64, idx: i64, value: i64, is_bool: i64, value_may_be_row: bool) 
                 list.kind = kind_join(list.kind, if is_bool != 0 { 2 } else { 1 });
                 value
             } else {
-                1 << 62 // "unwritten" sentinel
-            }
+                1 << 62            }
         }
         None => 1 << 62,
     }
 }
 
-/// See [`un_list_int_set`]; call sites that know `value` is a plain Int pass
-/// `value_may_be_row = false` so user Ints >= ID_BASE never alias a row.
 #[no_mangle]
 pub extern "C" fn un_list_int_set(v: i64, idx: i64, value: i64, is_bool: i64) -> i64 {
     set_impl(v, idx, value, is_bool, true)
 }
 
-/// See [`un_list_int_set`]; for call sites that know `value` is a plain Int.
 #[no_mangle]
 pub extern "C" fn un_list_int_set_scalar(v: i64, idx: i64, value: i64, is_bool: i64) -> i64 {
     set_impl(v, idx, value, is_bool, false)
 }
 
-/// Return the length of the IntVec; `-1` when `v` is not a live handle (the
-/// caller emits a bail instead of proceeding blindly).
 #[no_mangle]
 pub extern "C" fn un_list_int_len(v: i64) -> i64 {
     let slots = arena();
@@ -809,17 +654,11 @@ pub extern "C" fn un_list_int_len(v: i64) -> i64 {
     }
 }
 
-/// Free the IntVec behind `v` (fell out of scope or naturally dead at an
-/// emit point). Tombstone ids stay valid-but-dead; later reads behave like
-/// empty lists and later `snapshot` fails so the interpreter rebuilds.
 #[no_mangle]
 pub extern "C" fn un_list_int_free(v: i64) {
     let _ = arena().free(v);
 }
 
-/// Drop every IntVec in the arena. Intended for whole-process teardown next
-/// to `jit_cache::clear()`; afterwards any in-flight JIT code is out of
-/// contract. Returns the number of tables dropped.
 pub(crate) fn clear() -> usize {
     let _ = iter_clear();
     let mut arena = arena();

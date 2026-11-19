@@ -47,12 +47,6 @@ pub fn compile(source: &Source, ast: &Node) -> Result<Program, Panic> {
 impl<'a> Compiler<'a> {
     pub fn new(source: &'a Source) -> Self {
         let mut program = Program {
-            // Store the full path as passed (not just the file stem): the
-            // VM resolves `use` modules relative to the importing file's
-            // directory, and `.unbc` re-runs must resolve modules exactly
-            // like a direct `un run` from the same cwd. Error display
-            // still shows the stem via `Source::name()`, so messages keep
-            // their current shape.
             source_path: source.path.clone(),
             source: None,
             names: Vec::new(),
@@ -83,13 +77,6 @@ impl<'a> Compiler<'a> {
         Ok(self.program)
     }
 
-    /// Emit the class-registration spine: a dedicated `<classes_init>` proto
-    /// that re-emits the compilation of every top-level `class` declaration so
-    /// a native executable can register its class templates at startup by
-    /// running this proto once (`unrt_register_classes`). The interpreter
-    /// ignores the extra proto entirely; the plain Obj exe skips it unless it
-    /// has classes. Running the real `<module>` root instead would double-
-    /// execute `main()`.
     fn emit_classes_init(&mut self, ast: &Node) -> Result<(), Panic> {
         let class_nodes: Vec<&Node> = match ast.kind {
             NodeKind::Block => ast
@@ -107,8 +94,6 @@ impl<'a> Compiler<'a> {
         for cls in class_nodes {
             self.code(cls)?;
             if !self.raises {
-                // Mirror `code_block`'s top-level statement tail: error check,
-                // then drop the statement value.
                 self.emit(Op::Unwrap, 0, 0, span_of(cls));
                 self.emit(Op::Pop, 0, 0, span_of(cls));
             }
@@ -228,9 +213,6 @@ impl<'a> Compiler<'a> {
 
         let mut new_code: Vec<Instr> = Vec::with_capacity(original_code.len());
         let mut new_map: Vec<(usize, usize)> = Vec::with_capacity(original_code.len());
-        // Original instruction index -> new index. Skipped slots inside a
-        // fused 9-instruction run map to the fused instruction's new index
-        // (no valid jump ever targets inside a fused region).
         let mut original_to_new: Vec<usize> = vec![0; original_code.len() + 1];
 
         let mut i = 0usize;
@@ -286,8 +268,6 @@ impl<'a> Compiler<'a> {
             i += 1;
         }
 
-        // Sentinel: a jump targeting the instruction after the last one
-        // (legal for `break` to the end of a loop) maps to new_code.len().
         original_to_new[original_code.len()] = new_code.len();
         for ip in 0..new_code.len() {
             let op = match new_code[ip].op_code() {
@@ -298,7 +278,6 @@ impl<'a> Compiler<'a> {
             if !is_jump {
                 continue;
             }
-            // locate the original instruction that became new_code[ip]
             let original_ip = (0..original_code.len())
                 .find(|&o| original_to_new[o] == ip)
                 .unwrap_or_else(|| {
@@ -815,8 +794,6 @@ impl<'a> Compiler<'a> {
             match child.kind {
                 NodeKind::Catch => {
                     if catch.is_some() {
-                        // Never silently discard user code: a second catch
-                        // would have been dead code with no diagnostic.
                         return Err(Panic::named(
                             "error",
                             "multiple 'catch' clauses are not supported; use a single catch and discriminate inside it",
@@ -1304,9 +1281,6 @@ impl<'a> Compiler<'a> {
                     let member_name = self.text(&member.children[0]);
                     let slot = self.name_index(&member_name);
 
-                    // Defaults are compiled into the enclosing proto before the
-                    // member's own proto starts (same as free functions); the
-                    // MakeFunc opcode then reads `flags >> 8` values off the stack.
                     let defaults = self.compile_defaults(&member.children[1])?;
                     if defaults > 255 {
                         return Err(Panic::named(
@@ -1317,10 +1291,6 @@ impl<'a> Compiler<'a> {
                     let saved_raises = self.raises;
                     let saved_groups = std::mem::take(&mut self.groups);
                     self.begin_proto(&member_name, Some(&class_name), Some((member.start, member.length)));
-                    // Class methods receive `self` implicitly; register it
-                    // as local slot 0 so `self` reads emit Op::LoadLocal
-                    // instead of Op::LoadName (needed for the class-method
-                    // JIT intrinsic and to lower interpreter dispatch work).
                     self.slot_alloc("self");
                     self.compile_params(&member.children[1])?;
                     self.code_function_body(&member.children[2])?;
@@ -1345,7 +1315,6 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::AddMember, 0, slot as i32, span);
                 }
                 NodeKind::Typed => {
-                    // Annotation-only member: `x: float`
                     let Some(member_name) = self.member_target_name(&member.children[0]) else {
                         self.error_node(member, "invalid field name");
                         continue;
@@ -1416,10 +1385,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Static integer value of an enum member initializer. Accepts plain
-    /// `Const::Int`, `+`/`-`/`~` unary arithmetic on static integers and
-    /// `Typed`-wrapped static integers — everything else is a user error,
-    /// not an internal one.
     fn const_int_value(node: &Node) -> Option<i64> {
         match node.kind {
             NodeKind::Typed => Self::const_int_value(node.children.first()?),
@@ -1438,8 +1403,6 @@ impl<'a> Compiler<'a> {
             },
         }
     }
-    /// Static float value of a constant (`math.pi()`-style members are not
-    /// supported; enum values are integers by declaration).
     fn code_enum(&mut self, node: &Node) -> Result<(), Panic> {
         let span = (node.start, node.length);
         let enum_name = self.text(&node.children[0]);
@@ -1447,7 +1410,6 @@ impl<'a> Compiler<'a> {
         self.emit(Op::MakeEnum, 0, name_slot as i32, span);
         let register_slot = self.push_name_raw(&enum_name);
         self.emit(Op::RegisterClass, 0, register_slot as i32, span);
-        // The reference implementation (and the docs) start enum values at 0.
         let mut index = 0i64;
         for member in node.children.iter().skip(1) {
             let (member_name, value) = match member.kind {
@@ -1827,9 +1789,6 @@ impl<'a> Compiler<'a> {
 
     fn code_use(&mut self, node: &Node) -> Result<(), Panic> {
         let span = (node.start, node.length);
-        // `use a.*` is sugar for `use a { * }` (wildcard import). The parser
-        // emits `Unary(Wildcard, [a])` for the path; without this arm the
-        // raw source span ("a.*") would become a bogus module path.
         let path_node = &node.children[0];
         let (path, inline_wildcard) =
             if path_node.kind == NodeKind::Unary && path_node.op == Some(TokenType::Wildcard) {
@@ -1897,12 +1856,6 @@ impl<'a> Compiler<'a> {
             _ => self.source.span(node.start, node.length),
         }
     }
-    /// The bare field name for a class member target. Accepts an optional
-    /// type annotation and an optional default:
-    ///   `x`             -> `Some("x")`
-    ///   `x: int`        -> `Some("x")`
-    ///   `x: int = 5`    -> `Some("x")`
-    /// Anything else yields None (caller falls back to its own error path).
     fn member_target_name(&self, target: &Node) -> Option<String> {
         let mut t = target;
         loop {

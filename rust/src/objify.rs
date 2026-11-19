@@ -1,19 +1,3 @@
-//! `objify` — emit a relocatable object file (`.obj`, COFF on Windows-GNU)
-//! from an `.unbc` bytecode file.
-//!
-//! Milestone 1 (vertical slice): only the Int core subset lowers to native
-//! code — Int consts, body locals via Cranelift `Variable`s, `int` parameters
-//! as i64 block params, `Add`/`Sub`/`Mul`/`Idiv`/`Mod`, comparisons,
-//! `Jmp`/`JmpIf` (relative to next instruction), direct calls to protos in the
-//! same module, and `Return`. Protos using anything else are skipped with a
-//! warning; protos that pass the static screen but fail lowering are emitted
-//! as trap stubs (a call to one traps at runtime, never returns garbage).
-//! The entry proto (default `main`) is exported as `un_main` with a C ABI
-//! (`() -> i64`), so a tiny C/Rust driver can link against it.
-//!
-//! Values are uniformly i64 on the machine. Bool is 0/1, `none` is 0. Floats,
-//! strings, collections, classes, closures, exceptions and module loading are
-//! deliberately unsupported here — see `docs/compile/COMPILE_DESIGN.md`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -30,32 +14,20 @@ use crate::bytecode::{Constant, Op, Program, Proto};
 
 const FLAG_JUMP_TRUE: u16 = 1 << 0;
 
-/// What `un obj` produced.
 pub struct EmitOutcome {
-    /// Protos successfully lowered and defined in the object file.
     pub emitted: Vec<String>,
-    /// Protos rejected as unsupported (with the reason).
     pub skipped: Vec<String>,
-    /// Path of the written object file.
     pub output: std::path::PathBuf,
 }
 
-/// One virtual-stack entry during lowering.
 #[derive(Clone)]
 enum V {
-    /// Any cranelift value (i64 payloads; bools as 0/1).
     Val(cranelift_codegen::ir::Value),
-    /// A reference to another proto in the same module (only meaningful as a
-    /// callee for the `Call` instruction).
     Func(usize),
-    /// Marker pushed by `ArgBegin`, consumed by `Call`.
     ArgBegin,
-    /// Value pushed by `ArgPos`, consumed by `Call`.
     ArgEntry(cranelift_codegen::ir::Value),
 }
 
-/// Cheap static screen: every instruction must be supported, and every const
-/// Int/Bool. Name/call resolution happens during lowering.
 fn static_screen(program: &Program, proto: &Proto) -> bool {
     proto.code.iter().all(|instr| {
         instr.op_code().map(static_supported_op).unwrap_or(false)
@@ -100,14 +72,10 @@ fn static_supported_op(op: Op) -> bool {
     )
 }
 
-/// A `program.names` entry (used for `Param.name`, which is a program-global
-/// name index — unlike instruction name slots, which are proto-local).
 fn program_name<'a>(program: &'a Program, index: usize) -> Option<&'a str> {
     program.names.get(index).map(String::as_str)
 }
 
-/// A proto-local name slot (instruction operands and `proto.locals` entries):
-/// resolve through `proto.names` to the program-global name.
 fn proto_local_name<'a>(program: &'a Program, proto: &Proto, index: usize) -> Option<&'a str> {
     proto
         .names
@@ -116,7 +84,6 @@ fn proto_local_name<'a>(program: &'a Program, proto: &Proto, index: usize) -> Op
         .map(String::as_str)
 }
 
-/// Resolve a per-proto const slot to `program.consts`.
 fn proto_const<'a>(program: &'a Program, proto: &Proto, index: usize) -> Option<&'a Constant> {
     proto
         .consts
@@ -124,7 +91,6 @@ fn proto_const<'a>(program: &'a Program, proto: &Proto, index: usize) -> Option<
         .and_then(|&gi| program.consts.get(gi))
 }
 
-/// The internal function signature: one i64 per parameter, i64 result.
 fn internal_signature(module: &ObjectModule, arity: usize) -> cranelift_codegen::ir::Signature {
     let mut sig = module.make_signature();
     for _ in 0..arity {
@@ -134,9 +100,6 @@ fn internal_signature(module: &ObjectModule, arity: usize) -> cranelift_codegen:
     sig
 }
 
-/// Trap stub kept when a statically plausible proto fails to lower, so the
-/// object file never carries an undefined symbol. Calls to the stub trap at
-/// runtime instead of returning garbage.
 fn emit_trap_stub(
     module: &mut ObjectModule,
     fid: cranelift_module::FuncId,
@@ -157,8 +120,6 @@ fn emit_trap_stub(
     module.define_function(fid, &mut ctx).map_err(|e| format!("trap stub: {e:?}"))
 }
 
-/// Lower one proto. Returns `Err(reason)` when unsupported; the caller emits
-/// a trap stub to keep the module linkable.
 fn lower_proto(
     module: &mut ObjectModule,
     program: &Program,
@@ -167,8 +128,7 @@ fn lower_proto(
     fids: &HashMap<usize, cranelift_module::FuncId>,
 ) -> Result<(), String> {
     let proto = &program.protos[index];
-    let is_entry = false; // export linkage was decided at declaration time
-
+    let is_entry = false;
     let _ = is_entry;
 
     let mut func_ctx = module.make_context();
@@ -177,14 +137,11 @@ fn lower_proto(
     let mut builder_ctx = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut func_ctx.func, &mut builder_ctx);
 
-    // Entry block first: Cranelift expects the function's first block to carry
-    // the signature parameters.
     let entry = builder.create_block();
     builder.append_block_params_for_function_params(entry);
     let incoming = builder.block_params(entry).to_vec();
     builder.switch_to_block(entry);
 
-    // Parameter slots: i64 block params, slots 0..n (compiler order).
     let param_count = proto.params.len();
     let mut param_vars: Vec<Variable> = Vec::with_capacity(param_count);
     for i in 0..param_count {
@@ -193,7 +150,6 @@ fn lower_proto(
         param_vars.push(var);
     }
 
-    // Body locals (from `proto.locals`): one Variable per compiler slot.
     let mut local_vars: Vec<Variable> = Vec::with_capacity(proto.locals.len());
     for _ in 0..proto.locals.len() {
         let var = builder.declare_var(types::I64);
@@ -202,12 +158,8 @@ fn lower_proto(
         local_vars.push(var);
     }
 
-    // Jump targets past the end of the proto (or a trailing fall-through)
-    // land here: a well-defined zero return. The body is filled in after the
-    // main loop so the entry block stays first in the layout.
     let end_blk = builder.create_block();
 
-    // Map from instruction ip to the block that starts there (jump targets).
     let mut leaders: HashMap<usize, cranelift_codegen::ir::Block> = HashMap::new();
     for (ip, instr) in proto.code.iter().enumerate() {
         if let Some(op) = instr.op_code() {
@@ -222,8 +174,6 @@ fn lower_proto(
                     }
                 }
                 Op::Return => {
-                    // A terminator ends the current block; the next instruction
-                    // starts a fresh one.
                     if ip + 1 < proto.code.len() {
                         leaders.entry(ip + 1).or_insert_with(|| builder.create_block());
                     }
@@ -232,8 +182,6 @@ fn lower_proto(
             }
         }
     }
-    // The ip=0 block must be the function entry block (it carries the
-    // signature parameters); everything else starts fresh blocks.
     leaders.insert(0, entry);
     let blocks = leaders;
 
@@ -295,7 +243,6 @@ fn lower_proto(
                 let Some(name) = proto_local_name(program, proto, instr.operand as usize) else {
                     return Err("LoadName: bad name index".to_string());
                 };
-                // 1) parameter of this proto (program-global name index)
                 let param_idx = proto
                     .params
                     .iter()
@@ -306,7 +253,6 @@ fn lower_proto(
                     ip += 1;
                     continue;
                 }
-                // 2) body local (proto-local name slot)
                 let local_idx = proto
                     .locals
                     .iter()
@@ -317,7 +263,6 @@ fn lower_proto(
                     ip += 1;
                     continue;
                 }
-                // 3) another proto in this module → function marker for Call
                 let target = program
                     .protos
                     .iter()
@@ -486,14 +431,12 @@ fn lower_proto(
                 }
             }
             Op::Unwrap => {
-                // Core subset never produces `Err` values; no-op.
             }
             _ => return Err(format!("unsupported opcode {op:?}")),
         }
         ip += 1;
     }
 
-    // Fill the jump-to-end block with a well-defined zero return.
     builder.switch_to_block(end_blk);
     let zero = builder.ins().iconst(types::I64, 0);
     builder.ins().return_(&[zero]);
@@ -506,7 +449,6 @@ fn lower_proto(
     Ok(())
 }
 
-/// Emit an object file from a read-in `Program`.
 pub fn emit(program: &Program, output: &Path, entry: Option<&str>) -> Result<EmitOutcome, String> {
     let entry_name = entry.unwrap_or("main");
     let entry_index = program
@@ -528,8 +470,6 @@ pub fn emit(program: &Program, output: &Path, entry: Option<&str>) -> Result<Emi
 
     let mut skipped: Vec<String> = Vec::new();
 
-    // Pass 0: declare every statically plausible proto (before any emission,
-    // so a caller never references an undeclared callee).
     let mut fids: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
     for (index, proto) in program.protos.iter().enumerate() {
         if !static_screen(program, proto) {
@@ -548,8 +488,6 @@ pub fn emit(program: &Program, output: &Path, entry: Option<&str>) -> Result<Emi
         }
     }
 
-    // Pass 1: lower each declared proto; on failure emit a trap stub so the
-    // module stays linkable (no relocation can reference a missing symbol).
     let mut emitted: Vec<String> = Vec::new();
     for (index, _) in program.protos.iter().enumerate() {
         let name = program.names[program.protos[index].name].clone();

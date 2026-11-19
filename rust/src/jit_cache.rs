@@ -1,15 +1,3 @@
-//! Global registry of JIT-compiled Un functions.
-//!
-//! Entries are keyed by `(program_id, proto_index)` — `program_id` is the
-//! per-`Rc<Program>` opaque id assigned at compile/read time (see
-//! `Program::id`). Entries are scoped per program: the registry is a
-//! two-level map, so every per-program state can be enumerated and freed
-//! independently of every other program's, without pointer-identity tricks.
-//!
-//! Each entry records the native function pointer and its arity so the caller
-//! can dispatch with the right signature. Per-program `clear_program(id)`
-//! removes the entries and frees that program's JIT modules; `clear()`
-//! removes everything for every program at once.
 
 use cranelift_jit::JITModule;
 use std::collections::HashMap;
@@ -17,74 +5,36 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-/// JIT result tag: the value is an Int.
 pub const TAG_INT: i64 = 0;
-/// JIT result tag: the value is the IEEE-754 bits of a Float.
 pub const TAG_FLOAT: i64 = 1;
-/// JIT result tag: the JIT declined at runtime; the caller must fall back to
-/// the interpreter exactly once.
 pub const TAG_BAIL: i64 = 2;
-/// JIT result tag: the value is a Bool (dispatched to `boolean()`).
 pub const TAG_BOOL: i64 = 3;
-/// JIT result tag: the callee produced `Un`'s `None` singleton (written by
-/// class `__init__`s and other implicit-None functions). The value cell is
-/// ignored; the caller returns `world::none_obj()`.
 pub const TAG_NONE: i64 = 5;
-/// JIT result tag: the callee returned the handle of a freshly-materialised
-/// `Obj::List` (an all-Int/all-Bool IntVec). The value cell carries the raw
-/// handle; the caller materialises it back into an Un list and frees the
-/// handle.
 pub const TAG_INTLIST: i64 = 6;
 
-/// How each positional argument is expected by the callee's native code.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ArgKind {
-    /// Historical bytecode-JIT marshalling: a plain Int (its value must not
-    /// be a live IntVec arena handle), or an IntVec arena handle marked by
-    /// `param_tags` bit p.
     Unbc,
-    /// Compile-mode core entry: plain Int bits.
     Int,
-    /// Compile-mode core entry: raw IEEE-754 bits of a Float (`param_tags`
-    /// bit 32+p marks the position as float).
     Float,
-    /// Compile-mode core entry: 0/1 (`param_tags` bit 40+p marks bool).
     Bool,
 }
 
-/// A JIT-compiled function. The `ptr` points to the Cranelift-emitted native
-/// function with `arity` `i64` parameters plus a hidden result pointer,
-/// returning via that hidden pointer: the first i64 cell carries the result
-/// value (sent as i64 bits for Float too), the second cell carries one of
-/// `TAG_INT`, `TAG_FLOAT`, `TAG_BAIL`, `TAG_BOOL` or `TAG_NONE`.
 #[derive(Clone)]
 pub struct JitEntry {
     pub ptr: *const u8,
     pub arity: u32,
-    /// Per-argument marshalling for compile-mode core entries; empty for
-    /// bytecode-JIT entries (all `Unbc`).
     pub arg_kinds: Vec<ArgKind>,
 }
 
-// The JIT increments this counter on entry and decrements on exit. The
-// process is single-threaded and the runtime is cooperative, so Relaxed
-// order is sufficient — an RMW per call is about as cheap as it gets for
-// shared memory, and there is no contention.
 pub static JIT_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-// Cached copy of `world::max_recursion_depth()`. Refreshed by
-// `sync_max_jit_depth()` so the hot path never borrows `WORLD`. Initialised
-// to the default interpreter bound: an embedder that never calls
-// `world::reset()` must not end up with an unlimited native recursion guard.
 pub static JIT_MAX_DEPTH: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(crate::runtime::function::MAX_RECURSION_DEPTH);
 
-/// Refresh the JITed bound after a `set_max_recursion_depth()` call.
 pub(crate) fn sync_max_jit_depth(depth: usize) {
     JIT_MAX_DEPTH.store(depth, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Cranelift-imported helper for entry/depth check.
-/// Returns 1 when the JIT function must bail (too deep), 0 otherwise.
 #[no_mangle]
 pub extern "C" fn un_jit_depth_enter() -> i64 {
     let depth = JIT_DEPTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -92,16 +42,11 @@ pub extern "C" fn un_jit_depth_enter() -> i64 {
     if max == 0 || depth < max {
         0
     } else {
-        // Revert the increment so the caller's own bail path doesn't double
-        // count; the normal return will fetch_sub anyway.
         JIT_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         1
     }
 }
 
-/// Counter-side of depth accounting. Called at every normal exit path AND
-/// on the bail path so the VM's own depth tracking never leaks across
-/// nested calls.
 #[no_mangle]
 pub extern "C" fn un_jit_depth_exit() -> i64 {
     JIT_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -110,14 +55,9 @@ pub extern "C" fn un_jit_depth_exit() -> i64 {
 
 unsafe impl Send for JitEntry {}
 
-/// Native modules emitted per program, keyed by the same per-program id.
-/// Kept around so `clear_program` can free exactly one program's native
-/// code without touching the others'.
 static JIT_MODULES: LazyLock<Mutex<HashMap<u64, Vec<JITModule>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Stash a finished JIT module for `program_id`. Called by the emitter after
-/// all of its function pointers have been extracted.
 pub(crate) fn stash_module(program_id: u64, module: JITModule) {
     JIT_MODULES
         .lock()
@@ -127,12 +67,9 @@ pub(crate) fn stash_module(program_id: u64, module: JITModule) {
         .push(module);
 }
 
-/// Two-level registry: program_id -> proto_index -> entry.
 static JIT_FNS: LazyLock<Mutex<HashMap<u64, HashMap<u32, JitEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// JIT is enabled unless `UV_JIT` is set to `0` (or `false`) in the environment.
-/// Read once per process.
 static JIT_ENABLED: LazyLock<bool> = LazyLock::new(|| {
     std::env::var("UV_JIT")
         .map(|v| {
@@ -142,21 +79,10 @@ static JIT_ENABLED: LazyLock<bool> = LazyLock::new(|| {
         .unwrap_or(true)
 });
 
-/// Whether the JIT fast-path is enabled (default: yes, unless `UV_JIT=0`).
 pub fn jit_enabled() -> bool {
     *JIT_ENABLED
 }
 
-/// Strict JIT mode for canaries. Set `UV_JIT=2` (or `UV_JIT=strict`) to make
-/// any JIT candidate that fails to compile abort the process with exit code
-/// 2 instead of silently replacing it with a tag=2 fallback stub — the
-/// failure class that once disabled the whole JIT while `scripts/test.ps1`
-/// stayed green (TD-51). The mode is for curated corpora: any program whose
-/// functions legitimately leave the Int subset (strings, IO, floats-with-
-/// trig, nested-call args) will trip it, which is exactly what makes it a
-/// detection canary rather than a compatibility flag. Use `UV_JIT=0` to run
-/// without the JIT instead. Ignored on targets without the JIT (e.g. WASM),
-/// like `UV_JIT=0` is.
 pub fn jit_strict() -> u8 {
     static STRICT: LazyLock<u8> = LazyLock::new(|| {
         std::env::var("UV_JIT")
@@ -170,29 +96,19 @@ pub fn jit_strict() -> u8 {
     *STRICT
 }
 
-/// Whether the JIT emits diagnostic output (`UV_JIT_DEBUG` is set).
-///
-/// The flag is read once per process: the emitters ask for it per emitted
-/// instruction, and an environment lookup per opcode is expensive enough to
-/// show up in the JIT compile cost.
 pub fn jit_debug() -> bool {
     static JIT_DEBUG: LazyLock<bool> =
         LazyLock::new(|| std::env::var_os("UV_JIT_DEBUG").is_some());
     *JIT_DEBUG
 }
 
-/// Programs already attempted a lazy compile. On a lookup miss we attempt
-/// compilation once per program instead of on every call (ineligible
-/// programs stay ineligible; the check is just a hash-set probe).
 static JIT_LAZY_ATTEMPTED: LazyLock<Mutex<HashSet<u64>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// Record that this program instance had a lazy compile attempt.
 pub fn mark_jit_lazy_attempted(program_id: u64) {
     JIT_LAZY_ATTEMPTED.lock().expect("jit_cache").insert(program_id);
 }
 
-/// Whether a lazy compile attempt already ran (or was decided) for `program_id`.
 pub fn jit_lazy_attempted(program_id: u64) -> bool {
     JIT_LAZY_ATTEMPTED
         .lock()
@@ -200,7 +116,6 @@ pub fn jit_lazy_attempted(program_id: u64) -> bool {
         .unwrap_or(true)
 }
 
-/// Register a JIT-compiled entry for a proto of `program_id`.
 pub fn register_jit_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
     if !jit_enabled() {
         return;
@@ -213,9 +128,6 @@ pub fn register_jit_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
         .insert(proto_index, entry);
 }
 
-/// Register an entry produced by the compile-mode TIR backend. Unlike the
-/// bytecode JIT registration this is not gated by `UV_JIT`: when the user
-/// runs `un native`, compile mode is the contract.
 pub fn register_tir_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
     JIT_FNS
         .lock()
@@ -225,7 +137,6 @@ pub fn register_tir_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
         .insert(proto_index, entry);
 }
 
-/// Look up a previously registered JIT entry for `program_id`.
 pub fn get_jit_entry(program_id: u64, proto_index: u32) -> Option<JitEntry> {
     if !jit_enabled() {
         return None;
@@ -233,17 +144,10 @@ pub fn get_jit_entry(program_id: u64, proto_index: u32) -> Option<JitEntry> {
     JIT_FNS.lock().ok()?.get(&program_id)?.get(&proto_index).cloned()
 }
 
-/// Look up a compile-mode TIR entry bypassing `UV_JIT`.
 pub fn get_tir_entry(program_id: u64, proto_index: u32) -> Option<JitEntry> {
     JIT_FNS.lock().ok()?.get(&program_id)?.get(&proto_index).cloned()
 }
 
-/// Free exactly one program's JIT state: remove its entries, drop its
-/// native modules (`free_memory`), and forget its lazy-compile marker so the
-/// next attempt compiles fresh. Use `clear()` only for whole-process
-/// teardown; `clear_program()` is safe point-in-time per program.
-///
-/// Returns the number of native functions freed.
 pub fn clear_program(program_id: u64) -> usize {
     let (entries, modules) = {
         let mut fns = JIT_FNS.lock().expect("jit_cache");
@@ -257,28 +161,11 @@ pub fn clear_program(program_id: u64) -> usize {
         .expect("jit_cache")
         .remove(&program_id);
     for module in modules {
-        // SAFETY: free_memory invalidates pointers into the module; no code
-        // in the module may be entered afterwards and all related entries
-        // were removed from JIT_FNS above.
         unsafe { module.free_memory() };
     }
     entries
 }
 
-/// Free every native module the JIT emitted for this process and wipe the
-/// registry. Also drops every IntDict created by JIT code (the arena is
-/// process-lifetime otherwise, and repeated `clear()` cycles in tests would
-/// keep every table allocated). Any code entered afterwards must re-JIT
-/// against a fresh registry; the IntDict ids vanish with the native code,
-/// so no stale id is ever observable.
-///
-/// # Safety
-/// Calling this invalidates all previously returned `JitEntry.ptr` values:
-/// every native code pointer from every compiled module is freed. The caller
-/// must ensure no JIT-compiled code is executing anymore nor will be entered
-/// afterwards. Intended for whole-process shutdown (e.g. benchmarks /
-/// playground teardown), never for in-flight re-entry. Tests or other code
-/// that keep running Un programs after a `clear()` would crash or corrupt.
 pub fn clear() {
     let modules = std::mem::take(&mut *JIT_MODULES.lock().expect("jit_cache"));
     crate::runtime::int_dict::clear();
@@ -288,10 +175,6 @@ pub fn clear() {
     JIT_FNS.lock().expect("jit_cache").clear();
     for (_id, modules) in modules.into_iter() {
         for module in modules {
-            // SAFETY: free_memory invalidates all pointers into the module; the
-            // caller must not enter any of them afterwards. All entries from
-            // those modules have been removed from JIT_FNS, so no lookup can
-            // return a dangling pointer.
             unsafe { module.free_memory() };
         }
     }

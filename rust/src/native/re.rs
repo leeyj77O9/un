@@ -80,9 +80,6 @@ fn compile(pattern: &str) -> Result<Regex, Obj> {
     }
 }
 
-/// The regex engine exhausted its backtracking step budget. Surfaced as an
-/// Un error (never a silent "no match"), because an exhausted attempt cannot
-/// distinguish "doesn't match" from "would match eventually".
 fn limit_error() -> Obj {
     obj::err("regex backtracking limit exceeded")
 }

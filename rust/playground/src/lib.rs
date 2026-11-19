@@ -1,50 +1,3 @@
-//! `unvm-playground` ??the WASM entry point of the Un sandbox.
-//!
-//! `PlaygroundRunner.RunCode` of the reference C# implementation, ported to Rust:
-//! it runs a script against an in-memory file system with a fixed module allowlist,
-//! captures the sandbox stdout, and reports the outcome as JSON.
-//!
-//! The crate produces a `cdylib` (`playground.wasm`) exporting the `playground_*`
-//! ABI that the web playground loader uses. on non-wasm targets it builds as a
-//! native library so the ABI can be tested directly.
-//!
-//! ABI (documented, stable):
-//!
-//! ```text
-//! playground_alloc(len: usize) -> *mut u8
-//! playground_free(ptr: *mut u8, len: usize)
-//! playground_run(code_ptr: *const u8, code_len: usize,
-//!                file_ptr: *const u8, file_len: usize,
-//!                allowed_ptr: *const u8, allowed_len: usize,   // newline-separated names; empty = default
-//!                stdin_ptr: *const u8, stdin_len: usize,       // replayed input, '\n'-joined; may be empty
-//!                allow_eof: i32,                               // nonzero: at stdin EOF `read()` returns ""
-//!                out_len: *mut usize) -> *mut u8               // NUL-free; length in out_len
-//! ```
-//!
-//! The caller writes the input buffers with `playground_alloc`, reads the result
-//! into a UTF-8 string of `out_len` bytes, then frees both buffers and the result.
-//!
-//! Required imports (`wasm32-unknown-unknown` has no OS clock):
-//!
-//! ```text
-//! env.unvm_monotonic_nanos() -> f64   // e.g. performance.now() * 1e6
-//! env.unvm_unix_nanos()      -> f64   // e.g. Date.now() * 1e6
-//! ```
-//!
-//! Instantiating `unvm_playground.wasm` without these fails at link time; a host
-//! that returns NaN/negative values falls back to a counter / the epoch. This is
-//! what lets `time.stopwatch()`, `time.now()`, `time.monotonic*()`, and
-//! `random()`'s seed see real time instead of trapping.
-//!
-//! Interactive `read()`: the web playground replays the whole script with the
-//! input lines gathered so far as `stdin`. when the script calls `read()` and no
-//! replayed line remains, the run aborts with a `need_input` panic and the JSON
-//! result reports `"needsInput": true` (with whatever stdout was produced so far).
-//! `allow_eof` nonzero turns the abort into an empty-string line instead.
-//!
-//! The timeout parameter is accepted for ABI compatibility with the reference and is
-//! ignored: like the reference's browser path, a preemptive timeout cannot exist on
-//! WASM (the host enforces it), and a native build runs the same in-browser path.
 
 use std::rc::Rc;
 
@@ -57,7 +10,6 @@ use unvm::source::Source;
 use unvm::vm::{err_header, err_message, panic_display, Outcome, VM};
 use unvm::error::LangError;
 
-/// the reference's `DefaultAllowed`
 const DEFAULT_ALLOWED: &[&str] = &[
     "io", "math", "iter", "re", "random", "time", "builtin", "atomic",
 ];
@@ -67,8 +19,6 @@ pub struct PlaygroundResult {
     pub error: Option<String>,
     pub timed_out: bool,
     pub exit_code: i32,
-    /// the run aborted at `read()`: the replayed stdin ran out and `allow_eof` was
-    /// not set. the browser should ask the user for the next line and replay.
     pub needs_input: bool,
 }
 
@@ -76,9 +26,6 @@ fn is_need_input(o: &obj::Obj) -> bool {
     matches!(obj::payload(o), Payload::Panic { name, .. } if name == "need_input")
 }
 
-/// Prepend the `un: error trace` block (if any) to the error text shown in
-/// the browser, reusing the exact renderer the CLI uses. `root` is the
-/// synthetic module frame position used when no call boundary was crossed.
 fn render_error(
     ctx: &context::Context,
     text: String,
@@ -91,9 +38,6 @@ fn render_error(
     }
 }
 
-/// Runs `code` against the sandbox, mirrors `PlaygroundRunner.RunCode`.
-/// `stdin` is the replayed input the browser collected by asking the user line by
-/// line; `allow_eof` mirrors `UnInterop.SetAllowEof`.
 pub fn run(
     code: &str,
     file_name: &str,
@@ -118,7 +62,6 @@ pub fn run(
     let mut needs_input = false;
 
     let source = Rc::new(Source::new(file_name, code));
-    // `Runner.RunCore` ??parse, desugar, optimize, compile
     let program = match runner::compile_source(&source) {
         Ok(program) => Some(program),
         Err(runner::RunError::Parse(parse_error)) => {
@@ -147,7 +90,6 @@ pub fn run(
                     exit_code = 1;
                 }
                 Outcome::Propagate(err, start, length) => {
-                    // the header is preserved, as in `catch (PropagateFlow pf)`
                     let e = LangError::new(start, length, err_message(&err)).with_header(err_header(&err));
                     let text = e.display(&source);
                     error = Some(render_error(&vm.ctx, text, Some((source.clone(), start))));
@@ -173,8 +115,6 @@ pub fn run(
                 }
                 Outcome::Panic(o) => {
                     if is_need_input(&o) {
-                        // the browser asks for the next line and replays with more
-                        // stdin; the error stays hidden, as `NeedInputException` was
                         needs_input = true;
                     } else {
                         let text = panic_display(&o);
@@ -191,9 +131,6 @@ pub fn run(
     }
 
     let stdout = world::log_text();
-    // Each playground run compiles a fresh program with a fresh id, so the
-    // JIT entries this run created can never be reused by a later run; they
-    // are dead weight in the WASM linear memory until it is discarded.
     unvm::jit_cache::clear();
     world::reset();
 
@@ -224,7 +161,6 @@ fn escape_json(text: &str) -> String {
     out
 }
 
-/// `{"stdout": "...", "error": null|"...", "timedOut": false, "exitCode": 0, "needsInput": false}`
 pub fn result_to_json(result: &PlaygroundResult) -> String {
     let error = match &result.error {
         Some(text) => format!("\"{}\"", escape_json(text)),
@@ -338,7 +274,6 @@ mod tests {
         assert!(!result.timed_out);
         assert!(!result.needs_input);
 
-        // io.write(a, b) prints a + " " + b + "\n", matching the reference exactly
         let result = run("use io\nio.write(\"hello\", \"\\n\")", "playground.un", None, "", false);
         assert_eq!(result.stdout, "hello \n\n");
         assert_eq!(result.exit_code, 0);
@@ -359,8 +294,6 @@ mod tests {
 
     #[test]
     fn run_aborts_at_read_until_input_is_replayed() {
-        // no stdin: the run aborts at `read()` and reports needs_input, keeping the
-        // stdout (the prompt) it produced so far
         let result = run(
             "use io\nname = io.read(\"Name: \")\nio.write(\"hi\", name)",
             "playground.un",
@@ -372,7 +305,6 @@ mod tests {
         assert_eq!(result.stdout, "Name: ");
         assert!(result.error.is_none());
 
-        // replay with the collected line: the script completes without asking again
         let result = run(
             "use io\nname = io.read(\"Name: \")\nio.write(\"hi\", name)",
             "playground.un",
@@ -384,7 +316,6 @@ mod tests {
         assert_eq!(result.stdout, "Name: hi kim\n");
         assert_eq!(result.exit_code, 0);
 
-        // the replayed buffer is consumed in order, then asks again
         let result = run(
             "use io\nexample = io.read(\"first: \")\nother = io.read(\"second: \")\nio.write(example, other)",
             "playground.un",
@@ -395,7 +326,6 @@ mod tests {
         assert!(result.needs_input);
         assert_eq!(result.stdout, "first: second: ");
 
-        // allow_eof turns the abort into an empty line
         let result = run(
             "use io\nname = io.read(\"Name: \")\nio.write(\"hi\", name)",
             "playground.un",
@@ -410,8 +340,6 @@ mod tests {
 
     #[test]
     fn io_open_confines_to_sandbox_root() {
-        // `io` is in the default allow-list (println/input), but file access
-        // must not escape the sandbox root: absolute paths are refused.
         let result = run(
             "use io\nio.open(\"C:/Windows/System32/drivers/etc/hosts\", \"w\")",
             "playground.un",
@@ -429,7 +357,6 @@ mod tests {
             result.error
         );
 
-        // A parent-dir chain that would climb out is refused too.
         let result = run(
             "use io\nio.open(\"../../escape.txt\", \"w\")",
             "playground.un",

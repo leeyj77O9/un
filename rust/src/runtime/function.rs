@@ -42,10 +42,6 @@ pub struct Args {
 }
 impl Args {
     pub fn positional(values: Vec<Obj>) -> Self {
-        // No per-argument `String::new()` bookkeeping — positional call
-        // sites are the hot path and every call would pay for an empty
-        // String per argument otherwise. Consumers use `.get(i)` and treat
-        // a missing name as positional.
         Self { values, names: Vec::new() }
     }
     pub fn named(values: Vec<Obj>, mut names: Vec<String>) -> Self {
@@ -272,9 +268,6 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) els
             obj::type_name(f)
         ));
     };
-    // Borrow the cell once for the native branch: fetch the closure, the
-    // native body pointer (if any) and the depth bookkeeping context up front
-    // instead of re-borrowing at each step.
     let (closure, host) = {
         let cell = cell.borrow();
         let closure = cell.closure.clone();
@@ -302,9 +295,6 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) els
         context::set_call_depth(&closure, depth);
         return value;
     }
-    // Fast path: a JIT-compiled Proto accepted by the `.unbc` translator
-    // (Int-only subset + Float promotions). Skips scope allocation and
-    // parameter binding entirely — the JIT executes the frame directly.
     if let Some(result) = match &cell.borrow().body {
         Body::Proto { index, program } => {
             let bound = f.borrow().self_.clone();
@@ -353,8 +343,6 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) els
     };
     end_call(&frame, result)
 }
-// Shared canonical empty names list for native bodies (avoids one Vec alloc
-// + one RefCell borrow per native call).
 thread_local! {
     static EMPTY_NAMES: Rc<Vec<String>> = Rc::new(Vec::new());
 }
@@ -616,8 +604,6 @@ pub fn fn_clone(f: &Obj) -> Obj {
 pub fn is_func(o: &Obj) -> bool {
     matches!(obj::payload(o), Payload::Func(..))
 }
-/// A value usable as a callback in higher-order natives: a function, or a
-/// type object acting as a 1-argument converter (`list.map(int)`).
 pub fn is_callable(o: &Obj) -> bool {
     matches!(obj::payload(o), Payload::Func(..) | Payload::TObj(..))
 }

@@ -1,21 +1,3 @@
-//! `natcode` ??compile-mode native backend: TIR ??Cranelift ??`jit_cache`.
-//!
-//! Every eligible core function is emitted twice:
-//!
-//! - `tir_core_{i}`: the internal, fully typed body. Static calling
-//!   convention: `int` ??i64, `float` ??f64, `bool` ??i8. Calls to other
-//!   functions in the same module go through this signature ??direct calls
-//!   with no marshalling, no tag lists, no VM involvement.
-//! - `tir_entry_{i}`: the boundary the VM (`jit_call`) can call: hidden
-//!   result pointer (two i64 cells: `(value, tag)`), `param_tags` bitmap
-//!   (bit p=IntVec handle, bit 32+p=Float bits, bit 40+p=Bool), then the
-//!   raw i64 parameters.
-//!
-//! Calling convention for the bail flag: every function returns it as the
-//! last `i8` return value (`0` = normal, `1` = bail). The FFI wrapper maps a
-//! nonzero flag onto `TAG_BAIL`; internal callers propagate it outward until
-//! the outermost entry sees it and the VM re-runs the whole call in the
-//! interpreter ??never a wrong answer, never a silent miscompilation.
 
 use crate::jit_cache::{self, ArgKind, JitEntry, TAG_BAIL, TAG_BOOL, TAG_FLOAT, TAG_INT, TAG_NONE};
 use crate::bytecode::Program;
@@ -34,20 +16,12 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use cranelift_native;
 use std::collections::HashMap;
 
-/// Which backend the emitters target. `Vm` emits the in-process VM ABI
-/// (hidden pointer, param_tags, i64 args, hidden i8 bail flag). `Obj` emits a
-/// plain typed signature for the standalone object file — value returns only,
-/// no bail flag, division failure traps instead of bailing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NativeMode {
     Vm,
     Obj,
 }
 
-/// Compile the TIR program, stash the native module in `jit_cache`, and
-/// register every core entry there. Returns the names of functions that
-/// failed to compile (their entries are always-bail stubs; the VM runs them
-/// in the interpreter).
 pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> Vec<String> {
     let debug_trace = std::env::var_os("UV_TIR_DEBUG").is_some();
     if tir.functions.is_empty() {
@@ -76,7 +50,6 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
         "un_jit_depth_exit",
         jit_cache::un_jit_depth_exit as *const u8,
     );
-    // Float math intrinsics used by `math.<fn>(...)` in JIT-compiled code.
     builder.symbol("un_math_sin", crate::native::math::un_math_sin as *const u8);
     builder.symbol("un_math_cos", crate::native::math::un_math_cos as *const u8);
     builder.symbol("un_math_tan", crate::native::math::un_math_tan as *const u8);
@@ -97,7 +70,6 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
     builder.symbol("un_math_abs", crate::native::math::un_math_abs as *const u8);
     let mut module = JITModule::new(builder);
 
-    // Pass 1: declare internal + FFI entry for each function.
     let mut internal_fids: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
     let mut ffi_fids: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
     for f in &tir.functions {
@@ -126,15 +98,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
         }
     }
 
-    // Pass 2: emit. A failing function is replaced by an always-bail FFI
-    // stub; the interpreter picks up its semantics.
     for f in &tir.functions {
-        // The VM JIT can't call the VM runtime for Str/heap-collection
-        // operations, so those functions get an always-bail stub (the VM
-        // runs them in the interpreter). Heap collections are the documented
-        // fast path, not a failure — skip them silently so `un native`
-        // stderr stays byte-identical to `un run`. Str functions keep the
-        // pre-existing warning.
         let heap = crate::tir::fn_uses_heap(f);
         if crate::tir::fn_uses_str(f) || heap {
             if !heap {
@@ -178,8 +142,6 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
         }
         let internal_ok = matches!(&guard, Ok(Ok(())));
         if !internal_ok {
-            // Internal compile failed: replace the FFI entry with a pure
-            // bail stub so no symbol ever references the undefined internal.
             if !failed.iter().any(|n| n == &f.name) {
                 failed.push(f.name.clone());
             }
@@ -218,14 +180,12 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
     if module.finalize_definitions().is_err() {
         return failed;
     }
-    // Capture FFI pointers before stashing the module.
     let mut ffi_ptrs: HashMap<usize, *const u8> = HashMap::new();
     for (index, fid) in &ffi_fids {
         let ptr = module.get_finalized_function(*fid) as *const u8;
         ffi_ptrs.insert(*index, ptr);
     }
     jit_cache::stash_module(program_id, module);
-    // Map proto spans to proto indices.
     let mut proto_index_of: HashMap<(usize, usize), u32> = HashMap::new();
     for (index, proto) in program.protos.iter().enumerate() {
         if let Some(span) = proto.fn_span {
@@ -265,9 +225,6 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
                 TirTy::Int => ArgKind::Int,
                 TirTy::Float => ArgKind::Float,
                 TirTy::Bool => ArgKind::Bool,
-                // Str/List args are never passed to a VM-JIT candidate
-                // (those are filtered out up front); reaching here is a
-                // no-op mapping.
                 TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => ArgKind::Int,
             })
             .collect();
@@ -304,9 +261,6 @@ fn emit_trap_stub(
     module.define_function(fid, &mut ctx).map_err(|e| format!("trap stub: {e:?}"))
 }
 
-/// Emit an always-bail internal stub for a function the emitter cannot
-/// translate. The caller (the FFI wrapper) converts this into a
-/// bail-to-interpreter tag; the internal symbol still resolves.
 fn emit_internal_bail<M: Module>(
     module: &mut M,
     f: &TirFn,
@@ -347,13 +301,7 @@ fn emit_internal_bail<M: Module>(
     module.define_function(fid, &mut ctx).map_err(|e| format!("internal bail: {e:?}"))
 }
 
-/// Compile the TIR program to a relocatable object file and write it to
-/// `output`. Entry is the function named `entry` (default `main`), exported
-/// as `un_main` with a C ABI (`() -> i64` for `int` returns). Functions that
-/// fail to lower become trap stubs so the module stays linkable.
 pub fn obj_compile(
-    // Carried for symmetry with `native_compile`; unused (the TIR needs no
-    // per-program id — no JIT cache is involved).
     _program_id: u64,
     tir: &TirProgram,
     output: &Path,
@@ -382,8 +330,6 @@ pub fn obj_compile(
         .map_err(|e| format!("object builder: {e:?}"))?;
     let mut module = ObjectModule::new(object_builder);
 
-    // Pass 0: declare everything before any emission, so a caller never
-    // references an undeclared callee.
     let mut fids: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
     let mut skipped: Vec<String> = Vec::new();
     for (i, f) in tir.functions.iter().enumerate() {
@@ -403,7 +349,6 @@ pub fn obj_compile(
         }
     }
 
-    // Pass 1: lower. Failure → trap stub so the module stays linkable.
     let mut emitted: Vec<String> = Vec::new();
     for (i, f) in tir.functions.iter().enumerate() {
         let Some(&fid) = fids.get(&i) else {
@@ -449,8 +394,6 @@ pub fn obj_compile(
     })
 }
 
-/// Declare an imported C-ABI runtime function (used by Obj mode to call into
-/// `unrt`). Vm mode never emits these calls.
 fn declare_import<M: Module>(
     module: &mut M,
     name: &str,
@@ -485,14 +428,11 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
         Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => sig.returns.push(AbiParam::new(types::I64)),
         None => {
             if mode == NativeMode::Obj {
-                // Match the Obj-mode un_main ABI: `() -> i64` even for a
-                // void entry (emit_internal_return pushes the 0).
                 sig.returns.push(AbiParam::new(types::I64));
             }
         }
     }
     if mode == NativeMode::Vm {
-        // Hidden bail flag, returned as the last i8 always.
         sig.returns.push(AbiParam::new(types::I8));
     }
     sig
@@ -500,17 +440,12 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
 
 fn ffi_signature<M: Module>(module: &M, f: &TirFn) -> cranelift_codegen::ir::Signature {
     let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(types::I64)); // hidden result pointer
-    sig.params.push(AbiParam::new(types::I64)); // param_tags
-    for _ in 0..f.params.len() {
+    sig.params.push(AbiParam::new(types::I64));    sig.params.push(AbiParam::new(types::I64));    for _ in 0..f.params.len() {
         sig.params.push(AbiParam::new(types::I64));
     }
     sig
 }
 
-// ---------------------------------------------------------------------------
-// Emitters: internal (typed, static) functions and FFI wrappers.
-// ---------------------------------------------------------------------------
 
 
 
@@ -545,7 +480,6 @@ struct FnEmit<'a> {
     fns: &'a [TirFn],
     vars: &'a [Variable],
     local_tys: &'a [TirTy],
-    /// `Some` in Vm mode only (the VM recursion depth guard).
     fid_exit: Option<cranelift_module::FuncId>,
     acquired: Variable,
     bail_blk: Block,
@@ -553,12 +487,7 @@ struct FnEmit<'a> {
     loop_skips: Vec<Block>,
     terminated: bool,
     mode: NativeMode,
-    // No trap_blk: Obj-mode paths bail through `emit_error_gate`; Vm-mode
-    // paths bail through `bail_blk`.
-    /// Every fallible unrt call that returns an error object jumps to the
-    /// handler at the top of the stack instead of trapping.
     active_handlers: Vec<cranelift_codegen::ir::Block>,
-    /// Import declarations for the `unrt` runtime bridge (Obj mode only).
     unrt_str_new: Option<cranelift_module::FuncId>,
     unrt_str_cat: Option<cranelift_module::FuncId>,
     unrt_call_native: Option<cranelift_module::FuncId>,
@@ -601,20 +530,12 @@ struct FnEmit<'a> {
     unrt_obj_is_err: Option<cranelift_module::FuncId>,
     unrt_obj_eq: Option<cranelift_module::FuncId>,
     unrt_len: Option<cranelift_module::FuncId>,
-    /// String literals discovered during lowering, interned into the object's
-    /// data section (Obj mode only).
     str_literals: HashMap<Vec<u8>, cranelift_module::DataId>,
     str_literal_count: u32,
-    /// TirProgram index of this function: namespaces data object names so
-    /// identical literals in different functions don't collide.
     fn_index: u32,
-    /// Lazily-declared `un_math_<fn>` FFI imports, shared across call sites.
     math_ffi_fids: std::collections::HashMap<String, cranelift_module::FuncId>,
 }
 
-/// Embed raw bytes as a data object in the object module and return the
-/// global value that loads their address. Shared by string literals and
-/// native-call module/member names.
 fn embed_str_bytes<M: Module>(
     emitter: &mut FnEmit,
     module: &mut M,
@@ -642,7 +563,6 @@ fn embed_str_bytes<M: Module>(
     module.declare_data_in_func(data_id, builder.func)
 }
 
-/// Build the internal (typed) function body.
 fn emit_internal<M: Module>(
     f: &TirFn,
     module: &mut M,
@@ -652,7 +572,6 @@ fn emit_internal<M: Module>(
     fns: &[TirFn],
     mode: NativeMode,
 ) -> Result<(), ()> {
-    // VM mode imports the depth guard; Obj mode has no VM to re-enter.
     let fid_enter = if mode == NativeMode::Vm {
         Some(
             module
@@ -677,8 +596,6 @@ fn emit_internal<M: Module>(
     func_ctx.func.name = UserFuncName::user(0, func_id.as_u32());
     let mut builder = FunctionBuilder::new(&mut func_ctx.func, &mut builder_ctx);
 
-    // Import the unrt runtime bridge for Obj mode (Str values and native
-    // calls go through it). Vm mode never emits Str/native code.
     let unrt_none = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_obj_none", vec![], Some(types::I64))?)
     } else {
@@ -1015,7 +932,6 @@ fn emit_internal<M: Module>(
             }
         }
     }
-    // Depth enter: acquire or immediately bail (Vm only); Obj mode skips.
     let (body_entry, bail_entry) = if let Some(fid_enter) = fid_enter {
         let enter_ref = module.declare_func_in_func(fid_enter, builder.func);
         let enter_res = builder.ins().call(enter_ref, &[]);
@@ -1033,7 +949,6 @@ fn emit_internal<M: Module>(
         builder.def_var(acquired, zero);
         (entry, None)
     };
-    // bail_entry: bail without acquiring (Vm only).
     if let Some(bail_entry) = bail_entry {
         builder.switch_to_block(bail_entry);
         emit_internal_return(
@@ -1049,11 +964,9 @@ fn emit_internal<M: Module>(
         builder.seal_block(bail_entry);
     }
 
-    // The shared bail block for guard failures (division by zero, native
     let bail_blk = builder.create_block();
 
     builder.switch_to_block(body_entry);
-    // Body statements.
     let mut emitter = FnEmit {
         internal_fids,
         fns,
@@ -1120,7 +1033,6 @@ fn emit_internal<M: Module>(
         }
         emit_stmt(stmt, &mut emitter, &mut builder, module, f);
     }
-    // Falling off the end: ret-None returns none; ret-value bails.
     if !emitter.terminated {
         match f.ret {
             None => emit_internal_return(
@@ -1147,9 +1059,6 @@ fn emit_internal<M: Module>(
     }
     builder.seal_block(body_entry);
 
-    // bail_blk: acquired depth is held; drop it and return junk with the
-    // bail flag. (`emit_internal_return` exits the depth counter exactly
-    // once, when the frame holds it.)
     builder.switch_to_block(bail_blk);
     emit_internal_return(
         f,
@@ -1176,8 +1085,6 @@ fn emit_internal<M: Module>(
     }
 }
 
-/// Emit a return from the internal function: exit the depth counter (Vm),
-/// return the value (if any) and the bail flag (Vm only).
 fn emit_internal_return<M: Module>(
     f: &TirFn,
     builder: &mut FunctionBuilder,
@@ -1215,9 +1122,6 @@ fn emit_internal_return<M: Module>(
             returns.push(builder.ins().iconst(types::I8, 0));
         }
         (None, _) => {
-            // Obj mode always exports `un_main` as a C ABI `() -> i64`; a
-            // void entry must still hand back a live register (0) or the
-            // driver reads garbage as the exit code.
             if mode == NativeMode::Obj {
                 returns.push(builder.ins().iconst(types::I64, 0));
             }
@@ -1234,9 +1138,6 @@ fn emit_internal_return<M: Module>(
     builder.ins().return_(&returns);
 }
 
-/// Emit a sequence of statements. Returns `true` if control flow
-/// terminated before the end of the block (e.g. a `Return`), `false` if
-/// the block reached its natural end and should be sealed with a jump.
 fn emit_block<M: Module>(
     body: &[TirStmt],
     emitter: &mut FnEmit,
@@ -1277,16 +1178,14 @@ fn emit_stmt<M: Module>(
             builder.ins().brif(cond_v, then_blk, &[], else_blk, &[]);
 
             builder.switch_to_block(then_blk);
-            emitter.terminated = false; // fresh reachable block
-            let then_terminated = emit_block(then_body, emitter, builder, module, f);
+            emitter.terminated = false;            let then_terminated = emit_block(then_body, emitter, builder, module, f);
             if !then_terminated {
                 builder.ins().jump(merge_blk, &[]);
             }
             builder.seal_block(then_blk);
 
             builder.switch_to_block(else_blk);
-            emitter.terminated = false; // fresh reachable block
-            let else_terminated = emit_block(else_body, emitter, builder, module, f);
+            emitter.terminated = false;            let else_terminated = emit_block(else_body, emitter, builder, module, f);
             if !else_terminated {
                 builder.ins().jump(merge_blk, &[]);
             }
@@ -1294,15 +1193,11 @@ fn emit_stmt<M: Module>(
 
             builder.switch_to_block(merge_blk);
             if then_terminated && else_terminated {
-                // No path reaches merge; give it a terminator so the block
-                // stays well-formed, and stop emitting dead statements.
                 builder.ins().jump(emitter.bail_blk, &[]);
                 builder.seal_block(merge_blk);
                 emitter.terminated = true;
                 return true;
             }
-            // merge_blk is reached from whichever arm did not terminate;
-            // reset the flag so trailing statements are still emitted.
             emitter.terminated = false;
             builder.seal_block(merge_blk);
             false
@@ -1317,12 +1212,8 @@ fn emit_stmt<M: Module>(
             builder.switch_to_block(header);
             let (cond_v, _) = emit_expr(cond, emitter, builder, module, f);
             builder.ins().brif(cond_v, body_blk, &[], exit_blk, &[]);
-            // Do NOT seal the header yet: the back edge from the body's
-            // terminal jump may not be known. Sealing is SSA construction —
-            // seal only once every predecessor is emitted.
             builder.switch_to_block(body_blk);
-            emitter.terminated = false; // fresh reachable block
-            for s in body {
+            emitter.terminated = false;            for s in body {
                 if emitter.terminated {
                     break;
                 }
@@ -1332,12 +1223,9 @@ fn emit_stmt<M: Module>(
                 builder.ins().jump(header, &[]);
             }
             builder.seal_block(body_blk);
-            // Header now has all its predecessors (entry jump + back edge).
             builder.seal_block(header);
             emitter.loop_breaks.pop();
             emitter.loop_skips.pop();
-            // exit_blk is reached from the loop guard; reset the terminated
-            // flag so following statements still get emitted.
             emitter.terminated = false;
             builder.switch_to_block(exit_blk);
             builder.seal_block(exit_blk);
@@ -1365,10 +1253,8 @@ fn emit_stmt<M: Module>(
                 builder.ins().icmp(IntCC::SignedGreaterThan, var_i, end_v)
             };
             builder.ins().brif(continue_, body_blk, &[], exit_blk, &[]);
-            // Do NOT seal the header yet: the back edge arrives via skip_blk.
             builder.switch_to_block(body_blk);
-            emitter.terminated = false; // fresh reachable block
-            for s in body {
+            emitter.terminated = false;            for s in body {
                 if emitter.terminated {
                     break;
                 }
@@ -1383,13 +1269,10 @@ fn emit_stmt<M: Module>(
             let next = builder.ins().iadd(var_i2, step_v);
             builder.def_var(var_var, next);
             builder.ins().jump(header, &[]);
-            // skip_blk and header now have all their predecessors.
             builder.seal_block(skip_blk);
             builder.seal_block(header);
             emitter.loop_breaks.pop();
             emitter.loop_skips.pop();
-            // exit_blk is reached from the loop guard; reset the terminated
-            // flag so following statements still get emitted.
             emitter.terminated = false;
             builder.switch_to_block(exit_blk);
             builder.seal_block(exit_blk);
@@ -1399,7 +1282,6 @@ fn emit_stmt<M: Module>(
             let col_v = emit_expr(collection, emitter, builder, module, f).0;
             let var_var = emitter.vars[*var as usize];
             let elem_ty = emitter.local_tys[*var as usize];
-            // Loop counter variable.
             let idx_var = builder.declare_var(types::I64);
             let zero = builder.ins().iconst(types::I64, 0);
             builder.def_var(idx_var, zero);
@@ -1439,8 +1321,7 @@ fn emit_stmt<M: Module>(
                 _ => panic!("list iteration requires an int/float/class element type"),
             };
             builder.def_var(var_var, elem_val);
-            emitter.terminated = false; // fresh reachable block
-            for s in body {
+            emitter.terminated = false;            for s in body {
                 if emitter.terminated {
                     break;
                 }
@@ -1456,8 +1337,7 @@ fn emit_stmt<M: Module>(
             builder.switch_to_block(exit_blk);
             emitter.loop_breaks.pop();
             emitter.loop_skips.pop();
-            emitter.terminated = false; // exit_blk reached from loop guard
-            builder.seal_block(exit_blk);
+            emitter.terminated = false;            builder.seal_block(exit_blk);
             builder.seal_block(header);
             false
         }
@@ -1519,8 +1399,6 @@ fn emit_stmt<M: Module>(
             false
         }
         TirStmt::NativeCall { module: module_name, member, args } => {
-            // `mod.member(args)` via `unrt_call_native`: build the argument
-            // pointer array on the stack and call the bridge function.
             let id = emitter
                 .unrt_call_native
                 .expect("unrt import required for native calls");
@@ -1535,7 +1413,6 @@ fn emit_stmt<M: Module>(
             let slot = builder.create_sized_stack_slot(slot_data);
             for (i, arg) in args.iter().enumerate() {
                 let (v, vty) = emit_expr(arg, emitter, builder, module, f);
-                // Native calls take Obj arguments — wrap raw values first.
                 let wrapped = match vty {
                     TirTy::Str => v,
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => v,
@@ -1647,7 +1524,6 @@ fn emit_stmt<M: Module>(
             let set_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(set_ref, &[recv, nptr, nlen, v]);
             let obj = builder.inst_results(res)[0];
-            // A throwing __setattr__ surfaces as an error object.
             emit_error_gate(emitter, builder, module, obj);
             false
         }
@@ -1660,7 +1536,6 @@ fn emit_stmt<M: Module>(
             if let Some(&handler) = emitter.active_handlers.last() {
                 builder.ins().jump(handler, &[]);
             } else {
-                // Uncaught error leaked to the top: report and kill.
                 let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
                 let d_ref = module.declare_func_in_func(d_id, builder.func);
                 let _ = builder.ins().call(d_ref, &[]);
@@ -1670,10 +1545,6 @@ fn emit_stmt<M: Module>(
             true
         }
         TirStmt::Try { body, var, catch_body, finally_body } => {
-            // Flow sketch:
-            //   body      --ok--> success_blk --finally-> merge_blk
-            //   body      --err--> handler_blk --bind-> catch_body -> success_blk
-            // `finally_body` runs unconditionally once the try completes.
             let success_blk = builder.create_block();
             let handler_blk = builder.create_block();
             let merge_blk = builder.create_block();
@@ -1684,8 +1555,6 @@ fn emit_stmt<M: Module>(
             if !body_terminated {
                 builder.ins().jump(success_blk, &[]);
             }
-            // Handler: take the parked error object and bind it if the user
-            // asked for a name.
             builder.switch_to_block(handler_blk);
             emitter.terminated = false;
             if let Some(slot) = var {
@@ -1705,14 +1574,10 @@ fn emit_stmt<M: Module>(
                 builder.ins().jump(success_blk, &[]);
             }
             builder.seal_block(handler_blk);
-            // Success/merge path: run `finally_body` unconditionally.
             builder.switch_to_block(success_blk);
             emitter.terminated = false;
             builder.seal_block(success_blk);
             if let Some(finally_body) = finally_body {
-                // `finally_body` ends in a return path or a terminator that
-                // finishes the function; otherwise control falls through to
-                // the merge block.
                 let fin_terminated = emit_block(finally_body, emitter, builder, module, f);
                 if fin_terminated {
                     emitter.terminated = true;
@@ -1720,9 +1585,6 @@ fn emit_stmt<M: Module>(
                 }
                 builder.ins().jump(merge_blk, &[]);
             } else {
-                // Unconditional transfer to the merge block after the try
-                // completes: required for Cranelift to close `success_blk`
-                // with a terminator.
                 builder.ins().jump(merge_blk, &[]);
             }
             builder.switch_to_block(merge_blk);
@@ -1777,7 +1639,6 @@ fn const_int_sign(step: &TirExpr) -> i64 {
     }
 }
 
-/// Unbox an Obj-element of a list into the matching scalar representation.
 fn list_elem_unbox<M: Module>(
     list_ty: TirTy,
     emitter: &FnEmit,
@@ -1803,12 +1664,6 @@ fn list_elem_unbox<M: Module>(
     }
 }
 
-/// Route an error-object return from a fallible unrt call: branch to the
-/// active handler if any, else abort through `unrt_dump_uncaught`.
-/// On success, execution continues. Defines no values visible to callers.
-/// Every fallible unrt call on the fast path becomes:
-///   %res = call <unrt fn>(...)
-///   unrt_error_gate(emitter, builder, module, %res)
 fn emit_error_gate<M: Module>(
     emitter: &mut FnEmit,
     builder: &mut FunctionBuilder,
@@ -1817,8 +1672,7 @@ fn emit_error_gate<M: Module>(
 ) {
     let is_err_id = match emitter.unrt_obj_is_err {
         Some(id) => id,
-        None => return, // VM mode: no bridge — never reached
-    };
+        None => return,    };
     let is_err_ref = module.declare_func_in_func(is_err_id, builder.func);
     let res = builder.ins().call(is_err_ref, &[obj]);
     let raw = builder.inst_results(res)[0];
@@ -1836,8 +1690,6 @@ fn emit_error_gate<M: Module>(
             builder.ins().jump(handler, &[]);
         }
         None => {
-            // No enclosing handler: park the error and abort the process
-            // with the interpreter's uncaught-error behaviour.
             let wid = emitter.unrt_write_error.expect("unrt import required");
             let wref = module.declare_func_in_func(wid, builder.func);
             let _ = builder.ins().call(wref, &[obj]);
@@ -1851,12 +1703,6 @@ fn emit_error_gate<M: Module>(
     builder.switch_to_block(ok_blk);
 }
 
-/// Guard against `a // b`, `a % b` and `a / b` with an Int divisor of zero.
-/// The interpreter reports `int division by zero` as a catchable error;
-/// the native emitters must agree with that behaviour.
-/// In Obj mode, the error object is constructed, parked as the pending
-/// error, and control branches either to the enclosing handler or to
-/// `unrt_dump_uncaught`. In Vm mode, control bails to the interpreter.
 fn emit_int_zero_guard<M: Module>(
     emitter: &mut FnEmit,
     builder: &mut FunctionBuilder,
@@ -1871,7 +1717,6 @@ fn emit_int_zero_guard<M: Module>(
         builder.ins().brif(is_zero, fail_blk, &[], ok_blk, &[]);
         builder.seal_block(ok_blk);
         builder.switch_to_block(fail_blk);
-        // Build the same VM error object the interpreter would.
         let mid = emitter.unrt_make_int_div_zero.expect("unrt import required");
         let mref = module.declare_func_in_func(mid, builder.func);
         let res = builder.ins().call(mref, &[]);
@@ -1897,14 +1742,6 @@ fn emit_int_zero_guard<M: Module>(
     }
 }
 
-/// Guard against `a % b` with an Int divisor of zero. Unlike `//` and `/`,
-/// the interpreter reports int `%`-by-zero as a `Panic`-payload Obj
-/// (`divide_by_zero()` → an `"error"` panic), which `try` never
-/// catches — the interpreter always prints the report and exits 1.
-/// In Obj mode this code parks that exact panic object pending and calls
-/// `unrt_dump_uncaught` unconditionally (active handlers are bypassed), so
-/// the native exe prints the identical line and exits 1. In Vm mode, control
-/// bails to the interpreter, which does the same thing.
 fn emit_mod_zero_guard<M: Module>(
     emitter: &mut FnEmit,
     builder: &mut FunctionBuilder,
@@ -1919,7 +1756,6 @@ fn emit_mod_zero_guard<M: Module>(
         builder.ins().brif(is_zero, fail_blk, &[], ok_blk, &[]);
         builder.seal_block(ok_blk);
         builder.switch_to_block(fail_blk);
-        // Build the same VM panic object the interpreter would and dump it.
         let mid = emitter.unrt_make_mod_zero_panic.expect("unrt import required");
         let mref = module.declare_func_in_func(mid, builder.func);
         let res = builder.ins().call(mref, &[]);
@@ -1941,10 +1777,6 @@ fn emit_mod_zero_guard<M: Module>(
     }
 }
 
-/// Guard for `sqrt(x)` with an error x < 0 in the same shape the interpreter
-/// uses ("cannot compute sqrt of a negative number"). Vm bails to the
-/// interpreter (which raises the same error); Obj parks a catchable error
-/// via the pending channel.
 fn emit_math_sqrt_guard<M: Module>(
     emitter: &mut FnEmit,
     builder: &mut FunctionBuilder,
@@ -1982,9 +1814,6 @@ fn emit_math_sqrt_guard<M: Module>(
     builder.switch_to_block(ok_blk);
 }
 
-/// Guard for log/log2/log10 with an error v <= 0 in the same shape the
-/// interpreter uses ("expected value greater than 0"). Vm bails to the
-/// interpreter; Obj parks a catchable error via the pending channel.
 fn emit_math_log_guard<M: Module>(
     emitter: &mut FnEmit,
     builder: &mut FunctionBuilder,
@@ -2022,9 +1851,6 @@ fn emit_math_log_guard<M: Module>(
     builder.switch_to_block(ok_blk);
 }
 
-/// Emit `math.<intrinsic>` according to the `TirExpr::Math` variant, with
-/// the interpreter's boundary semantics (Vm bails, Obj parks a pending error)
-/// for `sqrt`/`ln`/`log2`/`log10`; the others are pure Float math.
 fn emit_math_inline<M: Module>(
     emitter: &mut FnEmit,
     builder: &mut FunctionBuilder,
@@ -2061,7 +1887,6 @@ fn emit_math_inline<M: Module>(
         Abs => "un_math_abs",
         Pow => "un_math_powf",
     };
-    // Two-argument log: `math.log(v, b)`; otherwise `math.log(v)`.
     match mf {
         Pow => emit_math_ffi_call(emitter, builder, module, "un_math_powf", args),
         Log => {
@@ -2075,7 +1900,6 @@ fn emit_math_inline<M: Module>(
     }
 }
 
-/// Call an `un_math_<fn>` FFI symbol (`native/math.rs` is linked statically).
 fn emit_math_ffi_call<M: Module>(
     emitter: &mut FnEmit,
     builder: &mut FunctionBuilder,
@@ -2104,8 +1928,6 @@ fn emit_math_ffi_call<M: Module>(
     builder.inst_results(res)[0]
 }
 
-/// Wrap raw ints/bools/floats as VM Obj pointers for the unrt bridge.
-/// Already-Obj values pass through unchanged.
 fn wrap_as_obj<M: Module>(
     v: cranelift_codegen::ir::Value,
     ty: TirTy,
@@ -2137,9 +1959,6 @@ fn wrap_as_obj<M: Module>(
     }
 }
 
-/// Unbox an Obj returned from a class bridge call. Int/Float/Bool are folded
-/// back to raw values; Str/collections/classes are carried through as raw
-/// pointers (they are already Obj).
 fn unbox_obj<M: Module>(
     obj: cranelift_codegen::ir::Value,
     ty: TirTy,
@@ -2180,8 +1999,6 @@ fn emit_expr<M: Module>(
     match expr {
         TirExpr::Int(v) => (builder.ins().iconst(types::I64, *v), TirTy::Int),
         TirExpr::Str(s) => {
-            // String literal: embed the bytes in the object's data section
-            // and reference it with a global value.
             let id = emitter.unrt_str_new.expect("unrt import required for Str");
             let gv = embed_str_bytes(emitter, module, builder, s.as_bytes());
             let ptr = builder.ins().symbol_value(types::I64, gv);
@@ -2267,7 +2084,6 @@ fn emit_expr<M: Module>(
             let new_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(new_ref, &[nptr, nlen, ptr, argc]);
             let obj = builder.inst_results(res)[0];
-            // __init__ may throw; route to the enclosing catch.
             emit_error_gate(emitter, builder, module, obj);
             (obj, *ret)
         }
@@ -2333,8 +2149,6 @@ fn emit_expr<M: Module>(
                 if elem_ty.is_none() {
                     elem_ty = Some(v_ty);
                 }
-                // Values cross the bridge as Obj pointers (`unrt_dict_from_pairs`
-                // expects a heterogeneous-object table): wrap raw ints/floats.
                 let v_v = match v_ty {
                     TirTy::Int => {
                         let id = emitter.unrt_obj_int.expect("unrt import required for dict values");
@@ -2348,8 +2162,7 @@ fn emit_expr<M: Module>(
                         let res = builder.ins().call(float_ref, &[v_v]);
                         builder.inst_results(res)[0]
                     }
-                    _ => v_v, // already an Obj pointer (e.g. a Str)
-                };
+                    _ => v_v,                };
                 let base = (16 * i) as i32;
                 let addr = builder.ins().stack_addr(types::I64, slot_t, base);
                 builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), k_v, addr, 0);
@@ -2429,7 +2242,6 @@ fn emit_expr<M: Module>(
             }
         }
         TirExpr::NativeCallExpr { module: mod_name, member: member_name, args, ret } => {
-            // `mod.member(args)` via `unrt_call_native` with a typed result.
             let id = emitter
                 .unrt_call_native
                 .expect("unrt import required for native calls");
@@ -2658,7 +2470,6 @@ fn emit_expr<M: Module>(
             let call = builder.ins().call(callee_ref, &arg_vals);
             let results = builder.inst_results(call).to_vec();
             if emitter.mode == NativeMode::Obj {
-                // Plain typed call: no hidden bail flag at the tail.
                 return match callee_ret {
                     Some(t) => (results[0], t),
                     None => {
@@ -2733,10 +2544,6 @@ fn emit_binop<M: Module>(
             _ => unreachable!(),
         },
         TirBinOp::Div => {
-            // int/int keeps-the-Int operands so div-by-zero routes through
-            // emit_int_zero_guard (same machinery as `//`; int `%` uses
-            // emit_mod_zero_guard because the interpreter treats `%` zero as
-            // an uncatchable Panic).
             if a_ty == TirTy::Int && b_ty == TirTy::Int {
                 emit_int_zero_guard(emitter, builder, module, b);
                 let a = builder.ins().fcvt_from_sint(types::F64, a);
@@ -2748,10 +2555,6 @@ fn emit_binop<M: Module>(
             (builder.ins().fdiv(a, b), TirTy::Float)
         }
         TirBinOp::IDiv => {
-            // Division by zero routes to the enclosing catch (Obj) or bails
-            // to the interpreter (Vm). INT_MIN // -1 wraps like the
-            // interpreter's wrapping_div: execute `sdiv` with a clamped
-            // divisor so the hardware never faults on the INT_MIN/-1 case.
             emit_int_zero_guard(emitter, builder, module, b);
             let minus_one = builder.ins().iconst(types::I64, -1);
             let is_m1 = builder.ins().icmp(IntCC::Equal, b, minus_one);
@@ -2761,8 +2564,7 @@ fn emit_binop<M: Module>(
             let q = builder.ins().sdiv(a, b_safe);
             let a_int_min = int_min;
             let a_is_min = builder.ins().icmp(IntCC::Equal, a, a_int_min);
-            let neg_a = builder.ins().ineg(a); // wraps: INT_MIN -> INT_MIN
-            let m1_res = builder.ins().select(a_is_min, int_min, neg_a);
+            let neg_a = builder.ins().ineg(a);            let m1_res = builder.ins().select(a_is_min, int_min, neg_a);
             let wrapped = builder.ins().select(is_m1, m1_res, q);
             return (wrapped, TirTy::Int);
         }
@@ -2838,7 +2640,6 @@ fn emit_cmp<M: Module>(
         let a = ensure_float(a, a_ty, builder);
         let b = ensure_float(b, b_ty, builder);
         if op == TirCmp::Ne {
-            // Rust `!=` is true on NaN pairs; OrderedNotEqual is false there.
             let eq = builder.ins().fcmp(FloatCC::Equal, a, b);
             let one = builder.ins().iconst(types::I8, 1);
             return (builder.ins().bxor(eq, one), TirTy::Bool);
@@ -2847,12 +2648,9 @@ fn emit_cmp<M: Module>(
         return (builder.ins().fcmp(cc, a, b), TirTy::Bool);
     }
     if a_ty == TirTy::Str && b_ty == TirTy::Str {
-        // String equality via the VM runtime (`obj::key_eq`). Vm mode never
-        // reaches here (Str functions are pre-filtered to the interpreter).
         let id = match emitter.unrt_obj_eq {
             Some(id) => id,
             None => {
-                // Defensive: bail so the interpreter can re-run the call.
                 builder.ins().jump(emitter.bail_blk, &[]);
                 let zero = builder.ins().iconst(types::I64, 0);
                 return (builder.ins().ireduce(types::I8, zero), TirTy::Bool);
@@ -2865,7 +2663,6 @@ fn emit_cmp<M: Module>(
         if op == TirCmp::Eq {
             return (raw8, TirTy::Bool);
         }
-        // != is the boolean negation of ==.
         let one = builder.ins().iconst(types::I8, 1);
         return (builder.ins().bxor(raw8, one), TirTy::Bool);
     }
@@ -2898,9 +2695,6 @@ fn float_cmp(op: TirCmp) -> FloatCC {
     }
 }
 
-/// Emit the FFI wrapper: converts parameters to the internal convention,
-/// calls the typed internal function, and reports the result through the
-/// hidden `(value, tag)` pair.
 fn emit_ffi(
     f: &TirFn,
     module: &mut JITModule,
@@ -2920,7 +2714,6 @@ fn emit_ffi(
     let hp = incoming[0];
     builder.switch_to_block(entry);
 
-    // Convert the parameters to the internal convention.
     let internal_ref = module.declare_func_in_func(internal_fid, builder.func);
     let args: Vec<cranelift_codegen::ir::Value> = f
         .params
@@ -2948,7 +2741,6 @@ fn emit_ffi(
     builder.seal_block(bail_blk);
     builder.seal_block(ok_blk);
 
-    // bail_blk: report TAG_BAIL and return.
     builder.switch_to_block(bail_blk);
     let zero = builder.ins().iconst(types::I64, 0);
     let two = builder.ins().iconst(types::I64, TAG_BAIL);
@@ -2956,7 +2748,6 @@ fn emit_ffi(
     builder.ins().store(MemFlagsData::new(), two, hp, 8);
     builder.ins().return_(&[]);
 
-    // ok_blk: convert the value and report it with its tag.
     builder.switch_to_block(ok_blk);
     match &f.ret {
         Some(TirTy::Int) => {
@@ -2966,16 +2757,12 @@ fn emit_ffi(
             builder.ins().store(MemFlagsData::new(), tag_v, hp, 8);
         }
         Some(TirTy::Str) => {
-            // Str returns travel through the Vm FFI only when a Vm function
-            // bails to the interpreter — report TAG_BAIL so the VM re-runs
-            // the call instead of trusting this value.
             let zero = builder.ins().iconst(types::I64, 0);
             let two = builder.ins().iconst(types::I64, TAG_BAIL);
             builder.ins().store(MemFlagsData::new(), zero, hp, 0);
             builder.ins().store(MemFlagsData::new(), two, hp, 8);
         }
         Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => {
-            // Same conservatism: heap collections and classes never cross the Vm boundary natively.
             let zero = builder.ins().iconst(types::I64, 0);
             let two = builder.ins().iconst(types::I64, TAG_BAIL);
             builder.ins().store(MemFlagsData::new(), zero, hp, 0);
@@ -3007,7 +2794,6 @@ fn emit_ffi(
     module.define_function(ffi_fid, &mut func_ctx).map_err(|_| ())
 }
 
-/// Replace a failed function with an always-bail FFI stub.
 fn emit_bail_ffi(
     module: &mut JITModule,
     ffi_fid: cranelift_module::FuncId,

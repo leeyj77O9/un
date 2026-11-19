@@ -398,11 +398,6 @@ impl<'a> Reader<'a> {
     fn remaining(&self) -> usize {
         self.bytes.len() - self.pos
     }
-    /// Reject absurd element counts from a hostile file *before* reserving
-    /// capacity: every item costs at least one byte, so a count larger than
-    /// the remaining bytes can never be valid, and `Vec::with_capacity`
-    /// would abort the process on the reservation instead of returning an
-    /// error.
     fn guard(&self, count: usize) -> Result<(), String> {
         if count > self.remaining() {
             return Err(format!(
@@ -466,9 +461,6 @@ mod tests {
     fn sample() -> Program {
         let mut program = Program {
             source_path: "test.un".to_string(),
-            // Spans in the synthetic program refer to indices up to 12;
-            // the embedded source must be long enough for validate()'s
-            // bounds check to pass.
             source: Some("x = 1 + 2\nmore source text here".to_string()),
             names: vec!["<module>".to_string(), "io".to_string(), "x".to_string()],
             consts: vec![

@@ -84,10 +84,6 @@ pub struct Proto {
 
     pub ext_type: Option<usize>,
 
-    /// Source span of the `fn`/`lambda` declaration this proto was compiled
-    /// from, when known. Used by the compile-mode TIR lowering to match a
-    /// typed function back to its proto. **Not serialized to `.unbc`** — a
-    /// program read back from disk has `None` here.
     pub fn_span: Option<(usize, usize)>,
 }
 impl Proto {
@@ -139,17 +135,12 @@ pub struct Program {
     pub msgs: Vec<String>,
     pub root: usize,
 
-    /// Unique per-program id (assigned at compile/read time). Per-program JIT
-    /// state is keyed by this id instead of by pointer identity, which
-    /// eliminates the stale-entry hazard when a program is dropped and a new
-    /// program lands at the same address.
     pub id: u64,
 }
 
 static PROGRAM_ID_SEQ: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1);
 
-/// Draw the next program id. Called at every fresh `Program` creation.
 pub fn next_program_id() -> u64 {
     PROGRAM_ID_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
@@ -265,10 +256,6 @@ impl Program {
                     "{label}: opcode {:#04x} is not defined",
                     proto.code[ip].op
                 ))?;
-                // Opcodes that the verifier understands but the register-VM
-                // translation does not implement. Reject here rather than
-                // letting `transfer::compile` fail downstream (which would
-                // otherwise panic in `plan_for`).
                 if matches!(
                     op,
                     Op::LoadUpv
@@ -285,16 +272,7 @@ impl Program {
                 check_indices(&label, proto, self, op, flags, operand)?;
             }
 
-            // Stack-depth analysis is delegated to the register-VM translator
-            // (`transfer::analyze`), which is the single source of truth for
-            // handler seeding, dead code after `Return`/`Raise`, and jump-target
-            // checks. Delegating here prevents the verifier and the translator
-            // from drifting apart.
             let depths = crate::vm::transfer::analyze(proto).map_err(|e| format!("{label}: {e}"))?;
-            // Register-VM invariant: the loaded program must fit within the
-            // 8-bit register file (locals + stack max depth + 1 <= 256).
-            // Enforce it here so downstream code (`vm::transfer::compile`) does
-            // not need to panic on a too-complex function.
             let scratch_base = proto.locals.len();
             let max_depth = depths.iter().flatten().copied().max().unwrap_or(0).max(0) as usize;
             let reg_count = scratch_base + max_depth + 1;
@@ -337,8 +315,6 @@ fn check_indices(
         | Op::MakeEnum
         | Op::AddMember => index_range(label, "name", operand, proto.names.len()),
         Op::ArgBegin => {
-            // The operand is only used as an allocation hint; a hostile
-            // .unbc must not force a multi-GB reservation.
             if operand > 256 {
                 return Err(format!("{label}: argument count {operand} exceeds 256"));
             }
@@ -417,11 +393,6 @@ fn index_range(label: &str, what: &str, index: usize, len: usize) -> Result<(), 
     }
     Ok(())
 }
-/// Validate a match pattern tree: depth must stay small (a crafted file
-/// could otherwise nest `Pattern::Tuple` until the stack overflows during a
-/// later recursive pass), and every index it names must be in range. Pattern
-/// indices are resolved against the program-wide tables (`match_pattern`
-/// reads `self.program.consts` / `self.program.names`).
 fn validate_pattern(label: &str, pattern: &Pattern, program: &Program, depth: usize) -> Result<(), String> {
     const MAX_PATTERN_DEPTH: usize = 64;
     if depth > MAX_PATTERN_DEPTH {
@@ -578,8 +549,6 @@ mod tests {
 
     #[test]
     fn validate_rejects_too_many_locals() {
-        // Construct a proto with 256 locals and a body with stack depth 1.
-        // 256 + 1 + 1 = 258 > 256 → must be rejected.
         let mut proto = Proto::new(0, PROTO_FUNCTION);
         proto.locals = (0..256).collect();
         proto.arity = 0;

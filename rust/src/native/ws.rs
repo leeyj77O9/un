@@ -5,8 +5,6 @@ use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
 use super::{arg, native};
 use super::net::{self, WsState};
-// TLS is not wired for WebSocket connections; only ws:// works. Accepting
-// wss here would produce a contradictory downstream error.
 const SCHEME: &str = "Only Uris starting with 'ws://' are supported. (Parameter 'uri')";
 fn url(scope: &Scope) -> Result<net::Uri, Obj> {
     let text = match obj::payload(&scope::get(scope, "url")) {
@@ -66,8 +64,6 @@ fn receive_impl(scope: &Scope) -> Obj {
     };
 
     let mut message = Vec::new();
-    // Cap the reassembled message — without it a misbehaving peer can grow
-    // it without bound, and a ping flood can keep the loop alive forever.
     const MAX_MESSAGE: usize = 64 * 1024 * 1024;
     const MAX_CONTROL_FRAMES: u32 = 1000;
     let mut control_frames: u32 = 0;
@@ -91,8 +87,6 @@ fn receive_impl(scope: &Scope) -> Obj {
             return obj::none();
         }
         if opcode == 9 {
-            // 9 = ping. The protocol requires a pong (opcode 10) with the
-            // same payload; without it conformant peers drop the connection.
             control_frames += 1;
             if control_frames > MAX_CONTROL_FRAMES {
                 return obj::err("websocket control-frame flood");
@@ -105,7 +99,6 @@ fn receive_impl(scope: &Scope) -> Obj {
             continue;
         }
         if opcode == 10 {
-            // 10 = pong. Means nothing to the application; never surface it.
             control_frames += 1;
             if control_frames > MAX_CONTROL_FRAMES {
                 return obj::err("websocket control-frame flood");
@@ -113,8 +106,6 @@ fn receive_impl(scope: &Scope) -> Obj {
             continue;
         }
         if opcode == 2 {
-            // Binary frames cannot be represented (Un has no bytes type);
-            // surface a catchable error instead of silently emitting "".
             return obj::err("websocket binary messages are not supported");
         }
         if opcode != 0 && opcode != 1 {
@@ -131,8 +122,6 @@ fn receive_impl(scope: &Scope) -> Obj {
     }
     match String::from_utf8(message) {
         Ok(text) => obj::str(&text),
-        // A text frame that is not valid UTF-8 violates RFC 6455; surface a
-        // catchable error instead of silently emitting an empty string.
         Err(_) => obj::err("websocket text frame is not valid UTF-8"),
     }
 }

@@ -125,7 +125,6 @@ fn arch_impl(_scope: &Scope) -> Obj {
     }
 }
 fn version_impl(_scope: &Scope) -> Obj {
-    // Truthful self-report: the Un runtime version, like Python's sys.version.
     obj::str(&format!("Un {}", env!("CARGO_PKG_VERSION")))
 }
 fn cpu_count_impl(_scope: &Scope) -> Obj {

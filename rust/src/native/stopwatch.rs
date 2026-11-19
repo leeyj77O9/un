@@ -8,7 +8,6 @@ use crate::runtime::scope::{self, Scope};
 use super::{arg, native};
 const TICKS_PER_SECOND: i64 = 10_000_000;
 
-/// A property that exposes `getter` and always rejects writes.
 fn read_only_property(
     closure: &Context,
     name: &str,

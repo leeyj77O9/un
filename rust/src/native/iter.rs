@@ -283,7 +283,6 @@ fn array_impl(scope: &Scope) -> Obj {
     if sizes.iter().any(|d| *d < 0) {
         return obj::err("expected all items in 'size' list to be non-negative integers");
     }
-    // Guard against uninterruptible allocations of astronomical arrays.
     const MAX_TOTAL_ELEMENTS: i64 = 10_000_000;
     let mut total: i64 = 1;
     for dim in &sizes {
@@ -312,9 +311,6 @@ fn range_impl(scope: &Scope) -> Obj {
     let start = scope::get(scope, "start");
     let end = scope::get(scope, "end");
     let step = scope::get(scope, "step");
-    // `end` is optional; when omitted, `start` acts as the stop:
-    // iter.range(n) ??iter.range(0, n). Python-style semantics otherwise:
-    // range(5, 0) with a positive step is empty (no bounds swapping).
     let start = match to_int(&start) {
         Ok(v) => v,
         Err(e) => return e,
@@ -338,8 +334,6 @@ fn range_impl(scope: &Scope) -> Obj {
     if step == 0 {
         return obj::err("step argument must not be zero");
     }
-    // The stage machine already implements the standard semantics
-    // (`step > 0` ??`v < stop`, else `v > stop`).
     iters::range_new(start, end, step)
 }
 fn counter_impl(scope: &Scope) -> Obj {
@@ -439,8 +433,6 @@ fn enumerate_impl(scope: &Scope) -> Obj {
         .collect();
     iters::seq(pairs)
 }
-/// Sum a plain `Obj::List` with no tuple round-trips; returns `None` for
-/// anything that is not a plain list so the caller can fall back.
 fn sum_list(value: &Obj) -> Option<Obj> {
     let crate::runtime::obj::Payload::List(cell) = crate::runtime::obj::payload(value) else {
         return None;
@@ -460,10 +452,6 @@ fn sum_list(value: &Obj) -> Option<Obj> {
 
 fn sum_impl(scope: &Scope) -> Obj {
     let value = scope::get(scope, "iterable");
-    // Fast path: summing a plain list ??avoid the generic normalize_to_tuple,
-    // which builds a tuple, re-wraps a nested list in another tuple (three
-    // whole-list shallow clones + a names vector per tuple), only to clone
-    // it back out again to the same items.
     if let Some(answer) = sum_list(&value) {
         return answer;
     }

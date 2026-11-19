@@ -168,9 +168,6 @@ impl Parser {
         if !self.is_end_of_statement() {
             let token = self.current();
             if self.is_statement_start(token.typ) {
-                // Compare with the last *significant* token (zero-width
-                // Dedent/Indent markers sit at the next line's offset and
-                // would always compare equal).
                 let prev_end = self.tokens[..self.position]
                     .iter()
                     .rev()
@@ -188,8 +185,6 @@ impl Parser {
                         ));
                     }
                 }
-                // Fresh line after a block statement (the lexer emits no
-                // NewLine between a Dedent and the next statement) — legal.
                 return Ok(statement);
             }
             return Err(LangError::new(
@@ -847,9 +842,6 @@ impl Parser {
                 }
                 op = self.next();
             }
-            // Right-associative operators (`**`) parse their right side
-            // with the same precedence minus one, making `2 ** 3 ** 2`
-            // parse as `2 ** (3 ** 2)`.
             let rhs_precedence = if op.typ == TokenType::DoubleAsterisk {
                 precedence.saturating_sub(1)
             } else {
@@ -1613,7 +1605,6 @@ fn unescape(s: &str) -> String {
             Some('\\') => out.push('\\'),
             Some('"') => out.push('"'),
             Some('\'') => out.push('\''),
-            // Python parity: unknown escapes keep the backslash.
             Some(c) => {
                 out.push('\\');
                 out.push(c);

@@ -141,9 +141,6 @@ fn load_file(path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, 
         }
         RunError::Panic(panic) => ModuleError::Panic(obj::panic("panic", panic.message)),
     })?;
-    // The module path bypasses `VM::new` (which validates), so validate here
-    // before executing — otherwise an over-complex function or a bad jump
-    // plan would reach `plan_for`'s invariant and panic the process.
     if let Err(message) = program.validate() {
         return Err(ModuleError::Panic(obj::panic("panic", message)));
     }
