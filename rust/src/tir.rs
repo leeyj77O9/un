@@ -44,6 +44,8 @@ pub enum TirTy {
     /// A class instance (Obj handle). The u16 indexes
     /// `TirProgram::class_names`.
     Class(u16),
+    /// The `catch err` binding: a raw VM error object, type-erased.
+    ErrorObj,
 }
 
 impl TirTy {
@@ -112,7 +114,7 @@ pub enum TirExpr {
     Bool(bool),
     Str(String),
     Local(u16),
-    /// i64 → f64 promotion (int operand used where a float is required).
+    /// i64 ??f64 promotion (int operand used where a float is required).
     Promote(Box<TirExpr>),
     Select {
         cond: Box<TirExpr>,
@@ -134,7 +136,7 @@ pub enum TirExpr {
     ListPopAt(Box<TirExpr>, Box<TirExpr>),
     /// `xs.contains(v)`
     ListContains(Box<TirExpr>, Box<TirExpr>),
-    /// `xs.index_of(v)` — position of `v` or -1.
+    /// `xs.index_of(v)` ??position of `v` or -1.
     ListIndexOf(Box<TirExpr>, Box<TirExpr>),
     /// `dict[key]` where `key` is a string expression.
     DictGet(Box<TirExpr>, Box<TirExpr>),
@@ -208,7 +210,7 @@ pub enum TirStmt {
         catch_body: Vec<TirStmt>,
         finally_body: Option<Vec<TirStmt>>,
     },
-    /// `throw(expr)` — park `expr` (any core value) in the pending-error
+    /// `throw(expr)` ??park `expr` (any core value) in the pending-error
     /// slot; control moves to the nearest enclosing catch label (or the
     /// unguarded exit of the function).
     Throw(TirExpr),
@@ -250,9 +252,9 @@ pub struct TirProgram {
     pub functions: Vec<TirFn>,
     /// Class name table for `TirTy::Class` ids, ordered lexicographically.
     pub class_names: Vec<String>,
-    /// Field name → declared type for each interned class (parallel to `class_names`).
+    /// Field name ??declared type for each interned class (parallel to `class_names`).
     pub class_fields: Vec<std::collections::HashMap<String, Ty>>,
-    /// Method name → `Ty::Func` for each interned class (parallel to `class_names`).
+    /// Method name ??`Ty::Func` for each interned class (parallel to `class_names`).
     pub class_methods: Vec<std::collections::HashMap<String, Ty>>,
 }
 
@@ -260,7 +262,7 @@ pub struct TirProgram {
 /// lowering. Kept separate so every lowering function can resolve class
 /// types without re-walking the AST.
 struct ClassTable {
-    /// class name → class id (index into `names`/`fields`/`methods`).
+    /// class name ??class id (index into `names`/`fields`/`methods`).
     index: std::collections::HashMap<String, u16>,
     names: Vec<String>,
     fields: Vec<std::collections::HashMap<String, Ty>>,
@@ -497,14 +499,8 @@ fn stmt_uses_heap(s: &TirStmt) -> bool {
         }
         TirStmt::MemberSet { receiver, value, .. } => expr_uses_heap(receiver) || expr_uses_heap(value),
         TirStmt::NativeCall { args, .. } => args.iter().any(expr_uses_heap),
-        TirStmt::Try { body, catch_body, finally_body, .. } => {
-            body.iter().any(stmt_uses_heap)
-                || catch_body.iter().any(stmt_uses_heap)
-                || finally_body
-                    .as_ref()
-                    .is_some_and(|f| f.iter().any(stmt_uses_heap))
-        }
-        TirStmt::Throw(e) => expr_uses_heap(e),
+        TirStmt::Try { .. } => true,
+        TirStmt::Throw(_) => true,
         TirStmt::Return(None) => false,
         TirStmt::Return(Some(e)) => expr_uses_heap(e),
         TirStmt::Break | TirStmt::Skip => false,
@@ -645,7 +641,7 @@ fn tirdbg_reject(node: &Node) {
 /// a same-module function candidate).
 fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: &FnCheck) -> bool {
     // The function/extension node wraps a name, a parameter tuple, and
-    // (optionally) a return-type identifier — those are structural and are
+    // (optionally) a return-type identifier ??those are structural and are
     // not checked here. Only the body Block is checked.
     let Some(body) = body_block_of(node) else {
         return false;
@@ -870,7 +866,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     visit(child, checked, source, locals, out);
                 }
             }
-            // Only the receiver is visited — the member name is an attribute
+            // Only the receiver is visited ??the member name is an attribute
             // name, not a local.
             NodeKind::Property => {
                 let receiver = node.children.first();
@@ -897,7 +893,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             NodeKind::Catch => {
                 // Children are either (binding identifier?, block) or block.
                 // The binding identifier is a local reference introduced by
-                // the try statement — account for it before visiting the
+                // the try statement ??account for it before visiting the
                 // catch body.
                 let mut scoped = locals.clone();
                 if let Some(first) = node.children.first() {
@@ -920,7 +916,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             }
             NodeKind::Slice | NodeKind::Tuple | NodeKind::Set
             | NodeKind::FString | NodeKind::Match | NodeKind::Case
-            | NodeKind::Try | NodeKind::Catch | NodeKind::Finally | NodeKind::Use | NodeKind::Using | NodeKind::Defer
+            | NodeKind::Use | NodeKind::Using | NodeKind::Defer
             | NodeKind::Function | NodeKind::Lambda | NodeKind::Class | NodeKind::Enum | NodeKind::Tagged
             | NodeKind::Accessor | NodeKind::Wildcard => {
                 tirdbg_reject(node); *out = false;
@@ -940,12 +936,74 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
 
 /// Collect the set of names this body can reference. `fcheck.locals` is the
 /// insertion-ordered set of every name bound by the body (parameters first,
-/// then locals in source order) — a binding exists for any way Un declares a
+/// then locals in source order) ??a binding exists for any way Un declares a
 /// name, including tuple destructuring. Anything else referenced by the body
 /// is a closure capture or a global, both of which are out of the core subset.
-fn collect_locals(_body: &Node, locals: &mut HashMap<String, ()>, _source: &Source, fcheck: &FnCheck) {
+///
+/// A fork arm ending in `->`, `break` or `throw` does not merge its local
+/// declarations back into the outer environment, so `fcheck.locals` misses
+/// names declared only inside terminated arms. We therefore also scan the
+/// AST for every binding site (`name =`, `name: T =`, `for name in`,
+/// `catch name`) and admit those as locals as well.
+fn collect_locals(body: &Node, locals: &mut HashMap<String, ()>, source: &Source, fcheck: &FnCheck) {
+    collect_binding_names(body, source, locals);
     for (name, _) in &fcheck.locals {
         locals.insert(name.clone(), ());
+    }
+}
+
+fn collect_binding_names(node: &Node, source: &Source, out: &mut HashMap<String, ()>) {
+    match node.kind {
+        NodeKind::Assign | NodeKind::Typed => {
+            if let Some(target) = node.children.first() {
+                collect_binding_target(target, source, out);
+            }
+            for child in node.children.iter().skip(1) {
+                collect_binding_names(child, source, out);
+            }
+            return;
+        }
+        NodeKind::For => {
+            if let Some(target) = node.children.first() {
+                collect_binding_target(target, source, out);
+            }
+            for child in node.children.iter().skip(1) {
+                collect_binding_names(child, source, out);
+            }
+            return;
+        }
+        NodeKind::Catch => {
+            if let Some(first) = node.children.first() {
+                if first.kind == NodeKind::Identifier {
+                    let name = source.span(first.start, first.length).to_string();
+                    out.insert(name, ());
+                }
+            }
+            for child in &node.children {
+                collect_binding_names(child, source, out);
+            }
+            return;
+        }
+        _ => {
+            for child in &node.children {
+                collect_binding_names(child, source, out);
+            }
+        }
+    }
+}
+
+fn collect_binding_target(target: &Node, source: &Source, out: &mut HashMap<String, ()>) {
+    match target.kind {
+        NodeKind::Identifier => {
+            let name = source.span(target.start, target.length).to_string();
+            out.insert(name, ());
+        }
+        NodeKind::Tuple | NodeKind::List => {
+            for child in &target.children {
+                collect_binding_target(child, source, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1059,6 +1117,7 @@ impl From<TirTy> for CoreTy {
             TirTy::DictStrInt => CoreTy::DictStrInt,
             TirTy::DictStrFloat => CoreTy::DictStrFloat,
             TirTy::Class(id) => CoreTy::Class(id),
+            TirTy::ErrorObj => CoreTy::Class(u16::MAX),
         }
     }
 }
@@ -1296,7 +1355,7 @@ fn lower_stmt(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result
 
 fn forbid_flow_controls(node: &Node, source: &Source) -> Result<(), String> {
     match node.kind {
-        NodeKind::Return | NodeKind::Break | NodeKind::Skip | NodeKind::Await | NodeKind::Wait => {
+        NodeKind::Return | NodeKind::Break | NodeKind::Skip => {
             let span = format!("{}, {}", node.start, node.length);
             let _ = span;
             // Point the user at the offending statement.
@@ -1316,7 +1375,7 @@ fn forbid_flow_controls(node: &Node, source: &Source) -> Result<(), String> {
 }
 
 fn lower_try(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<(), String> {
-    // `try body { catch err? }? catch_body finally?` — Un's grammar puts the
+    // `try body { catch err? }? catch_body finally?` ??Un's grammar puts the
     // block first, then the catch clause(s) and the optional finally.
     let body_block = node
         .children
@@ -1352,19 +1411,15 @@ fn lower_try(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
         }
     }
 
-    let mut catch_binding: Option<String> = None;
-    let mut catch_body: &Node = body_block; // overwritten for real catches
-    let no_catch_block: &Node = body_block; // unused, keeps types simple
+    let mut body_out = Vec::new();
+    lower_block(body_block, ctx, &mut body_out)?;
+
+    // Declare the catch binding only after the body ??declaration order
+    // must match the runtime slot numbers.
     let mut var_slot = None;
     match catch {
         Some(catch_node) => {
             forbid_flow_controls(catch_node, ctx.source)?;
-            catch_body = catch_node
-                .children
-                .iter()
-                .find(|c| c.kind == NodeKind::Block)
-                .ok_or_else(|| "'catch' without a body".to_string())?;
-            // A catch with a binding: exactly one Identifier then a Block.
             if catch_node.children.len() == 2 {
                 let name_node = &catch_node.children[0];
                 if name_node.kind != NodeKind::Identifier {
@@ -1376,22 +1431,23 @@ fn lower_try(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
                         "catch binding '{name}' shadows an existing local; rename the binding"
                     ));
                 }
-                let slot = declare(ctx, &name, TirTy::Class(u16::MAX));
-                catch_binding = Some(name);
+                let slot = declare(ctx, &name, TirTy::ErrorObj);
                 var_slot = Some(slot);
             } else if catch_node.children.len() != 1 {
                 return Err("'catch' has unexpected shape".to_string());
             }
         }
-        None => {
-            catch_body = no_catch_block; // placeholder; empty catch emitted below
-        }
+        None => {}
     }
 
-    // The body executes with the handler table active; code inside can now
-    // throw the in-handler paths to the catch.
-    let mut body_out = Vec::new();
-    lower_block(body_block, ctx, &mut body_out)?;
+    let catch_body: &Node = match catch {
+        Some(catch_node) => catch_node
+            .children
+            .iter()
+            .find(|c| c.kind == NodeKind::Block)
+            .ok_or_else(|| "'catch' without a body".to_string())?,
+        None => body_block, // unused when catch.is_none()
+    };
     let catch_body_out = if catch.is_some() {
         let mut out_v = Vec::new();
         lower_block(catch_body, ctx, &mut out_v)?;
@@ -1413,8 +1469,6 @@ fn lower_try(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
         })
         .transpose()?;
 
-    let _ = catch_binding;
-    let _ = var_slot;
     out.push(TirStmt::Try {
         body: body_out,
         var: var_slot,
@@ -1525,7 +1579,7 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
                 _ => return Err("only class member assignment is supported in the core".to_string()),
             };
             // Checker already validated the member exists; the field type
-            // guides the value coercion (Int → Float widening is allowed).
+            // guides the value coercion (Int ??Float widening is allowed).
             let field_ty = ctx
                 .classes
                 .field(id, &member)
@@ -1685,7 +1739,7 @@ fn lower_for(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
             return Ok(());
         }
     }
-    // `for v in [1, 2, 3]` — a list literal directly in the iterator position.
+    // `for v in [1, 2, 3]` ??a list literal directly in the iterator position.
     if iter.kind == NodeKind::List {
         let (collection, cty) = lower_expr(iter, ctx)?;
         let elem_ty = match cty {
@@ -1718,7 +1772,7 @@ fn lower_for(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
 }
 
 /// Match `iter.range(a, b[, step])`, `iter.range(n)`, or the `a..b` DotDot
-/// form — the only iterators the core supports — and evaluate bounds/step
+/// form ??the only iterators the core supports ??and evaluate bounds/step
 /// into expressions.
 fn parse_range_call(
     node: &Node,
@@ -2132,7 +2186,15 @@ fn lower_binary_op(
             Ok((TirExpr::Bin(bin, Box::new(a), Box::new(b)), CoreTy::Float))
         }
         TokenType::Slash => {
-            // int / int ??float (matches the runtime).
+            // int / int keeps its Int operands so the emitter can route
+            // div-by-zero to a catchable error; any other numeric pair
+            // promotes to f64 (matches the interpreter's float result).
+            if a_ty == CoreTy::Int && b_ty == CoreTy::Int {
+                return Ok((
+                    TirExpr::Bin(TirBinOp::Div, Box::new(a), Box::new(b)),
+                    CoreTy::Float,
+                ));
+            }
             if !numeric(a_ty) || !numeric(b_ty) {
                 return Err("'/' requires numbers".to_string());
             }
@@ -2459,7 +2521,7 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         return Err("only direct calls are supported in the core".to_string());
     }
     let name = ctx.source.span(callee.start, callee.length);
-    // The `len(x)` builtin → `TirExpr::Len` (unless shadowed by a user `len`).
+    // The `len(x)` builtin ??`TirExpr::Len` (unless shadowed by a user `len`).
     if name == "len" && !ctx.checked.sigs.contains_key("len") {
         let args_node = node
             .children
@@ -2604,6 +2666,15 @@ fn validate(f: &TirFn, program: &TirProgram) -> Result<(), String> {
         return Err("parameter count exceeds local slot budget".to_string());
     }
     // Seed with the parameters only; each `Let` appends its slot.
+    let debug_trace = std::env::var_os("UV_TIR_DEBUG").is_some();
+    if debug_trace {
+        eprintln!(
+            "TIRDBG lower fn={} params={:?} locals={:?}",
+            f.name,
+            f.params,
+            f.locals,
+        );
+    }
     let mut locals = f.locals[..f.params.len()].to_vec();
     for stmt in &f.body {
         collect_decls(stmt, &mut locals)?;
@@ -2670,11 +2741,14 @@ fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> 
                 collect_decls(s, locals)?;
             }
         }
-        TirStmt::ListSet { .. } | TirStmt::DictSet { .. } => {
-            // Assignments to indices don't declare locals.
+        TirStmt::ListSet { .. } | TirStmt::DictSet { .. } | TirStmt::ListAdd { .. } | TirStmt::ListInsert { .. } | TirStmt::ListReverse { .. } | TirStmt::ListSort { .. } | TirStmt::MemberSet { .. } => {
+            // Assignments to indices and list statement-method calls declare no locals.
+        }
+        TirStmt::Set(_, _) | TirStmt::Break | TirStmt::Skip | TirStmt::NativeCall { .. } | TirStmt::ExprStmt(_) | TirStmt::Return(_) => {
+            // No local declarations in these statements.
         }
         TirStmt::Try { body, var, catch_body, finally_body } => {
-            // TIR try executes: body → (on error) optional handler → finally,
+            // TIR try executes: body ??(on error) optional handler ??finally,
             // so collect declarations in that order.
             for s in body {
                 collect_decls(s, locals)?;
@@ -2687,10 +2761,10 @@ fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> 
                         locals.len()
                     ));
                 }
-                // Placeholder type `Class(u16::MAX)` = "raw VM object"; the
-                // runtime stores the thrown error Obj as the pending error
-                // and binds it to this slot.
-                locals.push(TirTy::Class(u16::MAX));
+                // The `catch err` binding is a raw VM error object — typed
+                // `ErrorObj` so eligibility can tell it apart from a class
+                // instance (`Class(_)`).
+                locals.push(TirTy::ErrorObj);
             }
             for s in catch_body {
                 collect_decls(s, locals)?;
@@ -2707,7 +2781,7 @@ fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> 
 }
 
 /// Map a checker Ty (class field / method signature) to a core TIR type.
-/// Class types get the id `u16::MAX` — validator equality for classes ignores
+/// Class types get the id `u16::MAX` ??validator equality for classes ignores
 /// the id, and the runtime dispatch only cares about the Obj handle.
 fn ty_to_tir_simple(ty: &Ty) -> Result<TirTy, String> {
     Ok(match ty {
@@ -3005,7 +3079,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Bool => Err("negation of bool".to_string()),
                     TirTy::Str => Err("negation of str".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat
-                    | TirTy::Class(_) => {
+                    | TirTy::Class(_) | TirTy::ErrorObj => {
                         Err("negation of collection or class instance".to_string())
                     }
                 },
@@ -3015,7 +3089,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Float => Err("'not' requires a bool or int".to_string()),
                     TirTy::Str => Err("'not' requires a bool or int".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat
-                    | TirTy::Class(_) => {
+                    | TirTy::Class(_) | TirTy::ErrorObj => {
                         Err("'not' requires a bool or int".to_string())
                     }
                 },
@@ -3064,6 +3138,7 @@ fn param_name(ty: TirTy) -> &'static str {
         TirTy::DictStrInt => "dict[str, int]",
         TirTy::DictStrFloat => "dict[str, float]",
         TirTy::Class(_) => "class",
+        TirTy::ErrorObj => "error-obj",
     }
 }
 
@@ -3252,15 +3327,15 @@ fn validate_stmt(
                 }
             }
             TirStmt::Try { body, var, catch_body, finally_body } => {
-                // Declaration order is body → `err` binding → catch body →
+                // Declaration order is body ??`err` binding ??catch body ??
                 // finally body, which matches the runtime's execution order
                 // on either path. Locals are shared between all parts.
                 validate_stmt(body, f, program, locals, slot, loop_depth)?;
                 if let Some(var_slot) = var {
                     if (*var_slot as usize) >= locals.len() {
-                        locals.push(TirTy::Class(u16::MAX));
+                        locals.push(TirTy::ErrorObj);
                     } else {
-                        locals[*var_slot as usize] = TirTy::Class(u16::MAX);
+                        locals[*var_slot as usize] = TirTy::ErrorObj;
                     }
                     *slot += 1;
                 }
@@ -3270,7 +3345,7 @@ fn validate_stmt(
                 }
             }
             TirStmt::Throw(expr) => {
-                // The thrown value is an Obj (usually Str) — checked structurally;
+                // The thrown value is an Obj (usually Str) ??checked structurally;
                 // the VM binds it to the catch variable if there is one.
                 let _ = expr_ty(expr, f, program, locals)?;
             }
@@ -3324,6 +3399,7 @@ fn body_terminates(body: &[TirStmt]) -> bool {
 fn stmt_terminates(stmt: &TirStmt) -> bool {
     match stmt {
         TirStmt::Return(_) => true,
+        TirStmt::Throw(_) => true,
         TirStmt::If { then_body, else_body, .. } => {
             body_terminates(then_body) && body_terminates(else_body)
         }

@@ -127,6 +127,9 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
             if let (Some(_), Some(ffi)) = (internal_fids.get(&f.index), ffi_fids.get(&f.index)) {
                 let ffi_sig = ffi_signature(&module, f);
                 emit_bail_ffi(&mut module, *ffi, &ffi_sig);
+                let internal_sig = internal_signature(&module, f, NativeMode::Vm);
+                let internal_fid = *internal_fids.get(&f.index).unwrap();
+                let _ = emit_internal_bail(&mut module, f, internal_fid, &internal_sig);
             }
             continue;
         }
@@ -162,6 +165,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
                 failed.push(f.name.clone());
             }
             emit_bail_ffi(&mut module, *ffi, &ffi_sig);
+            let _ = emit_internal_bail(&mut module, f, *internal, &internal_sig);
             continue;
         }
         let ffi_guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -245,7 +249,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
                 // Str/List args are never passed to a VM-JIT candidate
                 // (those are filtered out up front); reaching here is a
                 // no-op mapping.
-                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) => ArgKind::Int,
+                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => ArgKind::Int,
             })
             .collect();
         jit_cache::register_tir_entry(
@@ -279,6 +283,49 @@ fn emit_trap_stub(
     b.seal_all_blocks();
     b.finalize(module.target_config());
     module.define_function(fid, &mut ctx).map_err(|e| format!("trap stub: {e:?}"))
+}
+
+/// Emit an always-bail internal stub for a function the emitter cannot
+/// translate. The caller (the FFI wrapper) converts this into a
+/// bail-to-interpreter tag; the internal symbol still resolves.
+fn emit_internal_bail<M: Module>(
+    module: &mut M,
+    f: &TirFn,
+    fid: cranelift_module::FuncId,
+    sig: &cranelift_codegen::ir::Signature,
+) -> Result<(), String> {
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig.clone();
+    ctx.func.name = UserFuncName::user(0, fid.as_u32());
+    let mut bctx = FunctionBuilderContext::new();
+    let mut b = FunctionBuilder::new(&mut ctx.func, &mut bctx);
+    let blk = b.create_block();
+    b.append_block_params_for_function_params(blk);
+    b.switch_to_block(blk);
+    let zero_i64 = b.ins().iconst(types::I64, 0);
+    let zero_f64 = b.ins().f64const(0.0);
+    let zero_i8 = b.ins().iconst(types::I8, 0);
+    let one_i8 = b.ins().iconst(types::I8, 1);
+    match &f.ret {
+        Some(TirTy::Int) => {
+            b.ins().return_(&[zero_i64, one_i8]);
+        }
+        Some(TirTy::Float) => {
+            b.ins().return_(&[zero_f64, one_i8]);
+        }
+        Some(TirTy::Bool) => {
+            b.ins().return_(&[zero_i8, one_i8]);
+        }
+        Some(TirTy::Str) | Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => {
+            b.ins().return_(&[zero_i64, one_i8]);
+        }
+        None => {
+            b.ins().return_(&[one_i8]);
+        }
+    }
+    b.seal_all_blocks();
+    b.finalize(module.target_config());
+    module.define_function(fid, &mut ctx).map_err(|e| format!("internal bail: {e:?}"))
 }
 
 /// Compile the TIR program to a relocatable object file and write it to
@@ -415,7 +462,7 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
             TirTy::Int => types::I64,
             TirTy::Float => types::F64,
             TirTy::Bool => types::I8,
-            TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) => types::I64,
+            TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => types::I64,
         }));
     }
     match &f.ret {
@@ -423,7 +470,7 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
         Some(TirTy::Float) => sig.returns.push(AbiParam::new(types::F64)),
         Some(TirTy::Bool) => sig.returns.push(AbiParam::new(types::I8)),
         Some(TirTy::Str) => sig.returns.push(AbiParam::new(types::I64)),
-        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_)) => sig.returns.push(AbiParam::new(types::I64)),
+        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => sig.returns.push(AbiParam::new(types::I64)),
         None => {}
     }
     if mode == NativeMode::Vm {
@@ -488,17 +535,8 @@ struct FnEmit<'a> {
     loop_skips: Vec<Block>,
     terminated: bool,
     mode: NativeMode,
-    trap_blk: Block,
-    /// Trap block for a missing dict key (user trap `user1`). Distinct from
-    /// `trap_blk` so a dict miss is distinguishable from division by zero.
-    trap_bad_key_blk: Block,
-    /// Trap block for a list index out of range / list mutation error
-    /// (user trap `user2`).
-    trap_bad_index_blk: Block,
-    /// Trap block for a missing dict key (user trap `user1`). Distinct from
-    /// `trap_blk` so a dict miss is distinguishable from division by zero.
-    trap_bad_key_blk: Block,
-    /// Pending catch handler blocks, innermost (most recently) popped LAST.
+    // No trap_blk: Obj-mode paths bail through `emit_error_gate`; Vm-mode
+    // paths bail through `bail_blk`.
     /// Every fallible unrt call that returns an error object jumps to the
     /// handler at the top of the stack instead of trapping.
     active_handlers: Vec<cranelift_codegen::ir::Block>,
@@ -522,8 +560,9 @@ struct FnEmit<'a> {
     unrt_list_push: Option<cranelift_module::FuncId>,
     unrt_write_error: Option<cranelift_module::FuncId>,
     unrt_take_error: Option<cranelift_module::FuncId>,
-    unrt_is_pending: Option<cranelift_module::FuncId>,
     unrt_dump_uncaught: Option<cranelift_module::FuncId>,
+    unrt_make_int_div_zero: Option<cranelift_module::FuncId>,
+    unrt_make_mod_zero_panic: Option<cranelift_module::FuncId>,
     unrt_list_pop: Option<cranelift_module::FuncId>,
     unrt_list_pop_at: Option<cranelift_module::FuncId>,
     unrt_list_sort: Option<cranelift_module::FuncId>,
@@ -730,13 +769,18 @@ fn emit_internal<M: Module>(
     } else {
         None
     };
-    let unrt_is_pending = if mode == NativeMode::Obj {
-        Some(declare_import(module, "unrt_is_pending", vec![], Some(types::I64))?)
+    let unrt_dump_uncaught = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_dump_uncaught", vec![], None)?)
     } else {
         None
     };
-    let unrt_dump_uncaught = if mode == NativeMode::Obj {
-        Some(declare_import(module, "unrt_dump_uncaught", vec![], None)?)
+    let unrt_make_int_div_zero = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_make_int_div_zero", vec![], Some(types::I64))?)
+    } else {
+        None
+    };
+    let unrt_make_mod_zero_panic = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_make_mod_zero_panic", vec![], Some(types::I64))?)
     } else {
         None
     };
@@ -794,7 +838,7 @@ fn emit_internal<M: Module>(
                 TirTy::Int => types::I64,
                 TirTy::Float => types::F64,
                 TirTy::Bool => types::I8,
-                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) => types::I64,
+                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => types::I64,
             })
         })
         .collect();
@@ -833,7 +877,7 @@ fn emit_internal<M: Module>(
                 };
                 builder.def_var(*var, v);
             }
-            TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) => {
+            TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
                 let v = match unrt_none {
                     Some(id) => {
                         let none_ref = module.declare_func_in_func(id, builder.func);
@@ -881,23 +925,7 @@ fn emit_internal<M: Module>(
     }
 
     // The shared bail block for guard failures (division by zero, native
-    // depth reached through recursion, a sibling's bail). Vm only; Obj mode
-    // uses `trap_blk` for division failures instead.
     let bail_blk = builder.create_block();
-    let trap_blk = builder.create_block();
-    let trap_bad_key_blk = builder.create_block();
-    let trap_bad_index_blk = builder.create_block();
-    builder.switch_to_block(trap_blk);
-    builder.ins().trap(TrapCode::INTEGER_DIVISION_BY_ZERO);
-    builder.seal_block(trap_blk);
-    builder.switch_to_block(trap_bad_key_blk);
-    // Dict miss: abort through a user trap code (libc-style user1).
-    builder.ins().trap(TrapCode::unwrap_user(1));
-    builder.seal_block(trap_bad_key_blk);
-    builder.switch_to_block(trap_bad_index_blk);
-    // List index out of range: user2.
-    builder.ins().trap(TrapCode::unwrap_user(2));
-    builder.seal_block(trap_bad_index_blk);
 
     builder.switch_to_block(body_entry);
     // Body statements.
@@ -913,9 +941,6 @@ fn emit_internal<M: Module>(
         loop_skips: Vec::new(),
         terminated: false,
         mode,
-        trap_blk,
-        trap_bad_key_blk,
-        trap_bad_index_blk,
         active_handlers: Vec::new(),
         unrt_str_new,
         unrt_str_cat,
@@ -936,8 +961,9 @@ fn emit_internal<M: Module>(
         unrt_list_push,
         unrt_write_error,
         unrt_take_error,
-        unrt_is_pending,
         unrt_dump_uncaught,
+        unrt_make_int_div_zero,
+        unrt_make_mod_zero_panic,
         unrt_list_pop,
         unrt_list_pop_at,
         unrt_list_sort,
@@ -1036,7 +1062,7 @@ fn emit_internal_return<M: Module>(
         (Some(TirTy::Float), Some(v)) => returns.push(v),
         (Some(TirTy::Bool), Some(v)) => returns.push(v),
         (Some(TirTy::Str), Some(v)) => returns.push(v),
-        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_)), Some(v)) => returns.push(v),
+        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj), Some(v)) => returns.push(v),
         (Some(TirTy::Int), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
@@ -1046,7 +1072,7 @@ fn emit_internal_return<M: Module>(
         (Some(TirTy::Str), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
-        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_)), None) => {
+        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
         (Some(TirTy::Bool), None) => {
@@ -1368,7 +1394,7 @@ fn emit_stmt<M: Module>(
                 // Native calls take Obj arguments — wrap raw values first.
                 let wrapped = match vty {
                     TirTy::Str => v,
-                    TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) => v,
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => v,
                     TirTy::Int => {
                         let id = emitter.unrt_obj_int.expect("unrt import required for native calls");
                         let int_ref = module.declare_func_in_func(id, builder.func);
@@ -1468,6 +1494,85 @@ fn emit_stmt<M: Module>(
         }
         TirStmt::MemberSet { .. } => {
             unreachable!("class functions are rejected before Obj-mode emission")
+        }
+        TirStmt::Throw(expr) => {
+            let (value, ty) = emit_expr(expr, emitter, builder, module, f);
+            let obj = wrap_as_obj(value, ty, emitter, builder, module);
+            let wid = emitter.unrt_write_error.expect("unrt import required");
+            let wref = module.declare_func_in_func(wid, builder.func);
+            let _ = builder.ins().call(wref, &[obj]);
+            if let Some(&handler) = emitter.active_handlers.last() {
+                builder.ins().jump(handler, &[]);
+            } else {
+                // Uncaught error leaked to the top: report and kill.
+                let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+                let d_ref = module.declare_func_in_func(d_id, builder.func);
+                let _ = builder.ins().call(d_ref, &[]);
+                builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+            }
+            emitter.terminated = true;
+            true
+        }
+        TirStmt::Try { body, var, catch_body, finally_body } => {
+            // Flow sketch:
+            //   body      --ok--> success_blk --finally-> merge_blk
+            //   body      --err--> handler_blk --bind-> catch_body -> success_blk
+            // `finally_body` runs unconditionally once the try completes.
+            let success_blk = builder.create_block();
+            let handler_blk = builder.create_block();
+            let merge_blk = builder.create_block();
+            emitter.active_handlers.push(handler_blk);
+            emitter.terminated = false;
+            let body_terminated = emit_block(body, emitter, builder, module, f);
+            emitter.active_handlers.pop();
+            if !body_terminated {
+                builder.ins().jump(success_blk, &[]);
+            }
+            // Handler: take the parked error object and bind it if the user
+            // asked for a name.
+            builder.switch_to_block(handler_blk);
+            emitter.terminated = false;
+            if let Some(slot) = var {
+                let tid = emitter.unrt_take_error.expect("unrt import required");
+                let snap_ref = module.declare_func_in_func(tid, builder.func);
+                let res = builder.ins().call(snap_ref, &[]);
+                let raw = builder.inst_results(res)[0];
+                let var_var = emitter.vars[*slot as usize];
+                builder.def_var(var_var, raw);
+            } else {
+                let tid = emitter.unrt_take_error.expect("unrt import required");
+                let snap_ref = module.declare_func_in_func(tid, builder.func);
+                let _ = builder.ins().call(snap_ref, &[]);
+            }
+            let catch_terminated = emit_block(catch_body, emitter, builder, module, f);
+            if !catch_terminated {
+                builder.ins().jump(success_blk, &[]);
+            }
+            builder.seal_block(handler_blk);
+            // Success/merge path: run `finally_body` unconditionally.
+            builder.switch_to_block(success_blk);
+            emitter.terminated = false;
+            builder.seal_block(success_blk);
+            if let Some(finally_body) = finally_body {
+                // `finally_body` ends in a return path or a terminator that
+                // finishes the function; otherwise control falls through to
+                // the merge block.
+                let fin_terminated = emit_block(finally_body, emitter, builder, module, f);
+                if fin_terminated {
+                    emitter.terminated = true;
+                    return true;
+                }
+                builder.ins().jump(merge_blk, &[]);
+            } else {
+                // Unconditional transfer to the merge block after the try
+                // completes: required for Cranelift to close `success_blk`
+                // with a terminator.
+                builder.ins().jump(merge_blk, &[]);
+            }
+            builder.switch_to_block(merge_blk);
+            emitter.terminated = false;
+            builder.seal_block(merge_blk);
+            false
         }
         TirStmt::DictSet { dict, key, value } => {
             let (dict_v, _) = emit_expr(dict, emitter, builder, module, f);
@@ -1582,11 +1687,101 @@ fn emit_error_gate<M: Module>(
             let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
             let d_ref = module.declare_func_in_func(d_id, builder.func);
             let _ = builder.ins().call(d_ref, &[]);
-            builder.trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
         }
     }
     builder.seal_block(err_blk);
     builder.switch_to_block(ok_blk);
+}
+
+/// Guard against `a // b`, `a % b` and `a / b` with an Int divisor of zero.
+/// The interpreter reports `int division by zero` as a catchable error;
+/// the native emitters must agree with that behaviour.
+/// In Obj mode, the error object is constructed, parked as the pending
+/// error, and control branches either to the enclosing handler or to
+/// `unrt_dump_uncaught`. In Vm mode, control bails to the interpreter.
+fn emit_int_zero_guard<M: Module>(
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    divisor: cranelift_codegen::ir::Value,
+) {
+    let zero = builder.ins().iconst(types::I64, 0);
+    let is_zero = builder.ins().icmp(IntCC::Equal, divisor, zero);
+    let ok_blk = builder.create_block();
+    if emitter.mode == NativeMode::Obj {
+        let fail_blk = builder.create_block();
+        builder.ins().brif(is_zero, fail_blk, &[], ok_blk, &[]);
+        builder.seal_block(ok_blk);
+        builder.switch_to_block(fail_blk);
+        // Build the same VM error object the interpreter would.
+        let mid = emitter.unrt_make_int_div_zero.expect("unrt import required");
+        let mref = module.declare_func_in_func(mid, builder.func);
+        let res = builder.ins().call(mref, &[]);
+        let err = builder.inst_results(res)[0];
+        let wid = emitter.unrt_write_error.expect("unrt import required");
+        let wref = module.declare_func_in_func(wid, builder.func);
+        let _ = builder.ins().call(wref, &[err]);
+        if let Some(&handler) = emitter.active_handlers.last() {
+            builder.ins().jump(handler, &[]);
+        } else {
+            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+            let d_ref = module.declare_func_in_func(d_id, builder.func);
+            let _ = builder.ins().call(d_ref, &[]);
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+        }
+        builder.seal_block(fail_blk);
+        builder.switch_to_block(ok_blk);
+    } else {
+        let bail_blk = emitter.bail_blk;
+        builder.ins().brif(is_zero, bail_blk, &[], ok_blk, &[]);
+        builder.seal_block(ok_blk);
+        builder.switch_to_block(ok_blk);
+    }
+}
+
+/// Guard against `a % b` with an Int divisor of zero. Unlike `//` and `/`,
+/// the interpreter reports int `%`-by-zero as a `Panic`-payload Obj
+/// (`divide_by_zero()` → `System.DivideByZeroException`), which `try` never
+/// catches — the interpreter always prints the report and exits 1.
+/// In Obj mode this code parks that exact panic object pending and calls
+/// `unrt_dump_uncaught` unconditionally (active handlers are bypassed), so
+/// the native exe prints the identical line and exits 1. In Vm mode, control
+/// bails to the interpreter, which does the same thing.
+fn emit_mod_zero_guard<M: Module>(
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    divisor: cranelift_codegen::ir::Value,
+) {
+    let zero = builder.ins().iconst(types::I64, 0);
+    let is_zero = builder.ins().icmp(IntCC::Equal, divisor, zero);
+    let ok_blk = builder.create_block();
+    if emitter.mode == NativeMode::Obj {
+        let fail_blk = builder.create_block();
+        builder.ins().brif(is_zero, fail_blk, &[], ok_blk, &[]);
+        builder.seal_block(ok_blk);
+        builder.switch_to_block(fail_blk);
+        // Build the same VM panic object the interpreter would and dump it.
+        let mid = emitter.unrt_make_mod_zero_panic.expect("unrt import required");
+        let mref = module.declare_func_in_func(mid, builder.func);
+        let res = builder.ins().call(mref, &[]);
+        let err = builder.inst_results(res)[0];
+        let wid = emitter.unrt_write_error.expect("unrt import required");
+        let wref = module.declare_func_in_func(wid, builder.func);
+        let _ = builder.ins().call(wref, &[err]);
+        let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+        let d_ref = module.declare_func_in_func(d_id, builder.func);
+        let _ = builder.ins().call(d_ref, &[]);
+        builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+        builder.seal_block(fail_blk);
+        builder.switch_to_block(ok_blk);
+    } else {
+        let bail_blk = emitter.bail_blk;
+        builder.ins().brif(is_zero, bail_blk, &[], ok_blk, &[]);
+        builder.seal_block(ok_blk);
+        builder.switch_to_block(ok_blk);
+    }
 }
 
 /// Wrap raw ints/bools/floats as VM Obj pointers for the unrt bridge.
@@ -1618,7 +1813,7 @@ fn wrap_as_obj<M: Module>(
             builder.inst_results(res)[0]
         }
         TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat
-        | TirTy::Class(_) => v,
+        | TirTy::Class(_) | TirTy::ErrorObj => v,
     }
 }
 
@@ -1759,9 +1954,6 @@ fn emit_expr<M: Module>(
             let pop_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(pop_ref, &[list_v]);
             let raw = builder.inst_results(res)[0];
-            let is_err_id = emitter.unrt_obj_is_err.expect("unrt import required for list.pop");
-            let is_err_ref = module.declare_func_in_func(is_err_id, builder.func);
-            let raw = builder.inst_results(res)[0];
             emit_error_gate(emitter, builder, module, raw);
             list_elem_unbox(lty, emitter, builder, module, raw)
         }
@@ -1774,9 +1966,6 @@ fn emit_expr<M: Module>(
             let id = emitter.unrt_list_pop_at.expect("unrt import required for list.pop");
             let pop_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(pop_ref, &[list_v, idx_v]);
-            let raw = builder.inst_results(res)[0];
-            let is_err_id = emitter.unrt_obj_is_err.expect("unrt import required for list.pop");
-            let is_err_ref = module.declare_func_in_func(is_err_id, builder.func);
             let raw = builder.inst_results(res)[0];
             emit_error_gate(emitter, builder, module, raw);
             list_elem_unbox(lty, emitter, builder, module, raw)
@@ -1812,17 +2001,7 @@ fn emit_expr<M: Module>(
             let get_ref = module.declare_func_in_func(get_id, builder.func);
             let res = builder.ins().call(get_ref, &[dict_v, key_v]);
             let raw = builder.inst_results(res)[0];
-            let is_err_id = emitter.unrt_obj_is_err.expect("unrt import required for dict indexing");
-            let is_err_ref = module.declare_func_in_func(is_err_id, builder.func);
-            let res = builder.ins().call(is_err_ref, &[raw]);
-            let raw2 = builder.inst_results(res)[0];
-            let is_err = builder.ins().ireduce(types::I8, raw2);
-            let ok_blk = builder.create_block();
-            // Missing key traps (like division by zero): the VM error object
-            // can't cross back as a value.
-            builder.ins().brif(is_err, emitter.trap_bad_key_blk, &[], ok_blk, &[]);
-            builder.seal_block(ok_blk);
-            builder.switch_to_block(ok_blk);
+            emit_error_gate(emitter, builder, module, raw);
             match dty {
                 TirTy::DictStrInt => {
                     let id = emitter.unrt_int_from_obj.expect("unrt import required for int unbox");
@@ -1889,7 +2068,7 @@ fn emit_expr<M: Module>(
                     TirTy::Int => (builder.ins().ineg(value), TirTy::Int),
                     TirTy::Float => (builder.ins().fneg(value), TirTy::Float),
                     TirTy::Str => unreachable!("validator forbids neg of str"),
-                    TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) => {
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
                         unreachable!("validator forbids neg of collection")
                     }
                     TirTy::Bool => unreachable!("validator forbids neg of bool"),
@@ -1904,7 +2083,7 @@ fn emit_expr<M: Module>(
                     }
                     TirTy::Float => unreachable!("validator forbids not of float"),
                     TirTy::Str => unreachable!("validator forbids not of str"),
-                    TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) => {
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
                         unreachable!("validator forbids not of collection")
                     }
                 },
@@ -2007,65 +2186,48 @@ fn emit_binop<M: Module>(
             _ => unreachable!(),
         },
         TirBinOp::Div => {
+            // int/int keeps-the-Int operands so div-by-zero routes through
+            // emit_int_zero_guard (same machinery as `//`; int `%` uses
+            // emit_mod_zero_guard because the interpreter treats `%` zero as
+            // an uncatchable Panic).
             if a_ty == TirTy::Int && b_ty == TirTy::Int {
+                emit_int_zero_guard(emitter, builder, module, b);
                 let a = builder.ins().fcvt_from_sint(types::F64, a);
                 let b = builder.ins().fcvt_from_sint(types::F64, b);
-                (builder.ins().fdiv(a, b), TirTy::Float)
-            } else {
-                let a = ensure_float(a, a_ty, builder);
-                let b = ensure_float(b, b_ty, builder);
-                (builder.ins().fdiv(a, b), TirTy::Float)
+                return (builder.ins().fdiv(a, b), TirTy::Float);
             }
+            let a = ensure_float(a, a_ty, builder);
+            let b = ensure_float(b, b_ty, builder);
+            (builder.ins().fdiv(a, b), TirTy::Float)
         }
         TirBinOp::IDiv => {
-            let zero = builder.ins().iconst(types::I64, 0);
-            let is_zero = builder.ins().icmp(IntCC::Equal, b, zero);
+            // Division by zero routes to the enclosing catch (Obj) or bails
+            // to the interpreter (Vm). INT_MIN // -1 wraps like the
+            // interpreter's wrapping_div: execute `sdiv` with a clamped
+            // divisor so the hardware never faults on the INT_MIN/-1 case.
+            emit_int_zero_guard(emitter, builder, module, b);
             let minus_one = builder.ins().iconst(types::I64, -1);
-            let a_int_min = builder.ins().iconst(types::I64, i64::MIN);
-            let b_is_m1 = builder.ins().icmp(IntCC::Equal, b, minus_one);
+            let is_m1 = builder.ins().icmp(IntCC::Equal, b, minus_one);
+            let one = builder.ins().iconst(types::I64, 1);
+            let int_min = builder.ins().iconst(types::I64, i64::MIN);
+            let b_safe = builder.ins().select(is_m1, one, b);
+            let q = builder.ins().sdiv(a, b_safe);
+            let a_int_min = int_min;
             let a_is_min = builder.ins().icmp(IntCC::Equal, a, a_int_min);
-            let overflow = builder.ins().band(b_is_m1, a_is_min);
-            let bad = builder.ins().bor(is_zero, overflow);
-            let ok_blk = builder.create_block();
-            if emitter.mode == NativeMode::Obj {
-                // Division by zero traps; INT_MIN // -1 wraps like the
-                // interpreter's wrapping_div (result is INT_MIN).
-                let ok_blk2 = builder.create_block();
-                builder.ins().brif(is_zero, emitter.trap_blk, &[], ok_blk2, &[]);
-                builder.seal_block(ok_blk2);
-                builder.switch_to_block(ok_blk2);
-                let q = builder.ins().sdiv(a, b);
-                let int_min = builder.ins().iconst(types::I64, i64::MIN);
-                let wrapped = builder.ins().select(overflow, int_min, q);
-                return (wrapped, TirTy::Int);
-            }
-            let bail_blk = emitter.bail_blk;
-            builder.ins().brif(bad, bail_blk, &[], ok_blk, &[]);
-            builder.seal_block(ok_blk);
-            builder.switch_to_block(ok_blk);
-            (builder.ins().sdiv(a, b), TirTy::Int)
+            let neg_a = builder.ins().ineg(a); // wraps: INT_MIN -> INT_MIN
+            let m1_res = builder.ins().select(a_is_min, int_min, neg_a);
+            let wrapped = builder.ins().select(is_m1, m1_res, q);
+            return (wrapped, TirTy::Int);
         }
         TirBinOp::Mod => {
-            let zero = builder.ins().iconst(types::I64, 0);
-            let is_zero = builder.ins().icmp(IntCC::Equal, b, zero);
-            let ok_blk = builder.create_block();
-            if emitter.mode == NativeMode::Obj {
-                builder.ins().brif(is_zero, emitter.trap_blk, &[], ok_blk, &[]);
-            } else {
-                let bail_blk = emitter.bail_blk;
-                builder.ins().brif(is_zero, bail_blk, &[], ok_blk, &[]);
-            }
-            builder.seal_block(ok_blk);
-            builder.switch_to_block(ok_blk);
-            // Truncated remainder; INT_MIN % -1 ??0 like wrapping_rem.
+            emit_mod_zero_guard(emitter, builder, module, b);
             let minus_one = builder.ins().iconst(types::I64, -1);
-            let a_int_min = builder.ins().iconst(types::I64, i64::MIN);
-            let b_is_m1 = builder.ins().icmp(IntCC::Equal, b, minus_one);
-            let a_is_min = builder.ins().icmp(IntCC::Equal, a, a_int_min);
-            let overflow = builder.ins().band(b_is_m1, a_is_min);
+            let is_m1 = builder.ins().icmp(IntCC::Equal, b, minus_one);
+            let one = builder.ins().iconst(types::I64, 1);
+            let b_safe = builder.ins().select(is_m1, one, b);
             let zero_v = builder.ins().iconst(types::I64, 0);
-            let rem = builder.ins().srem(a, b);
-            let result = builder.ins().select(overflow, zero_v, rem);
+            let rem = builder.ins().srem(a, b_safe);
+            let result = builder.ins().select(is_m1, zero_v, rem);
             (result, TirTy::Int)
         }
         TirBinOp::BAnd => match (a_ty, b_ty) {
@@ -2106,7 +2268,7 @@ fn ensure_float(
         TirTy::Int => builder.ins().fcvt_from_sint(types::F64, v),
         TirTy::Str => unreachable!("validator forbids str arithmetic"),
         TirTy::Bool => unreachable!("validator forbids bool arithmetic"),
-        TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) => unreachable!("validator forbids collection-class arithmetic"),
+        TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => unreachable!("validator forbids collection-class arithmetic"),
     }
 }
 
@@ -2224,7 +2386,7 @@ fn emit_ffi(
                 TirTy::Float => builder.ins().bitcast(types::F64, MemFlagsData::new(), v),
                 TirTy::Bool => builder.ins().ireduce(types::I8, v),
                 TirTy::Str => v,
-                TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) => v,
+                TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => v,
             }
         })
         .collect();
@@ -2265,7 +2427,7 @@ fn emit_ffi(
             builder.ins().store(MemFlagsData::new(), zero, hp, 0);
             builder.ins().store(MemFlagsData::new(), two, hp, 8);
         }
-        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_)) => {
+        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => {
             // Same conservatism: heap collections and classes never cross the Vm boundary natively.
             let zero = builder.ins().iconst(types::I64, 0);
             let two = builder.ins().iconst(types::I64, TAG_BAIL);

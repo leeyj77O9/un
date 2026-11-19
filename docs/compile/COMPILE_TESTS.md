@@ -31,6 +31,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | 파일 | 용도 |
 |---|---|
 | `test/compile/typed_pass.un` | `un native`/`un run` 양쪽에서 동일하게 통과하는 컴파일-모드 코어 시맨틱 스모크 (alias/union/higher-order/closure capture bail/bool ops) |
+| `test/compile/exceptions.un` | `try`/`catch`/`finally`/`throw` + dict missing-key + int/int · `//` div-zero(catchable) + INT_MIN // -1 wrap — interpreter와 `un native`가 바이트 동일한지를 검증하는 예외 경로 픽스처 |
 | `bench/native_fib.un` | 어노테이션된 fib 벤치마크 (native 경로 확인 및 `scripts/compile-bench.ps1` 입력) |
 | `test/assert.un` | 어설트 모듈 (`assert_eq` / `assert_true` / `summary()`) |
 

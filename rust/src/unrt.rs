@@ -93,6 +93,26 @@ pub extern "C" fn unrt_is_pending() -> u64 {
     }
 }
 
+/// Returns a fresh VM object carrying the payload `Error { header: "error",
+/// message: "int division by zero" }`, exactly matching the interpreter's
+/// `div_zero("int")` error. Used by the native Int/Int `//` and `/` paths to
+/// park a catchable error into the pending slot.
+#[no_mangle]
+pub extern "C" fn unrt_make_int_div_zero() -> u64 {
+    to_raw(crate::runtime::obj::err("int division by zero"))
+}
+
+/// Returns a fresh VM object carrying the `Panic { name:
+/// "System.DivideByZeroException", message: "Attempted to divide by zero." }`
+/// payload, exactly matching the interpreter's `divide_by_zero()`. The
+/// interpreter never catches Panic payloads with `try`, so Obj-mode `%` MUST
+/// NOT park this object into the catch path — the emitted code must call
+/// `unrt_dump_uncaught` directly, unconditionally.
+#[no_mangle]
+pub extern "C" fn unrt_make_mod_zero_panic() -> u64 {
+    to_raw(crate::runtime::obj::divide_by_zero())
+}
+
 /// Takes the pending error and clears the slot. Returns 0 when none.
 #[no_mangle]
 pub extern "C" fn unrt_take_error() -> u64 {
@@ -102,24 +122,22 @@ pub extern "C" fn unrt_take_error() -> u64 {
     }
 }
 
-/// Dump the pending error to stderr in the interpreter's `error: ...` shape
-/// and terminate with exit code 1. Used by the unguarded Obj-mode entry
-/// (`un_main` driver) for programs that end with an uncaught error.
+/// Dump the pending error to stdout in the same shape the interpreter reports
+/// uncaught errors (`report()` in main.rs prints via `print!`) and terminate
+/// with exit code 1. Used by the unguarded Obj-mode entry (`un_main` driver)
+/// for programs that end with an uncaught error.
 #[no_mangle]
 pub extern "C" fn unrt_dump_uncaught() -> ! {
-    // Interpreter's `un` crate reports uncaught errors as stderr lines of
-    // the form `error: <header>: <message>` (or just `error: <message>` when
-    // the header is the default). Mirror that shape; the full source
-    // context is not available in a frozen exe.
+    // Interpreter's report() uses print! on stdout and exit(1). Mirror that
+    // shape (the source-context traceback is not available in a frozen
+    // exe): stdout line + exit 1.
     let err = take_pending_inner();
     let mut message = String::from("<no pending error>");
     if let Some(err) = err {
         let payload = crate::runtime::obj::payload_ref(&err);
         match &*payload {
             crate::runtime::obj::Payload::Error { header, message: m } => {
-                if header == "error" {
-                    message = format!("error: {m}");
-                } else if header == "Error" {
+                if header == "error" || header == "Error" {
                     message = format!("error: {m}");
                 } else {
                     message = format!("error: {header}: {m}");
@@ -133,7 +151,8 @@ pub extern "C" fn unrt_dump_uncaught() -> ! {
             }
         }
     }
-    eprintln!("{message}");
+    println!("{message}");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
     process::exit(1);
 }
 

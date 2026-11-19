@@ -33,7 +33,7 @@ self-contained mingw gcc를 경유한 `rustc`가 담당한다.
 |---|---|---|
 | 1 | 수직 슬라이스: core 부분집합(Int 상수/지역변수/산술/비교/`JmpIf`/직접 호출/`Return`) → COFF `.obj`, fib 데모 | **완료** |
 | 2 | `for i in a..b` / `while` 반복 하강 | **완료** (소스 경로: TIR ForRange/While을 그대로 하강; 루프 경계 가드 포함) |
-| 3 | VM 정적 링크 ABI — 생성 코드가 VM 런타임을 정적 링크해 Object 호출 | **3b 진행 중** (3a: `unvm`이 `staticlib`로 빌드되고 `unrt`(`rust/src/unrt.rs`)가 C ABI 제공. `un build --embed`는 임의의 Un 프로그램을 독립 exe로 빌드 — class/예외 포함. 3b: 생성 코드가 `unrt_call_native`/`unrt_obj_int` 등으로 VM 런타임을 직접 호출 — `io.write`, Str 리터럴/concat/`str == str`, `list[int]`/`list[float]`(리터럴, `for ... in`, `-> list[int]`, `io.write` 인자, `xs[i]` read/write, `len`)와 `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write, 함수 인자/반환)까지 네이티브 컴파일. 인터프리터와 출력 바이트 동일. 클래스를 사용하는 함수는 plain native에서 명시적으로 거부되며 `un build --embed`로 빌드) |
+| 3 | VM 정적 링크 ABI — 생성 코드가 VM 런타임을 정적 링크해 Object 호출 | **3b 진행 중** (3a: `unvm`이 `staticlib`로 빌드되고 `unrt`(`rust/src/unrt.rs`)가 C ABI 제공. `un build --embed`는 임의의 Un 프로그램을 독립 exe로 빌드 — class/예외 포함. 3b: 생성 코드가 `unrt_call_native`/`unrt_obj_int` 등으로 VM 런타임을 직접 호출 — `io.write`, Str 리터럴/concat/`str == str`, `list[int]`/`list[float]`(리터럴, `for ... in`, `-> list[int]`, `io.write` 인자, `xs[i]` read/write, `len`)와 `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write, 함수 인자/반환), **`try`/`catch`/`finally`와 `throw`**까지 네이티브 컴파일. 인터프리터와 출력 바이트 동일(보통 함수 body에서 `->`/`break`/`skip`이 안 쓰일 때). 클래스를 사용하는 함수는 plain native에서 명시적으로 거부되며 `un build --embed`로 빌드) |
 | 4 | `.un` 소스에서 바로 `un obj` (typeck/TIR 재사용) | **완료** |
 | 5 | `un build` — 링크까지 자동화 (self-contained mingw gcc 자동 탐지) | **완료** |
 
@@ -86,17 +86,41 @@ $env:TEMP\embed_test.exe
 - `len(x)`: `str`(UTF-16 코드 유닛, 인터프리터와 동일)과 `list[int]`/`list[float]`/
   `dict[str, int]`/`dict[str, float]`의 크기를 반환한다. 다른 타입은 인터프리터로 넘긴다.
   `un native`에서는 len 포함 함수도 모두 인터프리터 fallback.
-- class/예외/프로퍼티/동적 디스패치는 네이티브 미지원이며, plain `un obj`/`un build`는
-  클래스 타입을 사용하는 함수를 빌드 시점에 명확한 오류와 함께 거부한다:
+- 예외(`try`/`catch`/`finally`): 네이티브 exe가 `unrt_*`로 연결하는 **모든** VM 오류를
+  현재 함수의 활성 `catch`로 전달한다. 없는 키(`d[missing]`), 범위 밖 리스트 인덱스,
+  `throw(expr)`, 그리고 하강된 `try`의 body/finally에서 나는 모든 오류가 포함된다.
+  `int / int`에서 제수가 0이면 Obj 경로도 `emit_int_zero_guard`가
+  `unrt_make_int_div_zero`로 인터프리터와 동일한 `int division by zero` 에러 Obj을
+  `pending`에 주차해 활성 핸들러로 분기한다. 핸들러가 없으면 `unrt_dump_uncaught`가
+  인터프리터와 동일하게 stdout에 `error: ...` 한 줄을 출력하고 exit 1.
+  `//`도 같은 규칙. `INT_MIN // -1`은 인터프리터의 wrapping_div와 같이
+  `INT_MIN`으로 wrap한다(`b_safe = 1`로 치환해 hardware #DE 트랩을 원천 차단).
+  `int / int`는 `Float`으로 승격되어 `Float`을 반환하지만
+  (VM과 동일), 나누기 전 0 검사는 유지된다.
+- int `%` 0 나누기는 **catch 불가**다. 인터프리터는 `divide_by_zero()`로
+  `Payload::Panic`(`System.DivideByZeroException: Attempted to divide by zero.`)을 만들고
+  `try`/`Unwrap`은 `Payload::Error`만 잡으므로 항상 프로세스가 종료된다.
+  Obj 경로도 `emit_mod_zero_guard`가 활성 핸들러를 무시하고
+  `unrt_make_mod_zero_panic` → `unrt_dump_uncaught`로 stdout 한 줄 출력 + exit 1을
+  강제한다(인터프리터와 바이트 동일).
+- 네이티브 `try` 제약: `body`/`finally` 블록 안에서 `return`/`->`/`break`/`skip`은
+  사용 불가 (컴파일 오류). 중첩 `try`는 정상적으로 동작한다.
+  활성 핸들러가 없는 상황에서 leaf 오류가 나면 `unrt_dump_uncaught`가 exit(1)로
+  종료한다. `Vm` 모드에서 try/catch/throw를 쓰는 함수는 인터프리터로 bail되어
+  항상 인터프리터와 동일하게 동작한다.
+- `unrt_dump_uncaught`는 인터프리터의 `report()`와 마찬가지로 stdout에 출력한다
+  (소스 컨텍스트 traceback은 frozen exe에 없다).
+- class/프로퍼티/동적 디스패치는 네이티브 미지원이며, plain `un obj`/`un build`는
+  클래스 타입을 사용하는 함수를 **셋 엔트리보다 먼저** (`skipped`에 등재하지 않고)
+  폐기하고 빌드를 거부한다:
   `un build: class-typed functions are not supported in a native executable yet; rebuild with un build --embed`.
   `--embed`는 전체 VM을 정적 링크하므로 임의의 클래스 프로그램이 동작한다.
   (plain 경로로 클래스를 지원하려면 exe에 클래스 등록 테이블 + `Body::Native` 디스패치
   기계 장치가 필요하다 — 별도 단계로 보고 있다.)
 - `str == str`은 VM의 `key_eq`로 네이티브 비교한다.
-- `//`/`%`에 제수 0이면 **트랩**(INTEGER_DIVISION_BY_ZERO). `INT_MIN // -1`은
-  인터프리터의 `wrapping_div`와 같이 `INT_MIN`으로 wrap한다.
-- 나눗셈 가드는 VM 경로에서는 bail(인터프리터 재실행), `un obj` 경로에서는
-  트랩으로 동작한다 (의미 보존, 동작은 다름).
+- `//` 및 `Int / Int`에서 제수가 0이면 **catchable exception**이며, int `%` 0은
+  **uncatchable Panic**이다 (위 예외 항목 참고). 두 경우 모두 exit code는 1이고
+  출력은 인터프리터와 바이트 동일하다.
 - 재귀는 Depth 가드 없이 그냥 스택 재귀다 (스택 오버플로는 프로세스를 죽인다). VM 경로는 VM depth 가드가 있다.
 - `un build`의 드라이버는 `unrt_init()` → `un_main()` → `unrt_flush_stdout()` 순서로
   호출한다. Str 출력은 VM runtime의 stdout 버퍼를 통해 나간다. 엔트리 반환이

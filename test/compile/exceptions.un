@@ -1,0 +1,92 @@
+use io
+use test.assert as assert
+
+fn throw_and_catch() -> int
+    result = 0
+    try
+        throw("boom")
+        result = 1
+    catch err
+        result = 7
+    -> result
+
+fn dict_missing() -> int
+    d = {"a": 1}
+    result = 0
+    try
+        v = d["missing"]
+        result = 1
+    catch err
+        result = 42
+    -> result
+
+fn int_div_zero() -> int
+    a = 1
+    b = 0
+    result = 0
+    try
+        x = a / b
+        result = 99
+    catch err
+        result = 55
+    -> result
+
+fn idiv_zero() -> int
+    a = 7
+    b = 0
+    result = 0
+    try
+        x = a // b
+        result = 99
+    catch err
+        result = 66
+    -> result
+
+fn idiv_min_wrap() -> int
+    # INT_MIN // -1 wraps to INT_MIN (interpreter's wrapping_div), never an error.
+    a = -9223372036854775807 - 1
+    b = -1
+    -> a // b
+
+fn finally_runs() -> int
+    total = 0
+    try
+        total = 1
+    catch err
+        total = 2
+    finally
+        total = total + 10
+    -> total
+
+fn finally_after_throw() -> int
+    total = 0
+    try
+        throw("boom")
+        total = 1
+    catch err
+        total = 2
+    finally
+        total = total + 10
+    -> total
+
+fn nested() -> int
+    count = 0
+    try
+        try
+            throw("inner")
+        catch inner_err
+            count = count + 1
+            throw("outer")
+    catch outer_err
+        count = count * 10
+    -> count
+
+assert.assert_eq(throw_and_catch(), 7, "throw caught")
+assert.assert_eq(dict_missing(), 42, "dict missing key caught")
+assert.assert_eq(int_div_zero(), 55, "int/int zero caught")
+assert.assert_eq(idiv_zero(), 66, "idiv zero caught")
+assert.assert_eq(idiv_min_wrap(), -9223372036854775807 - 1, "INT_MIN // -1 wraps")
+assert.assert_eq(finally_runs(), 11, "finally runs on normal path")
+assert.assert_eq(finally_after_throw(), 12, "finally runs on throw path")
+assert.assert_eq(nested(), 10, "nested try re-throw")
+assert.summary()
