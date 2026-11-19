@@ -2335,6 +2335,43 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// Special-case `iter.min(list[x])` / `iter.max(list[x])`: returns the
+    /// element type for homogeneous int/float lists (same semantics as the
+    /// `iter_batch` family). Other shapes stay dynamic.
+    fn iter_minmax_sig(&mut self, node: &'a Node, env: &mut Env) -> Option<Ty> {
+        let callee = node.children.first()?;
+        if callee.kind != NodeKind::Property {
+            return None;
+        }
+        let member = callee.children.get(1)?;
+        let head = callee.children.first()?;
+        if head.kind != NodeKind::Identifier || member.kind != NodeKind::Identifier {
+            return None;
+        }
+        let member_name = self.text_of(member);
+        if self.text_of(head) != "iter" || (member_name != "min" && member_name != "max") {
+            return None;
+        }
+        let args_node = node.children.get(1)?;
+        if args_node.kind != NodeKind::Tuple {
+            return Some(Ty::Any);
+        }
+        let args: Vec<&'a Node> = args_node.children.iter().collect();
+        if args.len() != 1 {
+            // iter.min/max fall back to interpreter for rest-args.
+            return Some(Ty::Any);
+        }
+        let arg_ty = self.check_expr(args[0], env);
+        Some(match arg_ty {
+            Ty::List(elem) => match elem.as_ref() {
+                Ty::Int | Ty::Float => (*elem).clone(),
+                _ => Ty::Any,
+            },
+            Ty::Any => Ty::Any,
+            _ => Ty::Any,
+        })
+    }
+
     fn bind_for_target(&mut self, target: &'a Node, elem_ty: Ty, env: &mut Env) {        match target.kind {
             NodeKind::Identifier => {
                 env.declare(&self.text_of(target), elem_ty);
@@ -3165,6 +3202,9 @@ impl<'a> Checker<'a> {
                     }
                     Ty::Any => {
                         if let Some(ty) = self.iter_array_sig(node, env) {
+                            return ty;
+                        }
+                        if let Some(ty) = self.iter_minmax_sig(node, env) {
                             return ty;
                         }
                         if let Some(member_node) = callee.children.get(1) {

@@ -2718,6 +2718,35 @@ fn lower_iter_array(
     }
 }
 
+/// Lower `iter.min(xs)` / `iter.max(xs)` on a `list[int]`/`list[float]` to
+/// the same generic native-call bridge, with the element type as the
+/// statically known result.
+fn lower_iter_minmax(
+    member: &str,
+    args_tuple: &Node,
+    ctx: &mut LowerCtx,
+) -> Result<(TirExpr, CoreTy), String> {
+    let args = args_tuple.children.iter().collect::<Vec<&Node>>();
+    if args.len() != 1 {
+        return Err(format!("iter.{member} expects exactly one argument (list[int] or list[float])"));
+    }
+    let (arg, arg_cty) = lower_expr(args[0], ctx)?;
+    let (ret_ty, core_ret) = match arg_cty {
+        CoreTy::ListInt => (TirTy::Int, CoreTy::Int),
+        CoreTy::ListFloat => (TirTy::Float, CoreTy::Float),
+        _ => return Err(format!("iter.{member} requires a list[int] or list[float] argument")),
+    };
+    Ok((
+        TirExpr::NativeCallExpr {
+            module: "iter".into(),
+            member: member.into(),
+            args: vec![arg],
+            ret: ret_ty,
+        },
+        core_ret,
+    ))
+}
+
 /// Lower `math.<fn>(args...)` into a TIR math intrinsic. Numeric arguments
 /// (Int promotes to Float); the result type is Float. Implemented for the
 /// same set of operations the bytecode JIT handles; sqrt/log keep their
@@ -2837,6 +2866,10 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             // list[int], float list[float].
             if module == "iter" && member == "array" {
                 return lower_iter_array(&args_tuple, ctx);
+            }
+            // `iter.min(xs)` / `iter.max(xs)` — typed-element iterable.
+            if module == "iter" && (member == "min" || member == "max") {
+                return lower_iter_minmax(&member, args_tuple, ctx);
             }
             // `mod.member(v...)` for native members with a statically known
             // core result type — dispatch through the VM runtime bridge.
