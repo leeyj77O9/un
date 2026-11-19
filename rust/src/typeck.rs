@@ -215,6 +215,8 @@ pub struct ClassInfo {
     pub methods: HashMap<String, Ty>,
     pub bases: Vec<String>,
     pub has_getattr: bool,
+    /// Member names declared with a `set` accessor on this class (or a base).
+    pub setters: Vec<String>,
     /// Header parameters (`class Point(x: int, y: int)`) as `(name, ty)`.
     pub ctor_params: Vec<(String, Ty)>,
     pub ctor_required: usize,
@@ -747,6 +749,9 @@ impl<'a> Checker<'a> {
                         .first()
                         .map(|c| self.text_of(c))
                         .unwrap_or_default();
+                    if child.value.as_ref() == Some(&Const::Str("set".to_string())) {
+                        info.setters.push(name.clone());
+                    }
                     self.functions.push(DeclFn {
                         name,
                         node: child,
@@ -1487,6 +1492,25 @@ impl<'a> Checker<'a> {
         None
     }
 
+    fn class_has_setter(&self, class_name: &str, name: &str) -> bool {
+        let mut current = Some(class_name.to_string());
+        let mut seen = Vec::new();
+        while let Some(name_c) = current {
+            if seen.iter().any(|n| n == &name_c) {
+                return false;
+            }
+            seen.push(name_c.clone());
+            let Some(info) = self.classes.get(&name_c) else {
+                return false;
+            };
+            if info.setters.iter().any(|s| s == name) {
+                return true;
+            }
+            current = info.bases.first().cloned();
+        }
+        false
+    }
+
     fn class_has_getattr(&self, class_name: &str) -> bool {
         let mut current = Some(class_name.to_string());
         let mut seen = Vec::new();
@@ -1984,6 +2008,11 @@ impl<'a> Checker<'a> {
                 if self.class_has_getattr(&class) {
                     return;
                 }
+                // A property declared with a `set` accessor accepts
+                // assignment; a plain method never does.
+                if self.class_has_setter(&class, member) {
+                    return;
+                }
                 if self.class_method(&class, member).is_some() {
                     self.error(
                         node,
@@ -2293,6 +2322,7 @@ impl<'a> Checker<'a> {
     fn check_match(&mut self, node: &'a Node, env: &mut Env) {
         let scrutinee = node.children.first();
         let scrut_ty = scrutinee.map(|s| self.check_expr(s, env)).unwrap_or(Ty::Any);
+        self.check_match_exhaustive(node, &scrut_ty);
         let base = env.clone();
         let mut arm_envs: Vec<Env> = Vec::new();
         let mut any_arm = false;
@@ -2322,6 +2352,71 @@ impl<'a> Checker<'a> {
         }
         let merged = merge_arms(&base, &arm_envs);
         *env = merged;
+    }
+
+    fn check_match_exhaustive(&mut self, node: &'a Node, scrut_ty: &Ty) {
+        let mut has_wildcard = false;
+        let mut has_bool_true = false;
+        let mut has_bool_false = false;
+        let mut has_none = false;
+        for child in &node.children {
+            if child.kind != NodeKind::Case {
+                continue;
+            }
+            let Some(pattern) = child.children.first() else {
+                continue;
+            };
+            match pattern.kind {
+                NodeKind::Wildcard => has_wildcard = true,
+                NodeKind::Boolean => match pattern.value.as_ref() {
+                    Some(Const::Bool(true)) => has_bool_true = true,
+                    Some(Const::Bool(false)) => has_bool_false = true,
+                    _ => {}
+                },
+                NodeKind::None => has_none = true,
+                _ => {}
+            }
+        }
+        if has_wildcard {
+            return;
+        }
+        let scrutinee = node.children.first();
+        match scrut_ty {
+            Ty::None_ => {
+                if !has_none {
+                    self.error_match_exhaustive(
+                        node,
+                        scrutinee,
+                        "expected a 'none' arm or a wildcard '_' arm",
+                    );
+                }
+            }
+            Ty::Bool => {
+                if !(has_bool_true && has_bool_false) {
+                    self.error_match_exhaustive(
+                        node,
+                        scrutinee,
+                        "expected 'true' and 'false' arms or a wildcard '_' arm",
+                    );
+                }
+            }
+            Ty::Int | Ty::Float | Ty::Str | Ty::Unknown | Ty::Any | Ty::Union(_) | Ty::Tuple(_)
+                if !matches!(scrut_ty, Ty::Bool) => {
+                self.error_match_exhaustive(
+                    node,
+                    scrutinee,
+                    "expected a wildcard '_' arm; the match arms do not cover every case",
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn error_match_exhaustive(&mut self, node: &'a Node, scrut: Option<&'a Node>, message: &str) {
+        self.error(
+            scrut.unwrap_or(node),
+            format!("match exhaustiveness: {message}"),
+        );
     }
 
     fn check_pattern(&mut self, pattern: &'a Node, scrut: &Ty, env: &mut Env) {
@@ -2491,9 +2586,8 @@ impl<'a> Checker<'a> {
             NodeKind::Lambda => self.check_lambda(node, env),
             NodeKind::Match => {
                 let scrutinee = node.children.first();
-                if let Some(scrutinee) = scrutinee {
-                    self.check_expr(scrutinee, env);
-                }
+                let scrut_ty = scrutinee.map(|s| self.check_expr(s, env)).unwrap_or(Ty::Any);
+                self.check_match_exhaustive(node, &scrut_ty);
                 let mut arm_types = Vec::new();
                 for child in &node.children {
                     if child.kind == NodeKind::Case {

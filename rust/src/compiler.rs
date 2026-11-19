@@ -41,6 +41,7 @@ pub struct Compiler<'a> {
 pub fn compile(source: &Source, ast: &Node) -> Result<Program, Panic> {
     let mut c = Compiler::new(source);
     c.code_block(ast, false, true)?;
+    c.emit_classes_init(ast)?;
     c.finish()
 }
 impl<'a> Compiler<'a> {
@@ -80,6 +81,40 @@ impl<'a> Compiler<'a> {
             return Err(Panic::named("internal", "unbalanced proto stack"));
         }
         Ok(self.program)
+    }
+
+    /// Emit the class-registration spine: a dedicated `<classes_init>` proto
+    /// that re-emits the compilation of every top-level `class` declaration so
+    /// a native executable can register its class templates at startup by
+    /// running this proto once (`unrt_register_classes`). The interpreter
+    /// ignores the extra proto entirely; the plain Obj exe skips it unless it
+    /// has classes. Running the real `<module>` root instead would double-
+    /// execute `main()`.
+    fn emit_classes_init(&mut self, ast: &Node) -> Result<(), Panic> {
+        let class_nodes: Vec<&Node> = match ast.kind {
+            NodeKind::Block => ast
+                .children
+                .iter()
+                .filter(|n| n.kind == NodeKind::Class)
+                .collect(),
+            NodeKind::Class => std::iter::once(ast).collect(),
+            _ => Vec::new(),
+        };
+        if class_nodes.is_empty() {
+            return Ok(());
+        }
+        self.begin_proto("<classes_init>", None, None);
+        for cls in class_nodes {
+            self.code(cls)?;
+            if !self.raises {
+                // Mirror `code_block`'s top-level statement tail: error check,
+                // then drop the statement value.
+                self.emit(Op::Unwrap, 0, 0, span_of(cls));
+                self.emit(Op::Pop, 0, 0, span_of(cls));
+            }
+        }
+        self.end_proto();
+        Ok(())
     }
     pub fn open_group(&mut self, is_loop: bool) {
         self.groups.push(Group {
@@ -920,7 +955,8 @@ impl<'a> Compiler<'a> {
         self.emit(Op::ArgBegin, 0, 2, span);
         self.emit(Op::ArgPos, 0, 0, span);
         self.emit(Op::ArgPos, 0, 0, span);
-        self.emit(Op::Call, 0, 2, span);
+        let names_idx = self.call_names_index(Vec::new())?;
+        self.emit(Op::Call, names_idx as u16, 2, span);
         Ok(())
     }
 
@@ -952,7 +988,6 @@ impl<'a> Compiler<'a> {
             ends.push(self.emit_jump(Op::Jmp, 0, span));
 
             self.patch(fail, self.ip());
-            self.slot_stack.pop();
             self.emit(Op::PopScope, 0, 0, span);
         }
 
@@ -1042,7 +1077,8 @@ impl<'a> Compiler<'a> {
             self.emit(Op::Swap, 0, 0, span);
             self.emit(Op::ArgBegin, 0, 1, span);
             self.emit(Op::ArgPos, 0, 0, span);
-            self.emit(Op::Call, 0, 1, span);
+            let names_idx = self.call_names_index(Vec::new())?;
+            self.emit(Op::Call, names_idx as u16, 1, span);
         }
         Ok(())
     }

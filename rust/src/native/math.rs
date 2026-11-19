@@ -592,8 +592,9 @@ pub extern "C" fn un_math_log(x: f64, b: f64) -> f64 { x.ln() / b.ln() }
 pub extern "C" fn un_math_hypot(x: f64, y: f64) -> f64 { x.hypot(y) }
 #[no_mangle]
 pub extern "C" fn un_math_powf(x: f64, e: f64) -> f64 { x.powf(e) }
-#[no_mangle]
 pub extern "C" fn un_math_trunc_i64(x: f64) -> i64 { x.trunc() as i64 }
+#[no_mangle]
+pub extern "C" fn un_math_trunc(x: f64) -> f64 { x.trunc() }
 #[no_mangle]
 pub extern "C" fn un_math_sign(x: f64) -> i64 {
     if x.is_nan() || x == 0.0 { 0 } else if x > 0.0 { 1 } else { -1 }

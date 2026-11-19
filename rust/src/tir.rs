@@ -1,4 +1,4 @@
-//! `tir` ??compile-mode Typed IR and core-function eligibility.
+﻿//! `tir` ??compile-mode Typed IR and core-function eligibility.
 //!
 //! Compile mode lowers a small, statically typed *core subset* of Un to a
 //! direct-to-hardware representation (`TirProgram`). Everything outside the
@@ -148,8 +148,24 @@ pub enum TirExpr {
     MemberGet { receiver: Box<TirExpr>, member: Box<str>, ret: TirTy },
     /// `receiver.method(args...)` where `receiver` is class-typed.
     MethodCall { receiver: Box<TirExpr>, member: Box<str>, args: Vec<TirExpr>, ret: TirTy },
+    /// Cast `int(x)` where `x` is Int or Float.
+    CastInt(Box<TirExpr>),
+    /// Cast `float(x)` where `x` is Int or Float.
+    CastFloat(Box<TirExpr>),
+    /// `math.<intrinsic>(args...)` — single/double-precision float intrinsics.
+    Math(MathFn, Vec<TirExpr>),
     /// Index into `TirProgram::functions`.
     Call(u32, Vec<TirExpr>),
+}
+
+/// Math intrinsics lowered to the corresponding `un_math_*` FFI symbol
+/// (`native/math.rs`). `Log` carries the two-argument `esp`/`base` call:
+/// `math.log(v, b)`. `Pow` is `math.pow(v, e)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MathFn {
+    Sin, Cos, Tan, Asin, Acos, Atan, Sqrt, Cbrt, Exp, Ln, Log2, Log10,
+    /// `ln(v)` when arity is 1; the `v`/`base` pair otherwise.
+    Log, Floor, Ceil, Trunc, Abs, Pow,
 }
 
 #[derive(Clone, Debug)]
@@ -256,6 +272,9 @@ pub struct TirProgram {
     pub class_fields: Vec<std::collections::HashMap<String, Ty>>,
     /// Method name ??`Ty::Func` for each interned class (parallel to `class_names`).
     pub class_methods: Vec<std::collections::HashMap<String, Ty>>,
+    /// Members declared with a `set` accessor, inherited from bases
+    /// (parallel to `class_names`).
+    pub class_setters: Vec<std::collections::HashSet<String>>,
 }
 
 /// The class tables gathered from the checked program, threaded through
@@ -267,6 +286,7 @@ struct ClassTable {
     names: Vec<String>,
     fields: Vec<std::collections::HashMap<String, Ty>>,
     methods: Vec<std::collections::HashMap<String, Ty>>,
+    setters: Vec<std::collections::HashSet<String>>,
 }
 
 impl ClassTable {
@@ -278,15 +298,93 @@ impl ClassTable {
             .enumerate()
             .map(|(i, n)| (n.clone(), i as u16))
             .collect();
+        // Merge member tables through the class chain (own declaration
+        // wins), so base-class methods are visible on derived classes.
+        fn resolve<'a>(
+            checked: &'a CheckedProgram,
+            name: &str,
+            cache: &mut std::collections::HashMap<String, std::collections::HashMap<String, Ty>>,
+        ) -> std::collections::HashMap<String, Ty> {
+            if let Some(cached) = cache.get(name) {
+                return cached.clone();
+            }
+            let mut merged: std::collections::HashMap<String, Ty> =
+                std::collections::HashMap::new();
+            if let Some(info) = checked.classes.get(name) {
+                for base in info.bases.iter() {
+                    // Compute (and store) the base table first so multiple
+                    // uses of the same base share one clone.
+                    resolve(checked, base, cache);
+                }
+                for base in info.bases.iter() {
+                    if let Some(m) = cache.get(base.as_str()) {
+                        for (k, v) in m {
+                            merged.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
+                }
+                // Own entries always win.
+                for (k, v) in &info.methods {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+            cache.insert(name.to_string(), merged.clone());
+            merged
+        }
+        let mut merged_cache: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, Ty>,
+        > = std::collections::HashMap::new();
+        // Merge setter tables through the class chain the same way.
+        fn resolve_setters<'a>(
+            checked: &'a CheckedProgram,
+            name: &str,
+            cache: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
+        ) -> std::collections::HashSet<String> {
+            if let Some(cached) = cache.get(name) {
+                return cached.clone();
+            }
+            let mut merged: std::collections::HashSet<String> = std::collections::HashSet::new();
+            if let Some(info) = checked.classes.get(name) {
+                for base in info.bases.iter() {
+                    resolve_setters(checked, base, cache);
+                }
+                for base in info.bases.iter() {
+                    if let Some(m) = cache.get(base.as_str()) {
+                        for s in m {
+                            merged.insert(s.clone());
+                        }
+                    }
+                }
+                for s in &info.setters {
+                    merged.insert(s.clone());
+                }
+            }
+            cache.insert(name.to_string(), merged.clone());
+            merged
+        }
+        let mut setters_cache: std::collections::HashMap<
+            String,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
         let fields = names
             .iter()
             .map(|n| checked.classes[n].fields.clone())
             .collect();
         let methods = names
             .iter()
-            .map(|n| checked.classes[n].methods.clone())
+            .map(|n| resolve(checked, n, &mut merged_cache))
             .collect();
-        ClassTable { index, names, fields, methods }
+        let setters = names
+            .iter()
+            .map(|n| resolve_setters(checked, n, &mut setters_cache))
+            .collect();
+        ClassTable { index, names, fields, methods, setters }
+    }
+
+    /// Look up the setter set resolved for class id `id`.
+    fn setters(&self, id: u16) -> Option<&std::collections::HashSet<String>> {
+        self.setters.get(id as usize)
     }
 
     fn id(&self, name: &str) -> Option<u16> {
@@ -446,6 +544,8 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
         }
         TirExpr::Call(_, args) => args.iter().any(expr_uses_classes),
         TirExpr::List(elements) => elements.iter().any(expr_uses_classes),
+        TirExpr::Math(_, args) => args.iter().any(expr_uses_classes),
+        TirExpr::CastInt(inner) | TirExpr::CastFloat(inner) => expr_uses_classes(inner),
         TirExpr::Dict(entries) => entries.iter().any(|(k, v)| expr_uses_classes(k) || expr_uses_classes(v)),
         TirExpr::DictGet(a, b) | TirExpr::ListGet(a, b) => {
             expr_uses_classes(a) || expr_uses_classes(b)
@@ -521,6 +621,10 @@ fn expr_uses_heap(e: &TirExpr) -> bool {
         }
         TirExpr::Call(_, args) => args.iter().any(expr_uses_heap),
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_) | TirExpr::Local(_) => false,
+        TirExpr::Math(_, _) => false,
+        TirExpr::CastInt(inner) | TirExpr::CastFloat(inner) => {
+            expr_uses_heap(inner)
+        }
         TirExpr::Len(_)
         | TirExpr::ListPop(_)
         | TirExpr::ListPopAt(_, _)
@@ -579,6 +683,10 @@ fn expr_uses_str(e: &TirExpr) -> bool {
         | TirExpr::ClassNew { .. } | TirExpr::MemberGet { .. } | TirExpr::MethodCall { .. } => false,
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Local(_) => false,
         TirExpr::Promote(inner) => expr_uses_str(inner),
+        TirExpr::Math(_, _) => false,
+        TirExpr::CastInt(inner) | TirExpr::CastFloat(inner) => {
+            expr_uses_str(inner)
+        }
         TirExpr::Select { cond, then_expr, else_expr } => {
             expr_uses_str(cond) || expr_uses_str(then_expr) || expr_uses_str(else_expr)
         }
@@ -745,6 +853,20 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                 tirdbg_reject(node); *out = false;
             }
             NodeKind::Call => {
+                // `int(x)`/`float(x)` language casts: accepted with any core arg.
+                if let Some(first) = node.children.first() {
+                    if first.kind == NodeKind::Identifier {
+                        let name = source.span(first.start, first.length).to_string();
+                        if (name == "int" || name == "float") && !checked.sigs.contains_key(name.as_str()) {
+                            if let Some(arg_tuple) = node.children.get(1) {
+                                for arg in &arg_tuple.children {
+                                    visit(arg, checked, source, locals, out);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
                 // `len(x)` / `throw(x)` builtins: allowed when the arguments visit
                 // and the name isn't shadowed by a user-declared function.
                 if let Some(first) = node.children.first() {
@@ -1082,6 +1204,7 @@ impl TirProgram {
             class_names: classes.names.clone(),
             class_fields: classes.fields.clone(),
             class_methods: classes.methods.clone(),
+            class_setters: classes.setters.clone(),
         };
         program.validate()?;
         Ok(program)
@@ -1580,16 +1703,28 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
             };
             // Checker already validated the member exists; the field type
             // guides the value coercion (Int ??Float widening is allowed).
-            let field_ty = ctx
-                .classes
-                .field(id, &member)
-                .cloned()
-                .ok_or_else(|| {
-                    format!(
-                        "class '{}' has no field '{}'",
-                        ctx.classes.names[id as usize], member
-                    )
-                })?;
+            let field_ty = ctx.classes.field(id, &member).cloned();
+            let field_ty = match field_ty {
+                Some(ty) => ty,
+                None => {
+                    // Property with a `set` accessor (no backing field):
+                    // the static value type is `any` — accept any value and
+                    // let the VM dispatch through the property setter.
+                    if !ctx.classes.setters(id).is_some_and(|s| s.contains(member.as_str())) {
+                        return Err(format!(
+                            "class '{}' has no field '{}'",
+                            ctx.classes.names[id as usize], member
+                        ));
+                    }
+                    let (v_expr, _) = lower_expr(value, ctx)?;
+                    out.push(TirStmt::MemberSet {
+                        receiver: recv,
+                        member: member.into_boxed_str(),
+                        value: v_expr,
+                    });
+                    return Ok(());
+                }
+            };
             let (v_expr, v_ty) = lower_expr(value, ctx)?;
             let field_is_class = matches!(&field_ty, Ty::Class(_));
             if field_is_class {
@@ -2052,6 +2187,21 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 _ => return Err("only class member access is supported in the core".to_string()),
             };
             let Some(field_ty) = ctx.classes.field(id, &member).cloned() else {
+                // Not an annotated field: if `member` names an accessor
+                // (get/set) on the class, its static return type is `any`
+                // in this subset — direct the user at the escape hatch.
+                let is_accessor = ctx
+                    .classes
+                    .setters(id)
+                    .is_some_and(|s| s.contains(member.as_str()))
+                    || ctx.classes.method(id, &member).is_some();
+                if is_accessor {
+                    return Err(format!(
+                        "computed property '{}' of '{}' has no compile-time return type: annotate it or run with `un build --embed`",
+                        member,
+                        ctx.classes.names[id as usize],
+                    ));
+                }
                 return Err(format!(
                     "class '{}' has no field or method '{}'",
                     ctx.classes.names[id as usize], member
@@ -2449,14 +2599,74 @@ fn lower_arg_list(args_tuple: &Node, ctx: &mut LowerCtx) -> Result<Vec<TirExpr>,
     Ok(args)
 }
 
+/// Lower `math.<fn>(args...)` into a TIR math intrinsic. Numeric arguments
+/// (Int promotes to Float); the result type is Float. Implemented for the
+/// same set of operations the bytecode JIT handles; sqrt/log keep their
+/// guard semantics (`native/math.rs`).
+fn lower_math_call(
+    name: &str,
+    args_tuple: &Node,
+    ctx: &mut LowerCtx,
+) -> Result<(TirExpr, CoreTy), String> {
+    let arity = args_tuple.children.len();
+    let math_fn = match name {
+        "sin" => (MathFn::Sin, 1),
+        "cos" => (MathFn::Cos, 1),
+        "tan" => (MathFn::Tan, 1),
+        "asin" => (MathFn::Asin, 1),
+        "acos" => (MathFn::Acos, 1),
+        "atan" => (MathFn::Atan, 1),
+        "sqrt" => (MathFn::Sqrt, 1),
+        "cbrt" => (MathFn::Cbrt, 1),
+        "exp" => (MathFn::Exp, 1),
+        "ln" => (MathFn::Ln, 1),
+        "log2" => (MathFn::Log2, 1),
+        "log10" => (MathFn::Log10, 1),
+        "floor" => (MathFn::Floor, 1),
+        "ceil" => (MathFn::Ceil, 1),
+        "trunc" => (MathFn::Trunc, 1),
+        "abs" => (MathFn::Abs, 1),
+        "pow" => (MathFn::Pow, 2),
+        "log" => {
+            if arity == 1 {
+                (MathFn::Ln, 1)
+            } else if arity == 2 {
+                (MathFn::Log, 2)
+            } else {
+                return Err(format!("math.log expects 1 or 2 arguments, got {arity}"));
+            }
+        }
+        _ => return Err(format!("math.{name} is not supported in the core")),
+    };
+    let idx = math_fn;
+    if arity != idx.1 {
+        return Err(format!(
+            "math.{name} expects {} argument(s), got {arity}",
+            idx.1
+        ));
+    }
+    let mut promoted = Vec::with_capacity(arity);
+    for arg in &args_tuple.children {
+        let (expr, t) = lower_expr(arg, ctx)?;
+        match t {
+            CoreTy::Int | CoreTy::Float => {
+                promoted.push(promote_int_to_float(expr, t));
+            }
+            _ => {
+                return Err(format!(
+                    "math.{name} requires numeric arguments"
+                ))
+            }
+        }
+    }
+    Ok((TirExpr::Math(math_fn.0, promoted), CoreTy::Float))
+}
+
 fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), String> {
     let callee = node
         .children
         .first()
         .ok_or_else(|| "call without callee".to_string())?;
-    // `receiver.method(args...)` where receiver is class-typed. (The
-    // registered-native shape `mod.member(args)` is checked first by the
-    // statement lowering; a class receiver is anything else.)
     if callee.kind == NodeKind::Property {
         let member_node = callee
             .children
@@ -2473,6 +2683,13 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             .ok_or_else(|| "call without arguments".to_string())?;
         if args_tuple.kind != NodeKind::Tuple {
             return Err("call arguments must be positional in the core".to_string());
+        }
+        // `math.sin(v)` etc — single/double-precision float intrinsics.
+        if head.kind == NodeKind::Identifier {
+            let module = ctx.source.span(head.start, head.length).to_string();
+            if module == "math" {
+                return lower_math_call(&member, args_tuple, ctx);
+            }
         }
         let (recv, rty) = lower_expr(head, ctx)?;
         if matches!(rty, CoreTy::ListInt | CoreTy::ListFloat) {
@@ -2521,6 +2738,33 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         return Err("only direct calls are supported in the core".to_string());
     }
     let name = ctx.source.span(callee.start, callee.length);
+    // The `int(x)`/`float(x)` language casts.
+    if name == "int" || name == "float" {
+        let args_node = node
+            .children
+            .get(1)
+            .ok_or_else(|| "cast without arguments".to_string())?;
+        if args_node.kind != NodeKind::Tuple {
+            return Err("call arguments must be positional in the core".to_string());
+        }
+        if args_node.children.len() != 1 {
+            return Err(format!("{name}() expects exactly one argument"));
+        }
+        let (arg, arg_ty) = lower_expr(&args_node.children[0], ctx)?;
+        return match name.as_str() {
+            "int" => match arg_ty {
+                CoreTy::Int => Ok((arg, CoreTy::Int)),
+                CoreTy::Float => Ok((TirExpr::CastInt(Box::new(arg)), CoreTy::Int)),
+                _ => Err("int() requires a numeric argument".to_string()),
+            },
+            "float" => match arg_ty {
+                CoreTy::Int => Ok((TirExpr::CastFloat(Box::new(arg)), CoreTy::Float)),
+                CoreTy::Float => Ok((arg, CoreTy::Float)),
+                _ => Err("float() requires a numeric argument".to_string()),
+            },
+            _ => unreachable!(),
+        };
+    }
     // The `len(x)` builtin ??`TirExpr::Len` (unless shadowed by a user `len`).
     if name == "len" && !ctx.checked.sigs.contains_key("len") {
         let args_node = node
@@ -2809,6 +3053,21 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
     match expr {
         TirExpr::Int(_) => Ok(TirTy::Int),
         TirExpr::Float(_) => Ok(TirTy::Float),
+        TirExpr::Math(_, args) => {
+            // All arguments are promoted to float at lowering time.
+            for arg in args {
+                let _ = expr_ty(arg, f, program, locals)?;
+            }
+            Ok(TirTy::Float)
+        }
+        TirExpr::CastInt(inner) => match expr_ty(inner, f, program, locals)? {
+            TirTy::Int | TirTy::Float => Ok(TirTy::Int),
+            _ => Err("int() requires a numeric argument".to_string()),
+        },
+        TirExpr::CastFloat(inner) => match expr_ty(inner, f, program, locals)? {
+            TirTy::Int | TirTy::Float => Ok(TirTy::Float),
+            _ => Err("float() requires a numeric argument".to_string()),
+        }
         TirExpr::Bool(_) => Ok(TirTy::Bool),
         TirExpr::Str(_) => Ok(TirTy::Str),
         TirExpr::ListPop(receiver) | TirExpr::ListPopAt(receiver, _) => {
@@ -3274,16 +3533,26 @@ fn validate_stmt(
                     return Err("member assignment requires a class receiver".to_string());
                 };
                 let cid = id as usize;
-                let Some(field_ty) = program
+                let field_ty = program
                     .class_fields
                     .get(cid)
                     .and_then(|fields| fields.get(member.as_ref()))
-                    .cloned()
-                else {
-                    return Err(format!(
-                        "class '{}' has no field '{}'",
-                        program.class_names[cid], member
-                    ));
+                    .cloned();
+                let Some(field_ty) = field_ty else {
+                    // Property with a setter and no backing field: accept any
+                    // value; the VM validates the actual assignment.
+                    return if program
+                        .class_setters
+                        .get(cid)
+                        .is_some_and(|s| s.iter().any(|set| set == member.as_ref()))
+                    {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "class '{}' has no field '{}'",
+                            program.class_names[cid], member
+                        ))
+                    };
                 };
                 let expected = ty_to_tir_simple(&field_ty)?;
                 let vty = expr_ty(value, f, program, locals)?;
@@ -3377,7 +3646,9 @@ fn validate_stmt(
                 }
             }
             TirStmt::ExprStmt(expr) => {
-                if !matches!(expr, TirExpr::Call(..)) {
+                // Method calls are allowed as bare statements (the result is
+                // discarded): `c.bump()` performs the call for its effect.
+                if !matches!(expr, TirExpr::Call(..) | TirExpr::MethodCall { .. }) {
                     return Err("expression statement must be a call".to_string());
                 }
                 let _ = expr_ty(expr, f, program, locals)?;

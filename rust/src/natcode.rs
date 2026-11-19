@@ -76,6 +76,25 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
         "un_jit_depth_exit",
         jit_cache::un_jit_depth_exit as *const u8,
     );
+    // Float math intrinsics used by `math.<fn>(...)` in JIT-compiled code.
+    builder.symbol("un_math_sin", crate::native::math::un_math_sin as *const u8);
+    builder.symbol("un_math_cos", crate::native::math::un_math_cos as *const u8);
+    builder.symbol("un_math_tan", crate::native::math::un_math_tan as *const u8);
+    builder.symbol("un_math_asin", crate::native::math::un_math_asin as *const u8);
+    builder.symbol("un_math_acos", crate::native::math::un_math_acos as *const u8);
+    builder.symbol("un_math_atan", crate::native::math::un_math_atan as *const u8);
+    builder.symbol("un_math_sqrt", crate::native::math::un_math_sqrt as *const u8);
+    builder.symbol("un_math_cbrt", crate::native::math::un_math_cbrt as *const u8);
+    builder.symbol("un_math_exp", crate::native::math::un_math_exp as *const u8);
+    builder.symbol("un_math_ln", crate::native::math::un_math_ln as *const u8);
+    builder.symbol("un_math_log2", crate::native::math::un_math_log2 as *const u8);
+    builder.symbol("un_math_log10", crate::native::math::un_math_log10 as *const u8);
+    builder.symbol("un_math_floor", crate::native::math::un_math_floor as *const u8);
+    builder.symbol("un_math_ceil", crate::native::math::un_math_ceil as *const u8);
+    builder.symbol("un_math_powf", crate::native::math::un_math_powf as *const u8);
+    builder.symbol("un_math_log", crate::native::math::un_math_log as *const u8);
+    builder.symbol("un_math_trunc", crate::native::math::un_math_trunc as *const u8);
+    builder.symbol("un_math_abs", crate::native::math::un_math_abs as *const u8);
     let mut module = JITModule::new(builder);
 
     // Pass 1: declare internal + FFI entry for each function.
@@ -343,13 +362,6 @@ pub fn obj_compile(
     if tir.functions.is_empty() {
         return Err("no core functions found (nothing is eligible for native code)".to_string());
     }
-    if tir.functions.iter().any(crate::tir::fn_uses_classes) {
-        return Err(
-            "class-typed functions are not supported in a native executable yet; \
-             rebuild with `un build --embed` (the embedded VM runs the whole program)"
-                .to_string(),
-        );
-    }
     let entry_name = entry.unwrap_or("main");
     let entry_index = tir
         .functions
@@ -563,6 +575,13 @@ struct FnEmit<'a> {
     unrt_dump_uncaught: Option<cranelift_module::FuncId>,
     unrt_make_int_div_zero: Option<cranelift_module::FuncId>,
     unrt_make_mod_zero_panic: Option<cranelift_module::FuncId>,
+    unrt_make_math_expected_pos: Option<cranelift_module::FuncId>,
+    unrt_make_math_sqrt_neg: Option<cranelift_module::FuncId>,
+    unrt_class_new: Option<cranelift_module::FuncId>,
+    unrt_member_get: Option<cranelift_module::FuncId>,
+    unrt_member_set: Option<cranelift_module::FuncId>,
+    unrt_method_call: Option<cranelift_module::FuncId>,
+    unrt_bool_from_obj: Option<cranelift_module::FuncId>,
     unrt_list_pop: Option<cranelift_module::FuncId>,
     unrt_list_pop_at: Option<cranelift_module::FuncId>,
     unrt_list_sort: Option<cranelift_module::FuncId>,
@@ -580,6 +599,8 @@ struct FnEmit<'a> {
     /// TirProgram index of this function: namespaces data object names so
     /// identical literals in different functions don't collide.
     fn_index: u32,
+    /// Lazily-declared `un_math_<fn>` FFI imports, shared across call sites.
+    math_ffi_fids: std::collections::HashMap<String, cranelift_module::FuncId>,
 }
 
 /// Embed raw bytes as a data object in the object module and return the
@@ -784,6 +805,71 @@ fn emit_internal<M: Module>(
     } else {
         None
     };
+    let unrt_make_math_expected_pos = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_make_math_expected_pos",
+            vec![],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_make_math_sqrt_neg = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_make_math_sqrt_neg",
+            vec![],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_class_new = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_class_new",
+            vec![types::I64, types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_member_get = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_member_get",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_member_set = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_member_set",
+            vec![types::I64, types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_method_call = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_method_call",
+            vec![types::I64, types::I64, types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_bool_from_obj = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_bool_from_obj", vec![types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
     let unrt_list_pop = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_list_pop", vec![types::I64], Some(types::I64))?)
     } else {
@@ -963,7 +1049,14 @@ fn emit_internal<M: Module>(
         unrt_take_error,
         unrt_dump_uncaught,
         unrt_make_int_div_zero,
+        unrt_make_math_expected_pos,
+        unrt_make_math_sqrt_neg,
         unrt_make_mod_zero_panic,
+        unrt_class_new,
+        unrt_member_get,
+        unrt_member_set,
+        unrt_method_call,
+        unrt_bool_from_obj,
         unrt_list_pop,
         unrt_list_pop_at,
         unrt_list_sort,
@@ -977,6 +1070,7 @@ fn emit_internal<M: Module>(
         str_literals: HashMap::new(),
         str_literal_count: 0,
         fn_index: f.index as u32,
+        math_ffi_fids: std::collections::HashMap::new(),
     };
     for stmt in &f.body {
         if emitter.terminated {
@@ -1492,8 +1586,20 @@ fn emit_stmt<M: Module>(
             let _ = builder.ins().call(sort_ref, &[list_v]);
             false
         }
-        TirStmt::MemberSet { .. } => {
-            unreachable!("class functions are rejected before Obj-mode emission")
+        TirStmt::MemberSet { receiver, member, value } => {
+            let (recv, _) = emit_expr(receiver, emitter, builder, module, f);
+            let (v, v_ty) = emit_expr(value, emitter, builder, module, f);
+            let v = wrap_as_obj(v, v_ty, emitter, builder, module);
+            let gv = embed_str_bytes(emitter, module, builder, member.as_bytes());
+            let nptr = builder.ins().symbol_value(types::I64, gv);
+            let nlen = builder.ins().iconst(types::I64, member.as_bytes().len() as i64);
+            let id = emitter.unrt_member_set.expect("unrt import required for classes");
+            let set_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(set_ref, &[recv, nptr, nlen, v]);
+            let obj = builder.inst_results(res)[0];
+            // A throwing __setattr__ surfaces as an error object.
+            emit_error_gate(emitter, builder, module, obj);
+            false
         }
         TirStmt::Throw(expr) => {
             let (value, ty) = emit_expr(expr, emitter, builder, module, f);
@@ -1784,6 +1890,169 @@ fn emit_mod_zero_guard<M: Module>(
     }
 }
 
+/// Guard for `sqrt(x)` with an error x < 0 in the same shape the interpreter
+/// uses ("cannot compute sqrt of a negative number"). Vm bails to the
+/// interpreter (which raises the same error); Obj parks a catchable error
+/// via the pending channel.
+fn emit_math_sqrt_guard<M: Module>(
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    x: cranelift_codegen::ir::Value,
+) {
+    let zero = builder.ins().f64const(0.0);
+    let cond = builder.ins().fcmp(FloatCC::LessThan, x, zero);
+    let ok_blk = builder.create_block();
+    let fail_blk = builder.create_block();
+    builder.ins().brif(cond, fail_blk, &[], ok_blk, &[]);
+    builder.seal_block(ok_blk);
+    builder.switch_to_block(fail_blk);
+    if emitter.mode == NativeMode::Obj {
+        let mid = emitter.unrt_make_math_sqrt_neg.expect("unrt import required");
+        let mref = module.declare_func_in_func(mid, builder.func);
+        let res = builder.ins().call(mref, &[]);
+        let err = builder.inst_results(res)[0];
+        let wid = emitter.unrt_write_error.expect("unrt import required");
+        let wref = module.declare_func_in_func(wid, builder.func);
+        let _ = builder.ins().call(wref, &[err]);
+        if let Some(&handler) = emitter.active_handlers.last() {
+            builder.ins().jump(handler, &[]);
+        } else {
+            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+            let d_ref = module.declare_func_in_func(d_id, builder.func);
+            let _ = builder.ins().call(d_ref, &[]);
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+        }
+    } else {
+        let bail_blk = emitter.bail_blk;
+        builder.ins().jump(bail_blk, &[]);
+    }
+    builder.seal_block(fail_blk);
+    builder.switch_to_block(ok_blk);
+}
+
+/// Guard for log/log2/log10 with an error v <= 0 in the same shape the
+/// interpreter uses ("expected value greater than 0"). Vm bails to the
+/// interpreter; Obj parks a catchable error via the pending channel.
+fn emit_math_log_guard<M: Module>(
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    x: cranelift_codegen::ir::Value,
+) {
+    let zero = builder.ins().f64const(0.0);
+    let cond = builder.ins().fcmp(FloatCC::LessThanOrEqual, x, zero);
+    let ok_blk = builder.create_block();
+    let fail_blk = builder.create_block();
+    builder.ins().brif(cond, fail_blk, &[], ok_blk, &[]);
+    builder.seal_block(ok_blk);
+    builder.switch_to_block(fail_blk);
+    if emitter.mode == NativeMode::Obj {
+        let mid = emitter.unrt_make_math_expected_pos.expect("unrt import required");
+        let mref = module.declare_func_in_func(mid, builder.func);
+        let res = builder.ins().call(mref, &[]);
+        let err = builder.inst_results(res)[0];
+        let wid = emitter.unrt_write_error.expect("unrt import required");
+        let wref = module.declare_func_in_func(wid, builder.func);
+        let _ = builder.ins().call(wref, &[err]);
+        if let Some(&handler) = emitter.active_handlers.last() {
+            builder.ins().jump(handler, &[]);
+        } else {
+            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+            let d_ref = module.declare_func_in_func(d_id, builder.func);
+            let _ = builder.ins().call(d_ref, &[]);
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+        }
+    } else {
+        let bail_blk = emitter.bail_blk;
+        builder.ins().jump(bail_blk, &[]);
+    }
+    builder.seal_block(fail_blk);
+    builder.switch_to_block(ok_blk);
+}
+
+/// Emit `math.<intrinsic>` according to the `TirExpr::Math` variant, with
+/// the interpreter's boundary semantics (Vm bails, Obj parks a pending error)
+/// for `sqrt`/`ln`/`log2`/`log10`; the others are pure Float math.
+fn emit_math_inline<M: Module>(
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    mf: crate::tir::MathFn,
+    args: &[cranelift_codegen::ir::Value],
+) -> cranelift_codegen::ir::Value {
+    use crate::tir::MathFn::*;
+    match mf {
+        Sqrt => emit_math_sqrt_guard(emitter, builder, module, args[0]),
+        Ln => emit_math_log_guard(emitter, builder, module, args[0]),
+        Log => emit_math_log_guard(emitter, builder, module, args[0]),
+        Log2 => emit_math_log_guard(emitter, builder, module, args[0]),
+        Log10 => emit_math_log_guard(emitter, builder, module, args[0]),
+        _ => {}
+    }
+    let fname = match mf {
+        Sin => "un_math_sin",
+        Cos => "un_math_cos",
+        Tan => "un_math_tan",
+        Asin => "un_math_asin",
+        Acos => "un_math_acos",
+        Atan => "un_math_atan",
+        Sqrt => "un_math_sqrt",
+        Cbrt => "un_math_cbrt",
+        Exp => "un_math_exp",
+        Ln => "un_math_ln",
+        Log => "un_math_ln",
+        Log2 => "un_math_log2",
+        Log10 => "un_math_log10",
+        Floor => "un_math_floor",
+        Ceil => "un_math_ceil",
+        Trunc => "un_math_trunc",
+        Abs => "un_math_abs",
+        Pow => "un_math_powf",
+    };
+    // Two-argument log: `math.log(v, b)`; otherwise `math.log(v)`.
+    match mf {
+        Pow => emit_math_ffi_call(emitter, builder, module, "un_math_powf", args),
+        Log => {
+            if args.len() == 1 {
+                emit_math_ffi_call(emitter, builder, module, "un_math_ln", args)
+            } else {
+                emit_math_ffi_call(emitter, builder, module, "un_math_log", args)
+            }
+        }
+        _ => emit_math_ffi_call(emitter, builder, module, fname, args),
+    }
+}
+
+/// Call an `un_math_<fn>` FFI symbol (`native/math.rs` is linked statically).
+fn emit_math_ffi_call<M: Module>(
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    symbol: &str,
+    args: &[cranelift_codegen::ir::Value],
+) -> cranelift_codegen::ir::Value {
+    let n_params = args.len();
+    let fid = match emitter.math_ffi_fids.get(symbol) {
+        Some(&fid) => fid,
+        None => {
+            let mut sig = module.make_signature();
+            for _ in 0..n_params {
+                sig.params.push(AbiParam::new(types::F64));
+            }
+            sig.returns.push(AbiParam::new(types::F64));
+            let fid = module
+                .declare_function(symbol, cranelift_module::Linkage::Import, &sig)
+                .expect("declare un_math FFI import");
+            emitter.math_ffi_fids.insert(symbol.to_string(), fid);
+            fid
+        }
+    };
+    let callee_ref = module.declare_func_in_func(fid, builder.func);
+    let res = builder.ins().call(callee_ref, args);
+    builder.inst_results(res)[0]
+}
+
 /// Wrap raw ints/bools/floats as VM Obj pointers for the unrt bridge.
 /// Already-Obj values pass through unchanged.
 fn wrap_as_obj<M: Module>(
@@ -1814,6 +2083,39 @@ fn wrap_as_obj<M: Module>(
         }
         TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::DictStrInt | TirTy::DictStrFloat
         | TirTy::Class(_) | TirTy::ErrorObj => v,
+    }
+}
+
+/// Unbox an Obj returned from a class bridge call. Int/Float/Bool are folded
+/// back to raw values; Str/collections/classes are carried through as raw
+/// pointers (they are already Obj).
+fn unbox_obj<M: Module>(
+    obj: cranelift_codegen::ir::Value,
+    ty: TirTy,
+    emitter: &FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+) -> cranelift_codegen::ir::Value {
+    match ty {
+        TirTy::Int => {
+            let id = emitter.unrt_int_from_obj.expect("unrt import required for int unbox");
+            let int_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(int_ref, &[obj]);
+            builder.inst_results(res)[0]
+        }
+        TirTy::Float => {
+            let id = emitter.unrt_float_from_obj.expect("unrt import required for float unbox");
+            let float_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(float_ref, &[obj]);
+            builder.inst_results(res)[0]
+        }
+        TirTy::Bool => {
+            let id = emitter.unrt_bool_from_obj.expect("unrt import required for bool unbox");
+            let bool_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(bool_ref, &[obj]);
+            builder.inst_results(res)[0]
+        }
+        _ => obj,
     }
 }
 
@@ -1878,8 +2180,79 @@ fn emit_expr<M: Module>(
             let obj = builder.inst_results(res)[0];
             (obj, ret_ty)
         }
-        TirExpr::ClassNew { .. } | TirExpr::MemberGet { .. } | TirExpr::MethodCall { .. } => {
-            unreachable!("class functions are rejected before Obj-mode emission")
+        TirExpr::ClassNew { name, args, ret } => {
+            let arg_vals: Vec<_> = args
+                .iter()
+                .map(|a| emit_expr(a, emitter, builder, module, f))
+                .collect();
+            let slot = builder.create_sized_stack_slot(
+                cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    (8 * arg_vals.len()) as u32,
+                    8,
+                ),
+            );
+            for (i, (v, ty)) in arg_vals.iter().enumerate() {
+                let v = wrap_as_obj(*v, *ty, emitter, builder, module);
+                let addr = builder.ins().stack_addr(types::I64, slot, (8 * i) as i32);
+                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), v, addr, 0);
+            }
+            let gv = embed_str_bytes(emitter, module, builder, name.as_bytes());
+            let nptr = builder.ins().symbol_value(types::I64, gv);
+            let nlen = builder.ins().iconst(types::I64, name.as_bytes().len() as i64);
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            let argc = builder.ins().iconst(types::I64, args.len() as i64);
+            let id = emitter.unrt_class_new.expect("unrt import required for classes");
+            let new_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(new_ref, &[nptr, nlen, ptr, argc]);
+            let obj = builder.inst_results(res)[0];
+            // __init__ may throw; route to the enclosing catch.
+            emit_error_gate(emitter, builder, module, obj);
+            (obj, *ret)
+        }
+        TirExpr::MemberGet { receiver, member, ret } => {
+            let (recv, _) = emit_expr(receiver, emitter, builder, module, f);
+            let gv = embed_str_bytes(emitter, module, builder, member.as_bytes());
+            let nptr = builder.ins().symbol_value(types::I64, gv);
+            let nlen = builder.ins().iconst(types::I64, member.as_bytes().len() as i64);
+            let id = emitter.unrt_member_get.expect("unrt import required for classes");
+            let get_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(get_ref, &[recv, nptr, nlen]);
+            let obj = builder.inst_results(res)[0];
+            emit_error_gate(emitter, builder, module, obj);
+            let v = unbox_obj(obj, *ret, emitter, builder, module);
+            (v, *ret)
+        }
+        TirExpr::MethodCall { receiver, member, args, ret } => {
+            let (recv, _) = emit_expr(receiver, emitter, builder, module, f);
+            let arg_vals: Vec<_> = args
+                .iter()
+                .map(|a| emit_expr(a, emitter, builder, module, f))
+                .collect();
+            let slot = builder.create_sized_stack_slot(
+                cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    (8 * arg_vals.len()) as u32,
+                    8,
+                ),
+            );
+            for (i, (v, ty)) in arg_vals.iter().enumerate() {
+                let v = wrap_as_obj(*v, *ty, emitter, builder, module);
+                let addr = builder.ins().stack_addr(types::I64, slot, (8 * i) as i32);
+                builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), v, addr, 0);
+            }
+            let gv = embed_str_bytes(emitter, module, builder, member.as_bytes());
+            let nptr = builder.ins().symbol_value(types::I64, gv);
+            let nlen = builder.ins().iconst(types::I64, member.as_bytes().len() as i64);
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            let argc = builder.ins().iconst(types::I64, args.len() as i64);
+            let id = emitter.unrt_method_call.expect("unrt import required for classes");
+            let call_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(call_ref, &[recv, nptr, nlen, ptr, argc]);
+            let obj = builder.inst_results(res)[0];
+            emit_error_gate(emitter, builder, module, obj);
+            let v = unbox_obj(obj, *ret, emitter, builder, module);
+            (v, *ret)
         }
         TirExpr::Dict(entries) => {
             if entries.is_empty() {
@@ -1936,8 +2309,37 @@ fn emit_expr<M: Module>(
             let obj = builder.inst_results(res)[0];
             (obj, ret_ty)
         }
-        TirExpr::Len(arg) => {
-            let (arg_v, _) = emit_expr(arg, emitter, builder, module, f);
+        TirExpr::CastInt(inner) => {
+            let (v, ty) = emit_expr(inner, emitter, builder, module, f);
+            match ty {
+                TirTy::Int => (v, TirTy::Int),
+                TirTy::Float => (
+                    builder.ins().fcvt_to_sint(types::I64, v),
+                    TirTy::Int,
+                ),
+                _ => unreachable!(),
+            }
+        }
+        TirExpr::CastFloat(inner) => {
+            let (v, ty) = emit_expr(inner, emitter, builder, module, f);
+            match ty {
+                TirTy::Int => (
+                    builder.ins().fcvt_from_sint(types::F64, v),
+                    TirTy::Float,
+                ),
+                TirTy::Float => (v, TirTy::Float),
+                _ => unreachable!(),
+            }
+        }
+        TirExpr::Math(mf, args) => {
+            let arg_vals: Vec<_> = args
+                .iter()
+                .map(|a| emit_expr(a, emitter, builder, module, f).0)
+                .collect();
+            let result = emit_math_inline(emitter, builder, module, *mf, &arg_vals);
+            (result, TirTy::Float)
+        }
+        TirExpr::Len(arg) => {            let (arg_v, _) = emit_expr(arg, emitter, builder, module, f);
             let id = emitter.unrt_len.expect("unrt import required for len()");
             let len_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(len_ref, &[arg_v]);

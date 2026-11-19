@@ -750,6 +750,28 @@ fn build_cmd(args: &[String]) {
 
     // Compile source to TIR and emit the object file into a temp directory.
     let (source, node) = parse_file(input);
+    // The plain Obj native exe links the whole VM runtime, so classes are
+    // supported the same way dynamic objects are: the class-registration
+    // spine (<classes_init>) is baked into the exe and runs once at startup.
+    // Scan the AST for any class declaration; if none, the driver stays
+    // class-free and the .unbc is not embedded.
+    fn has_class(node: &unvm::ast::Node) -> bool {
+        if node.kind == unvm::ast::NodeKind::Class {
+            return true;
+        }
+        node.children.iter().any(has_class)
+    }
+    let has_classes = has_class(&node);
+    // Top-level class declarations are the only ones the plain native exe can
+    // register at startup (`<classes_init>` is a flat re-emission); classes
+    // nested inside control flow are rejected with a clear diagnostic.
+    let nested_class = node.children.iter().any(|c| {
+        c.kind != unvm::ast::NodeKind::Class && has_class(c)
+    });
+    if nested_class {
+        eprintln!("un build: class declarations nested inside control flow are not supported in a native executable yet; rebuild with `un build --embed`");
+        exit(1);
+    }
     let root = match optimize(&node) {
         Ok(result) => result.root,
         Err(panic) => {
@@ -779,6 +801,35 @@ fn build_cmd(args: &[String]) {
     let temp_dir = std::env::temp_dir();
     let obj_path = temp_dir.join(format!("un_build_{}.obj", std::process::id()));
     let driver_path = temp_dir.join(format!("un_build_driver_{}.rs", std::process::id()));
+    // Bake the class-registration spine (<classes_init>) into the exe when the
+    // program has classes: it runs once at startup to register class templates
+    // in the VM world before un_main() is called. The rest of the .unbc is
+    // never executed here — class behaviour reuses the interpreter path.
+    let classes_image: Option<std::path::PathBuf> = if has_classes {
+        match runner::compile_source(&source) {
+            Ok(mut program) => {
+                program.source = Some(source.code.iter().collect());
+                let bytes = unvm::bytecode::unbc::write(&program);
+                let image_path =
+                    temp_dir.join(format!("un_build_classes_{}.unbc", std::process::id()));
+                if let Err(e) = std::fs::write(&image_path, &bytes) {
+                    eprintln!("cannot write {}: {e}", image_path.display());
+                    exit(1);
+                }
+                Some(image_path)
+            }
+            Err(runner::RunError::Parse(error)) => {
+                print!("{}{}", error.display(&source), nl());
+                exit(1);
+            }
+            Err(runner::RunError::Panic(panic)) => {
+                eprintln!("{}", panic.display());
+                exit(1);
+            }
+        }
+    } else {
+        None
+    };
     match unvm::natcode::obj_compile(0, &lowered, &obj_path, None) {
         Ok(outcome) => {
             if !outcome.skipped.is_empty() {
@@ -793,9 +844,17 @@ fn build_cmd(args: &[String]) {
         }
     }
 
-    // Generate the driver: initialise the VM runtime, call un_main(), flush
-    // stdout, exit with the i64 result.
-    let driver = "extern \"C\" {\n    fn unrt_init();\n    fn unrt_flush_stdout();\n    fn un_main() -> i64;\n}\nfn main() {\n    unsafe { unrt_init(); }\n    let code = unsafe { un_main() };\n    unsafe { unrt_flush_stdout(); }\n    std::process::exit(code as i32)\n}\n";
+    // Generate the driver: initialise the VM runtime, (optionally) register
+    // the embedded class spine, call un_main(), flush stdout, exit with the
+    // i64 result.
+    let driver = match &classes_image {
+        Some(image) => format!(
+            "extern \"C\" {{\n    fn unrt_init();\n    fn unrt_flush_stdout();\n    fn un_main() -> i64;\n    fn unrt_register_classes(bytes: *const u8, len: usize) -> i32;\n}}\nconst CLASSES_BC: &[u8] = include_bytes!({:?});\nfn main() {{\n    unsafe {{ unrt_init() }};\n    let code = unsafe {{ unrt_register_classes(CLASSES_BC.as_ptr(), CLASSES_BC.len()) }};\n    if code != 0 {{ std::process::exit(1) }};\n    let code = unsafe {{ un_main() }};\n    unsafe {{ unrt_flush_stdout() }};\n    std::process::exit(code as i32)\n}}\n",
+            image.display().to_string()
+        ),
+        None => "extern \"C\" {\n    fn unrt_init();\n    fn unrt_flush_stdout();\n    fn un_main() -> i64;\n}\nfn main() {\n    unsafe { unrt_init(); }\n    let code = unsafe { un_main() };\n    unsafe { unrt_flush_stdout(); }\n    std::process::exit(code as i32)\n}\n".to_string(),
+    };
+    let image_path_cleanup = classes_image.clone();
     if let Err(e) = std::fs::write(&driver_path, driver) {
         eprintln!("cannot write {}: {e}", driver_path.display());
         exit(1);
@@ -864,6 +923,9 @@ fn build_cmd(args: &[String]) {
         .status();
     let _ = std::fs::remove_file(&obj_path);
     let _ = std::fs::remove_file(&driver_path);
+    if let Some(image) = image_path_cleanup {
+        let _ = std::fs::remove_file(image);
+    }
     match status {
         Ok(status) if status.success() => {
             println!("wrote {output}");

@@ -1,4 +1,4 @@
-//! `unrt` — the C ABI for the embedded runtime library.
+//! `unrt` ??the C ABI for the embedded runtime library.
 //!
 //! This is the foundation of stage-3 (VM static link ABI): it makes the
 //! whole VM runtime callable from code that does not run inside the Un VM,
@@ -12,7 +12,7 @@
 //!
 //! Currently provided:
 //!
-//! - `unvm_run_embedded` — parse a `.unbc` image held in memory and run it
+//! - `unvm_run_embedded` ??parse a `.unbc` image held in memory and run it
 //!   exactly like `un run <file.unbc>` would, returning a process exit code
 //!   (0 on success, 1 on any error). Used by `un build --embed`, which bakes
 //!   the program's bytecode into the generated driver.
@@ -106,8 +106,23 @@ pub extern "C" fn unrt_make_int_div_zero() -> u64 {
 /// "System.DivideByZeroException", message: "Attempted to divide by zero." }`
 /// payload, exactly matching the interpreter's `divide_by_zero()`. The
 /// interpreter never catches Panic payloads with `try`, so Obj-mode `%` MUST
-/// NOT park this object into the catch path — the emitted code must call
+/// NOT park this object into the catch path ??the emitted code must call
 /// `unrt_dump_uncaught` directly, unconditionally.
+/// Returns a fresh VM error Obj carrying `"expected value greater than 0"`,
+/// exactly matching the interpreter's `math.log*` boundary error. Used by
+/// Obj-mode Float math emission to park a catchable error into pending.
+#[no_mangle]
+pub extern "C" fn unrt_make_math_expected_pos() -> u64 {
+    to_raw(crate::runtime::obj::err("expected value greater than 0"))
+}
+
+/// Returns a fresh VM error Obj carrying `"cannot compute sqrt of a negative
+/// number"`, exactly matching the interpreter's `math.sqrt` boundary error.
+#[no_mangle]
+pub extern "C" fn unrt_make_math_sqrt_neg() -> u64 {
+    to_raw(crate::runtime::obj::err("cannot compute sqrt of a negative number"))
+}
+
 #[no_mangle]
 pub extern "C" fn unrt_make_mod_zero_panic() -> u64 {
     to_raw(crate::runtime::obj::divide_by_zero())
@@ -156,10 +171,157 @@ pub extern "C" fn unrt_dump_uncaught() -> ! {
     process::exit(1);
 }
 
+/// Construct a class instance, mirroring the interpreter: find the class
+/// template in the process-wide world (registered via
+/// `unrt_register_classes`), clone it, and run `__init__` through the VM.
+/// Returns an error object when the class is not registered.
+#[no_mangle]
+pub extern "C" fn unrt_class_new(
+    name_ptr: *const u8,
+    name_len: usize,
+    args: *const u64,
+    argc: usize,
+) -> u64 {
+    if name_ptr.is_null() {
+        return to_raw(crate::runtime::obj::err("unrt_class_new: null class name"));
+    }
+    let name_bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+    let Ok(name) = std::str::from_utf8(name_bytes) else {
+        return to_raw(crate::runtime::obj::err("unrt_class_new: class name is not utf-8"));
+    };
+    let Some(class) = crate::runtime::world::get_class(name) else {
+        return to_raw(crate::runtime::obj::err(format!(
+            "class '{name}' not registered"
+        )));
+    };
+    let values: Vec<crate::runtime::obj::Obj> = (0..argc)
+        .map(|i| {
+            borrow_obj(unsafe { *args.add(i) }).unwrap_or_else(crate::runtime::obj::none)
+        })
+        .collect();
+    let instance = crate::runtime::obj::clone_obj(&class);
+    to_raw(crate::runtime::obj::init(&instance, &values))
+}
+
+/// Call a bound method on `obj` by name: full lookup (properties, parents,
+/// `__getattr__`), bind `self`, and call with positional Obj args. The
+/// result is a raw Obj pointer; errors come back as error objects.
+#[no_mangle]
+pub extern "C" fn unrt_method_call(
+    obj: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+    args: *const u64,
+    argc: usize,
+) -> u64 {
+    if name_ptr.is_null() {
+        return to_raw(crate::runtime::obj::err("unrt_method_call: null member name"));
+    }
+    let Some(o) = borrow_obj(obj) else {
+        return to_raw(crate::runtime::obj::err("unrt_method_call: null receiver"));
+    };
+    let name_bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+    let Ok(name) = std::str::from_utf8(name_bytes) else {
+        return to_raw(crate::runtime::obj::err("unrt_method_call: member name is not utf-8"));
+    };
+    let member = crate::runtime::obj::get_attr(&o, name);
+    let values: Vec<crate::runtime::obj::Obj> = (0..argc)
+        .map(|i| {
+            borrow_obj(unsafe { *args.add(i) }).unwrap_or_else(crate::runtime::obj::none)
+        })
+        .collect();
+    to_raw(crate::runtime::obj::call_args(
+        &member,
+        &crate::runtime::function::Args::positional(values),
+    ))
+}
+
+/// Unbox an Obj to a bool (1/0). Returns 0 for non-Bool payloads.
+#[no_mangle]
+pub extern "C" fn unrt_bool_from_obj(o: u64) -> i64 {
+    let Some(o) = borrow_obj(o) else {
+        return 0;
+    };
+    match crate::runtime::obj::payload(&o) {
+        crate::runtime::obj::Payload::Bool(b) => b as i64,
+        _ => 0,
+    }
+}
+
+/// Register the classes baked into embedded `.unbc` bytes into the current
+/// process-wide VM world, then return. The class-registration spine is the
+/// dedicated `<classes_init>` proto emitted by the compiler; it re-compiles
+/// each top-level `class` declaration into MakeClass/AddMethod/AddMember/
+/// RegisterClass ops. Programs without any classes (or programs using the
+/// interpreter entry path, which is `unvm_run_embedded`) do not call this.
+/// Returns 0 on success, 1 on a fatal class-initialization error (already
+/// reported on stdout).
+#[no_mangle]
+pub extern "C" fn unrt_register_classes(bytes: *const u8, len: usize) -> i32 {
+    if bytes.is_null() || len == 0 {
+        return 0;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(bytes, len) };
+    let program = match crate::bytecode::unbc::read(slice) {
+        Ok(program) => program,
+        Err(message) => {
+            eprintln!("unrt_register_classes: {message}");
+            return 1;
+        }
+    };
+    let entry = program
+        .protos
+        .iter()
+        .position(|p| program.names[p.name] == "<classes_init>");
+    let Some(entry) = entry else {
+        return 0;
+    };
+    let source = crate::source::Source::new(
+        program.source_path.clone(),
+        program.source.clone().unwrap_or_default().as_str(),
+    );
+    let flow = match crate::vm::VM::run_proto(std::rc::Rc::new(program), std::rc::Rc::new(source), entry) {
+        Ok(outcome) => outcome,
+        Err(message) => {
+            eprintln!("un: class initialization failed: {message}");
+            return 1;
+        }
+    };
+    match flow {
+        crate::vm::Outcome::Value(_) | crate::vm::Outcome::Return(..) => 0,
+        crate::vm::Outcome::Error(e) => {
+            eprintln!("un: class initialization failed: {}", e.message);
+            1
+        }
+        crate::vm::Outcome::Propagate(obj, _, _) => {
+            eprintln!(
+                "un: class initialization failed: {}",
+                crate::runtime::obj::display(&obj)
+            );
+            1
+        }
+        crate::vm::Outcome::Panic(obj) => {
+            eprintln!(
+                "un: class initialization failed: {}",
+                crate::vm::panic_display(&obj)
+            );
+            1
+        }
+        crate::vm::Outcome::Break(_, _) => {
+            eprintln!("un: class initialization failed: 'break' outside loop");
+            1
+        }
+        crate::vm::Outcome::Skip(_, _) => {
+            eprintln!("un: class initialization failed: 'skip' outside loop");
+            1
+        }
+    }
+}
+
 /// Parse a `.unbc` image from memory and execute it with the default
 /// interpreter configuration (same as `un run`). Stdout is flushed; errors
 /// are printed to stdout. Returns 0 on success, 1 otherwise. Must be called
-/// from a fresh thread or after any previous VM has finished — the VM keeps
+/// from a fresh thread or after any previous VM has finished ??the VM keeps
 /// process-global state.
 #[no_mangle]
 pub extern "C" fn unvm_run_embedded(bytes: *const u8, len: usize) -> i32 {
@@ -218,8 +380,7 @@ pub extern "C" fn unvm_run_embedded(bytes: *const u8, len: usize) -> i32 {
     }
 }
 
-/// Convenience wrapper for embedding from a file path instead of raw bytes —
-/// reads `.unbc` from disk like `un run` does. Provided for callers that
+/// Convenience wrapper for embedding from a file path instead of raw bytes ??/// reads `.unbc` from disk like `un run` does. Provided for callers that
 /// don't want to embed the bytes in the binary.
 #[no_mangle]
 pub extern "C" fn unvm_run_file(path_ptr: *const u8, path_len: usize) -> i32 {
@@ -236,7 +397,7 @@ pub extern "C" fn unvm_run_file(path_ptr: *const u8, path_len: usize) -> i32 {
     unvm_run_embedded(bytes.as_ptr(), bytes.len())
 }
 
-/// Current capacity growth strategy for lists — freshly-created lists start
+/// Current capacity growth strategy for lists ??freshly-created lists start
 /// with the capacity hint requested from the caller (default 8).
 #[no_mangle]
 pub extern "C" fn unrt_list_new() -> u64 {
@@ -401,7 +562,7 @@ pub extern "C" fn unrt_list_len(list: u64) -> i64 {
     }
 }
 
-/// Get the element at `idx` as an Obj (caller treats it as Int/Float/…).
+/// Get the element at `idx` as an Obj (caller treats it as Int/Float/??.
 #[no_mangle]
 pub extern "C" fn unrt_list_get(list: u64, idx: i64) -> u64 {
     let Some(list) = borrow_obj(list) else {
@@ -695,7 +856,7 @@ fn to_raw(o: crate::runtime::obj::Obj) -> u64 {
     std::rc::Rc::into_raw(o) as u64
 }
 
-/// (Re)initialize the native module table from `.` — same as a fresh Un
+/// (Re)initialize the native module table from `.` ??same as a fresh Un
 /// process. Idempotent.
 #[no_mangle]
 pub extern "C" fn unrt_init() {
@@ -806,7 +967,7 @@ pub extern "C" fn unrt_call_native(
 }
 
 /// Generic bridge for calls to ordinary Un values (Obj of any callable
-/// kind — typically used with closures and class receivers). Not yet wired
+/// kind ??typically used with closures and class receivers). Not yet wired
 /// to generated code; provided for stage 3b follow-ups.
 #[no_mangle]
 pub extern "C" fn unrt_call_obj(callable: u64, args: *const u64, argc: usize) -> u64 {

@@ -119,8 +119,84 @@ pub struct VM {
     pending_propagate: Option<Outcome>,
 }
 
+/// Bind every module-level function (`FLAG_FUNC_BIND`) into the current
+/// scope, without executing any bytecode. The native exe calls this before
+/// running the `<classes_init>` spine: class decorators and class-def
+/// default expressions may reference module functions. Default parameter
+/// values themselves are not re-evaluated (the spine sees `null()` for
+/// omitted optional arguments); module variables assigned outside classes
+/// are not bound at this stage.
+pub fn bind_module_functions(program: &Rc<Program>, ctx: &Context) {
+    let scope = context::scope(ctx);
+    for (index, proto) in program.protos.iter().enumerate() {
+        if proto.flags & FLAG_FUNC_BIND == 0 {
+            continue;
+        }
+        let name = program.names[proto.name].clone();
+        let arg_count = proto.params.len();
+        let mut args = Vec::with_capacity(arg_count);
+        for param in &proto.params {
+            let pname = program.names[param.name].clone();
+            let type_name = match param.type_name {
+                Some(i) => Types::single(&program.names[i]),
+                None => Types::single(types::ANY),
+            };
+            let essential = param.flags & PARAM_ESSENTIAL != 0;
+            let optional = param.flags & PARAM_OPTIONAL != 0;
+            let positional = param.flags & PARAM_POSITIONAL != 0;
+            let keyword = param.flags & PARAM_KEYWORD != 0;
+            let default = if optional {
+                obj::null()
+            } else if positional {
+                collections::tup(Vec::new(), Vec::new())
+            } else if keyword {
+                collections::dict(Vec::new())
+            } else {
+                obj::null()
+            };
+            args.push(function::ArgData {
+                name: pname,
+                type_name,
+                essential,
+                optional,
+                positional,
+                keyword,
+                default: Some(default),
+            });
+        }
+        let created = function::proto_fn(
+            Some(name.clone()),
+            args,
+            Types::single(types::ANY),
+            index,
+            program.clone(),
+            ctx.clone(),
+        );
+        scope::set(&scope, &name, created);
+    }
+}
+
 impl VM {
     pub fn new(program: Rc<Program>, source: Rc<Source>) -> Result<Self, String> {
+        let root = program.root;
+        Self::build(program, source, root)
+    }
+
+    /// Execute only `entry` (instead of the program root). Used by the
+    /// native exe's `unrt_register_classes` to run the `<classes_init>`
+    /// class-registration spine exactly once at startup — running the real
+    /// root would double-execute `main()`.
+    pub fn run_proto(
+        program: Rc<Program>,
+        source: Rc<Source>,
+        entry: usize,
+    ) -> Result<Outcome, String> {
+        let mut vm = Self::build(program, source, entry)?;
+        bind_module_functions(&vm.program, &vm.ctx);
+        Ok(vm.run())
+    }
+
+    fn build(program: Rc<Program>, source: Rc<Source>, entry: usize) -> Result<Self, String> {
         program.validate()?;
         world::set_proto_executor(Some(Rc::new(
             |program: &Rc<Program>, ctx: &Context, proto_index: usize| {
@@ -144,7 +220,7 @@ impl VM {
                 let message = panic_payload_message(&payload);
                 format!("internal error (please report): {message}")
             })?;
-        let root = program.root;
+        let root = entry;
         let reg_count = plan.protos[root].reg_count;
         Ok(Self {
             ctx: context::new(world::global_scope(), source, context::new_frames()),
