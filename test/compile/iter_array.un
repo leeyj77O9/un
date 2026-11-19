@@ -1,0 +1,16 @@
+use io
+use test.assert as assert
+use iter
+
+fn main() -> int
+    dp: list[int] = iter.array(0, 100)
+    assert.assert_eq(len(dp), 100, "iter.array length")
+    assert.assert_eq(dp[99], 0, "iter.array value")
+    dp[0] = 1
+    assert.assert_eq(dp[0], 1, "iter.array index write")
+    ys: list[float] = iter.array(2.5, 3)
+    assert.assert_eq(ys[2], 2.5, "iter.array float value")
+    assert.summary()
+    -> 0
+
+main()

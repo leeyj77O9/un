@@ -570,6 +570,8 @@ struct FnEmit<'a> {
     unrt_list_from_ints: Option<cranelift_module::FuncId>,
     unrt_list_from_floats: Option<cranelift_module::FuncId>,
     unrt_list_from_elems: Option<cranelift_module::FuncId>,
+    unrt_list_repeat_int: Option<cranelift_module::FuncId>,
+    unrt_list_repeat_float: Option<cranelift_module::FuncId>,
     unrt_int_from_obj: Option<cranelift_module::FuncId>,
     unrt_float_from_obj: Option<cranelift_module::FuncId>,
     unrt_dict_from_pairs: Option<cranelift_module::FuncId>,
@@ -752,6 +754,26 @@ fn emit_internal<M: Module>(
             module,
             "unrt_list_from_elems",
             vec![types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_list_repeat_int = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_list_repeat_int",
+            vec![types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_list_repeat_float = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_list_repeat_float",
+            vec![types::F64, types::I64],
             Some(types::I64),
         )?)
     } else {
@@ -1056,6 +1078,8 @@ fn emit_internal<M: Module>(
         unrt_list_from_ints,
         unrt_list_from_floats,
         unrt_list_from_elems,
+        unrt_list_repeat_int,
+        unrt_list_repeat_float,
         unrt_int_from_obj,
         unrt_float_from_obj,
         unrt_dict_from_pairs,
@@ -2375,6 +2399,34 @@ fn emit_expr<M: Module>(
                 .collect();
             let result = emit_math_inline(emitter, builder, module, *mf, &arg_vals);
             (result, TirTy::Float)
+        }
+        TirExpr::ListRepeat { value, len, ty } => {
+            let (v, vty) = emit_expr(value, emitter, builder, module, f);
+            let (n, nty) = emit_expr(len, emitter, builder, module, f);
+            if nty != TirTy::Int {
+                panic!("iter.array size must be int");
+            }
+            match ty {
+                TirTy::ListInt => {
+                    if vty != TirTy::Int {
+                        panic!("iter.array int result with non-int value");
+                    }
+                    let id = emitter.unrt_list_repeat_int.expect("unrt import required for iter.array");
+                    let fid = module.declare_func_in_func(id, builder.func);
+                    let res = builder.ins().call(fid, &[v, n]);
+                    (builder.inst_results(res)[0], TirTy::ListInt)
+                }
+                TirTy::ListFloat => {
+                    if vty != TirTy::Float {
+                        panic!("iter.array float result with non-float value");
+                    }
+                    let id = emitter.unrt_list_repeat_float.expect("unrt import required for iter.array");
+                    let fid = module.declare_func_in_func(id, builder.func);
+                    let res = builder.ins().call(fid, &[v, n]);
+                    (builder.inst_results(res)[0], TirTy::ListFloat)
+                }
+                _ => unreachable!("iter.array element type"),
+            }
         }
         TirExpr::Len(arg) => {            let (arg_v, _) = emit_expr(arg, emitter, builder, module, f);
             let id = emitter.unrt_len.expect("unrt import required for len()");

@@ -625,6 +625,30 @@ pub extern "C" fn unrt_list_from_elems(ptr: *const u64, len: i64) -> u64 {
     to_raw(crate::runtime::collections::list(items))
 }
 
+/// Build a list of `len` copies of `value`, int elements. Used by the
+/// native exe (Obj mode) path for `iter.array(v, n)`.
+#[no_mangle]
+pub extern "C" fn unrt_list_repeat_int(value: i64, len: i64) -> u64 {
+    if len < 0 {
+        return to_raw(crate::runtime::obj::err("expected all items in 'size' list to be non-negative integers"));
+    }
+    let items: Vec<crate::runtime::obj::Obj> =
+        (0..len).map(|_| crate::runtime::obj::int(value)).collect();
+    to_raw(crate::runtime::collections::list(items))
+}
+
+/// Build a list of `len` copies of `value`, float elements. Used by the
+/// native exe (Obj mode) path for `iter.array(v, n)`.
+#[no_mangle]
+pub extern "C" fn unrt_list_repeat_float(value: f64, len: i64) -> u64 {
+    if len < 0 {
+        return to_raw(crate::runtime::obj::err("expected all items in 'size' list to be non-negative integers"));
+    }
+    let items: Vec<crate::runtime::obj::Obj> =
+        (0..len).map(|_| crate::runtime::obj::float(value)).collect();
+    to_raw(crate::runtime::collections::list(items))
+}
+
 /// Unbox an Obj to i64. Returns 0 for non-Int payloads.
 #[no_mangle]
 pub extern "C" fn unrt_int_from_obj(o: u64) -> i64 {

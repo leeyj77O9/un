@@ -2295,8 +2295,47 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn bind_for_target(&mut self, target: &'a Node, elem_ty: Ty, env: &mut Env) {
-        match target.kind {
+    /// Special-case `iter.array(v, n)`: the module keeps fixed list
+    /// signatures so compile mode can type it (everything else on the iter
+    /// module stays dynamic).
+    fn iter_array_sig(&mut self, node: &'a Node, env: &mut Env) -> Option<Ty> {
+        let callee = node.children.first()?;
+        if callee.kind != NodeKind::Property {
+            return None;
+        }
+        let member = callee.children.get(1)?;
+        let head = callee.children.first()?;
+        if head.kind != NodeKind::Identifier || member.kind != NodeKind::Identifier {
+            return None;
+        }
+        if self.text_of(head) != "iter" || self.text_of(member) != "array" {
+            return None;
+        }
+        let args_node = node.children.get(1)?;
+        if args_node.kind != NodeKind::Tuple {
+            return Some(Ty::Any);
+        }
+        let args: Vec<&'a Node> = args_node.children.iter().collect();
+        if args.len() != 2 {
+            self.error(callee, format!("iter.array expects exactly 2 arguments, got {}", args.len()));
+            return Some(Ty::Any);
+        }
+        let value_ty = self.check_expr(args[0], env);
+        let size_ty = self.check_expr(args[1], env);
+        if !matches!(size_ty, Ty::Int | Ty::Any) {
+            self.error(args[1], format!("iter.array size must be an int, got '{}'", size_ty));
+        }
+        Some(match value_ty {
+            Ty::Int => Ty::list(Ty::Int),
+            Ty::Float => Ty::list(Ty::Float),
+            other => {
+                self.error(args[0], format!("iter.array value must be an int or float, got '{}'", other));
+                Ty::list(Ty::Int)
+            }
+        })
+    }
+
+    fn bind_for_target(&mut self, target: &'a Node, elem_ty: Ty, env: &mut Env) {        match target.kind {
             NodeKind::Identifier => {
                 env.declare(&self.text_of(target), elem_ty);
             }
@@ -2938,8 +2977,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_call(&mut self, node: &'a Node, env: &mut Env) -> Ty {
-        let Some(callee) = node.children.first() else {
+    fn check_call(&mut self, node: &'a Node, env: &mut Env) -> Ty {        let Some(callee) = node.children.first() else {
             return Ty::Any;
         };
         // Resolve the callee before checking arguments: class constructor,
@@ -3126,6 +3164,9 @@ impl<'a> Checker<'a> {
                         Ty::Unknown
                     }
                     Ty::Any => {
+                        if let Some(ty) = self.iter_array_sig(node, env) {
+                            return ty;
+                        }
                         self.check_call_args_any(node.children.get(1), env);
                         Ty::Any
                     }

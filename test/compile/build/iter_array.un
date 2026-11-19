@@ -1,0 +1,15 @@
+use io
+use iter
+
+fn main() -> int
+    dp: list[int] = iter.array(0, 100)
+    io.write(len(dp))
+    dp[0] = 1
+    io.write(dp[0])
+    io.write(dp[1])
+    ys = iter.array(2.5, 2)
+    io.write(ys[0])
+    io.write(ys[1])
+    -> 0
+
+main()

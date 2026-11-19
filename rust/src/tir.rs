@@ -144,6 +144,9 @@ pub enum TirExpr {
     ListContains(Box<TirExpr>, Box<TirExpr>),
     /// `xs.index_of(v)` ??position of `v` or -1.
     ListIndexOf(Box<TirExpr>, Box<TirExpr>),
+    /// `iter.array(v, n)` — a list of `n` copies of `v`. Element types are
+    /// int (ListInt) or float (ListFloat) only.
+    ListRepeat { value: Box<TirExpr>, len: Box<TirExpr>, ty: TirTy },
     /// `dict[key]` where `key` is a string expression.
     DictGet(Box<TirExpr>, Box<TirExpr>),
     /// `list[idx]` where `idx` is an int expression. Negative indices wrap.
@@ -552,6 +555,7 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
         TirExpr::Call(_, args) => args.iter().any(expr_uses_classes),
         TirExpr::List(elements) => elements.iter().any(expr_uses_classes),
         TirExpr::Math(_, args) => args.iter().any(expr_uses_classes),
+        TirExpr::ListRepeat { .. } => false,
         TirExpr::CastInt(inner) | TirExpr::CastFloat(inner) => expr_uses_classes(inner),
         TirExpr::Dict(entries) => entries.iter().any(|(k, v)| expr_uses_classes(k) || expr_uses_classes(v)),
         TirExpr::DictGet(a, b) | TirExpr::ListGet(a, b) => {
@@ -637,6 +641,7 @@ fn expr_uses_heap(e: &TirExpr) -> bool {
         | TirExpr::ListPopAt(_, _)
         | TirExpr::ListContains(_, _)
         | TirExpr::ListIndexOf(_, _) => true,
+        TirExpr::ListRepeat { .. } => true,
     }
 }
 
@@ -689,6 +694,7 @@ fn expr_uses_str(e: &TirExpr) -> bool {
         TirExpr::Dict(_) | TirExpr::DictGet(_, _) | TirExpr::ListGet(_, _)
         | TirExpr::ClassNew { .. } | TirExpr::MemberGet { .. } | TirExpr::MethodCall { .. } => false,
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Local(_) => false,
+        TirExpr::ListRepeat { .. } => false,
         TirExpr::Promote(inner) => expr_uses_str(inner),
         TirExpr::Math(_, _) => false,
         TirExpr::CastInt(inner) | TirExpr::CastFloat(inner) => {
@@ -2662,6 +2668,35 @@ fn lower_arg_list(args_tuple: &Node, ctx: &mut LowerCtx) -> Result<Vec<TirExpr>,
     Ok(args)
 }
 
+/// Lower `iter.array(v, n)` into a `ListRepeat` — a list of `n` copies of
+/// `v`, typed `list[int]` for an int value or `list[float]` for a float
+/// value. Size must be an int.
+fn lower_iter_array(
+    args_tuple: &Node,
+    ctx: &mut LowerCtx,
+) -> Result<(TirExpr, CoreTy), String> {
+    let args: Vec<&Node> = args_tuple.children.iter().collect();
+    if args.len() != 2 {
+        return Err(format!("iter.array expects exactly 2 arguments, got {}", args.len()));
+    }
+    let (value, vty) = lower_expr(args[0], ctx)?;
+    let (len_expr, len_cty) = lower_expr(args[1], ctx)?;
+    if len_cty != CoreTy::Int {
+        return Err("iter.array size must be an int".to_string());
+    }
+    match vty {
+        CoreTy::Int => Ok((
+            TirExpr::ListRepeat { value: Box::new(value), len: Box::new(len_expr), ty: TirTy::ListInt },
+            CoreTy::ListInt,
+        )),
+        CoreTy::Float => Ok((
+            TirExpr::ListRepeat { value: Box::new(value), len: Box::new(len_expr), ty: TirTy::ListFloat },
+            CoreTy::ListFloat,
+        )),
+        _ => Err("iter.array requires an int or float value".to_string()),
+    }
+}
+
 /// Lower `math.<fn>(args...)` into a TIR math intrinsic. Numeric arguments
 /// (Int promotes to Float); the result type is Float. Implemented for the
 /// same set of operations the bytecode JIT handles; sqrt/log keep their
@@ -2752,6 +2787,11 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             let module = ctx.source.span(head.start, head.length).to_string();
             if module == "math" {
                 return lower_math_call(&member, args_tuple, ctx);
+            }
+            // `iter.array(v, n)` — a list of `n` copies of `v`; int stays
+            // list[int], float list[float].
+            if module == "iter" && member == "array" {
+                return lower_iter_array(&args_tuple, ctx);
             }
         }
         let (recv, rty) = lower_expr(head, ctx)?;
@@ -3127,6 +3167,23 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                 let _ = expr_ty(arg, f, program, locals)?;
             }
             Ok(TirTy::Float)
+        }
+        TirExpr::ListRepeat { value, len, ty } => {
+            match (expr_ty(value, f, program, locals)?, expr_ty(len, f, program, locals)?) {
+                (TirTy::Int, TirTy::Int) => {
+                    if *ty != TirTy::ListInt {
+                        return Err("iter.array int result type mismatch".to_string());
+                    }
+                    Ok(TirTy::ListInt)
+                }
+                (TirTy::Float, TirTy::Int) => {
+                    if *ty != TirTy::ListFloat {
+                        return Err("iter.array float result type mismatch".to_string());
+                    }
+                    Ok(TirTy::ListFloat)
+                }
+                _ => Err("iter.array value must be an int or float and size must be an int".to_string()),
+            }
         }
         TirExpr::CastInt(inner) => match expr_ty(inner, f, program, locals)? {
             TirTy::Int | TirTy::Float => Ok(TirTy::Int),
