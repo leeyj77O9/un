@@ -7,6 +7,9 @@
 # Local benchmark measurement dumps (scripts/bench.ps1 - results.csv/md per run)
 /bench/results/
 
+# Audit evidence logs are local-only; the report (AUDIT_REVIEW.md) is the tracked record.
+docs/audit/evidence/*.log
+
 # Node (bench/node)
 node_modules/
 
