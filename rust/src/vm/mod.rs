@@ -1385,11 +1385,12 @@ impl VM {
 
                 let parts: Vec<String> = path.split('.').map(|s| s.to_string()).collect();
                 let last = parts.last().cloned().unwrap_or_default();
+                let scope = context::scope(&self.ctx);
                 let result = if world::is_native(&last) {
-                    modules::include(&last, alias, imports).map_err(module::ModuleError::Panic)
+                    modules::include(&last, alias, imports, &scope).map_err(module::ModuleError::Panic)
                 } else {
                     let source_path = self.ctx.borrow().source.path.clone();
-                    module::import_file(&parts, &source_path, alias, imports, Some(context::traces(&self.ctx)))
+                    module::import_file(&parts, &source_path, alias, imports, Some(context::traces(&self.ctx)), &scope)
                 };
                 if let Err(error) = result {
                     let name = self
@@ -1614,6 +1615,7 @@ pub(crate) fn jit_call(
     param_tags: i64,
 ) -> UnJitResult {
     assert!(ints.len() == entry.arity as usize);
+    crate::jit_cache::JIT_NATIVE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temp_mark = crate::runtime::int_class::temp_mark();
     type F0 = unsafe extern "C" fn(*mut i64, i64);
     type F1 = unsafe extern "C" fn(*mut i64, i64, i64);

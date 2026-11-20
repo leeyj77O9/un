@@ -1,7 +1,7 @@
 use crate::runtime::collections;
 use crate::runtime::iters;
 use crate::runtime::obj::{self, Obj};
-use crate::runtime::scope;
+use crate::runtime::scope::{self, Scope};
 use crate::runtime::world;
 pub fn init_classes() {
     let instances: Vec<(&str, Obj)> = vec![
@@ -33,6 +33,7 @@ pub fn include(
     name: &str,
     alias: Option<String>,
     imports: Option<Vec<(String, String)>>,
+    target_scope: &Scope,
 ) -> Result<(), Obj> {
     if !world::is_allowed(name) {
         return Err(obj::panic(
@@ -49,7 +50,7 @@ pub fn include(
             ));
         }
     };
-    import_map(&members, name, name, alias, imports)
+    import_map(&members, name, name, alias, imports, target_scope)
 }
 pub fn import_map(
     map: &[(String, Obj)],
@@ -57,9 +58,10 @@ pub fn import_map(
     module_object_name: &str,
     module_alias: Option<String>,
     imports: Option<Vec<(String, String)>>,
+    target_scope: &Scope,
 ) -> Result<(), Obj> {
     const WILDCARD: &str = "*";
-    let scope = world::global_scope();
+    let scope = target_scope.clone();
     if let Some(imports) = imports {
         if let Some(alias) = module_alias {
             if scope::contains_key(&scope, &alias) {

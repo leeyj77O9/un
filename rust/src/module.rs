@@ -3,7 +3,7 @@ use crate::error::LangError;
 use crate::runtime::context;
 use crate::runtime::modules;
 use crate::runtime::obj::{self, Obj};
-use crate::runtime::scope;
+use crate::runtime::scope::{self, Scope};
 use crate::runtime::world;
 use crate::runner::{compile_source, RunError};
 use crate::source::Source;
@@ -26,6 +26,7 @@ pub fn import_file(
     module_alias: Option<String>,
     imports: Option<Vec<(String, String)>>,
     trace: Option<context::Traces>,
+    target_scope: &Scope,
 ) -> Result<(), ModuleError> {
     let mut joined = std::path::PathBuf::new();
     for part in parts {
@@ -48,7 +49,7 @@ pub fn import_file(
     let map = load(&full, trace)?;
     let module_name = parts.join(".");
     let object_name = parts.last().cloned().unwrap_or_default();
-    modules::import_map(&map, &module_name, &object_name, module_alias, imports)
+    modules::import_map(&map, &module_name, &object_name, module_alias, imports, target_scope)
         .map_err(ModuleError::Panic)
 }
 pub fn load(full_path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, Obj)>, ModuleError> {

@@ -1,0 +1,6 @@
+fn test() -> none
+    use io
+    io.write(123)
+
+test()
+io.write(234)

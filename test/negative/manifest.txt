@@ -56,3 +56,4 @@ test/negative/traceback_toplevel.un|1|int division by zero
 test/fixtures/traceback_import/main.un|1|un: error trace
 test/negative/types_overflow.un|1|u8: value 300 out of range
 test/negative/types_overflow_f64.un|1|is too large for an i64
+test/negative/import_function_scope.un|1|undefined variable 'io'

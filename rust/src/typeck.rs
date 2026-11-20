@@ -661,7 +661,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            NodeKind::Use => self.collect_use(node),
+            NodeKind::Use => {}
             NodeKind::Assign | NodeKind::Typed => {}
             _ => {
                 for child in &node.children {
@@ -1211,6 +1211,9 @@ impl<'a> Checker<'a> {
         }
         self.silence += 1;
         let mut seed_env = Env::new();
+        for name in &self.import_names {
+            seed_env.declare(name, Ty::Any);
+        }
         self.check_module_block(self.root, &mut seed_env);
         for scope in &seed_env.scopes {
             for (name, ty) in scope {
@@ -1221,6 +1224,9 @@ impl<'a> Checker<'a> {
         let mut env = Env::new();
         for (name, ty) in self.globals.clone() {
             env.declare(&name, ty);
+        }
+        for name in &self.import_names {
+            env.declare(name, Ty::Any);
         }
         self.check_module_block(self.root, &mut env);
         let functions = std::mem::take(&mut self.checked_functions);
@@ -1251,7 +1257,12 @@ impl<'a> Checker<'a> {
                     }
                 }
                 NodeKind::Class => self.check_class_defaults(child, env),
-                NodeKind::Enum | NodeKind::Use => {}
+                NodeKind::Enum => {}
+                NodeKind::Use => {
+                    for name in use_bound_names(child, self.source) {
+                        env.declare(&name, Ty::Any);
+                    }
+                }
                 _ => self.check_stmt(child, env),
             }
         }
@@ -1645,6 +1656,9 @@ impl<'a> Checker<'a> {
                 }
             }
             NodeKind::Use => {
+                for name in use_bound_names(node, self.source) {
+                    env.declare(&name, Ty::Any);
+                }
             }
             NodeKind::Function | NodeKind::Extension => {
                 let (name, is_method, class_name) = function_decl_name(node, self.source);
