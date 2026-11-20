@@ -18,6 +18,7 @@ use unvm::error::LangError;
 
 const DEFAULT_ALLOWED: &[&str] = &[
     "io", "math", "iter", "re", "random", "time", "builtin", "atomic",
+    "codes", "types",
 ];
 
 pub struct PlaygroundResult {

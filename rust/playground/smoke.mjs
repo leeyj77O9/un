@@ -144,6 +144,14 @@ const r4c = run("use io\nuse random\nrandom.seed(42)\nio.write(random.int(0, 10)
 expect("custom allowlist permits listed modules", r4c.exitCode, 0);
 expect("custom allowlist stdout", r4c.stdout, "true\n");
 
+const r4d = run("use io\nuse codes { chr, hex }\nio.write(chr(65), hex(255))");
+expect("codes module allowed", r4d.exitCode, 0);
+expect("codes module stdout", r4d.stdout, "A 0xff\n");
+
+const r4e = run("use io\nuse types\nio.write(types.i8(7))");
+expect("types module allowed", r4e.exitCode, 0);
+expect("types module stdout", r4e.stdout, "7\n");
+
 const r5 = run("use io\nloop");
 expect("broken script exit code", r5.exitCode, 1);
 expectMatch("broken script parse error message", r5.error, /error:/);
