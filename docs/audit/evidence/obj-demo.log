@@ -1,0 +1,15 @@
+﻿wrote fib.un.unbc
+wrote fib.obj (emitted: fib, main)
+skipped: <module>: not statically supported
+obj-demo: fib = 55
+wrote obj_fib_build.exe
+obj-demo (un build): 55
+wrote embed_fib.exe
+obj-demo (un build --embed): 55
+wrote embed_class.exe
+obj-demo (un build --embed class): 37
+obj-demo (un build class): 37
+obj-demo (un build class list): 37
+337
+3
+obj-demo: PASS

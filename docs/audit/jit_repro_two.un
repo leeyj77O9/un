@@ -1,0 +1,13 @@
+use iter
+use io
+
+fn drive(n)
+    s = 0
+    for i in iter.range(1, n + 1)
+        s = (s + i * 1103515245 + 12345) % 10007
+        s = s + (i * 7) // 3
+        s = s & 0xffff
+    -> s
+
+io.write(`{drive(1000000)}`)
+io.write(`{drive(1000000)}`)

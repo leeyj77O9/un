@@ -67,8 +67,33 @@ pub(crate) fn stash_module(program_id: u64, module: JITModule) {
         .push(module);
 }
 
+/// Bytecode-JIT compiled entries (`.unbc` -> native, registered by `jit_bc`).
 static JIT_FNS: LazyLock<Mutex<HashMap<u64, HashMap<u32, JitEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Compile-Mode TIR entries (registered by `natcode`). Kept in a **separate**
+/// map from `JIT_FNS`: both use `JitEntry` and the same `(program_id, proto)`
+/// key, so sharing one map made `get_tir_entry()` return bytecode entries and
+/// silently route every call after the first one through `try_call_tir_entry`
+/// (whose empty `arg_kinds` rejects argument-taking protos) into the
+/// interpreter. See AUDIT-001.
+static TIR_FNS: LazyLock<Mutex<HashMap<u64, HashMap<u32, JitEntry>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Number of native JIT invocations that actually reached `vm::jit_call`.
+/// Used by regression tests to prove the JIT is really executing, not merely
+/// registering a stub that always falls back to the interpreter.
+pub static JIT_NATIVE_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+pub fn jit_native_calls() -> usize {
+    JIT_NATIVE_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub fn reset_jit_native_calls() {
+    JIT_NATIVE_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
 
 static JIT_ENABLED: LazyLock<bool> = LazyLock::new(|| {
     std::env::var("UV_JIT")
@@ -129,7 +154,7 @@ pub fn register_jit_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
 }
 
 pub fn register_tir_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
-    JIT_FNS
+    TIR_FNS
         .lock()
         .expect("jit_cache")
         .entry(program_id)
@@ -145,14 +170,16 @@ pub fn get_jit_entry(program_id: u64, proto_index: u32) -> Option<JitEntry> {
 }
 
 pub fn get_tir_entry(program_id: u64, proto_index: u32) -> Option<JitEntry> {
-    JIT_FNS.lock().ok()?.get(&program_id)?.get(&proto_index).cloned()
+    TIR_FNS.lock().ok()?.get(&program_id)?.get(&proto_index).cloned()
 }
 
 pub fn clear_program(program_id: u64) -> usize {
     let (entries, modules) = {
         let mut fns = JIT_FNS.lock().expect("jit_cache");
+        let mut tirs = TIR_FNS.lock().expect("jit_cache");
         let mut modules = JIT_MODULES.lock().expect("jit_cache");
         let entries = fns.remove(&program_id).map(|m| m.len()).unwrap_or(0);
+        tirs.remove(&program_id);
         let modules = modules.remove(&program_id).unwrap_or_default();
         (entries, modules)
     };
@@ -173,9 +200,48 @@ pub fn clear() {
     crate::runtime::int_class::clear();
     JIT_LAZY_ATTEMPTED.lock().expect("jit_cache").clear();
     JIT_FNS.lock().expect("jit_cache").clear();
+    TIR_FNS.lock().expect("jit_cache").clear();
     for (_id, modules) in modules.into_iter() {
         for module in modules {
             unsafe { module.free_memory() };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bytecode_and_tir_entries_live_in_separate_maps() {
+        // Use a key that cannot collide with a real program id.
+        let id = u64::MAX - 4242;
+        let mk = |kinds| JitEntry {
+            ptr: std::ptr::null(),
+            arity: 1,
+            arg_kinds: kinds,
+        };
+        JIT_FNS
+            .lock()
+            .expect("jit_cache")
+            .entry(id)
+            .or_default()
+            .insert(0, mk(Vec::new()));
+        TIR_FNS
+            .lock()
+            .expect("jit_cache")
+            .entry(id)
+            .or_default()
+            .insert(1, mk(vec![ArgKind::Int]));
+
+        let jit = JIT_FNS.lock().expect("jit_cache");
+        let tir = TIR_FNS.lock().expect("jit_cache");
+        assert!(jit.get(&id).unwrap().contains_key(&0));
+        assert!(tir.get(&id).unwrap().contains_key(&1));
+        assert!(!tir.get(&id).unwrap().contains_key(&0));
+        assert!(!jit.get(&id).unwrap().contains_key(&1));
+        drop(jit);
+        drop(tir);
+        clear_program(id);
     }
 }

@@ -1,0 +1,16 @@
+use io
+
+fn countdown(n)
+    while n > 0
+        n = n - 1
+    -> n
+
+fn acc(n, step)
+    t = 0
+    while n > 0
+        t += n
+        n = n - step
+    -> t
+
+io.write(countdown(100000))
+io.write(acc(100000, 3))

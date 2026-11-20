@@ -68,11 +68,35 @@ fn normalize_under(base: &std::path::Path, path: &str) -> Option<String> {
             Component::Normal(part) => out.push(part),
         }
     }
-    if starts_with_case_insensitive(&out, base) {
-        Some(out.display().to_string())
-    } else {
-        None
+    if !starts_with_case_insensitive(&out, base) {
+        return None;
     }
+
+    // Symlink policy (AUDIT-006): the lexical check above is necessary but not
+    // sufficient — a symlink placed under the root may resolve outside it.
+    // Resolve symlinks in both the root and the candidate and re-check
+    // containment. Return the canonical path so the later open uses exactly
+    // the path that passed the check (no check/use gap through a swapped
+    // symlink). For a virtual/non-existent root (e.g. the playground's
+    // "memory://") canonicalization is impossible, so we keep the lexical
+    // result — there is no real filesystem in which a symlink could exist.
+    if let Ok(canon_base) = std::fs::canonicalize(base) {
+        let resolved = match std::fs::canonicalize(&out) {
+            Ok(path) => path,
+            Err(_) => {
+                // The file may not exist yet (write mode): resolve the nearest
+                // existing ancestor and re-append the final component.
+                let parent = out.parent()?;
+                let name = out.file_name()?;
+                std::fs::canonicalize(parent).ok()?.join(name)
+            }
+        };
+        if !starts_with_case_insensitive(&resolved, &canon_base) {
+            return None;
+        }
+        return Some(resolved.display().to_string());
+    }
+    Some(out.display().to_string())
 }
 fn starts_with_case_insensitive(path: &std::path::Path, base: &std::path::Path) -> bool {
     let mut path_components = path.components();
@@ -229,4 +253,69 @@ fn write_text(item: &Obj) -> Result<(), Obj> {
     };
     world::stdout().borrow_mut().push_str(&text);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_under;
+    use std::path::Path;
+
+    fn base() -> &'static Path {
+        Path::new("C:\\sandbox")
+    }
+
+    #[test]
+    fn sandbox_rejects_absolute_drive_and_unc_paths() {
+        assert!(normalize_under(base(), "C:/secret").is_none());
+        assert!(normalize_under(base(), "\\\\server\\share\\secret").is_none());
+    }
+
+    #[test]
+    fn sandbox_rejects_parent_directory_escapes() {
+        assert!(normalize_under(base(), "..//escape").is_none());
+        assert!(normalize_under(base(), "sub/../../escape").is_none());
+    }
+
+    #[test]
+    fn sandbox_accepts_paths_under_the_base() {
+        let ok = normalize_under(base(), "sub/file.txt").expect("path under base");
+        assert!(ok.to_lowercase().replace('/', "\\").ends_with("sub\\file.txt"));
+        let ok = normalize_under(base(), "./file.txt").expect("dot-prefixed path");
+        assert!(ok.to_lowercase().replace('/', "\\").ends_with("file.txt"));
+    }
+
+    #[test]
+    fn sandbox_rejects_symlink_pointing_outside_the_base() {
+        let tmp = std::env::temp_dir().join(format!("un_sandbox_symlink_{}", std::process::id()));
+        let root = tmp.join("root");
+        let outside = tmp.join("outside");
+        let _ = std::fs::remove_dir_all(&tmp);
+        if std::fs::create_dir_all(&root).is_err() || std::fs::create_dir_all(&outside).is_err() {
+            return;
+        }
+        std::fs::write(outside.join("secret.txt"), b"secret").expect("write outside file");
+        let link = root.join("link");
+        let created = {
+            #[cfg(windows)]
+            {
+                std::os::windows::fs::symlink_dir(&outside, &link)
+            }
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&outside, &link)
+            }
+        };
+        if created.is_err() {
+            // Creating symlinks needs extra privileges on some Windows setups.
+            // Skip the dynamic check in that case; the policy itself is still
+            // exercised by the canonicalization path in normalize_under.
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+        assert!(
+            normalize_under(&root, "link/secret.txt").is_none(),
+            "symlink escaping the sandbox root must be rejected"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

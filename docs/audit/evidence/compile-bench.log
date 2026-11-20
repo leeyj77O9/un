@@ -1,0 +1,7 @@
+﻿
+mode                     exit   median(ms)    asserts
+un run (VM+JIT)             0      205.048        2/0
+un run (UV_JIT=0)           0      197.836        2/0
+un native                   0      177.469        2/0
+
+saved: C:\dev\un\bench\results\20261120-025300-compile\native_fib24.csv

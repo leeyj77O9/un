@@ -75,9 +75,9 @@ Counts at the time of writing:
 | Group | Files | Assertions |
 |---|---|---|
 | suite | 1 | 109 |
-| unit + integration + regression | 46 | (1538 - 109) |
-| **Positive total** | **47** | **1538** |
-| negative (exit-code checks) | 48 checks | 48 matched + 0 documented divergences |
+| unit + integration + regression | 47 | (1570 - 109) |
+| **Positive total** | **48** | **1570** |
+| negative (exit-code checks) | 51 checks | 51 matched + 0 documented divergences |
 | known (documented defects) | 0 | none registered |
 | fixtures (not run directly) | 8 | n/a |
 
@@ -140,18 +140,20 @@ moved into meaningful tests (2026-11-16), and `scripts/test.ps1` passes with
 ## Current status
 
 ```
-Positive: 47 files, 1538 passed, 0 failed, 0 crashed
-Negative: 48 matched, 0 mismatched, 0 documented divergences
+Positive: 48 files, 1570 passed, 0 failed, 0 crashed
+Negative: 51 matched, 0 mismatched, 0 documented divergences
 Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```
 
-`cargo test --release` covers the Rust side (213 tests). Two additional
-runners compare execution shapes: `scripts/differential.ps1` runs every
-manifest file with `UV_JIT=0` and default JIT and diffs stdout + exit code
-(95 files, 0 differences), and `scripts/unbc-roundtrip.ps1 -IncludeNegative`
-byte-compares `un run` against `un compile` + `un run <file>.unbc`
-(Positive 47/47, compilable Negative 39/39).
+`cargo test --release --workspace` covers the Rust side (227 tests, including
+the JIT entry-map isolation, repeated-native-call, and sandbox path-confinement
+regression guards). Two
+additional runners compare execution shapes: `scripts/differential.ps1` runs
+every manifest file with `UV_JIT=0` and default JIT and diffs stdout + exit
+code (99 files, 0 differences), and `scripts/unbc-roundtrip.ps1
+-IncludeNegative` byte-compares `un run` against `un compile` + `un run
+<file>.unbc` (Positive 48/48, compilable Negative 42/42).
 
 All previously known failures are fixed: negative-step slicing, `upper_bound`,
 `lower_bound` past-the-end, set equality, dict equality, `2 in [1, 2, 3]`,

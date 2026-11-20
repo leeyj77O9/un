@@ -1,0 +1,4 @@
+use test.assert as assert
+
+assert.assert_eq(1 + 1, 2, "forced strict failure probe")
+assert.summary()

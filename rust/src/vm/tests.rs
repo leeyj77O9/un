@@ -393,6 +393,37 @@ fn a_cleared_jit_program_runs_identically() {
     assert_eq!(out1, out2);
 }
 #[test]
+fn an_argument_taking_proto_stays_jit_native_on_repeated_calls() {
+    // Regression guard for AUDIT-001: before the JIT_FNS/TIR_FNS split, the
+    // first call compiled to native code but the second call was misrouted to
+    // try_call_tir_entry (empty arg_kinds) and silently fell back to the
+    // interpreter. Two argument-taking calls must both reach native code and
+    // no bytecode JIT entry may be visible as a TIR entry.
+    native::init(".");
+    let text = "use io\nfn add(a, b)\n    -> a + b\nio.write(add(1, 2))\nio.write(add(3, 4))\n";
+    let (program, source) = compile_text(text);
+    let program_id = program.id;
+    let proto_count = program.protos.len();
+    crate::jit_cache::reset_jit_native_calls();
+    let mut vm = VM::new(program, source).expect("vm");
+    let outcome = vm.run();
+    assert!(matches!(outcome, Outcome::Value(_)));
+
+    for proto in 0..proto_count {
+        if crate::jit_cache::get_jit_entry(program_id, proto as u32).is_some() {
+            assert!(
+                crate::jit_cache::get_tir_entry(program_id, proto as u32).is_none(),
+                "bytecode JIT entry for proto {proto} is visible as a TIR entry (AUDIT-001)"
+            );
+        }
+    }
+    let calls = crate::jit_cache::jit_native_calls();
+    assert!(calls >= 2, "expected at least 2 native JIT calls, got {calls}");
+    crate::jit_cache::clear_program(program_id);
+    world::log_clear();
+}
+
+#[test]
 fn a_full_clear_lets_jit_run_again() {
     native::init(".");
     let text = "use io\nio.write(\"value\", 3 * 5)\n";

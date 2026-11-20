@@ -9,7 +9,7 @@
 
 | Phase | 작업 | 상태 | 검증 |
 |---|---|---|---|
-| 1 | 아키텍처 분석 + 설계 | **완료** | `scripts/test.ps1` 1538 passed / 48 negative (baseline 유지) |
+| 1 | 아키텍처 분석 + 설계 | **완료** | `scripts/test.ps1` 1570 passed / 51 negative (baseline 유지) |
 | 2 | `typeck` (정적 분석·타입 검사·추론) | **완료** | `un check` 구현·검증; `test/compile/typed_pass.un` 통과 양쪽 모드 |
 | 3 | `tir` (Typed IR + 검증기) | **완료** | core 판정 통과 함수 5개(add/square/mixed/id_bool/fib) native 실행 |
 | 4 | `natcode` (Cranelift 코드젠) | **완료** | `un native` 바이너리 fib(24) native 실행, bail 경로 interpreter와 출력 동일 |
@@ -53,10 +53,10 @@
 - `un run`/`un compile`: **변경 없음**.
 
 ### 검증
-- `scripts/test.ps1`: Positive 47/1538, Negative 48 — **baseline 유지**.
-- `scripts/differential.ps1`: 95 files 0 differences — **green**.
-- `scripts/unbc-roundtrip.ps1 -IncludeNegative`: 47 files identical, negative 39 — **green**.
-- `cargo test --release`: 213 passed (1회 `a_cleared_jit_program_runs_identically`가
+- `scripts/test.ps1`: Positive 48/1570, Negative 51 — **baseline 유지**.
+- `scripts/differential.ps1`: 99 files 0 differences — **green**.
+- `scripts/unbc-roundtrip.ps1 -IncludeNegative`: 48 files identical, negative 42 — **green**.
+- `cargo test --release`: 227 passed (1회 `a_cleared_jit_program_runs_identically`가
   flake로 1회 실패했으나 재실행 green; 기존 테스트 순서 경쟁, 본 변경과 무관 — F-022 참조).
 - `scripts/compile-check.ps1`: 18 passed (fixture 6 + untyped-source-rejected + errors 11).
 - `scripts/exe-diff.ps1`: **신규** — `test/compile/*.un`을 `un build --embed`로 링크한 exe가

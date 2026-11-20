@@ -1,0 +1,21 @@
+﻿rustup :    Compiling indexmap v2.14.2
+위치 줄:1 문자:1
++ rustup run stable-x86_64-pc-windows-gnu cargo build --release --targe ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling indexmap v2.14.2:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+   Compiling cfg-if v1.0.5
+   Compiling memchr v2.8.3
+   Compiling crc32fast v1.5.5
+   Compiling gimli v0.33.0
+   Compiling object v0.40.0
+   Compiling cranelift-codegen v0.137.1
+   Compiling cranelift-module v0.137.1
+   Compiling cranelift-native v0.137.1
+   Compiling cranelift-frontend v0.137.1
+   Compiling cranelift-jit v0.137.1 (C:\dev\un\vendor\cranelift-jit)
+   Compiling cranelift-object v0.137.1
+   Compiling unvm v0.1.0 (C:\dev\un\rust)
+   Compiling unvm-playground v0.1.0 (C:\dev\un\rust\playground)
+    Finished `release` profile [optimized] target(s) in 37.89s

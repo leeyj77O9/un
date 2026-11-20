@@ -86,8 +86,8 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
 - Closures capture the whole `Context`; there is no upvalue cell and
   `LoadUpv`/`StoreUpv` are ABI placeholders that are never emitted.
 - Exception handling uses a `TryEntry` stack. The recorded handler depth
-  (`TryEntry.depth`) is currently written but never read — the register file
-  is not truncated on handler entry (TD-12).
+  (`TryEntry.acc_depth`) is read on handler entry to truncate the argument
+  frame (`vm/mod.rs:346/354/371`) — TD-12 is resolved.
 - `PLAN_CACHE` (thread-local) maps `program.id` → `(Rc<Program>, Rc<Plan>)`.
   Entries hold the owning `Rc<Program>` and live for the process
   (TD-03 — growth is unchanged, but a pointer collision can no longer serve
@@ -193,10 +193,10 @@ them.
 | `test/negative/manifest.txt` | `path|expected exit|expected substring` — exit code and stderr matching for error cases |
 | `test/KnownFailures.txt` | scripts that are expected to fail (currently empty) |
 | `test/KnownDivergent.txt` | documented divergences (currently none registered) |
-| `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (95 files) |
+| `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (98 files) |
 | `scripts/unbc-roundtrip.ps1` | `.unbc` round-trip byte comparison for Positive and compilable Negative files |
 | `scripts/bench.ps1` | warm-up + repetitions + statistics (min/median/mean/max/stddev/ops) |
-| `cargo test --release` | 213 Rust unit tests (lexer, parser, compiler, runtime, VM, native, net/redirects) |
+| `cargo test --release --workspace` | 223 tests (lib 218 + playground 5; lexer, parser, compiler, runtime, VM, native, net/redirects + JIT/sandbox regression guards) |
 
 The build is release-only and requires the GNU toolchain:
 

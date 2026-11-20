@@ -12,7 +12,7 @@ fn message(o: &Obj) -> String {
     }
 }
 fn include(name: &str, alias: Option<String>, imports: Option<Vec<(String, String)>>) -> Obj {
-    match modules::include(name, alias, imports) {
+    match modules::include(name, alias, imports, &world::global_scope()) {
         Ok(()) => obj::none(),
         Err(e) => e,
     }

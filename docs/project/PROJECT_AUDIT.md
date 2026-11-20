@@ -14,7 +14,7 @@ Related documents:
 - `docs/project/REFACTOR_LOG.md` — dated log of the changes that were actually applied.
 - `docs/spec/ARCHITECTURE.md` — how the implementation is put together.
 - `docs/project/TECHNICAL_DEBT.md` — the debt register (items deliberately left in place).
-- `docs/project/DECISIONS.md` — language/runtime decisions (D-001 … D-077).
+- `docs/project/DECISIONS.md` — language/runtime decisions (D-001 … D-092).
 
 ## 1. Scope and method
 
@@ -171,10 +171,10 @@ symbol with exactly one occurrence in its own definition file is reported as
 
 ## 6. Result of this audit pass
 
-(as of 2026-11-16/17. Several counts have since moved — current figures are maintained in
-`README.md` / `docs/guides/TEST_GUIDE.md` / `docs/spec/ARCHITECTURE.md`: Positive 47 files / **1538 passed** /
-0 failed, Negative **48 matched**, differential **95 files / 0 differences**. The numbers below
-are kept as the historical record of the audit run.)
+(as of 2026-11-16/17. Several counts have since moved — the authoritative current figures are
+maintained in `docs/guides/TEST_GUIDE.md` (Positive 48 files / 1570 passed, Negative 51 matched,
+differential 99 files, roundtrip 48/48 + 42/42). The numbers below are kept as the historical
+record of the audit run.)
 
 - Build: `cargo build --release` → **exit 0, 0 warnings**.
 - Tests: `scripts/test.ps1` → **Positive 40 files / 1391 passed / 0 failed /

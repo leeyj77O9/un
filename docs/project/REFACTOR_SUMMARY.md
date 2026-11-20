@@ -73,12 +73,12 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
 | Gate | Result |
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
-| `cargo test --release` | **213 passed / 0 failed** |
-| `scripts/test.ps1` | Positive **47 files / 1538 passed** / 0 failed / 0 crashed; Negative **48 matched / 0 divergences**; Known **0**; exit **0** |
-| `scripts/differential.ps1` | **95 files, 0 differences** (JIT on vs off, byte-identical) |
-| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **47/47**; Negative compilable **39/39** identical |
+| `cargo test --release --workspace` | **227 passed / 0 failed** (includes 2 JIT + 3 sandbox regression guards added 2026-11-20) |
+| `scripts/test.ps1` | Positive **48 files / 1570 passed** / 0 failed / 0 crashed; Negative **51 matched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/differential.ps1` | **99 files, 0 differences** (JIT on vs off, byte-identical) |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **48/48**; Negative compilable **42/42** identical |
 | `test/test_suite.un` | **109 passed / 0 failed** |
-| `scripts/bench.ps1 -Group all -Report` | all 15 x 4 lanes self-validate; root `BENCHMARK.md` regenerated; Un JIT/Python geomean **2.124x** (JIT live since pass 18; depth-guard fix moved fib24 3.39 → 1.32 ms in pass 22) |
+| `scripts/bench.ps1 -Group all -Report` | all 15 x 4 lanes self-validate; root `BENCHMARK.md` regenerated; Un JIT/Python geomean **≈7x** (historical 2.124x; 2026-11-20 재측정 6.99x, `BENCHMARK.md` 7.527x — AUDIT-001 수정으로 JIT 정상 발동 복구) |
 
 ## Intentionally not done / known limits
 
@@ -104,7 +104,7 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
 | `docs/project/PROJECT_AUDIT.md` | Audit findings (S1/S2/S3) with fix mapping |
 | `docs/project/REFACTOR_LOG.md` | Per-pass verification records |
 | `docs/project/TECHNICAL_DEBT.md` | Debt register (open items + closed summary) |
-| `docs/project/DECISIONS.md` | D-001 … D-077, append-only |
+| `docs/project/DECISIONS.md` | D-001 … D-092, append-only |
 | `docs/spec/BYTECODE.md` | `.unbc` format specification |
 | `docs/guides/TEST_GUIDE.md` | Test authoring and runner guide |
 | `docs/guides/BENCHMARK_GUIDE.md` | Benchmark methodology and caveats |

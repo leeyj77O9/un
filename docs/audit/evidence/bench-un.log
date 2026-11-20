@@ -1,0 +1,31 @@
+﻿Un benchmark runner - modes: unjit
+executable: C:\dev\un\rust\target\release\un.exe
+python: Python 3.13.17
+node:   v26.13.0
+ENV|un|os=Un 0.1.0|plat=windows|arch=X64|cpu=16|64=true|depth=1000
+ENV|un_commit|36aa40d
+
+label            iters  un vm(ms) un jit(ms) python(ms)   node(ms)    vm/py   jit/py jit/node  py/node
+int_ops         1000000        n/a   1806.711        n/a        n/a      n/a      n/a      n/a      n/a
+fib24                1        n/a    196.281        n/a        n/a      n/a      n/a      n/a      n/a
+native_fib24         1        n/a    199.404        n/a        n/a      n/a      n/a      n/a      n/a
+nested_sum_200   40000        n/a      8.915        n/a        n/a      n/a      n/a      n/a      n/a
+qsort500           500        n/a     16.252        n/a        n/a      n/a      n/a      n/a      n/a
+mergesort1000     1000        n/a     46.096        n/a        n/a      n/a      n/a      n/a      n/a
+rle1994           1994        n/a      7.175        n/a        n/a      n/a      n/a      n/a      n/a
+dict5000         10000        n/a      3.798        n/a        n/a      n/a      n/a      n/a      n/a
+iter10000        30000        n/a     19.301        n/a        n/a      n/a      n/a      n/a      n/a
+math10000        10000        n/a     19.660        n/a        n/a      n/a      n/a      n/a      n/a
+class1000         1000        n/a      4.802        n/a        n/a      n/a      n/a      n/a      n/a
+sieve30000       30000        n/a     67.315        n/a        n/a      n/a      n/a      n/a      n/a
+matrix48        110592        n/a     73.779        n/a        n/a      n/a      n/a      n/a      n/a
+sin20000         20000        n/a     23.481        n/a        n/a      n/a      n/a      n/a      n/a
+call200000      200000        n/a    290.165        n/a        n/a      n/a      n/a      n/a      n/a
+regex6000         6000        n/a      1.292        n/a        n/a      n/a      n/a      n/a      n/a
+
+Geomean ratios (>1 = first language is faster):
+Un JIT / Python n/a
+Un JIT / Node n/a
+Un VM / Python n/a
+Un VM / Node n/a
+Python / Node n/a

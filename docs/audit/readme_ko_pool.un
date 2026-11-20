@@ -1,0 +1,9 @@
+use io
+use flow
+use iter
+
+using pool = flow.spawn(2)
+r = pool.map(fn(x) -> x * x, 1, 2, 3, 4)
+io.write(list(iter.sorted(r)))   # [1, 4, 9, 16]
+s = pool.submit(fn(x) -> x * 3, (7))
+io.write(wait s)                 # 21
