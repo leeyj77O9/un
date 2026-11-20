@@ -25,6 +25,7 @@ const exp = instance.exports;
 if (typeof exp.playground_alloc !== "function") throw new Error("playground_alloc export missing");
 if (typeof exp.playground_run !== "function") throw new Error("playground_run export missing");
 if (typeof exp.playground_free !== "function") throw new Error("playground_free export missing");
+if (typeof exp.playground_check !== "function") throw new Error("playground_check export missing");
 
 const mem = () => new Uint8Array(exp.memory.buffer);
 const encoder = new TextEncoder();
@@ -68,6 +69,28 @@ function run(code, { fileName = "playground.un", stdin = "", allowEof = false, a
     exp.playground_free(outLenPtr, 4);
 
     return JSON.parse(json);
+}
+
+function check(code, fileName = "playground.un") {
+    const codeBuffer = writeBuffer(code);
+    const fileBuffer = writeBuffer(fileName);
+    const outLenPtr = exp.playground_alloc(4);
+    let resultPtr = 0;
+    let outLen = 0;
+    try {
+        resultPtr = exp.playground_check(
+            codeBuffer.ptr, codeBuffer.length,
+            fileBuffer.ptr, fileBuffer.length,
+            outLenPtr,
+        );
+        outLen = new Uint32Array(exp.memory.buffer, outLenPtr, 1)[0];
+        return JSON.parse(decoder.decode(mem().subarray(resultPtr, resultPtr + outLen)));
+    } finally {
+        freeBuffer(codeBuffer.ptr, codeBuffer.length);
+        freeBuffer(fileBuffer.ptr, fileBuffer.length);
+        if (resultPtr !== 0) freeBuffer(resultPtr, outLen);
+        exp.playground_free(outLenPtr, 4);
+    }
 }
 
 let failed = 0;
@@ -283,6 +306,30 @@ const r28 = run("use io\nfor i in 0..2000\n    io.write(i)");
 expect("2000-line stdout exit code", r28.exitCode, 0);
 const lineCount = (r28.stdout.match(/\n/g) || []).length;
 expect("2000-line stdout line count", lineCount, 2000);
+
+// ---------------------------------------------------------------------------
+// type check + inference (playground_check ABI)
+// ---------------------------------------------------------------------------
+
+const c1 = check("use io\nx = 1\nio.write(x)");
+expect("check valid source ok", c1.ok, true);
+expect("check valid source has no diagnostics", c1.diagnostics.length, 0);
+expect("check infers variable type", JSON.stringify(c1.vars), JSON.stringify([["x", "int"]]));
+
+const c2 = check("use io\nfn add(a: int, b: int) -> int\n    -> a + b\nio.write(add(1, 2))");
+expect("check valid function ok", c2.ok, true);
+expect("check infers function params", JSON.stringify(c2.fnParams), JSON.stringify([["add", [["a", "int"], ["b", "int"]]]]));
+expect("check infers function return", JSON.stringify(c2.fnReturns), JSON.stringify([["add", "int"]]));
+
+const c3code = "use io\nx: int = \"oops\"\nio.write(x)";
+const c3 = check(c3code);
+expect("check type error not ok", c3.ok, false);
+expect("check type error count", c3.diagnostics.length, 1);
+if (c3.diagnostics[0] && c3.diagnostics[0].message.includes("cannot assign")) ok("check type error message");
+else fail("check type error message", `got: ${JSON.stringify(c3.diagnostics)}`);
+const c3span = c3code.slice(c3.diagnostics[0].start, c3.diagnostics[0].start + c3.diagnostics[0].length);
+expect("check type error span", c3span, "x");
+expect("check type error line", c3.diagnostics[0].line, 1);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
