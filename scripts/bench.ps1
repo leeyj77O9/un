@@ -206,17 +206,17 @@ $Pairs = @(
     [pscustomobject]@{ label = "fib24";          un = "bench/fib.un";       native = "bench/native_fib_exe.un"; exe = "bench/native_fib_exe.un"; node = "bench/node/fib.mjs";       python = "bench/python/fib.py" }
     [pscustomobject]@{ label = "native_fib24";   un = "bench/native_fib.un"; native = "bench/native_fib_exe.un"; exe = "bench/native_fib_exe.un"; node = "bench/node/fib.mjs";      python = "bench/python/fib.py" }
     [pscustomobject]@{ label = "nested_sum_200"; un = "bench/loop.un";      native = "bench/native_loop.un"; exe = "bench/native_loop.un"; node = "bench/node/loop.mjs";     python = "bench/python/loop.py" }
-    [pscustomobject]@{ label = "qsort500";       un = "bench/sort.un";      node = "bench/node/sort.mjs";     python = "bench/python/sort.py" }
-    [pscustomobject]@{ label = "mergesort1000";  un = "bench/mergesort.un"; node = "bench/node/mergesort.mjs"; python = "bench/python/mergesort.py" }
+    [pscustomobject]@{ label = "qsort500";       un = "bench/sort.un";      native = "bench/native_sort.un"; exe = "bench/native_sort.un"; node = "bench/node/sort.mjs";     python = "bench/python/sort.py" }
+    [pscustomobject]@{ label = "mergesort1000";  un = "bench/mergesort.un"; native = "bench/native_mergesort.un"; exe = "bench/native_mergesort.un"; node = "bench/node/mergesort.mjs"; python = "bench/python/mergesort.py" }
     [pscustomobject]@{ label = "rle1994";        un = "bench/string.un";    node = "bench/node/string.mjs";   python = "bench/python/string.py" }
-    [pscustomobject]@{ label = "dict5000";       un = "bench/dict.un";      node = "bench/node/dict.mjs";     python = "bench/python/dict.py" }
-    [pscustomobject]@{ label = "iter10000";      un = "bench/iter.un";      node = "bench/node/iter.mjs";     python = "bench/python/iter.py" }
-    [pscustomobject]@{ label = "math10000";      un = "bench/math.un";      node = "bench/node/math.mjs";     python = "bench/python/math.py" }
-    [pscustomobject]@{ label = "class1000";      un = "bench/class.un";     node = "bench/node/class.mjs";    python = "bench/python/class.py" }
-    [pscustomobject]@{ label = "sieve30000";     un = "bench/sieve.un";     node = "bench/node/sieve.mjs";    python = "bench/python/sieve.py" }
+    [pscustomobject]@{ label = "dict5000";       un = "bench/dict.un";      native = "bench/native_dict.un"; exe = "bench/native_dict.un"; node = "bench/node/dict.mjs";     python = "bench/python/dict.py" }
+    [pscustomobject]@{ label = "iter10000";      un = "bench/iter.un";      native = "bench/native_iter.un"; exe = "bench/native_iter.un"; node = "bench/node/iter.mjs";     python = "bench/python/iter.py" }
+    [pscustomobject]@{ label = "math10000";      un = "bench/math.un";      native = "bench/native_math.un"; exe = "bench/native_math.un"; node = "bench/node/math.mjs";     python = "bench/python/math.py" }
+    [pscustomobject]@{ label = "class1000";      un = "bench/class.un";     native = "bench/native_class.un"; exe = "bench/native_class.un"; node = "bench/node/class.mjs";    python = "bench/python/class.py" }
+    [pscustomobject]@{ label = "sieve30000";     un = "bench/sieve.un";     native = "bench/native_sieve.un"; exe = "bench/native_sieve.un"; node = "bench/node/sieve.mjs";    python = "bench/python/sieve.py" }
     [pscustomobject]@{ label = "matrix48";       un = "bench/matrix.un";    node = "bench/node/matrix.mjs";   python = "bench/python/matrix.py" }
-    [pscustomobject]@{ label = "sin20000";       un = "bench/floatmath.un"; node = "bench/node/floatmath.mjs"; python = "bench/python/floatmath.py" }
-    [pscustomobject]@{ label = "call200000";     un = "bench/funccall.un";  node = "bench/node/funccall.mjs";  python = "bench/python/funccall.py" }
+    [pscustomobject]@{ label = "sin20000";       un = "bench/floatmath.un"; native = "bench/native_floatmath.un"; exe = "bench/native_floatmath.un"; node = "bench/node/floatmath.mjs"; python = "bench/python/floatmath.py" }
+    [pscustomobject]@{ label = "call200000";     un = "bench/funccall.un";  native = "bench/native_funccall.un"; exe = "bench/native_funccall.un"; node = "bench/node/funccall.mjs";  python = "bench/python/funccall.py" }
     [pscustomobject]@{ label = "regex6000";      un = "bench/regex.un";     node = "bench/node/regex.mjs";    python = "bench/python/regex.py" }
 )
 

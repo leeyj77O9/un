@@ -48,6 +48,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | `test/compile/matches.un` | match exhaustiveness 분석 — bool true/false arm·int arm·`_` wildcard·none arm을 포함한 exhaustive match 표기; interpreter와 `un native`가 바이트 동일 |
 | `bench/native_fib.un` | 어노테이션된 fib 벤치마크 (native 경로 확인 및 `scripts/compile-bench.ps1` 입력) |
 | `bench/native_fib_exe.un` | plain `un build` exe 벤치 입력 — 모듈 import 없이 `use io`/`use time`만 쓰고 700회 fib(24)의 회당 ms를 출력 (time.monotonic 1ms 양자화 보완) |
+| `bench/native_sort.un` / `native_mergesort.un` / `native_dict.un` / `native_iter.un` / `native_class.un` / `native_sieve.un` / `native_math.un` / `native_floatmath.un` / `native_funccall.un` | 나머지 dynamic fixture의 core-compile 대응형. slice/빈 리터럴/lambda를 인덱스 루프·`iter.array`로 대체하고 자체 시간측정 |
+| compile 열이 `N/A`인 워크로드 | `rle1994`(문자 단위 인덱싱), `matrix48`(중첩 list), `regex6000`(match 객체) — 현재 core subset으로 표현 불가 |
 | `bench/native_int_ops.un` | `int_ops`의 core-compile 가능한 변형 — `for 1..n` + 정수 산술만 사용, `un native`/plain exe 양쪽에서 측정 |
 | `bench/native_loop.un` | `nested_sum_200`의 core-compile 가능한 변형 — 중첩 `for 1..size`, 700회 반복 평균 ms 출력 |
 | `test/assert.un` | 어설트 모듈 (`assert_eq` / `assert_true` / `summary()`) |

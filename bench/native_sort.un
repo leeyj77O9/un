@@ -1,0 +1,57 @@
+use io
+use time
+use iter
+
+# qsort500의 compile-mode 대응: slice(xs[1:]) 대신 인덱스 루프 사용.
+fn lcg(n: int, seed: int) -> list[int]
+    xs: list[int] = [0]
+    s = seed
+    for i in 0..n
+        s = (s * 1103515245 + 12345) % 100000
+        if i == 0
+            xs[0] = s
+        else
+            xs.add(s)
+    -> xs
+
+fn qsort(xs: list[int]) -> list[int]
+    if len(xs) <= 1
+        -> xs
+    pivot = xs[0]
+    ns = 0
+    nl = 0
+    for i in 1..len(xs)
+        if xs[i] < pivot
+            ns += 1
+        else
+            nl += 1
+    smaller = iter.array(0, ns)
+    larger = iter.array(0, nl)
+    ks = 0
+    il = 0
+    for i in 1..len(xs)
+        v = xs[i]
+        if v < pivot
+            smaller[ks] = v
+            ks += 1
+        else
+            larger[il] = v
+            il += 1
+    out = qsort(smaller)
+    out.add(pivot)
+    rest = qsort(larger)
+    for v in rest
+        out.add(v)
+    -> out
+
+fn main() -> int
+    data = lcg(500, 7)
+    start = time.monotonic()
+    r = 0
+    while r < 7
+        qsort(data)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 7.0)
+    -> 0
+
+main()

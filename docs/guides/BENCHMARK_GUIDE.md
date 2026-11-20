@@ -16,6 +16,10 @@ Two extra compile-mode lanes are measured for the typed self-timed fixtures
 built with `un build`. Those fixtures print bare millisecond values instead of
 `BENCH|` lines and skip assertion validation; dynamic/untyped workloads show
 `N/A` in the compile columns (they are outside the compile-mode subset).
+Three workloads still have no compile variant: `rle1994` (character indexing),
+`matrix48` (nested lists) and `regex6000` (match objects).
+`dict5000` uses `codes.hex(...)` string keys because core dicts are `dict[str, int]`;
+its compile numbers include key-conversion overhead.
 
 ## Running benchmarks
 

@@ -1,0 +1,21 @@
+use io
+use time
+use math
+
+# math10000의 compile-mode 대응: floor(sqrt(i)) 누적. math intrinsic은 core 지원.
+fn math_work(n: int) -> float
+    total = 0.0
+    for i in 1..n + 1
+        total += math.floor(math.sqrt(i))
+    -> total
+
+fn main() -> int
+    start = time.monotonic()
+    r = 0
+    while r < 700
+        math_work(10000)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 700.0)
+    -> 0
+
+main()

@@ -1,0 +1,42 @@
+use io
+use time
+
+# iter10000의 compile-mode 대응: lambda 파이프라인 대신 등가의 for 루프
+# (list 생성 -> x*2 -> 4의 배수 필터 -> 합계).
+fn iter_work(n: int) -> int
+    base: list[int] = [0]
+    for i in 0..n
+        if i == 0
+            base[0] = i
+        else
+            base.add(i)
+    mapped: list[int] = [0]
+    for i in 0..n
+        if i == 0
+            mapped[0] = base[0] * 2
+        else
+            mapped.add(base[i] * 2)
+    evens: list[int] = [0]
+    k = 0
+    for v in mapped
+        if v % 4 == 0
+            if k == 0
+                evens[0] = v
+            else
+                evens.add(v)
+            k += 1
+    total = 0
+    for i in 0..k
+        total += evens[i]
+    -> total
+
+fn main() -> int
+    start = time.monotonic()
+    r = 0
+    while r < 7
+        iter_work(10000)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 7.0)
+    -> 0
+
+main()

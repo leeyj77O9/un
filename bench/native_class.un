@@ -1,0 +1,30 @@
+use io
+use time
+
+# class1000의 compile-mode 대응: annotated class + 메서드 호출만 사용.
+class Point
+    x: int = 0
+    y: int = 0
+    fn __init__(px: int, py: int)
+        self.x = px
+        self.y = py
+    fn norm() -> int
+        -> self.x * self.x + self.y * self.y
+
+fn class_work(n: int) -> int
+    total = 0
+    for i in 0..n
+        p = Point(i, i + 1)
+        total += p.norm()
+    -> total
+
+fn main() -> int
+    start = time.monotonic()
+    r = 0
+    while r < 700
+        class_work(1000)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 700.0)
+    -> 0
+
+main()

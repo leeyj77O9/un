@@ -1,0 +1,23 @@
+use io
+use time
+
+# call200000의 compile-mode 대응: mix() 200000회 호출 체인.
+fn mix(x: int) -> int
+    -> (x * 1103515245 + 12345) % 100000
+
+fn call_work(n: int) -> int
+    x = 42
+    for i in 0..n
+        x = mix(x)
+    -> x
+
+fn main() -> int
+    start = time.monotonic()
+    r = 0
+    while r < 700
+        call_work(200000)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 700.0)
+    -> 0
+
+main()

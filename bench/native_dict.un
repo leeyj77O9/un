@@ -1,0 +1,25 @@
+use io
+use time
+use codes
+
+# dict5000의 compile-mode 대응: int 키 대신 codes.hex(int) 문자열 키를 쓴다
+# (core subset은 dict[str, int]만 허용). 키 변환 오버헤드가 추가된다는 점 유의.
+fn dict_work(n: int) -> int
+    d: dict[str, int] = {"seed": 0}
+    for i in 0..n
+        d[codes.hex(i * 2)] = i
+    total = 0
+    for i in 0..n
+        total += d[codes.hex(i * 2)]
+    -> total
+
+fn main() -> int
+    start = time.monotonic()
+    r = 0
+    while r < 7
+        dict_work(5000)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 7.0)
+    -> 0
+
+main()

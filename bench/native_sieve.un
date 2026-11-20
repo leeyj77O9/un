@@ -1,0 +1,34 @@
+use io
+use time
+
+# sieve30000의 compile-mode 대응: list[bool] 대신 list[int] 0/1 플래그.
+fn sieve(n: int) -> int
+    flags: list[int] = [1]
+    for i in 1..n
+        flags.add(1)
+    flags[0] = 0
+    flags[1] = 0
+    p = 2
+    while p * p < n
+        if flags[p] != 0
+            m = p * p
+            while m < n
+                flags[m] = 0
+                m += p
+        p += 1
+    count = 0
+    for f in flags
+        if f != 0
+            count += 1
+    -> count
+
+fn main() -> int
+    start = time.monotonic()
+    r = 0
+    while r < 7
+        sieve(30000)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 7.0)
+    -> 0
+
+main()
