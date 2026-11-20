@@ -4,8 +4,9 @@
 
 ## 측정 환경
 
-- 2026-11-19, Windows x64 (GNU toolchain), `rustc stable-x86_64-pc-windows-gnu` `--release`
+- 2026-11-19 (exe 행 추가 2026-11-20), Windows x64 (GNU toolchain), `rustc stable-x86_64-pc-windows-gnu` `--release`
 - 벤치마크 스크립트: `bench/native_fib.un` (annotated fib(24), 7 reps, warmup 2, median)
+- plain exe 벤치: `bench/native_fib_exe.un` — Un 모듈 import 없이 `use io`/`use time`만 쓰는 core-compile 가능한 변형. 700회 fib(24)를 프로세스 안에서 돌려 회당 ms를 출력하고, `compile-bench.ps1`이 7회 실행 median을 낸다(다른 모드의 in-process median과 같은 단위).
 - 실행 파일: `rust\target\release\un.exe`
 
 재현:
@@ -14,6 +15,9 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-bench.ps1
 # 측정 루프가 bench.harness를 쓰므로 수동 비교:
 .\rust\target\release\un.exe native bench\native_fib.un
+# plain exe 직접 비교:
+.\rust\target\release\un.exe build bench\native_fib_exe.un -o %TEMP%\native_fib_exe.exe
+%TEMP%\native_fib_exe.exe
 ```
 
 ## 측정 결과 (median of 7, ms)
@@ -23,11 +27,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-bench.ps1
 | `un run` (VM + 기존 bytecode JIT) | 194.3–240.0 | JIT 동작, compile mode 미사용 |
 | `un run` (VM, `UV_JIT=0`) | 195.5–198.1 | 순수 인터프리터 |
 | `un native` (Compile Mode) | **169.3–174.3** | core 함수 native + 하네스 interp |
+| `un build` (standalone exe) | **≈0.17–0.18** | 2026-11-20 재측정. 위 세 모드와 달리 `bench.harness`가 없는 자체 타이밍(700회 fib)이라 순수 fib 계산 시간만 비교 가능 |
 
 → compile mode가 `un run` 대비 약 **10–13%** 빠르다. 이 수치가 작게 나오는 이유는
 측정이 `bench.harness.measure`(interpreter) + 함수 호출 오버헤드에 지배되기 때문이며,
 TIR core 경로가 실제로 native로 실행됨은 `UV_TIR_DEBUG=1`로 확인할 수 있다
 (예: `TIRDBG OK proto=1 fib`).
+plain exe는 Cranelift가 fib를 직접 네이티브 코드로 만든 결과로 **JIT 대비 약 10배,
+인터프리터 대비 약 1000배** 빠르다. 단, exe 행은 `bench.harness`(assert/결과 검증)가
+없고 700회 fib 자체의 회당 시간만 재므로 위 세 행과 동일한 조건은 아니다.
 
 ## 주의사항
 

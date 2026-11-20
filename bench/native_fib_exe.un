@@ -1,0 +1,27 @@
+use io
+use time
+
+# ============================================================
+# Compile Mode 벤치마크 - plain native executable (un build)
+# bench/native_fib.un 과 같은 fib(24)지만, Un 모듈 import 없이
+# `use io` / `use time`만 써서 `un build`의 core subset으로 빌드된다.
+# time.monotonic()의 해상도가 1ms라 700회를 한 번에 재고
+# 회당 ms로 나눠 출력한다 (other modes의 median(ms)와 비교 가능).
+# 출력: 회당 fib(24) 시간(ms)을 실수 한 줄로.
+# ============================================================
+
+fn fib(n: int) -> int
+    if n < 2
+        -> n
+    -> fib(n - 1) + fib(n - 2)
+
+fn main() -> int
+    start = time.monotonic()
+    i = 0
+    while i < 700
+        fib(24)
+        i += 1
+    io.write((time.monotonic() - start) * 1000.0 / 700.0)
+    -> 0
+
+main()
