@@ -1,3 +1,5 @@
+mod lsp;
+
 use std::process::exit;
 use std::rc::Rc;
 use unvm::ast::{Const, Node};
@@ -44,6 +46,7 @@ fn dispatch() {
         Some("obj") => obj_cmd(&args[1..]),
         Some("build") => build_cmd(&args[1..]),
         Some("help") => print_help(),
+        Some("lsp") => exit(lsp::run()),
         None => print_help(),
         Some(cmd) => {
 
@@ -60,6 +63,7 @@ fn print_help() {
     print!("  un native <file.un>   (compile mode: static analysis + native execution){}", nl());
     print!("  un obj <file.un|file.unbc> [-o out.obj] [--entry name]  (emit a relocatable object file){}", nl());
     print!("  un build <file.un> [-o out.exe] [--embed]  (emit .obj and link into a native executable; --embed bakes the whole VM runtime for any-program support){}", nl());
+    print!("  un lsp                (run the language server over stdio for the VS Code extension){}", nl());
 }
 fn read_source(path: &str) -> Source {
 
@@ -128,8 +132,6 @@ fn desugar_cmd(args: &[String]) {
         eprintln!("usage: un desugar <file>");
         exit(2);
     }
-    // Desugaring is folded into the optimizer as of 2026-11-16; printing the
-    // optimized AST shows exactly what the compiler consumes.
     let (source, node) = parse_file(&args[0]);
     match optimize(&node) {
         Ok(result) => print_node(&result.root, &source, 0),
@@ -340,19 +342,15 @@ fn native(args: &[String]) {
             exit(1);
         }
     };
-    // Compile mode requires a clean static analysis pass; print diagnostics
-    // and bail out otherwise.
     let checked = match typeck::check_program(&source, &root) {
         Ok(checked) => checked,
         Err(errors) => {
             for error in &errors {
                 print!("{}{}", error.display(&source), nl());
             }
-            eprintln!("{} compile-mode error(s)", errors.len());
             exit(1);
         }
     };
-    // Lower the checked program to TIR and register the native entry points.
     let lowered = match unvm::tir::TirProgram::lower(&source, &root, &checked) {
         Ok(program) => program,
         Err(error) => {
@@ -439,7 +437,6 @@ fn check(args: &[String]) {
             for error in &errors {
                 print!("{}{}", error.display(&source), nl());
             }
-            eprintln!("{} compile-mode error(s)", errors.len());
             exit(1);
         }
     }
@@ -484,12 +481,10 @@ fn obj_cmd(args: &[String]) {
     };
     let output = output.unwrap_or_else(|| format!("{input}.obj"));
 
-    // Needed for `io.write(...)` and friends to be recognized as native calls.
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     native::init(cwd.to_str().unwrap_or("."));
 
     if input.ends_with(".unbc") {
-        // Bytecode path: Int core subset from a precompiled .unbc.
         let bytes = match std::fs::read(input) {            Ok(bytes) => bytes,
             Err(e) => {
                 eprintln!("cannot read {input}: {e}");
@@ -518,7 +513,6 @@ fn obj_cmd(args: &[String]) {
         return;
     }
 
-    // Source path: parse -> optimize -> typeck -> TIR -> .obj (loops included).
     let (source, node) = parse_file(input);
     let root = match optimize(&node) {
         Ok(result) => result.root,
@@ -534,7 +528,6 @@ fn obj_cmd(args: &[String]) {
             for error in &errors {
                 print!("{}{}", error.display(&source), nl());
             }
-            eprintln!("{} compile-mode error(s)", errors.len());
             exit(1);
         }
     };
@@ -559,9 +552,6 @@ fn obj_cmd(args: &[String]) {
     }
 }
 
-/// Locate rustup's stable-x86_64-pc-windows-gnu toolchain (rustc + self-contained
-/// mingw gcc, used as the linker). The default `rustc` on PATH may belong to a
-/// different target (e.g. MSVC), which cannot link GNU object files.
 fn find_gnu_toolchain() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     let toolchains = std::path::Path::new(&home).join(".rustup").join("toolchains");
@@ -570,7 +560,6 @@ fn find_gnu_toolchain() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .collect();
-    // Prefer the repo-standard toolchain explicitly.
     dirs.sort();
     for dir in dirs {
         let gcc = dir
@@ -620,7 +609,6 @@ fn build_cmd(args: &[String]) {
         eprintln!("usage: un build <file.un> [-o out.exe] [--embed]");
         exit(2);
     };
-    // Needed for `io.write(...)` and friends to be recognized as native calls.
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     native::init(cwd.to_str().unwrap_or("."));
     let output = output.unwrap_or_else(|| {
@@ -635,9 +623,6 @@ fn build_cmd(args: &[String]) {
     let driver_path = temp_dir.join(format!("un_build_driver_{}.rs", std::process::id()));
 
     if embed {
-        // --embed: bake the .unbc image into the generated driver and link it
-        // against libunvm.a (the whole VM runtime, statically). Works for any
-        // Un program, not just the Int core subset.
         let program = match runner::compile_source(&Rc::new(read_source(input))) {
             Ok(program) => program,
             Err(runner::RunError::Parse(error)) => {
@@ -686,9 +671,6 @@ fn build_cmd(args: &[String]) {
             .arg("2021")
             .arg("-C")
             .arg(format!("linker={}", gcc.display()))
-            // libunvm.a is placed last by rustc, so GNU ld would never re-scan
-            // the Windows import libraries for its undefined symbols. Repeat
-            // them here, after the static library.
             .arg("-C")
             .arg(format!("link-arg={}", staticlib.display()))
             .arg("-C")
@@ -748,13 +730,7 @@ fn build_cmd(args: &[String]) {
         return;
     }
 
-    // Compile source to TIR and emit the object file into a temp directory.
     let (source, node) = parse_file(input);
-    // The plain Obj native exe links the whole VM runtime, so classes are
-    // supported the same way dynamic objects are: the class-registration
-    // spine (<classes_init>) is baked into the exe and runs once at startup.
-    // Scan the AST for any class declaration; if none, the driver stays
-    // class-free and the .unbc is not embedded.
     fn has_class(node: &unvm::ast::Node) -> bool {
         if node.kind == unvm::ast::NodeKind::Class {
             return true;
@@ -762,9 +738,6 @@ fn build_cmd(args: &[String]) {
         node.children.iter().any(has_class)
     }
     let has_classes = has_class(&node);
-    // Top-level class declarations are the only ones the plain native exe can
-    // register at startup (`<classes_init>` is a flat re-emission); classes
-    // nested inside control flow are rejected with a clear diagnostic.
     let nested_class = node.children.iter().any(|c| {
         c.kind != unvm::ast::NodeKind::Class && has_class(c)
     });
@@ -786,7 +759,6 @@ fn build_cmd(args: &[String]) {
             for error in &errors {
                 print!("{}{}", error.display(&source), nl());
             }
-            eprintln!("{} compile-mode error(s)", errors.len());
             exit(1);
         }
     };
@@ -801,10 +773,6 @@ fn build_cmd(args: &[String]) {
     let temp_dir = std::env::temp_dir();
     let obj_path = temp_dir.join(format!("un_build_{}.obj", std::process::id()));
     let driver_path = temp_dir.join(format!("un_build_driver_{}.rs", std::process::id()));
-    // Bake the class-registration spine (<classes_init>) into the exe when the
-    // program has classes: it runs once at startup to register class templates
-    // in the VM world before un_main() is called. The rest of the .unbc is
-    // never executed here — class behaviour reuses the interpreter path.
     let classes_image: Option<std::path::PathBuf> = if has_classes {
         match runner::compile_source(&source) {
             Ok(mut program) => {
@@ -844,9 +812,6 @@ fn build_cmd(args: &[String]) {
         }
     }
 
-    // Generate the driver: initialise the VM runtime, (optionally) register
-    // the embedded class spine, call un_main(), flush stdout, exit with the
-    // i64 result.
     let driver = match &classes_image {
         Some(image) => format!(
             "extern \"C\" {{\n    fn unrt_init();\n    fn unrt_flush_stdout();\n    fn un_main() -> i64;\n    fn unrt_register_classes(bytes: *const u8, len: usize) -> i32;\n}}\nconst CLASSES_BC: &[u8] = include_bytes!({:?});\nfn main() {{\n    unsafe {{ unrt_init() }};\n    let code = unsafe {{ unrt_register_classes(CLASSES_BC.as_ptr(), CLASSES_BC.len()) }};\n    if code != 0 {{ std::process::exit(1) }};\n    let code = unsafe {{ un_main() }};\n    unsafe {{ unrt_flush_stdout() }};\n    std::process::exit(code as i32)\n}}\n",
@@ -880,8 +845,6 @@ fn build_cmd(args: &[String]) {
         .arg(format!("linker={}", gcc.display()))
         .arg("-C")
         .arg(format!("link-arg={}", obj_path.display()))
-        // libunvm.a comes last from rustc's perspective; repeat the Windows
-        // import libraries so GNU ld can resolve the runtime's references.
         .arg("-C")
         .arg(format!("link-arg={}", staticlib.display()))
         .arg("-C")

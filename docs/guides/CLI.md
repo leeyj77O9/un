@@ -40,6 +40,7 @@ Add that directory to `PATH` if you want to run `un` from anywhere.
 | `un desugar <file.un>` | print the optimized (desugared) AST |
 | `un opt <file.un>` | print the optimizer pass count and the optimized AST |
 | `un help` | usage synopsis |
+| `un lsp` | run the language server over stdio (used by the `un-language` VS Code extension; diagnostics, optional Compile Mode diagnostics, hover, go-to-definition, hierarchical symbols, references, rename, folding, IntelliSense completion + member completion after `.`, signature help, snippets, semantic tokens) |
 
 If the file argument has no extension, `.un` is appended automatically.
 Paths are resolved relative to the current working directory; imported modules
@@ -265,11 +266,73 @@ gcc via `rustc`. If the object imports the VM runtime (e.g. `io.write` from a
 native-eligible path), the link fails with unresolved symbols — the Int core
 currently has no runtime imports, which is what makes standalone builds work.
 
+**Entry semantics.** A plain native executable runs **only** the Un `main`
+function (the entry proto, exported as `un_main`): the module's top-level
+statements are **not** executed, and the process exit code is `main()`'s
+return value. Write the entry logic inside `fn main()`. By contrast,
+`un run` / `un native` / `--embed` use interpreter semantics — the module's
+top-level statements execute once, and `main()` runs only if the file calls
+it explicitly.
+
 With `--embed`, the same command instead bakes the program's `.unbc` image
 into the generated driver and links it against `libunvm.a` (the whole VM
 runtime statically). Embed mode works for **any** Un program — classes,
 collections, IO, string interpolation — and produces a single self-contained
 executable. See `docs/compile/OBJ_MILESTONES.md`.
+
+### `un lsp`
+
+Run a minimal Language Server Protocol server over stdin/stdout (stdio).
+This is what the `un-language` VS Code extension launches as `un lsp`; it is
+not a debugging or execution path. Supported features:
+
+- push diagnostics (`textDocument/publishDiagnostics`) from the lexer/parser —
+  reported as you type, fail-fast (first error only)
+- Compile Mode diagnostics (optional) — pass
+  `initializationOptions: {"compileMode": true}` (or the `un/compileMode`
+  notification with `{enabled: true}`) to also run
+  `lex -> parse -> optimize -> typeck` and report up to 50 type-check errors
+  with spans. This is what the VS Code setting `un.lsp.compileMode` does.
+- `textDocument/completion` — keywords (plus snippets), primitive/language
+  constants, native module names, and definitions collected from the current
+  document. After a `.`, only members of the receiver are suggested: `self.`
+  and instances of a class get that class's methods/properties; native module
+  names (`io`, `math`, ...) get the module's native members; variables whose
+  type is known from an annotation or a literal/constructor (`list[int]`,
+  `"text"`, `[..]`, `{..}`, `set(..)`, `iter.range(..)`, ...) get the
+  built-in type's methods (`str`, `list`, `dict`, `set`, `iter`, `date`,
+  `stopwatch`)
+- `textDocument/signatureHelp` — UDF functions, constructors (`Point(...)`
+  shows `__init__`), native module functions: triggers on `(` and `,`,
+  re-triggers on `,` and `)`
+- `textDocument/definition` — jump to the definition of the identifier under
+  the cursor (functions, extensions, classes, enums, variables)
+- `textDocument/hover` — the declaration line of the symbol under the cursor
+- `textDocument/documentSymbol` — hierarchical outline (class > methods and
+  fields, enum members, module-level symbols; locals inside functions are
+  hidden)
+- `textDocument/references` — all sites of the symbol visible from the cursor,
+  scope-aware (a same-named local binding wins over the module binding;
+  `self` and `super` are excluded)
+- `textDocument/rename` — `WorkspaceEdit` for every site of the symbol
+  visible from the cursor, scope-aware; `self` and `super` cannot be renamed;
+  the new name must be a valid Un identifier
+- `textDocument/foldingRange` — indentation (`Indent`/`Dedent`) fold ranges
+- `textDocument/semanticTokens/full` — AST-based semantic highlighting:
+  classes, enums and their members, functions and methods, parameters,
+  variables, properties (class fields and member accesses after `.`),
+  namespaces (`use` paths and aliases) and type annotations are tagged with
+  the standard `namespace`/`class`/`enum`/`enumMember`/`parameter`/`variable`/
+  `property`/`function`/`type` legend. A member access directly followed by
+  `(` is a call and is tagged `function` (`io.write(...)`, `list.map(...)`,
+  `obj.method(...)`); keywords and punctuation stay with the TextMate grammar
+
+Compile Mode diagnostics are opt-in because compile mode requires fully
+annotated signatures and would produce noise on interpreter-mode programs.
+References and renames only consider the current document; cross-file
+references are not resolved. The implementation has no external dependencies.
+Logs go to stderr, which the VS Code client surfaces in the
+"Un Language Server" output channel.
 
 ## Implementation notes
 

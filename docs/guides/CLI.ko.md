@@ -40,6 +40,7 @@ Windows(GNU 툴체인)에서는 `rust\target\release\un.exe`가 생성됩니다.
 | `un desugar <file.un>` | desugar된 최적화 AST 출력 |
 | `un opt <file.un>` | 옵티마이저 패스 수와 최적화된 AST 출력 |
 | `un help` | 사용법 요약 |
+| `un lsp` | stdin/stdout으로 언어 서버를 실행 (`un-language` VS Code 확장이 사용; 진단, 선택적 Compile Mode 진단, 호버, 정의로 이동, 계층 심볼, 참조 찾기, 이름 변경, 접기, 자동완성(멤버 추천 포함), 시그니처 도움말, 스니펫, semantic tokens) |
 
 파일 인자에 확장자가 없으면 `.un`이 자동으로 붙습니다. 경로는 현재 작업 디렉터리
 기준으로 해석합니다. import되는 모듈은 importing 파일 기준 상대 경로를 먼저 찾고,
@@ -263,11 +264,62 @@ proto는 trap stub으로 정의되어 링크를 유지합니다(호출 시 트�
 VM 런타임을 import하면(예: core 경로에서 `io.write` 호출) 링크가 미해결 심볼로
 실패합니다 — 현재 Int core에는 런타임 import가 없어서 독립 빌드가 가능합니다.
 
+**진입점의 동작.** plain native exe는 Un `main` 함수만 실행합니다(진입 proto를 `un_main`으로 export). 모듈 최상위 문장은 실행되지 않으며, 프로세스 종료 코드는 `main()`의 반환값입니다. 진입 로직은 `fn main()` 안에 써야 합니다. 이에 반해 `un run` / `un native` / `--embed`는 인터프리터 의미론입니다 — 모듈 최상위 문장이 한 번 실행되고, `main()`은 파일이 직접 호출할 때만 실행됩니다.
+
 `--embed`를 쓰면 같은 명령으로 프로그램의 `.unbc` 이미지를 드라이버에 구워
 `libunvm.a`(전체 VM 런타임, 정적 링크)와 함께 링크합니다. embed 모드는
 **모든 Un 프로그램**(class, collection, IO, 문자열 보간 등)에서 완전하게
 동작하며, 단일 자체 완결 실행형을 만듭니다. 자세한 것은
 `docs/compile/OBJ_MILESTONES.md`를 참고하세요.
+
+### `un lsp`
+
+stdin/stdout으로 최소 JSON-RPC 언어 서버(LSP)를 실행합니다. 이것이
+`un-language` VS Code 확장이 `un lsp`로 실행하는 언어 서버이며, 실행이나
+디버그 경로가 아닙니다. 지원 기능:
+
+- 푸시 진단(`textDocument/publishDiagnostics`) — lexer/parser에서 가져온
+  오류를 입력하는 대로 표시(파서 fail-fast, 첫 오류만)
+- Compile Mode 진단(선택) — `initializationOptions: {"compileMode": true}`를
+  넘기거나 `un/compileMode` 알림(`{enabled: true}`)을 보내면
+  `lex → parse → optimize → typeck`를 실행해 스팬이 있는 타입 오류를 최대
+  50개까지 보고합니다. VS Code 설정 `un.lsp.compileMode`가 이 동작을 켭니다.
+- `textDocument/completion` — 키워드(스니펫 포함), 기본 타입/언어 상수,
+  네이티브 모듈 이름, 문서 안에서 수집한 정의 이름. `.` 뒤에는
+  수신자에 따른 멤버만 제안: `self.`와 클래스의 인스턴스(`p.`)에는
+  그 클래스의 메서드/속성, 네이티브 모듈 이름(`io`, `math` 등)에는
+  모듈의 네이티브 멤버 이름이 제안됨. 변수의 타입을 알 수 있으면(어노테이션
+  `list[int]`, 리터럴 `"..."`/`[...]`/`{...}`, 생성자 `set(...)`,
+  `iter.range(...)` 등) 빌트인 타입(`str`, `list`, `dict`, `set`, `iter`,
+  `date`, `stopwatch`)의 메서드도 제안됨
+- `textDocument/signatureHelp` — 사용자가 정의한 함수, 생성자(`Point(` →
+  `__init__`), 네이티브 모듈 함수의 시그니처를 매개변수 목록과 함께
+  표시. `(`와 `,`로 트리거, `,`와 `)`로 재트리거
+- `textDocument/definition` — 커서 아래 식별자의 정의로 이동(함수, 확장
+  함수, 클래스, enum, 변수)
+- `textDocument/hover` — 커서 아래 심볼의 선언 라인 표시
+- `textDocument/documentSymbol` — 계층(클래스 > 메서드/필드, enum 멤버,
+  모듈 레벨 심볼) 아웃라인. 함수 안의 지역 변수는 표시하지 않음
+- `textDocument/references` — 커서에서 보이는 심볼의 모든 위치를
+  스코프 인식으로 반환(같은 이름의 지역 바인딩이 모듈 바인딩보다 우선,
+  `self`와 `super` 제외)
+- `textDocument/rename` — 커서에서 보이는 심볼의 모든 위치에 대한
+  `WorkspaceEdit`를 스코프 인식으로 생성. `self`와 `super`는 이름 변경 불가,
+  새 이름은 유효한 Un 식별자여야 함
+- `textDocument/foldingRange` — 들여쓰기(`Indent`/`Dedent`) 기반 접기 범위
+- `textDocument/semanticTokens/full` — AST 기반 의미 하이라이팅. 클래스,
+  enum과 그 멤버, 함수/메서드, 파라미터, 변수, 속성(클래스 필드 및 `.` 뒤의
+  멤버 접근), 네임스페이스(`use` 경로와 별칭), 타입 어노테이션을
+  `namespace`/`class`/`enum`/`enumMember`/`parameter`/`variable`/`property`/
+  `function`/`type` 범례로 표시. 멤버 접근이 `(` 바로 앞에 오면 호출로
+  간주해 `function`으로 표시(`io.write(...)`, `list.map(...)`,
+  `obj.method(...)`). 키워드와 문장부호는 TextMate 문법이 담당
+
+Compile Mode 진단은 옵트인입니다. 컴파일 모드는 모든 함수에 타입 어노테이션을
+요구하므로 인터프리터 모드 프로그램에는 노이즈가 됩니다. 참조 찾기/이름 변경은
+현재 문서 안에서만 동작하며 파일 교차 참조는 해석하지 않습니다. 외부 의존성이
+없습니다. 로그는 stderr로 나가고, VS Code 클라이언트는 이를
+"Un Language Server" 출력 채널에 표시합니다.
 
 ## 구현 참고
 
