@@ -60,7 +60,7 @@ Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(�
 
 - 백그라운드에서 표현식을 실행하고 `Future`를 반환하는 `go`
 - `Future`를 대기하는 `wait`
-- map과 submit을 제공하는 low.spawn(n) 풀 핸들 (Un은 협업적 싱글스레드 런타임이라 OS 스레드를 만들지 않고, pool.map은 인자마다 결과를 만들지만 호출자 스레드에서 인라인으로 실행됨)
+- map과 submit을 제공하는 `flow.spawn(n)` 풀 핸들 (Un은 협업적 싱글스레드 런타임이라 OS 스레드를 만들지 않고, pool.map은 인자마다 결과를 만들지만 호출자 스레드에서 인라인으로 실행됨)
 
 ### 계획됨
 
@@ -282,7 +282,10 @@ Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일�
   지원하며 `scripts\obj-demo.ps1`이 fib 예제를 링크해 실행까지 검증한다
   (`docs/compile/OBJ_MILESTONES.md`).
 - `un build <file.un> [-o out.exe]`는 위 과정을 명령 하나로 수행해 독립 실행형
-  `.exe`를 만든다 (rustup self-contained mingw gcc로 링크).
+  `.exe`를 만든다 (rustup self-contained mingw gcc로 링크). **plain exe는 `fn main`만 실행한다**
+  — 모듈 최상위 문장은 실행되지 않고 종료 코드는 `main()`의 반환값이다. 이에 반해
+  `un run` / `un native` / `--embed`는 최상위 문장을 실행하고 `main()`은 파일이
+  직접 호출해야 실행된다.
 - `un build --embed <file.un> [-o out.exe]`는 대신 프로그램의 `.unbc` 이미지를
   작은 드라이버에 구워 `libunvm.a`(전체 VM 런타임, 정적으로 링크)와 함께 링크한다.
   이 경로는 **모든 Un 프로그램**(class, collection, IO, 문자열 보간 등 Int core
@@ -293,6 +296,15 @@ Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일�
   (annotated)와 메서드, `__init__`, 상속, 프로퍼티 접근은 VM 브릿지를 통해
   인터프리터와 동일하게 동작한다. 순수 getter property(any 반환 타입)는 거부되며
   `un build --embed`를 써야 한다.
+- `un lsp`는 stdin/stdout으로 LSP 언어 서버를 실행한다. 기본은 lexer/parser
+  오류만 보고하며, Compile Mode 타입 진단은 `initializationOptions.compileMode`
+  또는 `un/compileMode` 알림으로 opt-in한다. Rust를 쓰지 않는 클라이언트도
+  그대로 쓸 수 있으며, 저장소 밖 `C:\dev\un-vscode`에는 이를 사용하는
+  VS Code 확장(`un-language`) 소스가 있다 — 구문 강조 + 실시간 진단, 호버,
+  F12 정의로 이동, 계층 아웃라인(클래스 > 메서드/필드), Shift+F12 참조 찾기,
+   F2 이름 변경, 접기, 자동완성(`.` 멤버추천, 시그니처 도움말, 스니펫 포함), AST 기반 semantic tokens를 제공하며,
+   에디터 안에서 `Un: Run File` 버튼(에디터 제목 바/우클릭/상태 바)으로
+   현재 파일을 바로 `un run`으로 실행할 수 있다.
 
 ### 첫 프로그램
 
@@ -340,8 +352,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
 Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
-포함하지 않는다. 현재 기준은 Positive 47 파일 / 1538 passed / 0 failed / 0 crashed,
-Negative 48 checks 매칭 + 0 documented divergences, Known 0 파일이다.
+포함하지 않는다. 현재 기준은 Positive 48 파일 / 1570 passed / 0 failed / 0 crashed,
+Negative 51 checks 매칭 + 0 documented divergences, Known 0 파일이다. (2026-11-20 재측정)
 
 벤치마크는 `bench/`의 스크립트를 같은 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`와 `results.md`에 저장한다.
@@ -543,9 +555,10 @@ a = go slow(5)
 io.write(wait a)    # 10
 ```
 
-- map과 submit을 제공하는 low.spawn(n) 풀 핸들 (Un은 협업적 싱글스레드 런타임이라 OS 스레드를 만들지 않고, pool.map은 인자마다 결과를 만들지만 호출자 스레드에서 인라인으로 실행됨)
-Future를 돌려준다. 공유 상태를 두고 경쟁이 일어나지 않게 하려면 `atomic.int`/`atomic.bool`
-(예: `counter.inc()`)로 원자 연산을 할 수 있다.
+`flow.spawn(n)`은 map과 submit을 제공하는 풀 핸들을 만든다. 다만 Un은 협업적 싱글스레드
+런타임이라 OS 스레드를 만들지 않는다. `pool.map`은 인자마다 결과를 만들고 `pool.submit`은
+`Future`를 돌려주지만, 실제 실행은 호출자 스레드에서 인라인으로 이루어진다. 공유 상태를 두고
+경쟁이 일어나지 않게 하려면 `atomic.int`/`atomic.bool`(예: `counter.inc()`)로 원자 연산을 할 수 있다.
 
 ```un
 use atomic
@@ -561,7 +574,7 @@ use io
 use flow
 use iter
 
-- map과 submit을 제공하는 low.spawn(n) 풀 핸들 (Un은 협업적 싱글스레드 런타임이라 OS 스레드를 만들지 않고, pool.map은 인자마다 결과를 만들지만 호출자 스레드에서 인라인으로 실행됨)
+using pool = flow.spawn(2)
 r = pool.map(fn(x) -> x * x, 1, 2, 3, 4)
 io.write(list(iter.sorted(r)))   # [1, 4, 9, 16]
 s = pool.submit(fn(x) -> x * 3, (7))
@@ -612,6 +625,7 @@ work()    # start done
 | `flow` | `spawn`(pool 핸들, 협업적 싱글스레드 — 호출자 스레드에서 인라인 실행)과 `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options`, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
+| `types` | `u8`/`u16`/`u32`/`u64`, `i8`/`i16`/`i32`/`i64`, `f32`/`f64` — 고정 폭 정수/실수 변환 생성자. 범위 검사는 변환 시점에만 하고 벗어나면 잡을 수 없는 예외를 발생(출력은 `error: <메시지>`). 이후 연산은 일반 `int`/`float`과 동일(`u64`는 Un int가 i64라 `i64::MAX`까지만 담김). `use types` 필요 — import가 없는 모듈에서는 고정 폭 이름(`u32` 등 포함)이 알 수 없는 타입 어노테이션이 됨 |
 
 컬렉션 메서드로는 `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, 그리고 `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with` 같은 문자열 메서드가 있다.
 
@@ -682,7 +696,7 @@ Un/
 |-- rust/
 |   |-- Cargo.toml
 |   |-- src/
-|   |   |-- main.rs          (CLI 진입점: run/compile/tokens/ast/desugar/opt/dis/dis-reg/plan/help)
+|   |   |-- main.rs          (CLI 진입점: run/compile/check/native/obj/build/lsp/help)
 |   |   |-- lib.rs
 |   |   |-- bytecode/        (opcodes, instruction, Program, Proto, unbc container)
 |   |   |-- lexer.rs / parser.rs / optimize.rs / compiler.rs / vm/ / module.rs

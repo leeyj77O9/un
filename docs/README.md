@@ -288,6 +288,10 @@ runs in the interpreter with identical semantics.
   runs the fib demo (`docs/compile/OBJ_MILESTONES.md`).
 - `un build <file.un> [-o out.exe]` does the same end to end and links the
   object into a standalone executable (via rustup's self-contained mingw gcc).
+  **A plain exe runs only `fn main`** — the module's top-level statements are
+  not executed and the process exit code is `main()`'s return value. By
+  comparison, `un run` / `un native` / `--embed` execute the top-level
+  statements, and `main()` runs only when the file calls it explicitly.
 - `un build --embed <file.un> [-o out.exe]` instead bakes the program's
   `.unbc` image into a tiny generated driver and links it against `libunvm.a`
   (the whole VM runtime, statically). This works for **any** Un program —
@@ -299,6 +303,16 @@ runs in the interpreter with identical semantics.
   inheritance and property access run through the VM bridge with exactly the
   interpreter's semantics. Computed property getters with `any` return types
   are rejected and need `un build --embed`.
+- `un lsp` runs a Language Server Protocol server over stdin/stdout. It reports
+  lexer/parser diagnostics by default; Compile Mode type diagnostics are opt-in
+  via `initializationOptions.compileMode` or the `un/compileMode` notification.
+  Any client may speak to it; the `C:\dev\un-vscode` folder holds the
+  `un-language` VS Code extension that launches it — syntax highlighting plus
+  live diagnostics, hover, F12 go-to-definition, hierarchical outlines
+  (class > methods/fields), Shift+F12 references, F2 rename, folding,
+    completion (with member completion after `.`, signature help, and snippets),
+     and AST-based semantic tokens. The extension adds an `Un: Run File` button (editor title bar / right-click / status bar) that saves
+   the current file and runs it in a terminal as `un run <file>`.
 
 ### First program
 
@@ -346,8 +360,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
-The current baseline is Positive 47 files / 1538 passed / 0 failed / 0 crashed,
-Negative 48 checks matched + 0 documented divergences, and Known 0 files.
+The current baseline is Positive 48 files / 1570 passed / 0 failed / 0 crashed,
+Negative 51 checks matched + 0 documented divergences, and Known 0 files
+(re-measured 2026-11-20).
 
 The benchmark scripts in `bench/` are measured with warmup, repeated runs, and
 statistics, and saved to `bench/results/<timestamp>/results.csv` and `results.md`.
@@ -633,6 +648,7 @@ work()    # start done
 | `flow` | `spawn` (pool handle, cooperative single-thread: inline execution) and `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options`, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
+| `types` | `u8`/`u16`/`u32`/`u64`, `i8`/`i16`/`i32`/`i64`, `f32`/`f64` — fixed-width integer/float constructors. Range checks happen at conversion time only; out-of-range values raise the uncatchable error panic (printed as `error: <message>`). Afterwards they behave like ordinary `int`/`float` (and `u64` is capped at `i64::MAX` because Un ints are signed 64-bit). `use types` is required — in a module without the import, all fixed-width names (including `u32` etc.) are unknown type annotations |
 
 Collection methods include `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, and string methods such as `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with`.
 
@@ -707,7 +723,7 @@ Un/
 |-- rust/
 |   |-- Cargo.toml
 |   |-- src/
-|   |   |-- main.rs          (CLI entry: run/compile/tokens/ast/desugar/opt/dis/dis-reg/plan/help)
+|   |   |-- main.rs          (CLI entry: run/compile/check/native/obj/build/lsp/help)
 |   |   |-- lib.rs
 |   |   |-- bytecode/        (opcodes, instruction, Program, Proto, unbc container)
 |   |   |-- lexer.rs / parser.rs / optimize.rs / compiler.rs / vm/ / module.rs

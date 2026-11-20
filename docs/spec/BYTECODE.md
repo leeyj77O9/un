@@ -207,7 +207,7 @@ proto table   : count u32 + protos
 8. pattern 중첩 깊이 ≤ 64 (`MAX_PATTERN_DEPTH`).
 
 손상된 입력은 panic/abort가 아니라 exit 1 + 명확한 오류 메시지로 거부된다.
-`unbc-roundtrip.ps1 -IncludeNegative`가 Positive 48/48, compilable Negative 41/41을 검증한다.
+`unbc-roundtrip.ps1 -IncludeNegative`가 Positive 48/48, compilable Negative 42/42을 검증한다.
 
 ## 8. JIT와의 관계
 

@@ -984,6 +984,9 @@ C# `Evaluator.cs` 인용과 존재하지 않는 opcode 이름은 제거.
 
 ## 최종 상태
 
--build/warning 0, `cargo test --release --workspace` **223 passed**(lib 218 + playground 5).
+-build/warning 0, `cargo test --release --workspace` **227 passed**(lib 219 + playground 8).
+-감사 후 사용자가 `0c0cf4a`(use import 스코프), `9a05f66`(playground typeck ABI)를 별도 커밋하면서
+  기준값이 Negative 50→51, differential 98→99, roundtrip negative 41→42로 이동했다.
+  위 문서 수치는 이 변경을 반영한 값이며, Part II의 측정값은 당시 기록으로 보존한다.
 -모든 게이트 green, JIT 성능 회복 확인.
 -감사 보고서의 원래 발견사항은 보존했고, 이 Part III이 수정 사실을 명시한다.
