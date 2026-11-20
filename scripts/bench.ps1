@@ -3,7 +3,7 @@
     Un 벤치마크 러너. C:\dev\un 에서 실행한다.
 
 .DESCRIPTION
-    bench/*.un(Un VM / Un JIT), bench/python/*.py(CPython), bench/node/*.mjs(Node.js)를
+    bench/*.un(Un VM / Un JIT / Compile Mode / standalone exe), bench/python/*.py(CPython), bench/node/*.mjs(Node.js)를
     같은 알고리즘/입력/검증으로 실행하고, 레이블별로 짝지어 비교한다.
 
     측정 규칙:
@@ -21,13 +21,14 @@
     group은 언어 레인을, Only는 벤치마크를 고른다.
 
 .PARAMETER Group
-    all(기본) | un | unvm | unjit | unnative | native | node | python
-    all      = Un VM + Un JIT + Python + Node
+    all(기본) | un | unvm | unjit | unnative | unbuild | native | node | python
+    all      = Un VM + Un JIT + Compile Mode(un native) + standalone exe(un build) + Python + Node
     un       = Un JIT만 (하위 호환)
     unvm     = Un VM만 (UV_JIT=0)
     unjit    = Un JIT만 (기본 런타임)
-    unnative = 컴파일 모드만 (`un native`) — 결과는 unjit 컬럼에 담는다
-    native   = unnative의 별칭
+    unnative = Compile Mode (`un native`)만 — 별도 컬럼에 기록
+    unbuild  = standalone native exe (`un build`)만 — 빌드 가능한 벤치만 해당
+    native   = unnative + unbuild (compile mode 전체)
     node     = Node만
     python   = Python만
 
@@ -91,6 +92,29 @@ function Parse-BenchLine([string]$line) {
     }
 }
 
+function Parse-BareBench([string]$text, [int]$iters, [int]$reps, [int]$warmup) {
+    # Compile-mode fixtures are self-timed and print bare millisecond values
+    # (one per repetition); synthesize a BENCH-shaped record for the tables.
+    $samples = @()
+    foreach ($line in ($text -split "`n")) {
+        $v = 0.0
+        $t = $line.Trim()
+        if ($t -and [double]::TryParse($t, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$v)) { $samples += $v }
+    }
+    if ($samples.Count -eq 0) { return $null }
+    $sorted = @($samples | Sort-Object)
+    $sum = 0.0; foreach ($v in $sorted) { $sum += $v }
+    $avg = $sum / $sorted.Count
+    $dev = 0.0; foreach ($v in $sorted) { $dev += ($v - $avg) * ($v - $avg) }
+    $median = $sorted[[int]($sorted.Count / 2)]
+    return @{
+        iters = $iters; reps = $samples.Count; warmup = $warmup
+        min = $sorted[0]; median = $median; avg = $avg
+        max = $sorted[$sorted.Count - 1]; stddev = [math]::Sqrt($dev / $sorted.Count)
+        ops = if ($median -gt 0) { 1000.0 / $median } else { 0.0 }
+    }
+}
+
 function Parse-MemLine([string]$line) {
     $i = $line.IndexOf("MEM|")
     if ($i -lt 0) { return $null }
@@ -132,6 +156,31 @@ function Invoke-UnNative([string]$path) {
     return @{ code = $code; text = ($out -join "`n") }
 }
 
+function Invoke-BuildExe([string]$source, [string]$exePath) {
+    # Compile a plain standalone exe, run it 7 times and parse the bare float
+    # each run prints (ms per workload unit). The dedicated .un fixture avoids
+    # bench.harness/assert imports because those are outside the plain-exe core.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $Exe build $source -o $exePath *> $null
+    if ($LASTEXITCODE -ne 0) {
+        $ErrorActionPreference = $prev
+        return @{ code = $LASTEXITCODE; text = "" }
+    }
+    & $exePath *> $null   # warmup
+    $text = ""
+    for ($r = 0; $r -lt 7; $r++) {
+        $out = & $exePath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $ErrorActionPreference = $prev
+            return @{ code = $LASTEXITCODE; text = ($out -join "`n") }
+        }
+        $text += ($out -join "`n") + "`n"
+    }
+    $ErrorActionPreference = $prev
+    return @{ code = 0; text = $text }
+}
+
 function Invoke-Node([string]$path) {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -153,10 +202,10 @@ function Invoke-Python([string]$path, [string]$pythonExe) {
 # ---------- 측정 항목 ----------
 # Un/Node/Python이 같은 알고리즘/입력/기대값을 쓰는 트리플이다.
 $Pairs = @(
-    [pscustomobject]@{ label = "int_ops";        un = "bench/int_ops.un";   node = "bench/node/int_ops.mjs";   python = "bench/python/int_ops.py" }
-    [pscustomobject]@{ label = "fib24";          un = "bench/fib.un";       node = "bench/node/fib.mjs";       python = "bench/python/fib.py" }
-    [pscustomobject]@{ label = "native_fib24";   un = "bench/native_fib.un"; node = "bench/node/fib.mjs";      python = "bench/python/fib.py" }
-    [pscustomobject]@{ label = "nested_sum_200"; un = "bench/loop.un";      node = "bench/node/loop.mjs";     python = "bench/python/loop.py" }
+    [pscustomobject]@{ label = "int_ops";        un = "bench/int_ops.un";   native = "bench/native_int_ops.un"; exe = "bench/native_int_ops.un"; node = "bench/node/int_ops.mjs";   python = "bench/python/int_ops.py" }
+    [pscustomobject]@{ label = "fib24";          un = "bench/fib.un";       native = "bench/native_fib_exe.un"; exe = "bench/native_fib_exe.un"; node = "bench/node/fib.mjs";       python = "bench/python/fib.py" }
+    [pscustomobject]@{ label = "native_fib24";   un = "bench/native_fib.un"; native = "bench/native_fib_exe.un"; exe = "bench/native_fib_exe.un"; node = "bench/node/fib.mjs";      python = "bench/python/fib.py" }
+    [pscustomobject]@{ label = "nested_sum_200"; un = "bench/loop.un";      native = "bench/native_loop.un"; exe = "bench/native_loop.un"; node = "bench/node/loop.mjs";     python = "bench/python/loop.py" }
     [pscustomobject]@{ label = "qsort500";       un = "bench/sort.un";      node = "bench/node/sort.mjs";     python = "bench/python/sort.py" }
     [pscustomobject]@{ label = "mergesort1000";  un = "bench/mergesort.un"; node = "bench/node/mergesort.mjs"; python = "bench/python/mergesort.py" }
     [pscustomobject]@{ label = "rle1994";        un = "bench/string.un";    node = "bench/node/string.mjs";   python = "bench/python/string.py" }
@@ -188,18 +237,19 @@ if ($Only -ne "") {
 $eachMode = @()
 foreach ($g in ($Group -split ',' | ForEach-Object { $_.Trim().ToLower() })) {
     switch ($g) {
-        "all"   { $eachMode += @("unvm", "unjit", "python", "node") }
+        "all"   { $eachMode += @("unvm", "unjit", "python", "node", "unnative", "unbuild") }
         "un"    { $eachMode += "unjit" }   # 하위 호환: un == unjit
         "unvm"  { $eachMode += "unvm" }
         "unjit" { $eachMode += "unjit" }
         # compile-mode(`un native`): 정적분석(컴파일) 기반 네이티브 경로만 별도로 측정한다.
         # 결과는 unjit 컬럼에 담지만 -Group 이름은 native/unnative로 선택한다.
         "unnative" { $eachMode += "unnative" }
-        "native"   { $eachMode += "unnative" }
+        "unbuild"  { $eachMode += "unbuild" }
+        "native"   { $eachMode += @("unnative", "unbuild") }
         "node"  { $eachMode += "node" }
         "python"{ $eachMode += "python" }
         default {
-            Write-Host "unknown group: $g (valid: all | un | unvm | unjit | unnative | native | node | python)"
+            Write-Host "unknown group: $g (valid: all | un | unvm | unjit | unnative | unbuild | native | node | python)"
             exit 2
         }
     }
@@ -285,12 +335,13 @@ foreach ($line in $EnvLines) { Write-Host $line }
 # ---------- 실행 ----------
 $Failures = 0
 $Rows = @()
+$compileOnly = -not @($eachMode | Where-Object { $_ -notin @("unnative", "unbuild") }).Count
 
 foreach ($p in $Pairs) {
     $row = [pscustomobject]@{
-        label = $p.label; unvm = $null; unjit = $null; python = $null; node = $null; memNode = $null; memPython = $null
-        unvmCode = "n/a"; unjitCode = "n/a"; pyCode = "n/a"; nodeCode = "n/a"
-        unvmValid = "skipped"; unjitValid = "skipped"; pyValid = "skipped"; nodeValid = "skipped"
+        label = $p.label; unvm = $null; unjit = $null; compile = $null; build = $null; python = $null; node = $null; memNode = $null; memPython = $null
+        unvmCode = "n/a"; unjitCode = "n/a"; compileCode = "n/a"; buildCode = "n/a"; pyCode = "n/a"; nodeCode = "n/a"
+        unvmValid = "skipped"; unjitValid = "skipped"; compileValid = "skipped"; buildValid = "skipped"; pyValid = "skipped"; nodeValid = "skipped"
     }
     if ($eachMode -contains "unvm") {
         $r = Invoke-Un $p.un $true
@@ -299,12 +350,32 @@ foreach ($p in $Pairs) {
         foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.unvm = $b } }
     }
     if ($eachMode -contains "unnative") {
-        # compile mode(`un native`)만 측정한다. 바이트코드 JIT 경로는 건드리지 않고 결과를
-        # unjit 계열 칸에 채운다.
-        $r = Invoke-UnNative $p.un
-        $row.unjitCode = $r.code; $row.unjitValid = Get-Validation $r.text
-        if ($r.code -ne 0) { Write-Host "[BAD]  native $($p.un) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }
-        foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.unjit = $b } }
+        # Compile Mode (un native): separate column, never overwrites unjit.
+        $r = Invoke-UnNative $(if ($p.native) { $p.native } else { $p.un })
+        $row.compileCode = $r.code; $row.compileValid = Get-Validation $r.text
+        if ($r.code -ne 0) {
+            if ($r.text -match "compile error:") {
+                # Dynamic/untyped workloads are intentionally outside compile mode.
+                $row.compileValid = "compile-rejected (skipped)"
+            } else {
+                Write-Host "[BAD]  native $($p.un) exit=$($r.code)" -ForegroundColor Red; $Failures += 1
+            }
+        }
+        foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.compile = $b } }
+        if (-not $row.compile -and $r.code -eq 0) {
+            $row.compile = Parse-BareBench $r.text 1 7 2
+            if ($row.compile) { $row.compileValid = "self-timed (no asserts)" }
+        }
+    }
+    if ($eachMode -contains "unbuild" -and $p.exe) {
+        $exePath = Join-Path $env:TEMP ("un_bench_" + $p.label + "_" + [guid]::NewGuid().ToString("N") + ".exe")
+        $r = Invoke-BuildExe $p.exe $exePath
+        $row.buildCode = $r.code; $row.buildValid = if ($r.code -eq 0) { "n/a (exe)" } else { "failed" }
+        if ($r.code -ne 0) { Write-Host "[BAD]  build $($p.exe) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }
+        if ($r.code -eq 0) {
+            $row.build = Parse-BareBench $r.text 1 7 1
+        }
+        if (Test-Path $exePath) { Remove-Item $exePath -Force -ErrorAction SilentlyContinue }
     }
     if ($eachMode -contains "unjit") {
         $r = Invoke-Un $p.un $false
@@ -330,7 +401,7 @@ foreach ($p in $Pairs) {
             $m = Parse-MemLine $line; if ($m) { $row.memNode = $m }
         }
     }
-    if (-not $row.unvm -and -not $row.unjit -and -not $row.python -and -not $row.node) {
+    if (-not $compileOnly -and -not $row.unvm -and -not $row.unjit -and -not $row.compile -and -not $row.build -and -not $row.python -and -not $row.node) {
         Write-Host "[BAD]  no BENCH line for $($p.label)" -ForegroundColor Red
         $Failures += 1
     }
@@ -339,13 +410,13 @@ foreach ($p in $Pairs) {
 
 # ---------- 지표 계산 ----------
 function ItersOf($row) {
-    foreach ($k in @("unjit", "unvm", "python", "node")) {
+    foreach ($k in @("unjit", "compile", "build", "unvm", "python", "node")) {
         if ($row.$k) { return $row.$k.iters }
     }
     return 0
 }
 function BitOf($row) {
-    foreach ($k in @("unjit", "unvm", "python", "node")) {
+    foreach ($k in @("unjit", "compile", "build", "unvm", "python", "node")) {
         if ($row.$k) { return @{ reps = $row.$k.reps; warmup = $row.$k.warmup } }
     }
     return @{ reps = 0; warmup = 0 }
@@ -367,8 +438,8 @@ function Geomean([double[]]$values) {
 
 # ---------- 표 ----------
 Write-Host ""
-Write-Host ("{0,-15} {1,6} {2,10} {3,10} {4,10} {5,10} {6,8} {7,8} {8,8} {9,8}" -f `
-    "label", "iters", "un vm(ms)", "un jit(ms)", "python(ms)", "node(ms)", "vm/py", "jit/py", "jit/node", "py/node")
+Write-Host ("{0,-15} {1,6} {2,10} {3,10} {4,11} {5,9} {6,10} {7,10} {8,8} {9,8} {10,8} {11,8}" -f `
+    "label", "iters", "un vm(ms)", "un jit(ms)", "native(ms)", "exe(ms)", "python(ms)", "node(ms)", "vm/py", "jit/py", "jit/node", "py/node")
 
 function FmtOrNA($v, $f) {
     if ($null -eq $v) { return "n/a" }
@@ -386,11 +457,14 @@ foreach ($row in $Rows) {
     $rPYN   = RatioOf $row.python $row.node
     $vmMedian = MedianOf $row.unvm
     $jitMedian = MedianOf $row.unjit
+    $compileMedian = MedianOf $row.compile
+    $buildMedian = MedianOf $row.build
     $pyMedian = MedianOf $row.python
     $nodeMedian = MedianOf $row.node
-    Write-Host ("{0,-15} {1,6} {2,10} {3,10} {4,10} {5,10} {6,8} {7,8} {8,8} {9,8}" -f `
+    Write-Host ("{0,-15} {1,6} {2,10} {3,10} {4,11} {5,9} {6,10} {7,10} {8,8} {9,8} {10,8} {11,8}" -f `
         $row.label, (ItersOf $row),
         (FmtOrNA $vmMedian "F3"), (FmtOrNA $jitMedian "F3"),
+        (FmtOrNA $compileMedian "F3"), (FmtOrNA $buildMedian "F3"),
         (FmtOrNA $pyMedian "F3"), (FmtOrNA $nodeMedian "F3"),
         (FmtOrNA $rVMPY "F3"), (FmtOrNA $rJITPY "F3"), (FmtOrNA $rJITN "F3"), (FmtOrNA $rPYN "F3"))
 }
@@ -421,23 +495,27 @@ if ($PreviousCsv -and (Test-Path $PreviousCsv)) {
     }
     $iUnjit = & $colFor "unjit_median_ms"
     if ($null -eq $iUnjit) { $iUnjit = & $colFor "un_median_ms" }   # 이전 포맷 폴백
+    $iCompile = & $colFor "compile_median_ms"
+    $iBuild = & $colFor "build_median_ms"
     $iPython = & $colFor "python_median_ms"
     $iNode = & $colFor "node_median_ms"
     foreach ($line in ($prevLines | Select-Object -Skip 1)) {
         $parts = $line -split ","
         if ($parts.Count -lt 10) { continue }
         $get = { param($idx) if ($null -eq $idx) { $null } else { $v = $parts[$idx]; if ($v -match '^-?\d+(\.\d+)?$') { [double]::Parse($v, [System.Globalization.CultureInfo]::InvariantCulture) } else { $null } } }
-        $prev[$parts[0]] = @{ unjit = (& $get $iUnjit); python = (& $get $iPython); node = (& $get $iNode) }
+        $prev[$parts[0]] = @{ unjit = (& $get $iUnjit); compile = (& $get $iCompile); build = (& $get $iBuild); python = (& $get $iPython); node = (& $get $iNode) }
     }
     foreach ($row in $Rows) {
         if (-not $prev.ContainsKey($row.label)) { continue }
         $p = $prev[$row.label]
         $cur = @{
             unjit = if ($row.unjit) { $row.unjit.median } else { $null }
+            compile = if ($row.compile) { $row.compile.median } else { $null }
+            build = if ($row.build) { $row.build.median } else { $null }
             python = if ($row.python) { $row.python.median } else { $null }
             node = if ($row.node) { $row.node.median } else { $null }
         }
-        foreach ($lang in @("unjit", "python", "node")) {
+        foreach ($lang in @("unjit", "compile", "build", "python", "node")) {
             if ($null -ne $cur[$lang] -and $null -ne $p[$lang] -and $p[$lang] -gt 0) {
                 $change = ($cur[$lang] - $p[$lang]) / $p[$lang] * 100.0
                 $Comparisons += [pscustomobject]@{ label = $row.label; lang = $lang; pct = $change }
@@ -460,13 +538,13 @@ if ($Comparisons.Count -gt 0) {
 
 # ---------- 저장 ----------
 $Csv = @()
-$Header = "label,iters,reps,warmup,unvm_min_ms,unvm_median_ms,unvm_avg_ms,unvm_max_ms,unvm_stddev_ms,unvm_ops,unjit_min_ms,unjit_median_ms,unjit_avg_ms,unjit_max_ms,unjit_stddev_ms,unjit_ops,python_min_ms,python_median_ms,python_avg_ms,python_max_ms,python_stddev_ms,python_ops,node_min_ms,node_median_ms,node_avg_ms,node_max_ms,node_stddev_ms,node_ops,python_heap_delta_mb,python_heap_mb,node_heap_delta_mb,unvm_validation,unjit_validation,python_validation,node_validation"
+$Header = "label,iters,reps,warmup,unvm_min_ms,unvm_median_ms,unvm_avg_ms,unvm_max_ms,unvm_stddev_ms,unvm_ops,unjit_min_ms,unjit_median_ms,unjit_avg_ms,unjit_max_ms,unjit_stddev_ms,unjit_ops,compile_min_ms,compile_median_ms,compile_avg_ms,compile_max_ms,compile_stddev_ms,compile_ops,build_min_ms,build_median_ms,build_avg_ms,build_max_ms,build_stddev_ms,build_ops,python_min_ms,python_median_ms,python_avg_ms,python_max_ms,python_stddev_ms,python_ops,node_min_ms,node_median_ms,node_avg_ms,node_max_ms,node_stddev_ms,node_ops,python_heap_delta_mb,python_heap_mb,node_heap_delta_mb,unvm_validation,unjit_validation,compile_validation,build_validation,python_validation,node_validation"
 $Csv += $Header
 
 foreach ($row in $Rows) {
     $b = BitOf $row
     $cells = @($row.label, (ItersOf $row), $b.reps, $b.warmup)
-    foreach ($k in @("unvm", "unjit", "python", "node")) {
+    foreach ($k in @("unvm", "unjit", "compile", "build", "python", "node")) {
         $v = $row.$k
         if ($null -ne $v) {
             $sMin = Fmt $v.min "F6"; $sMed = Fmt $v.median "F6"; $sAvg = Fmt $v.avg "F6"
@@ -479,7 +557,7 @@ foreach ($row in $Rows) {
     $cells += $(if ($row.memPython) { Fmt $row.memPython.delta "F3" } else { "n/a" })
     $cells += $(if ($row.memPython) { Fmt $row.memPython.heap "F3" } else { "n/a" })
     $cells += $(if ($row.memNode) { Fmt $row.memNode.delta "F3" } else { "n/a" })
-    $cells += @($row.unvmValid, $row.unjitValid, $row.pyValid, $row.nodeValid)
+    $cells += @($row.unvmValid, $row.unjitValid, $row.compileValid, $row.buildValid, $row.pyValid, $row.nodeValid)
     $Csv += ($cells -join ",")
 }
 
@@ -492,8 +570,9 @@ $Json = @{
     rows     = $Rows | ForEach-Object {
         @{
             label = $_.label
-            unvm  = $_.unvm; unjit = $_.unjit; python = $_.python; node = $_.node
+            unvm  = $_.unvm; unjit = $_.unjit; compile = $_.compile; build = $_.build; python = $_.python; node = $_.node
             unvmValidation = $_.unvmValid; unjitValidation = $_.unjitValid
+            compileValidation = $_.compileValid; buildValidation = $_.buildValid
             pythonValidation = $_.pyValid; nodeValidation = $_.nodeValid
         }
     }
@@ -512,8 +591,8 @@ if (-not $NoSave) {
     $firstBit = BitOf $Rows[0]
     $Md += "- 측정: warmup=$($firstBit.warmup), reps=$($firstBit.reps), 중앙값 비교"
     $Md += ""
-    $Md += "| label | iters | Un VM (ms) | Un JIT (ms) | Python (ms) | Node (ms) | JIT/Python | JIT/Node |"
-    $Md += "|---|---|---:|---:|---:|---:|---:|---:|"
+    $Md += "| label | iters | Un VM (ms) | Un JIT (ms) | Native (ms) | Exe (ms) | Python (ms) | Node (ms) | JIT/Python | JIT/Node |"
+    $Md += "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"
     foreach ($row in $Rows) {
         $b = BitOf $row
         $rVMPY = RatioOf $row.unvm $row.python
@@ -523,6 +602,8 @@ if (-not $NoSave) {
             $row.label, (ItersOf $row),
             $(if ($row.unvm) { Fmt $row.unvm.median "F4" } else { "n/a" }),
             $(if ($row.unjit) { Fmt $row.unjit.median "F4" } else { "n/a" }),
+            $(if ($row.compile) { Fmt $row.compile.median "F4" } else { "n/a" }),
+            $(if ($row.build) { Fmt $row.build.median "F4" } else { "n/a" }),
             $(if ($row.python) { Fmt $row.python.median "F4" } else { "n/a" }),
             $(if ($row.node) { Fmt $row.node.median "F4" } else { "n/a" }),
             $(if ($rJITPY) { Fmt $rJITPY "F3" } else { "n/a" }),
@@ -548,6 +629,15 @@ $geoJitN   = Geomean $jitVsNode
 $geoVmPy   = Geomean $vmVsPy
 $geoVmN    = Geomean $vmVsNode
 $geoPyN    = Geomean $pyVsNode
+$jitVsCompile = @(); $jitVsBuild = @()
+foreach ($row in $Rows) {
+    # RatioOf candidate baseline => baseline/candidate. 라벨이 "JIT / Compile",
+    # "JIT / Exe"이므로 candidate에 compile/build를 넣어야 JIT가 분자가 된다.
+    $c = RatioOf $row.compile $row.unjit; if ($c) { $jitVsCompile += $c }
+    $d = RatioOf $row.build   $row.unjit; if ($d) { $jitVsBuild += $d }
+}
+$geoJitCompile = Geomean $jitVsCompile
+$geoJitBuild   = Geomean $jitVsBuild
 Write-Host ""
 Write-Host "Geomean ratios (>1 = first language is faster):"
 Write-Host ("{0,-12} {1}" -f "Un JIT / Python", $(if ($geoJitPy) { Fmt $geoJitPy "F3" } else { "n/a" }))
@@ -555,6 +645,8 @@ Write-Host ("{0,-12} {1}" -f "Un JIT / Node",   $(if ($geoJitN) { Fmt $geoJitN "
 Write-Host ("{0,-12} {1}" -f "Un VM / Python",  $(if ($geoVmPy) { Fmt $geoVmPy "F3" } else { "n/a" }))
 Write-Host ("{0,-12} {1}" -f "Un VM / Node",    $(if ($geoVmN) { Fmt $geoVmN "F3" } else { "n/a" }))
 Write-Host ("{0,-12} {1}" -f "Python / Node",   $(if ($geoPyN) { Fmt $geoPyN "F3" } else { "n/a" }))
+Write-Host ("{0,-12} {1}" -f "JIT / Compile",  $(if ($geoJitCompile) { Fmt $geoJitCompile "F3" } else { "n/a" }))
+Write-Host ("{0,-12} {1}" -f "JIT / Exe",      $(if ($geoJitBuild) { Fmt $geoJitBuild "F3" } else { "n/a" }))
 
 # ---------- BENCHMARK.md 재생성 ----------
 if ($Report) {
@@ -574,6 +666,8 @@ if ($Report) {
             $row.label, (ItersOf $row),
             $(if ($row.unvm) { Fmt $row.unvm.median "F4" } else { "N/A" }),
             $(if ($row.unjit) { Fmt $row.unjit.median "F4" } else { "N/A" }),
+            $(if ($row.compile) { Fmt $row.compile.median "F4" } else { "N/A" }),
+            $(if ($row.build) { Fmt $row.build.median "F4" } else { "N/A" }),
             $(if ($row.python) { Fmt $row.python.median "F4" } else { "N/A" }),
             $(if ($row.node) { Fmt $row.node.median "F4" } else { "N/A" }),
             $(if ($sJITPY) { Fmt $sJITPY "F3" } else { "N/A" }),
@@ -593,7 +687,7 @@ if ($Report) {
     $out += ""
     $out += "| 노드 | 내용 |"
     $out += "|---|---|"
-    $out += "| 측정 언어 | Un VM (UV_JIT=0), Un JIT(기본), CPython, Node.js |"
+    $out += "| 측정 언어 | Un VM (UV_JIT=0), Un JIT(기본), Compile Mode(un native), standalone exe(un build), CPython, Node.js |"
     $out += "| 측정 방식 | 워밍업 2회 → reps=7회 개별 측정, Median 비교 |"
     $out += "| 저장 위치 | bench/results/<timestamp>/results.csv, results.json, results.md |"
     $out += "| 보고서 | 이 문서(BENCHMARK.md)은 -Report로 자동 생성된다 |"
@@ -629,8 +723,8 @@ if ($Report) {
     $out += ""
     $out += "## 4. Results (all)"
     $out += ""
-    $out += "| Benchmark | iters | Un VM (ms) | Un JIT (ms) | Python (ms) | Node (ms) | JIT/Python | JIT/Node |"
-    $out += "|---|---:|---:|---:|---:|---:|---:|---:|"
+    $out += "| Benchmark | iters | Un VM (ms) | Un JIT (ms) | Native (ms) | Exe (ms) | Python (ms) | Node (ms) | JIT/Python | JIT/Node |"
+    $out += "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     foreach ($row in $Rows) {
         $cells = & $BenchRow $row
         $out += ("| " + ($cells -join " | ") + " |")
@@ -650,7 +744,7 @@ if ($Report) {
         $out += "|---|---:|---:|---:|---:|---:|---:|---:|"
         foreach ($member in $cat.members) {
             $r = $Rows | Where-Object { $_.label -eq $member } | Select-Object -First 1
-            if ($null -eq $r) { $out += "| $member | N/A | N/A | N/A | N/A | N/A | N/A | N/A |"; continue }
+            if ($null -eq $r) { $out += "| $member | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |"; continue }
             $cells = & $BenchRow $r
             $out += ("| " + ($cells -join " | ") + " |")
         }
@@ -676,8 +770,8 @@ if ($Report) {
     $out += ""
     $out += "## 12. Overall Comparison"
     $out += ""
-    $out += "| Benchmark | iters | Un VM (ms) | Un JIT (ms) | Python (ms) | Node (ms) | JIT/Python | JIT/Node |"
-    $out += "|---|---:|---:|---:|---:|---:|---:|---:|"
+    $out += "| Benchmark | iters | Un VM (ms) | Un JIT (ms) | Native (ms) | Exe (ms) | Python (ms) | Node (ms) | JIT/Python | JIT/Node |"
+    $out += "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     foreach ($row in $Rows) {
         $cells = & $BenchRow $row
         $out += ("| " + ($cells -join " | ") + " |")

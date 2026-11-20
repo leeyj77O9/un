@@ -1,0 +1,23 @@
+use io
+use time
+
+# nested_sum_200의 compile-mode 대응 벤치: 중첩 for 1..size + 곱셈만 사용.
+# 7회 실행 후 회당 ms 출력.
+
+fn nested_sum(size: int) -> int
+    total = 0
+    for i in 1..size + 1
+        for j in 1..size + 1
+            total += i * j
+    -> total
+
+fn main() -> int
+    start = time.monotonic()
+    r = 0
+    while r < 700
+        nested_sum(200)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 700.0)
+    -> 0
+
+main()

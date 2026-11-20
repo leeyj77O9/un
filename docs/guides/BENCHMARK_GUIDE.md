@@ -11,11 +11,22 @@ the same expected values*, and are self-validating before they measure:
 - Node.js: `bench/node/<name>.mjs` — validated with `node:assert/strict`, prints `=== Verify: ok ===`
 - Python: `bench/python/<name>.py` — validated with plain `assert`, prints `=== Verify: ok ===`
 
+Two extra compile-mode lanes are measured for the typed self-timed fixtures
+(`bench/native_<name>.un`): `un native` (Compile Mode) and a standalone exe
+built with `un build`. Those fixtures print bare millisecond values instead of
+`BENCH|` lines and skip assertion validation; dynamic/untyped workloads show
+`N/A` in the compile columns (they are outside the compile-mode subset).
+
 ## Running benchmarks
 
 ```powershell
-# All lanes (Un VM + Un JIT + Python + Node), save under bench/results/<timestamp>/
+# All lanes (Un VM + Un JIT + Compile Mode + standalone exe + Python + Node), save under bench/results/<timestamp>/
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1
+
+# Compile-mode lanes only (un native + plain un build exe)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1 -Group native
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1 -Group unnative
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1 -Group unbuild
 
 # One or more lanes (comma-separated combos possible)
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1 -Group unjit

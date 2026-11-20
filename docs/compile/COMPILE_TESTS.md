@@ -48,6 +48,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | `test/compile/matches.un` | match exhaustiveness 분석 — bool true/false arm·int arm·`_` wildcard·none arm을 포함한 exhaustive match 표기; interpreter와 `un native`가 바이트 동일 |
 | `bench/native_fib.un` | 어노테이션된 fib 벤치마크 (native 경로 확인 및 `scripts/compile-bench.ps1` 입력) |
 | `bench/native_fib_exe.un` | plain `un build` exe 벤치 입력 — 모듈 import 없이 `use io`/`use time`만 쓰고 700회 fib(24)의 회당 ms를 출력 (time.monotonic 1ms 양자화 보완) |
+| `bench/native_int_ops.un` | `int_ops`의 core-compile 가능한 변형 — `for 1..n` + 정수 산술만 사용, `un native`/plain exe 양쪽에서 측정 |
+| `bench/native_loop.un` | `nested_sum_200`의 core-compile 가능한 변형 — 중첩 `for 1..size`, 700회 반복 평균 ms 출력 |
 | `test/assert.un` | 어설트 모듈 (`assert_eq` / `assert_true` / `summary()`) |
 | `test/compile/errors/*.un` | 거부가 예정된 프로그램 예제 — `un check`/`un native` 양쪽이 exit 1이며 `manifest.txt`의 기대 부분문자열이 에러 출력에 있어야 하는 부정 케이스 (`member call on list/str`, `undefined name`, `unassignable property`, `return type mismatch`, `untyped params`, syntax error 등) | 
 
