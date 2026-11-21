@@ -18,6 +18,10 @@ pub enum TirTy {
     DictStrFloat,
     Class(u16),
     ErrorObj,
+    /// A statically resolved lambda: index of the synthesized `TirFn`.
+    Lambda(u32),
+    /// A list whose elements are closure objects.
+    ListLambda,
 }
 
 fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
@@ -31,6 +35,7 @@ fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
             Ty::Int => Some(TirTy::ListInt),
             Ty::Float => Some(TirTy::ListFloat),
             Ty::Class(name) => classes.id(name).map(TirTy::ListClass),
+            Ty::Func { .. } => Some(TirTy::ListLambda),
             _ => None,
         },
         Ty::Dict(key, value) => match key.as_ref() {
@@ -41,6 +46,7 @@ fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
             },
             _ => None,
         },
+        Ty::Func { .. } => Some(TirTy::Lambda(u32::MAX)),
         _ => None,
     }
 }
@@ -112,6 +118,21 @@ pub enum TirExpr {
     CastFloat(Box<TirExpr>),
     Math(MathFn, Vec<TirExpr>),
     Call(u32, Vec<TirExpr>),
+    /// Source location attached to an error-producing expression.
+    Located { span: (usize, usize), inner: Box<TirExpr> },
+    /// Allocate a first-class closure value from a synthesized lambda.
+    MakeClosure {
+        func_index: u32,
+        captures: Vec<u16>,
+        kinds: Vec<u8>,
+        ret_kind: u8,
+    },
+    /// Call a callable value (closure object) held in a local or container.
+    CallObj { callee: Box<TirExpr>, args: Vec<TirExpr>, ret: TirTy },
+    /// Read a process-global slot (inlined module state).
+    GlobalGet(u16),
+    /// The `none` value (boxed by NRT as a proper object handle).
+    NoneValue,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +196,7 @@ pub enum TirStmt {
     Skip,
     Return(Option<TirExpr>),
     ExprStmt(TirExpr),
+    GlobalSet(u16, TirExpr),
     NativeCall {
         module: String,
         member: String,
@@ -188,6 +210,8 @@ pub struct TirFn {
     pub proto_span: (usize, usize),
     pub index: usize,
     pub params: Vec<TirTy>,
+    /// Lowered default expressions, aligned with `params` (`None` for required).
+    pub defaults: Vec<Option<TirExpr>>,
     pub ret: Option<TirTy>,
     pub locals: Vec<TirTy>,
     pub body: Vec<TirStmt>,
@@ -199,6 +223,109 @@ pub struct TirProgram {
     pub class_fields: Vec<std::collections::HashMap<String, Ty>>,
     pub class_methods: Vec<std::collections::HashMap<String, Ty>>,
     pub class_setters: Vec<std::collections::HashSet<String>>,
+    /// Declared field order per class (for positional ctor assignment).
+    pub class_field_order: Vec<Vec<String>>,
+    /// True if any function writes a global (VM uses different semantics).
+    pub has_global_write: bool,
+}
+
+/// True when every function can be emitted against the standalone native
+/// runtime (`libnrt.a`) without any VM bridge. Supported: scalars, Str, lists
+/// and dicts, classes (incl. inheritance), closures, try/catch, native modules
+/// (except `random`, which is time-seeded and cannot match `un run` byte for
+/// byte). Dynamic `Any`/union code and module-global side effects beyond simple
+/// inlined assignments stay on the `--embed` path.
+pub fn nrt_supported(tir: &TirProgram) -> bool {
+    fn ty_ok(ty: TirTy) -> bool {
+        matches!(
+            ty,
+            TirTy::Int
+                | TirTy::Float
+                | TirTy::Bool
+                | TirTy::Str
+                | TirTy::ListInt
+                | TirTy::ListFloat
+                | TirTy::DictStrInt
+                | TirTy::DictStrFloat
+                | TirTy::Class(_)
+                | TirTy::ListClass(_)
+                | TirTy::ErrorObj
+                | TirTy::Lambda(_)
+                | TirTy::ListLambda
+        )
+    }
+    fn expr_ok(e: &TirExpr) -> bool {
+        match e {
+            TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_)
+            | TirExpr::Local(_) | TirExpr::NoneValue => true,
+            TirExpr::Promote(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a) | TirExpr::CastFloat(a)
+            | TirExpr::Len(a) | TirExpr::ListPop(a) | TirExpr::ListPopAt(a, _)
+            | TirExpr::ListContains(a, _) | TirExpr::ListIndexOf(a, _) => expr_ok(a),
+            TirExpr::Select { cond, then_expr, else_expr } => {
+                expr_ok(cond) && expr_ok(then_expr) && expr_ok(else_expr)
+            }
+            TirExpr::Bin(_, a, b) | TirExpr::Cmp(_, a, b) => expr_ok(a) && expr_ok(b),
+            TirExpr::ListGet(a, b) => expr_ok(a) && expr_ok(b),
+            TirExpr::List(elems) => elems.iter().all(expr_ok),
+            TirExpr::Dict(entries) => entries.iter().all(|(k, v)| expr_ok(k) && expr_ok(v)),
+            TirExpr::DictGet(a, b) => expr_ok(a) && expr_ok(b),
+            TirExpr::ListRepeat { value, len, .. } => expr_ok(value) && expr_ok(len),
+            TirExpr::Math(_, args) | TirExpr::Call(_, args) => args.iter().all(expr_ok),
+            TirExpr::NativeCallExpr { module, args, .. } => module.as_ref() != "random" && args.iter().all(expr_ok),
+            TirExpr::ClassNew { args, .. } | TirExpr::MethodCall { args, .. } => args.iter().all(expr_ok),
+            TirExpr::MemberGet { receiver, .. } => expr_ok(receiver),
+            TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) => true,
+            TirExpr::CallObj { callee, args, .. } => expr_ok(callee) && args.iter().all(expr_ok),
+            TirExpr::Located { inner, .. } => expr_ok(inner),
+        }
+    }
+    fn stmt_ok(s: &TirStmt) -> bool {
+        match s {
+            TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) | TirStmt::Return(Some(e)) => expr_ok(e),
+            TirStmt::Return(None) | TirStmt::Break | TirStmt::Skip => true,
+            TirStmt::Throw(e) | TirStmt::GlobalSet(_, e) => expr_ok(e),
+            TirStmt::Try { body, catch_body, finally_body, .. } => {
+                body.iter().all(stmt_ok)
+                    && catch_body.iter().all(stmt_ok)
+                    && finally_body.as_ref().map_or(true, |b| b.iter().all(stmt_ok))
+            }
+            TirStmt::If { cond, then_body, else_body } => {
+                expr_ok(cond) && then_body.iter().all(stmt_ok) && else_body.iter().all(stmt_ok)
+            }
+            TirStmt::While { cond, body } => expr_ok(cond) && body.iter().all(stmt_ok),
+            TirStmt::ForRange { start, end, step, body, .. } => {
+                expr_ok(start) && expr_ok(end) && expr_ok(step) && body.iter().all(stmt_ok)
+            }
+            TirStmt::ForEach { collection, body, .. } => expr_ok(collection) && body.iter().all(stmt_ok),
+            TirStmt::ListSet { list, index, value } => expr_ok(list) && expr_ok(index) && expr_ok(value),
+            TirStmt::DictSet { dict, key, value } => expr_ok(dict) && expr_ok(key) && expr_ok(value),
+            TirStmt::MemberSet { receiver, value, .. } => expr_ok(receiver) && expr_ok(value),
+            TirStmt::ListAdd { receiver, arg }
+            | TirStmt::ListInsert { receiver, arg, .. } => expr_ok(receiver) && expr_ok(arg),
+            TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver } => expr_ok(receiver),
+            // `random.*` is seeded from wall-clock time, so a native exe could
+            // never be byte-identical to `un run`. Keep it on the VM path.
+            TirStmt::NativeCall { module, args, .. } => module != "random" && args.iter().all(expr_ok),
+        }
+    }
+    // Closures and class methods are invoked through an all-integer C ABI shim
+    // in NRT; Float params/returns need XMM registers and would be garbage.
+    let indirect_abi_ok = |f: &TirFn| {
+        let indirect = f.name.starts_with("__lambda_")
+            || tir.class_methods.iter().any(|m| m.contains_key(&f.name));
+        !indirect
+            || (!f.params.contains(&TirTy::Float) && f.ret != Some(TirTy::Float))
+    };
+    !tir.functions.is_empty()
+        && !tir.has_global_write
+        && tir.functions.iter().all(|f| {
+            f.params.iter().copied().all(ty_ok)
+                && f.locals.iter().copied().all(ty_ok)
+                && f.ret.map_or(true, ty_ok)
+                && indirect_abi_ok(f)
+                && f.defaults.iter().flatten().all(expr_ok)
+                && f.body.iter().all(stmt_ok)
+        })
 }
 
 struct ClassTable {
@@ -207,6 +334,7 @@ struct ClassTable {
     fields: Vec<std::collections::HashMap<String, Ty>>,
     methods: Vec<std::collections::HashMap<String, Ty>>,
     setters: Vec<std::collections::HashSet<String>>,
+    field_order: Vec<Vec<String>>,
 }
 
 impl ClassTable {
@@ -293,7 +421,19 @@ impl ClassTable {
             .iter()
             .map(|n| resolve_setters(checked, n, &mut setters_cache))
             .collect();
-        ClassTable { index, names, fields, methods, setters }
+        let field_order = names.iter().map(|n| {
+            let mut order = Vec::new();
+            if let Some(info) = checked.classes.get(n) {
+                for base in &info.bases {
+                    if let Some(b) = checked.classes.get(base) {
+                        for f in &b.field_order { if !order.contains(f) { order.push(f.clone()); } }
+                    }
+                }
+                for f in &info.field_order { if !order.contains(f) { order.push(f.clone()); } }
+            }
+            order
+        }).collect();
+        ClassTable { index, names, fields, methods, setters, field_order }
     }
 
     fn setters(&self, id: u16) -> Option<&std::collections::HashSet<String>> {
@@ -385,7 +525,7 @@ pub fn fn_uses_classes(f: &TirFn) -> bool {
 
 fn stmt_uses_classes(s: &TirStmt) -> bool {
     match s {
-        TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) => expr_uses_classes(e),
+        TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) | TirStmt::GlobalSet(_, e) => expr_uses_classes(e),
         TirStmt::If { cond, then_body, else_body } => {
             expr_uses_classes(cond) || then_body.iter().any(stmt_uses_classes) || else_body.iter().any(stmt_uses_classes)
         }
@@ -429,6 +569,9 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
     match e {
         TirExpr::ClassNew { .. } | TirExpr::MemberGet { .. } | TirExpr::MethodCall { .. } => true,
         TirExpr::Promote(inner) | TirExpr::Un(_, inner) => expr_uses_classes(inner),
+        TirExpr::Located { inner, .. } => expr_uses_classes(inner),
+        TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) | TirExpr::NoneValue => false,
+        TirExpr::CallObj { callee, args, .. } => expr_uses_classes(callee) || args.iter().any(expr_uses_classes),
         TirExpr::Select { cond, then_expr, else_expr } => {
             expr_uses_classes(cond) || expr_uses_classes(then_expr) || expr_uses_classes(else_expr)
         }
@@ -467,7 +610,7 @@ pub fn fn_uses_heap(f: &TirFn) -> bool {
 
 fn stmt_uses_heap(s: &TirStmt) -> bool {
     match s {
-        TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) => expr_uses_heap(e),
+        TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) | TirStmt::GlobalSet(_, e) => expr_uses_heap(e),
         TirStmt::If { cond, then_body, else_body } => {
             expr_uses_heap(cond) || then_body.iter().any(stmt_uses_heap) || else_body.iter().any(stmt_uses_heap)
         }
@@ -505,6 +648,9 @@ fn expr_uses_heap(e: &TirExpr) -> bool {
         | TirExpr::ClassNew { .. } | TirExpr::MemberGet { .. } | TirExpr::MethodCall { .. } => true,
         TirExpr::Promote(inner)
         | TirExpr::Un(_, inner) => expr_uses_heap(inner),
+        TirExpr::Located { inner, .. } => expr_uses_heap(inner),
+        TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) | TirExpr::NoneValue => true,
+        TirExpr::CallObj { callee, args, .. } => expr_uses_heap(callee) || args.iter().any(expr_uses_heap),
         TirExpr::Select { cond, then_expr, else_expr } => {
             expr_uses_heap(cond) || expr_uses_heap(then_expr) || expr_uses_heap(else_expr)
         }
@@ -529,7 +675,7 @@ fn expr_uses_heap(e: &TirExpr) -> bool {
 
 fn stmt_uses_str(s: &TirStmt) -> bool {
     match s {
-        TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) => expr_uses_str(e),
+        TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) | TirStmt::GlobalSet(_, e) => expr_uses_str(e),
         TirStmt::If { cond, then_body, else_body } => {
             expr_uses_str(cond) || then_body.iter().any(stmt_uses_str) || else_body.iter().any(stmt_uses_str)
         }
@@ -573,7 +719,10 @@ fn expr_uses_str(e: &TirExpr) -> bool {
         TirExpr::List(elements) => elements.iter().any(expr_uses_str),
         TirExpr::Dict(_) | TirExpr::DictGet(_, _) | TirExpr::ListGet(_, _)
         | TirExpr::ClassNew { .. } | TirExpr::MemberGet { .. } | TirExpr::MethodCall { .. } => false,
-        TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Local(_) => false,
+        TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Local(_) | TirExpr::NoneValue => false,
+        TirExpr::Located { inner, .. } => expr_uses_str(inner),
+        TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) => false,
+        TirExpr::CallObj { callee, args, .. } => expr_uses_str(callee) || args.iter().any(expr_uses_str),
         TirExpr::ListRepeat { .. } => false,
         TirExpr::Promote(inner) => expr_uses_str(inner),
         TirExpr::Math(_, _) => false,
@@ -597,41 +746,56 @@ fn expr_uses_str(e: &TirExpr) -> bool {
     }
 }
 
-pub fn is_core_fn(fcheck: &FnCheck) -> bool {
+/// Explain why a function is outside the core subset, with the local/parameter
+/// name and a hint for annotation. Returns `None` when the function is eligible.
+pub fn core_rejection_reason(fcheck: &FnCheck) -> Option<String> {
     let FnCheck { sig, locals, .. } = fcheck;
-    if sig.receiver != 0 || sig.is_method || sig.variadic {
-        return false;
+    if sig.variadic {
+        return Some(format!("'{}' is a variadic function", sig.name));
     }
     if sig.params.len() > MAX_CORE_ARITY {
-        return false;
+        return Some(format!("'{}' has more than {MAX_CORE_ARITY} parameters", sig.name));
     }
-    if sig.params.iter().any(|ty| !is_core_ty(ty)) {
-        return false;
+    if let Some((name, ty)) = sig.param_names.iter().zip(&sig.params).find(|(_, ty)| !is_core_ty(ty)) {
+        return Some(format!(
+            "parameter '{name}' of '{}' has non-core type '{ty}' - annotate it with int/float/bool/str/list[int]/dict[str,int] to enable native compilation",
+            sig.name
+        ));
     }
     match &sig.ret {
         Ty::Int | Ty::Float | Ty::Bool | Ty::None_ | Ty::Str => {}
-        Ty::List(elem) => match elem.as_ref() {
-            Ty::Int | Ty::Float | Ty::Class(_) => {}
-            _ => return false,
-        },
-        Ty::Dict(key, value) => match (key.as_ref(), value.as_ref()) {
-            (Ty::Str, Ty::Int | Ty::Float) => {}
-            _ => return false,
-        },
+        Ty::List(elem) => {
+            if !matches!(elem.as_ref(), Ty::Int | Ty::Float | Ty::Class(_)) {
+                return Some(format!("'{}' returns non-core 'list[{}]'", sig.name, elem.display()));
+            }
+        }
+        Ty::Dict(key, value) => {
+            if !matches!((key.as_ref(), value.as_ref()), (Ty::Str, Ty::Int | Ty::Float)) {
+                return Some(format!("'{}' returns a non-core dict", sig.name));
+            }
+        }
         Ty::Class(_) => {}
-        _ => return false,
+        other => return Some(format!("'{}' returns non-core type '{other}'", sig.name)),
     }
-    if locals.iter().any(|(_, ty)| !is_core_ty(ty)) {
-        return false;
+    if let Some((name, ty)) = locals.iter().find(|(_, ty)| !is_core_ty(ty)) {
+        return Some(format!(
+            "local '{name}' of '{}' has non-core type '{ty}' - annotate the binding to enable native compilation",
+            sig.name
+        ));
     }
-    true
+    None
+}
+
+pub fn is_core_fn(fcheck: &FnCheck) -> bool {
+    core_rejection_reason(fcheck).is_none()
 }
 
 fn is_core_ty(ty: &Ty) -> bool {
     match ty {
         Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::None_ | Ty::Class(_) => true,
-        Ty::List(elem) => matches!(elem.as_ref(), Ty::Int | Ty::Float | Ty::Class(_)),
+        Ty::List(elem) => matches!(elem.as_ref(), Ty::Int | Ty::Float | Ty::Class(_) | Ty::Func { .. }),
         Ty::Dict(key, value) => matches!(key.as_ref(), Ty::Str) && matches!(value.as_ref(), Ty::Int | Ty::Float),
+        Ty::Func { .. } => true,
         _ => false,
     }
 }
@@ -645,12 +809,13 @@ fn tirdbg_reject(node: &Node) {
     }
 }
 
-fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: &FnCheck) -> bool {
+fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: &FnCheck, globals: &std::collections::HashMap<String, u16>) -> bool {
     let Some(body) = body_block_of(node) else {
         return false;
     };
     let mut locals: HashMap<String, ()> = HashMap::new();
     collect_locals(body, &mut locals, source, fcheck);
+    for (name, _) in globals { locals.insert(name.clone(), ()); }
 
     fn visit(
         node: &Node,
@@ -663,6 +828,9 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             return;
         }
         match node.kind {
+            // Lambda bodies are lowered separately into synthesized functions;
+            // their parameters and captures are not this function's locals.
+            NodeKind::Lambda => return,
             NodeKind::Identifier => {
                 let name = source.span(node.start, node.length);
                 if !locals.contains_key(&name) {
@@ -751,9 +919,31 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                 tirdbg_reject(node); *out = false;
             }
             NodeKind::Call => {
+                if node.children.first().is_some_and(|c| c.kind == NodeKind::Index) {
+                    if let Some(callee) = node.children.first() {
+                        visit(callee, checked, source, locals, out);
+                    }
+                    if let Some(args) = node.children.get(1) {
+                        for a in &args.children { visit(a, checked, source, locals, out); }
+                    }
+                    return;
+                }
+                if node.children.first().is_some_and(|c| c.kind == NodeKind::Lambda) {
+                    if let Some(args) = node.children.get(1) {
+                        for arg in &args.children { visit(arg, checked, source, locals, out); }
+                    }
+                    return;
+                }
                 if let Some(first) = node.children.first() {
                     if first.kind == NodeKind::Identifier {
                         let name = source.span(first.start, first.length).to_string();
+                        // A local variable may hold a statically resolved lambda.
+                        if locals.contains_key(&name) && !checked.sigs.contains_key(name.as_str()) {
+                            if let Some(args) = node.children.get(1) {
+                                for arg in &args.children { visit(arg, checked, source, locals, out); }
+                            }
+                            return;
+                        }
                         if (name == "int" || name == "float") && !checked.sigs.contains_key(name.as_str()) {
                             if let Some(arg_tuple) = node.children.get(1) {
                                 for arg in &arg_tuple.children {
@@ -911,7 +1101,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             NodeKind::Slice | NodeKind::Tuple | NodeKind::Set
             | NodeKind::FString | NodeKind::Match | NodeKind::Case
             | NodeKind::Use | NodeKind::Using | NodeKind::Defer
-            | NodeKind::Function | NodeKind::Lambda | NodeKind::Class | NodeKind::Enum | NodeKind::Tagged
+            | NodeKind::Function | NodeKind::Class | NodeKind::Enum | NodeKind::Tagged
             | NodeKind::Accessor | NodeKind::Wildcard => {
                 tirdbg_reject(node); *out = false;
             }
@@ -1002,8 +1192,140 @@ fn body_block_of(node: &Node) -> Option<&Node> {
 
 
 impl TirProgram {
-    pub fn lower(source: &Source, root: &Node, checked: &CheckedProgram) -> Result<TirProgram, TirError> {
+    /// Fill omitted trailing arguments with the callee's lowered defaults.
+    /// Runs after all functions are lowered so call sites can reference any
+    /// function defined later in the file.
+    pub fn pad_default_args(&mut self) {
+        fn pad_expr(e: &mut TirExpr, program: &[TirFn], class_names: &[String]) {
+            match e {
+                TirExpr::Located { inner, .. } => pad_expr(inner, program, class_names),
+                TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) | TirExpr::NoneValue => {}
+                TirExpr::CallObj { callee, args, .. } => {
+                    pad_expr(callee, program, class_names);
+                    for a in args { pad_expr(a, program, class_names); }
+                }
+                TirExpr::Call(index, args) => {
+                    for a in args.iter_mut() { pad_expr(a, program, class_names); }
+                    if let Some(callee) = program.get(*index as usize) {
+                        pad_args(args, &callee.defaults);
+                    }
+                }
+                TirExpr::MethodCall { receiver, member, args, .. } => {
+                    pad_expr(receiver, program, class_names);
+                    for a in args.iter_mut() { pad_expr(a, program, class_names); }
+                    let member_defaults = program.iter()
+                        .find(|f| &f.name == member.as_ref())
+                        .map(|f| f.defaults[1.min(f.defaults.len())..].to_vec());
+                    if let Some(defaults) = member_defaults {
+                        pad_args(args, &defaults);
+                    }
+                }
+                TirExpr::ClassNew { name, args, .. } => {
+                    for a in args.iter_mut() { pad_expr(a, program, class_names); }
+                    // `__init__` takes `self` in slot 0; find the one whose
+                    // receiver class matches this constructor's class name.
+                    let class_id = class_names.iter().position(|n| n == name.as_ref());
+                    let init = program.iter().find(|f| {
+                        f.name == "__init__"
+                            && match (f.params.first(), class_id) {
+                                (Some(TirTy::Class(id)), Some(cid)) => *id as usize == cid,
+                                _ => false,
+                            }
+                    });
+                    if let Some(init) = init {
+                        let defaults = &init.defaults[1.min(init.defaults.len())..];
+                        pad_args(args, defaults);
+                    }
+                }
+                TirExpr::List(items) | TirExpr::Math(_, items) => {
+                    for item in items { pad_expr(item, program, class_names); }
+                }
+                TirExpr::Dict(entries) => {
+                    for (k, v) in entries { pad_expr(k, program, class_names); pad_expr(v, program, class_names); }
+                }
+                TirExpr::Promote(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a)
+                | TirExpr::CastFloat(a) | TirExpr::Len(a) | TirExpr::ListPop(a)
+                | TirExpr::ListContains(a, _) | TirExpr::ListIndexOf(a, _)
+                | TirExpr::MemberGet { receiver: a, .. } => pad_expr(a, program, class_names),
+                TirExpr::ListPopAt(a, b) | TirExpr::ListGet(a, b) | TirExpr::DictGet(a, b)
+                | TirExpr::Bin(_, a, b) | TirExpr::Cmp(_, a, b) => {
+                    pad_expr(a, program, class_names); pad_expr(b, program, class_names);
+                }
+                TirExpr::ListRepeat { value, len, .. } => {
+                    pad_expr(value, program, class_names); pad_expr(len, program, class_names);
+                }
+                TirExpr::Select { cond, then_expr, else_expr } => {
+                    pad_expr(cond, program, class_names); pad_expr(then_expr, program, class_names); pad_expr(else_expr, program, class_names);
+                }
+                TirExpr::NativeCallExpr { args, .. } => {
+                    for a in args { pad_expr(a, program, class_names); }
+                }
+                TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_)
+                | TirExpr::Local(_) => {}
+            }
+        }
+        fn pad_args(args: &mut Vec<TirExpr>, defaults: &[Option<TirExpr>]) {
+            while args.len() < defaults.len() {
+                match &defaults[args.len()] {
+                    Some(d) => args.push(d.clone()),
+                    None => break,
+                }
+            }
+        }
+        fn pad_stmt(s: &mut TirStmt, program: &[TirFn], class_names: &[String]) {
+            match s {
+                TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e)
+                | TirStmt::Return(Some(e)) | TirStmt::Throw(e) | TirStmt::GlobalSet(_, e) => pad_expr(e, program, class_names),
+                TirStmt::If { cond, then_body, else_body } => {
+                    pad_expr(cond, program, class_names);
+                    for st in then_body.iter_mut().chain(else_body.iter_mut()) { pad_stmt(st, program, class_names); }
+                }
+                TirStmt::While { cond, body } => {
+                    pad_expr(cond, program, class_names);
+                    for st in body { pad_stmt(st, program, class_names); }
+                }
+                TirStmt::ForRange { start, end, step, body, .. } => {
+                    pad_expr(start, program, class_names); pad_expr(end, program, class_names); pad_expr(step, program, class_names);
+                    for st in body { pad_stmt(st, program, class_names); }
+                }
+                TirStmt::ForEach { collection, body, .. } => {
+                    pad_expr(collection, program, class_names);
+                    for st in body { pad_stmt(st, program, class_names); }
+                }
+                TirStmt::ListSet { list, index, value } | TirStmt::DictSet { dict: list, key: index, value } => {
+                    pad_expr(list, program, class_names); pad_expr(index, program, class_names); pad_expr(value, program, class_names);
+                }
+                TirStmt::MemberSet { receiver, value, .. } => {
+                    pad_expr(receiver, program, class_names); pad_expr(value, program, class_names);
+                }
+                TirStmt::ListAdd { receiver, arg } => {
+                    pad_expr(receiver, program, class_names); pad_expr(arg, program, class_names);
+                }
+                TirStmt::ListInsert { receiver, arg, index } => {
+                    pad_expr(receiver, program, class_names); pad_expr(arg, program, class_names); pad_expr(index, program, class_names);
+                }
+                TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver } => pad_expr(receiver, program, class_names),
+                TirStmt::NativeCall { args, .. } => {
+                    for a in args { pad_expr(a, program, class_names); }
+                }
+                TirStmt::Try { body, catch_body, finally_body, .. } => {
+                    for st in body.iter_mut().chain(catch_body.iter_mut()) { pad_stmt(st, program, class_names); }
+                    if let Some(fb) = finally_body { for st in fb { pad_stmt(st, program, class_names); } }
+                }
+                TirStmt::Return(None) | TirStmt::Break | TirStmt::Skip => {}
+            }
+        }
+        let functions_snapshot = self.functions.clone();
+        for f in &mut self.functions {
+            for st in &mut f.body { pad_stmt(st, &functions_snapshot, &self.class_names); }
+            for d in f.defaults.iter_mut().flatten() { pad_expr(d, &functions_snapshot, &self.class_names); }
+        }
+    }
+
+    pub fn lower(source: &Source, root: &Node, checked: &CheckedProgram, global_names: &[String]) -> Result<TirProgram, TirError> {
         let debug_trace = std::env::var_os("UV_TIR_DEBUG").is_some();
+        let globals: std::collections::HashMap<String, u16> = global_names.iter()
+            .cloned().enumerate().map(|(i, n)| (n, i as u16)).collect();
         let fn_nodes = collect_fn_nodes(root);
         if debug_trace {
             eprintln!("TIRDBG collected {} fn nodes, checked has {} functions", fn_nodes.len(), checked.functions.len());
@@ -1027,10 +1349,13 @@ impl TirProgram {
             };
             let fcheck = &checked.functions[fn_index];
             let core_ok = is_core_fn(fcheck);
-            let body_ok = body_is_core(node, source, checked, fcheck);
+            let body_ok = body_is_core(node, source, checked, fcheck, &globals);
             if debug_trace {
                 let name = &fcheck.sig.name;
                 eprintln!("TIRDBG gate {} is_core={} body_core={}", name, core_ok, body_ok);
+                if let Some(reason) = core_rejection_reason(fcheck) {
+                    eprintln!("TIRDBG   reason: {reason}");
+                }
             }
             if core_ok && body_ok {
                 eligible.push(fn_index);
@@ -1042,7 +1367,10 @@ impl TirProgram {
             .map(|(tir_i, &fn_i)| (fn_i, tir_i))
             .collect();
         let classes = ClassTable::new(checked);
+        let lambda_base = eligible.len() as u32;
+        let mut lambdas = Vec::new();
         let mut functions = Vec::with_capacity(eligible.len());
+        let mut any_global_write = false;
         for node in &fn_nodes {
             let Some(&fn_index) = checked.fn_by_span.get(&node.start) else {
                 continue;
@@ -1051,17 +1379,55 @@ impl TirProgram {
                 continue;
             };
             let fcheck = &checked.functions[fn_index];
-            let lowered = lower_function(node, source, fcheck, checked, tir_i, &tir_index, &classes)
+            let lowered = lower_function(node, source, fcheck, checked, tir_i, &tir_index, &classes, &mut lambdas, lambda_base, &globals, &mut any_global_write)
                 .map_err(|e| TirError(format!("{}: {}", fcheck.sig.name, e)))?;
             functions.push(lowered);
         }
-        let program = TirProgram {
+        // Initialize inlined module globals before `main` runs, in source order.
+        let mut init_body = Vec::new();
+        {
+            let mut init_ctx = LowerCtx {
+                source,
+                checked,
+                tir_index: &tir_index,
+                slots: HashMap::new(),
+                locals: Vec::new(),
+                classes: &classes,
+                lambda_vars: HashMap::new(),
+                lambdas: &mut lambdas,
+                lambda_base,
+                globals: &globals,
+                wrote_global: &mut false,
+            };
+            for child in &root.children {
+                if child.kind == NodeKind::Assign {
+                    let is_global = child.children.first().and_then(|t| {
+                        let name = source.span(t.start, t.length);
+                        globals.get(&name.to_string())
+                    }).is_some();
+                    if !is_global { continue; }
+                    if let Err(e) = lower_stmt(child, &mut init_ctx, &mut init_body) {
+                        return Err(TirError(format!("module init: {e}")));
+                    }
+                }
+            }
+        }
+        if let Some(main_fn) = functions.iter_mut().find(|f| f.name == "main") {
+            let mut body = init_body;
+            body.append(&mut main_fn.body);
+            main_fn.body = body;
+        }
+        functions.extend(lambdas);
+        let mut program = TirProgram {
             functions,
             class_names: classes.names.clone(),
             class_fields: classes.fields.clone(),
             class_methods: classes.methods.clone(),
             class_setters: classes.setters.clone(),
+            class_field_order: classes.field_order.clone(),
+            has_global_write: any_global_write,
         };
+        program.pad_default_args();
         program.validate()?;
         Ok(program)
     }
@@ -1079,6 +1445,8 @@ enum CoreTy {
     DictStrInt,
     DictStrFloat,
     Class(u16),
+    Lambda(u32),
+    ListLambda,
     None_,
 }
 
@@ -1096,6 +1464,8 @@ impl From<TirTy> for CoreTy {
             TirTy::DictStrFloat => CoreTy::DictStrFloat,
             TirTy::Class(id) => CoreTy::Class(id),
             TirTy::ErrorObj => CoreTy::Class(u16::MAX),
+            TirTy::ListLambda => CoreTy::ListLambda,
+            TirTy::Lambda(index) => CoreTy::Lambda(index),
         }
     }
 }
@@ -1107,16 +1477,30 @@ struct LowerCtx<'a> {
     slots: HashMap<String, u16>,
     locals: Vec<TirTy>,
     classes: &'a ClassTable,
+    /// Local slot -> (synthesized lambda function index, captured local slots).
+    lambda_vars: HashMap<u16, (u32, Vec<u16>)>,
+    /// Synthesized lambda functions (appended to the program after lowering).
+    lambdas: &'a mut Vec<TirFn>,
+    /// Index offset for synthesized lambdas in the final function list.
+    lambda_base: u32,
+    /// Top-level global variable name -> slot index.
+    globals: &'a std::collections::HashMap<String, u16>,
+    /// Set when a function writes a global (VM uses StoreLocal semantics).
+    wrote_global: &'a mut bool,
 }
 
-fn lower_function(
-    node: &Node,
+fn lower_function<'a>(
+    node: &'a Node,
     source: &Source,
     fcheck: &FnCheck,
     checked: &CheckedProgram,
     tir_i: usize,
     tir_index: &HashMap<usize, usize>,
     classes: &ClassTable,
+    lambdas: &mut Vec<TirFn>,
+    lambda_base: u32,
+    globals: &'a std::collections::HashMap<String, u16>,
+    wrote_global: &'a mut bool,
 ) -> Result<TirFn, String> {
     let mut ctx = LowerCtx {
         source,
@@ -1125,6 +1509,11 @@ fn lower_function(
         slots: HashMap::new(),
         locals: Vec::new(),
         classes,
+        lambda_vars: HashMap::new(),
+        lambdas,
+        lambda_base,
+        globals,
+        wrote_global,
     };
     for (i, (name, ty)) in fcheck.sig.param_names.iter().zip(&fcheck.sig.params).enumerate() {
         let tty = tir_ty_from_ty(classes, ty)
@@ -1142,6 +1531,34 @@ fn lower_function(
         .ok_or_else(|| "function without a body".to_string())?;
     let mut body = Vec::new();
     lower_block(body_node, &mut ctx, &mut body)?;
+    // Lower default expressions from the parameter list. `body_is_core` only
+    // walks the body, so a non-core default makes the whole function ineligible.
+    let mut defaults = vec![None; fcheck.sig.params.len()];
+    if let Some(params_node) = node.children.iter().find(|c| c.kind == NodeKind::Tuple) {
+        for (i, param) in params_node.children.iter().enumerate() {
+            let slot = i + fcheck.sig.receiver;
+            if slot >= defaults.len() {
+                break;
+            }
+            let Some(inner) = param.children.first() else { continue };
+            if inner.kind != NodeKind::Assign {
+                continue;
+            }
+            let Some(expr_node) = inner.children.get(1) else { continue };
+            let (lowered, _) = lower_expr(expr_node, &mut ctx)
+                .map_err(|e| format!("parameter '{}' default: {e}", fcheck.sig.param_names[i]))?;
+            // Defaults are cloned into call sites, so they cannot refer to
+            // parameters of the callee (those slots mean something else at the
+            // call site). Such functions stay on the VM path.
+            if expr_uses_local(&lowered) {
+                return Err(format!(
+                    "parameter '{}' default references another parameter",
+                    fcheck.sig.param_names[i]
+                ));
+            }
+            defaults[slot] = Some(lowered);
+        }
+    }
     let ret = match &fcheck.sig.ret {
         Ty::Int => Some(TirTy::Int),
         Ty::Float => Some(TirTy::Float),
@@ -1196,10 +1613,36 @@ fn lower_function(
             }
             params
         },
+        defaults,
         ret,
         locals: ctx.locals,
         body,
     })
+}
+
+fn expr_uses_local(e: &TirExpr) -> bool {
+    match e {
+        TirExpr::Local(_) | TirExpr::GlobalGet(_) | TirExpr::NoneValue => true,
+        TirExpr::List(items) | TirExpr::Math(_, items) | TirExpr::Call(_, items) => {
+            items.iter().any(expr_uses_local)
+        }
+        TirExpr::Dict(entries) => entries.iter().any(|(k, v)| expr_uses_local(k) || expr_uses_local(v)),
+        TirExpr::Promote(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a) | TirExpr::CastFloat(a)
+        | TirExpr::Len(a) | TirExpr::ListPop(a) | TirExpr::ListContains(a, _)
+        | TirExpr::ListIndexOf(a, _) | TirExpr::MemberGet { receiver: a, .. } => expr_uses_local(a),
+        TirExpr::ListPopAt(a, b) | TirExpr::ListGet(a, b) | TirExpr::DictGet(a, b)
+        | TirExpr::Bin(_, a, b) | TirExpr::Cmp(_, a, b) => expr_uses_local(a) || expr_uses_local(b),
+        TirExpr::ListRepeat { value, len, .. } => expr_uses_local(value) || expr_uses_local(len),
+        TirExpr::Select { cond, then_expr, else_expr } => {
+            expr_uses_local(cond) || expr_uses_local(then_expr) || expr_uses_local(else_expr)
+        }
+        TirExpr::NativeCallExpr { args, .. } => args.iter().any(expr_uses_local),
+        TirExpr::ClassNew { args, .. } | TirExpr::MethodCall { args, .. } => args.iter().any(expr_uses_local),
+        TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_) => false,
+        TirExpr::Located { inner, .. } => expr_uses_local(inner),
+        TirExpr::MakeClosure { captures, .. } => captures.iter().any(|s| expr_uses_local(&TirExpr::Local(*s))),
+        TirExpr::CallObj { callee, args, .. } => expr_uses_local(callee) || args.iter().any(expr_uses_local),
+    }
 }
 
 fn native_call_shape<'a>(
@@ -1283,7 +1726,11 @@ fn lower_stmt(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result
                             return Err("throw() expects exactly one argument".to_string());
                         }
                         let (expr, _) = lower_expr(&args_node.children[0], ctx)?;
-                        out.push(TirStmt::Throw(expr));
+                        let span = (node.start, node.length);
+                        out.push(TirStmt::Throw(TirExpr::Located {
+                            span,
+                            inner: Box::new(expr),
+                        }));
                         return Ok(());
                     }
                 }
@@ -1439,6 +1886,184 @@ fn declare(ctx: &mut LowerCtx, name: &str, ty: TirTy) -> u16 {
     slot
 }
 
+/// Collect identifiers in a lambda body that refer to locals of the enclosing
+/// function (free variables). These become leading parameters of the
+/// synthesized lambda function.
+fn lambda_captures(body: &Node, param_names: &[String], ctx: &LowerCtx) -> Vec<String> {
+    fn visit(node: &Node, names: &[String], ctx: &LowerCtx, out: &mut Vec<String>) {
+        if node.kind == NodeKind::Identifier {
+            let name = ctx.source.span(node.start, node.length).to_string();
+            if ctx.slots.contains_key(&name)
+                && !names.contains(&name)
+                && !out.contains(&name)
+            {
+                out.push(name);
+            }
+        }
+        for child in &node.children {
+            visit(child, names, ctx, out);
+        }
+    }
+    let mut out = Vec::new();
+    visit(body, param_names, ctx, &mut out);
+    out
+}
+
+fn synthesize_lambda(
+    node: &Node,
+    ctx: &mut LowerCtx,
+    func_index: u32,
+) -> Result<Vec<u16>, String> {
+    let params_node = node.children.first().filter(|n| n.kind == NodeKind::Tuple)
+        .ok_or_else(|| "lambda without parameters".to_string())?;
+    let body_node = node.children.get(1).filter(|n| n.kind == NodeKind::Block)
+        .ok_or_else(|| "lambda without a body".to_string())?;
+    let mut param_names = Vec::new();
+    let mut param_tys = Vec::new();
+    for param in &params_node.children {
+        let name = param_name_text_local(param, ctx.source)
+            .ok_or_else(|| "lambda parameter without a name".to_string())?;
+        let ty_node = param_type_node_local(param);
+        let ty = match ty_node {
+            Some(t) => {
+                let text = ctx.source.span(t.start, t.length).to_string();
+                match text.as_str() {
+                    "int" => Ty::Int,
+                    "float" => Ty::Float,
+                    "bool" => Ty::Bool,
+                    "str" => Ty::Str,
+                    "none" => Ty::None_,
+                    _ => return Err(format!("unsupported lambda parameter type '{text}'")),
+                }
+            }
+            None => return Err("lambda parameter requires a type annotation".to_string()),
+        };
+        param_names.push(name);
+        param_tys.push(ty);
+    }
+    let captures = lambda_captures(body_node, &param_names, ctx);
+    let capture_slots: Vec<u16> = captures.iter()
+        .map(|n| *ctx.slots.get(n).expect("capture is an enclosing local"))
+        .collect();
+
+    // Build a child lowering context: capture slots first, then parameters.
+    let mut child = LowerCtx {
+        source: ctx.source,
+        checked: ctx.checked,
+        tir_index: ctx.tir_index,
+        slots: HashMap::new(),
+        locals: Vec::new(),
+        classes: ctx.classes,
+        lambda_vars: HashMap::new(),
+        lambdas: ctx.lambdas,
+        lambda_base: ctx.lambda_base,
+        globals: ctx.globals,
+        wrote_global: ctx.wrote_global,
+    };
+    for (name, parent_slot) in captures.iter().zip(&capture_slots) {
+        let tty = ctx.locals.get(*parent_slot as usize).copied().unwrap_or(TirTy::Int);
+        let child_slot = child.locals.len() as u16;
+        child.slots.insert(name.clone(), child_slot);
+        child.locals.push(tty);
+    }
+    let mut params = Vec::new();
+    for (name, ty) in param_names.iter().zip(&param_tys) {
+        let tty = tir_ty_from_ty(child.classes, ty)
+            .ok_or_else(|| format!("lambda parameter type '{}' is not core-supported", ty.display()))?;
+        let slot = child.locals.len() as u16;
+        child.slots.insert(name.clone(), slot);
+        child.locals.push(tty);
+        params.push(tty);
+    }
+    // Captures precede parameters in the synthesized signature.
+    let capture_tys: Vec<TirTy> = child.locals[..capture_slots.len()].to_vec();
+    let mut all_params = capture_tys;
+    all_params.extend(params);
+    let defaults = vec![None; all_params.len()];
+    // Reserve this lambda's slot BEFORE lowering the body, so nested lambdas
+    // get higher indices and this lambda's absolute index stays stable.
+    let absolute_index = ctx.lambda_base + func_index;
+    let placeholder = TirFn {
+        name: format!("__lambda_{absolute_index}"),
+        proto_span: (node.start, node.length),
+        index: absolute_index as usize,
+        params: all_params.clone(),
+        defaults: defaults.clone(),
+        ret: Some(TirTy::Int),
+        locals: child.locals.clone(),
+        body: Vec::new(),
+    };
+    child.lambdas.push(placeholder);
+    let mut body = Vec::new();
+    lower_block(body_node, &mut child, &mut body)?;
+    let ret = body.iter().find_map(|st| match st {
+        TirStmt::Return(Some(e)) => infer_simple_ty(e, &child.locals),
+        _ => None,
+    }).or(Some(TirTy::Int));
+    child.lambdas[func_index as usize] = TirFn {
+        name: format!("__lambda_{absolute_index}"),
+        proto_span: (node.start, node.length),
+        index: absolute_index as usize,
+        params: all_params,
+        defaults,
+        ret,
+        locals: child.locals,
+        body,
+    };
+    Ok(capture_slots)
+}
+
+fn infer_simple_ty(e: &TirExpr, locals: &[TirTy]) -> Option<TirTy> {
+    match e {
+        TirExpr::Int(_) => Some(TirTy::Int),
+        TirExpr::Float(_) => Some(TirTy::Float),
+        TirExpr::Bool(_) => Some(TirTy::Bool),
+        TirExpr::Str(_) => Some(TirTy::Str),
+        TirExpr::Local(s) => locals.get(*s as usize).copied(),
+        TirExpr::GlobalGet(_) => Some(TirTy::Int),
+        TirExpr::Promote(_) | TirExpr::CastFloat(_) => Some(TirTy::Float),
+        TirExpr::CastInt(_) => Some(TirTy::Int),
+        TirExpr::Bin(_, a, b) => {
+            let ta = infer_simple_ty(a, locals);
+            let tb = infer_simple_ty(b, locals);
+            if ta == Some(TirTy::Float) || tb == Some(TirTy::Float) { Some(TirTy::Float) }
+            else { ta.or(tb) }
+        }
+        TirExpr::Cmp(_, _, _) | TirExpr::Un(TirUnOp::Not, _) | TirExpr::Len(_)
+        | TirExpr::ListContains(_, _) => Some(TirTy::Bool),
+        TirExpr::Un(TirUnOp::Neg, a) => infer_simple_ty(a, locals),
+        TirExpr::Located { inner, .. } => infer_simple_ty(inner, locals),
+        TirExpr::List(_) => Some(TirTy::ListInt),
+        TirExpr::CallObj { ret, .. } => Some(*ret),
+        _ => None,
+    }
+}
+
+fn param_name_text_local(param: &Node, source: &Source) -> Option<String> {
+    let inner = param.children.first()?;
+    match inner.kind {
+        NodeKind::Identifier => Some(source.span(inner.start, inner.length).to_string()),
+        NodeKind::Typed | NodeKind::Assign => {
+            let n = inner.children.first()?;
+            if n.kind == NodeKind::Typed { param_name_text_local(n, source) } else {
+                Some(source.span(n.start, n.length).to_string())
+            }
+        }
+        _ => None,
+    }
+}
+fn param_type_node_local(param: &Node) -> Option<&Node> {
+    let inner = param.children.first()?;
+    match inner.kind {
+        NodeKind::Typed => inner.children.get(1),
+        NodeKind::Assign => {
+            let n = inner.children.first()?;
+            if n.kind == NodeKind::Typed { n.children.get(1) } else { None }
+        }
+        _ => None,
+    }
+}
+
 fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<(), String> {
     let target = node
         .children
@@ -1451,8 +2076,43 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
     match target.kind {
         NodeKind::Identifier => {
             let name = ctx.source.span(target.start, target.length).to_string();
+            if slot_of(ctx, &name).is_none() {
+                if let Some(&g) = ctx.globals.get(&name) {
+                    let (expr, ty) = lower_expr(value, ctx)?;
+                    if ty != CoreTy::Int {
+                        return Err(format!("global '{name}' must be initialized with an int in a no-VM exe"));
+                    }
+                    *ctx.wrote_global = true;
+                    out.push(TirStmt::GlobalSet(g, expr));
+                    return Ok(());
+                }
+            }
+            if value.kind == NodeKind::Lambda {
+                let idx = ctx.lambdas.len() as u32;
+                let captures = synthesize_lambda(value, ctx, idx)?;
+                let func_index = ctx.lambda_base + idx;
+                let (kinds, ret_kind) = {
+                    let f = &ctx.lambdas[idx as usize];
+                    let k = f.params.iter().map(|t| match t {
+                        TirTy::Int => 0u8, TirTy::Float => 1, TirTy::Bool => 2, _ => 3,
+                    }).collect();
+                    let r = match f.ret { Some(TirTy::Int) => 0, Some(TirTy::Float) => 1, Some(TirTy::Bool) => 2, _ => 3 };
+                    (k, r)
+                };
+                let closure = TirExpr::MakeClosure { func_index, captures: captures.clone(), kinds, ret_kind };
+                if let Some(slot) = slot_of(ctx, &name) {
+                    ctx.lambda_vars.insert(slot, (func_index, captures));
+                    out.push(TirStmt::Set(slot, closure));
+                } else {
+                    let slot = declare(ctx, &name, TirTy::Lambda(func_index));
+                    ctx.lambda_vars.insert(slot, (func_index, captures));
+                    out.push(TirStmt::Let(slot, closure));
+                }
+                return Ok(());
+            }
             let (expr, ty) = lower_expr(value, ctx)?;
             if let Some(slot) = slot_of(ctx, &name) {
+                ctx.lambda_vars.remove(&slot);
                 out.push(TirStmt::Set(slot, expr));
             } else {
                 let tty = tir_ty_of(ty)?;
@@ -1610,12 +2270,14 @@ fn tir_ty_of(ty: CoreTy) -> Result<TirTy, String> {
         CoreTy::ListInt => Ok(TirTy::ListInt),
         CoreTy::ListFloat => Ok(TirTy::ListFloat),
         CoreTy::ListClass(id) => Ok(TirTy::ListClass(id)),
+        CoreTy::ListLambda => Ok(TirTy::ListLambda),
         CoreTy::DictStrInt => Ok(TirTy::DictStrInt),
         CoreTy::DictStrFloat => Ok(TirTy::DictStrFloat),
         CoreTy::None_ => {
             Err("cannot infer a concrete local type in the core".to_string())
         }
         CoreTy::Class(id) => Ok(TirTy::Class(id)),
+        CoreTy::Lambda(index) => Ok(TirTy::Lambda(index)),
     }
 }
 
@@ -1904,7 +2566,7 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             Some(Const::Str(v)) => Ok((TirExpr::Str(v.clone()), CoreTy::Str)),
             _ => Err("bad string literal".to_string()),
         },
-        NodeKind::None => Ok((TirExpr::Int(0), CoreTy::None_)),
+        NodeKind::None => Ok((TirExpr::NoneValue, CoreTy::None_)),
         NodeKind::Dict => {
             let mut entries: Vec<(TirExpr, TirExpr)> = Vec::with_capacity(node.children.len());
             let mut value_cty: Option<CoreTy> = None;
@@ -1965,11 +2627,14 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                         return Err("dict key must be a string".to_string());
                     }
                     Ok((
-                        TirExpr::DictGet(Box::new(target), Box::new(key)),
+                        TirExpr::Located {
+                            span: (node.start, node.length),
+                            inner: Box::new(TirExpr::DictGet(Box::new(target), Box::new(key))),
+                        },
                         elem_cty,
                     ))
                 }
-                CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_) => {
+                CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_) | CoreTy::ListLambda => {
                     let (key, kty) = lower_expr(key_node, ctx)?;
                     if kty != CoreTy::Int {
                         return Err("list index must be an int".to_string());
@@ -1978,10 +2643,14 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                         CoreTy::ListInt => CoreTy::Int,
                         CoreTy::ListFloat => CoreTy::Float,
                         CoreTy::ListClass(id) => CoreTy::Class(id),
+                        CoreTy::ListLambda => CoreTy::Lambda(u32::MAX),
                         _ => return Err("indexing requires a list[int], list[float] or list[class]".to_string()),
                     };
                     Ok((
-                        TirExpr::ListGet(Box::new(target), Box::new(key)),
+                        TirExpr::Located {
+                            span: (node.start, node.length),
+                            inner: Box::new(TirExpr::ListGet(Box::new(target), Box::new(key))),
+                        },
                         elem_cty,
                     ))
                 }
@@ -2014,6 +2683,7 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 CoreTy::Int => CoreTy::ListInt,
                 CoreTy::Float => CoreTy::ListFloat,
                 CoreTy::Class(id) => CoreTy::ListClass(id),
+                CoreTy::Lambda(_) => CoreTy::ListLambda,
                 _ => return Err("core lists require int, float, or class elements".to_string()),
             };
             Ok((TirExpr::List(elements), ret))
@@ -2059,10 +2729,15 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         }
         NodeKind::Identifier => {
             let name = ctx.source.span(node.start, node.length);
-            let slot = slot_of(ctx, &name)
-                .ok_or_else(|| format!("unknown variable '{name}'"))?;
-            let ty = CoreTy::from(ctx.locals[slot as usize]);
-            Ok((TirExpr::Local(slot), ty))
+            // Local slots shadow globals (as in the VM's scope chain).
+            if let Some(slot) = slot_of(ctx, &name) {
+                let ty = CoreTy::from(ctx.locals[slot as usize]);
+                return Ok((TirExpr::Local(slot), ty));
+            }
+            if let Some(&g) = ctx.globals.get(&name) {
+                return Ok((TirExpr::GlobalGet(g), CoreTy::Int));
+            }
+            Err(format!("unknown variable '{name}'"))
         }
         NodeKind::Unary => lower_unary(node, ctx),
         NodeKind::Binary => lower_binary(node, ctx),
@@ -2133,7 +2808,8 @@ fn lower_binary(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), St
     }
     let (a, a_ty) = lower_expr(lhs, ctx)?;
     let (b, b_ty) = lower_expr(rhs, ctx)?;
-    lower_binary_op(op, a, a_ty, b, b_ty)
+    let (expr, ty) = lower_binary_op(op, a, a_ty, b, b_ty)?;
+    Ok((TirExpr::Located { span: (node.start, node.length), inner: Box::new(expr) }, ty))
 }
 
 fn lower_binary_op(
@@ -2596,7 +3272,9 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 if let Some(core_ret) = core_ty_of(&ret_ty) {
                     let args = lower_arg_list(args_tuple, ctx)?;
                     return Ok((
-                        TirExpr::NativeCallExpr {
+                        TirExpr::Located {
+                            span: (node.start, node.length),
+                            inner: Box::new(TirExpr::NativeCallExpr {
                             module: module.clone().into_boxed_str(),
                             member: member.clone().into_boxed_str(),
                             args,
@@ -2607,7 +3285,8 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                                 Ty::Str => TirTy::Str,
                                 _ => unreachable!(),
                             },
-                        },
+                        }),
+                    },
                         core_ret,
                     ));
                 }
@@ -2654,10 +3333,58 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             field_ret,
         ));
     }
+    let args_tuple_for_lambda = node.children.get(1);
+    if callee.kind == NodeKind::Index {
+        let (cv, _) = lower_expr(callee, ctx)?;
+        let args_node = args_tuple_for_lambda
+            .filter(|n| n.kind == NodeKind::Tuple)
+            .ok_or_else(|| "call arguments must be positional".to_string())?;
+        let args = lower_arg_list(args_node, ctx)?;
+        return Ok((TirExpr::CallObj {
+            callee: Box::new(cv),
+            args,
+            ret: TirTy::Int,
+        }, CoreTy::Int));
+    }
+    if callee.kind == NodeKind::Lambda {
+        let idx = ctx.lambdas.len() as u32;
+        let captures = synthesize_lambda(callee, ctx, idx)?;
+        let func_index = ctx.lambda_base + idx;
+        let args_node = args_tuple_for_lambda
+            .filter(|n| n.kind == NodeKind::Tuple)
+            .ok_or_else(|| "lambda call arguments must be positional".to_string())?;
+        let mut args = lower_arg_list(args_node, ctx)?;
+        let mut all: Vec<TirExpr> = captures.iter().map(|s| TirExpr::Local(*s)).collect();
+        all.append(&mut args);
+        return Ok((TirExpr::Call(func_index, all), CoreTy::Int));
+    }
     if callee.kind != NodeKind::Identifier {
         return Err("only direct calls are supported in the core".to_string());
     }
     let name = ctx.source.span(callee.start, callee.length);
+    if let Some(slot) = slot_of(ctx, &name) {
+        let lambda_info = ctx.lambda_vars.get(&slot).cloned();
+        if let Some((_func_index, _captures)) = lambda_info {
+            let args_node = args_tuple_for_lambda
+                .filter(|n| n.kind == NodeKind::Tuple)
+                .ok_or_else(|| "lambda call arguments must be positional".to_string())?;
+            let args = lower_arg_list(args_node, ctx)?;
+            let ret = ctx.locals.get(slot as usize).copied().unwrap_or(TirTy::Int);
+            let call_ret = match ret {
+                TirTy::Lambda(idx) => {
+                    let local_idx = idx.saturating_sub(ctx.lambda_base);
+                    ctx.lambdas.get(local_idx as usize).and_then(|f| f.ret).unwrap_or(TirTy::Int)
+                }
+                _ => TirTy::Int,
+            };
+            let core_ret = match call_ret { TirTy::Int => CoreTy::Int, TirTy::Float => CoreTy::Float, TirTy::Bool => CoreTy::Bool, _ => CoreTy::Int };
+            return Ok((TirExpr::CallObj {
+                callee: Box::new(TirExpr::Local(slot)),
+                args,
+                ret: call_ret,
+            }, core_ret));
+        }
+    }
     if name == "int" || name == "float" {
         let args_node = node
             .children
@@ -2778,14 +3505,23 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             ))
         }
     };
-    if args.len() != fcheck.sig.params.len() {
+    // Missing trailing arguments are filled with the callee's lowered defaults
+    // in `pad_default_args` after all functions have been lowered.
+    let required = fcheck.sig.required.saturating_sub(fcheck.sig.receiver);
+    if args.len() < required || args.len() > fcheck.sig.params.len() {
         return Err(format!(
-            "'{name}' expects {} argument(s), got {}",
+            "'{name}' expects {required}..{} argument(s), got {}",
             fcheck.sig.params.len(),
             args.len()
         ));
     }
-    Ok((TirExpr::Call(tir_i as u32, args), ret))
+    Ok((
+        TirExpr::Located {
+            span: (node.start, node.length),
+            inner: Box::new(TirExpr::Call(tir_i as u32, args)),
+        },
+        ret,
+    ))
 }
 
 fn fn_index_of(checked: &CheckedProgram, name: &str, call_span: usize) -> Option<usize> {
@@ -2844,6 +3580,7 @@ fn validate(f: &TirFn, program: &TirProgram) -> Result<(), String> {
 
 fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> {
     match stmt {
+        TirStmt::GlobalSet(_, _) => {}
         TirStmt::Let(slot, _) => {
             if (*slot as usize) != locals.len() {
                 return Err(format!(
@@ -2949,6 +3686,11 @@ fn ty_to_tir_simple(ty: &Ty) -> Result<TirTy, String> {
 
 fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) -> Result<TirTy, String> {
     match expr {
+        TirExpr::Located { inner, .. } => expr_ty(inner, f, program, locals),
+        TirExpr::MakeClosure { func_index, .. } => Ok(TirTy::Lambda(*func_index)),
+        TirExpr::CallObj { ret, .. } => Ok(*ret),
+        TirExpr::GlobalGet(_) => Ok(TirTy::Int),
+        TirExpr::NoneValue => Ok(TirTy::Str),
         TirExpr::Int(_) => Ok(TirTy::Int),
         TirExpr::Float(_) => Ok(TirTy::Float),
         TirExpr::Math(_, args) => {
@@ -3165,6 +3907,8 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                 Ok(TirTy::ListFloat)
             } else if let TirTy::Class(id) = ty {
                 Ok(TirTy::ListClass(id))
+            } else if let TirTy::Lambda(_) = ty {
+                Ok(TirTy::ListLambda)
             } else {
                 Err("list elements must be int, float or class instances".to_string())
             }
@@ -3259,7 +4003,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Bool => Err("negation of bool".to_string()),
                     TirTy::Str => Err("negation of str".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
-                    | TirTy::Class(_) | TirTy::ErrorObj => {
+                    | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
                         Err("negation of collection or class instance".to_string())
                     }
                 },
@@ -3269,7 +4013,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Float => Err("'not' requires a bool or int".to_string()),
                     TirTy::Str => Err("'not' requires a bool or int".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
-                    | TirTy::Class(_) | TirTy::ErrorObj => {
+                    | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
                         Err("'not' requires a bool or int".to_string())
                     }
                 },
@@ -3319,6 +4063,8 @@ fn param_name(ty: TirTy) -> &'static str {
         TirTy::DictStrFloat => "dict[str, float]",
         TirTy::Class(_) => "class",
         TirTy::ErrorObj => "error-obj",
+        TirTy::Lambda(_) => "lambda",
+        TirTy::ListLambda => "list[lambda]",
     }
 }
 
@@ -3332,6 +4078,9 @@ fn validate_stmt(
 ) -> Result<(), String> {
     for stmt in body {
         match stmt {
+            TirStmt::GlobalSet(_, expr) => {
+                let _ = expr_ty(expr, f, program, locals)?;
+            }
             TirStmt::Let(s, expr) => {
                 let ty = expr_ty(expr, f, program, locals)?;
                 if (*slot as u16) != *s {
@@ -3563,7 +4312,11 @@ fn validate_stmt(
                 }
             }
             TirStmt::ExprStmt(expr) => {
-                if !matches!(expr, TirExpr::Call(..) | TirExpr::MethodCall { .. }) {
+                let inner = match expr {
+                    TirExpr::Located { inner, .. } => inner.as_ref(),
+                    other => other,
+                };
+                if !matches!(inner, TirExpr::Call(..) | TirExpr::MethodCall { .. } | TirExpr::CallObj { .. }) {
                     return Err("expression statement must be a call".to_string());
                 }
                 let _ = expr_ty(expr, f, program, locals)?;

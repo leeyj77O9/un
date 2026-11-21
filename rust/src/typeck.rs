@@ -28,6 +28,8 @@ pub enum Ty {
         params: Rc<[Ty]>,
         names: Rc<[String]>,
         ret: Rc<Ty>,
+        /// Minimum number of arguments (trailing params may have defaults).
+        required: usize,
     },
     Unknown,
 }
@@ -166,6 +168,8 @@ pub struct ClassInfo {
     pub setters: Vec<String>,
     pub ctor_params: Vec<(String, Ty)>,
     pub ctor_required: usize,
+    /// Declared field order (positional ctor argument order).
+    pub field_order: Vec<String>,
 }
 
 
@@ -690,6 +694,18 @@ impl<'a> Checker<'a> {
                 info.bases.push(self.text_of(base));
             }
         }
+        // Base-class constructor parameters are part of the derived class's
+        // constructor (the VM passes base args first). Collect them up front.
+        let inherited: Vec<(String, Ty)> = info.bases.iter()
+            .filter_map(|base| self.classes.get(base))
+            .flat_map(|base| base.ctor_params.iter().cloned())
+            .collect();
+        let inherited_required: usize = info.bases.iter()
+            .filter_map(|base| self.classes.get(base))
+            .map(|base| base.ctor_required)
+            .sum();
+        info.ctor_params.extend(inherited.iter().cloned());
+        info.ctor_required += inherited_required;
         if let Some(params) = node.children.iter().find(|c| c.kind == NodeKind::Tuple) {
             for param in &params.children {
                 let pname = param_name_text(param, self.source).unwrap_or_default();
@@ -700,6 +716,7 @@ impl<'a> Checker<'a> {
                     .map(|t| self.parse_annotation_node(t))
                     .unwrap_or(Ty::Unknown);
                 merge_field(&mut info.fields, pname.clone(), ty.clone());
+                info.field_order.push(pname.clone());
                 let has_default = param
                     .children
                     .first()
@@ -719,6 +736,7 @@ impl<'a> Checker<'a> {
                 match child.kind {
                     NodeKind::Typed => {
                         if let Some((name, ty)) = bare_typed_member(child, self) {
+                            if !info.field_order.contains(&name) { info.field_order.push(name.clone()); }
                             merge_field(&mut info.fields, name, ty);
                         }
                     }
@@ -1184,6 +1202,7 @@ impl<'a> Checker<'a> {
                 params: sig.params[sig.receiver..].into(),
                 names: sig.param_names[sig.receiver..].into(),
                 ret: Rc::new(sig.ret.clone()),
+                required: sig.required.saturating_sub(sig.receiver),
             },
             None => Ty::Any,
         }
@@ -1606,6 +1625,7 @@ fn bind_method_ty(sig: &FnSig) -> Ty {
         params: sig.params[sig.receiver..].into(),
         names: sig.param_names[sig.receiver..].into(),
         ret: Rc::new(sig.ret.clone()),
+        required: sig.required.saturating_sub(sig.receiver),
     }
 }
 
@@ -2674,6 +2694,7 @@ impl<'a> Checker<'a> {
                 params: sig.params[sig.receiver..].into(),
                 names: sig.param_names[sig.receiver..].into(),
                 ret: Rc::new(sig.ret.clone()),
+                required: sig.required.saturating_sub(sig.receiver),
             };
         }
         if self.import_names.iter().any(|n| n == &name) {
@@ -2921,6 +2942,7 @@ impl<'a> Checker<'a> {
             params: vec![Ty::Any].into(),
             names: vec!["arg0".to_string()].into(),
             ret: Rc::new(Ty::Any),
+            required: 0,
         }
     }
 
@@ -2931,14 +2953,14 @@ impl<'a> Checker<'a> {
             NodeKind::Identifier => {
                 let name = self.text_of(callee);
                 let local_fn = env.lookup(&name).cloned().or_else(|| self.globals.get(&name).cloned());
-                if let Some(Ty::Func { params, names, ret }) = local_fn {
+                if let Some(Ty::Func { params, names, ret, required }) = local_fn {
                     return self.apply_sig(
                         &FnSig {
                             name,
                             params: params.to_vec(),
                             param_names: names.to_vec(),
                             ret: (*ret).clone(),
-                            required: params.len(),
+                            required,
                             is_method: false,
                             receiver: 0,
                             variadic: false,
@@ -2987,14 +3009,14 @@ impl<'a> Checker<'a> {
                     return Ty::Any;
                 }
                 if let Some(ty) = builtin_ty(&name) {
-                    if let Ty::Func { params, names, ret } = ty {
+                    if let Ty::Func { params, names, ret, required } = ty {
                         return self.apply_sig(
                             &FnSig {
                                 name,
                                 params: params.to_vec(),
                                 param_names: names.to_vec(),
                                 ret: (*ret).clone(),
-                                required: params.len(),
+                                required,
                                 is_method: false,
                                 receiver: 0,
                                 variadic: false,
@@ -3008,14 +3030,14 @@ impl<'a> Checker<'a> {
                     return Ty::Any;
                 }
                 if let Some(ty) = env.lookup(&name).cloned() {
-                    if let Ty::Func { params, names, ret } = ty {
+                    if let Ty::Func { params, names, ret, required } = ty {
                         return self.apply_sig(
                             &FnSig {
                                 name,
                                 params: params.to_vec(),
                                 param_names: names.to_vec(),
                                 ret: (*ret).clone(),
-                                required: params.len(),
+                                required,
                                 is_method: false,
                                 receiver: 0,
                                 variadic: false,
@@ -3050,14 +3072,14 @@ impl<'a> Checker<'a> {
                     Ty::Class(class) => {
                         let class_name = class.to_string();
                         if let Some(field_ty) = self.class_field(&class_name, &member) {
-                            if let Ty::Func { params, names, ret } = field_ty.clone() {
+                            if let Ty::Func { params, names, ret, required } = field_ty.clone() {
                                 return self.apply_sig(
                                     &FnSig {
                                         name: member,
                                         params: params.to_vec(),
                                         param_names: names.to_vec(),
                                         ret: (*ret).clone(),
-                                        required: params.len(),
+                                        required,
                                         is_method: false,
                                         receiver: 0,
                                         variadic: false,
@@ -3074,14 +3096,14 @@ impl<'a> Checker<'a> {
                             return Ty::Unknown;
                         }
                         if let Some(method_ty) = self.class_method(&class_name, &member) {
-                            if let Ty::Func { params, names, ret } = method_ty {
+                            if let Ty::Func { params, names, ret, required } = method_ty {
                                 return self.apply_sig(
                                     &FnSig {
                                         name: member,
                                         params: params.to_vec(),
                                         param_names: names.to_vec(),
                                         ret: (*ret).clone(),
-                                        required: params.len(),
+                                        required,
                                         is_method: false,
                                         receiver: 0,
                                         variadic: false,
@@ -3153,13 +3175,13 @@ impl<'a> Checker<'a> {
             NodeKind::Call => {
                 let inner = self.check_expr(callee, env);
                 match inner {
-                    Ty::Func { params, names, ret } => {
+                    Ty::Func { params, names, ret, required } => {
                         let sig = FnSig {
                             name: "<call>".to_string(),
                             params: params.to_vec(),
                             param_names: names.to_vec(),
                             ret: (*ret).clone(),
-                            required: params.len(),
+                            required,
                             is_method: false,
                             receiver: 0,
                             variadic: false,
@@ -3179,13 +3201,13 @@ impl<'a> Checker<'a> {
             _ => {
                 let inner = self.check_expr(callee, env);
                 match inner {
-                    Ty::Func { params, names, ret } => {
+                    Ty::Func { params, names, ret, required } => {
                         let sig = FnSig {
                             name: "<call>".to_string(),
                             params: params.to_vec(),
                             param_names: names.to_vec(),
                             ret: (*ret).clone(),
-                            required: params.len(),
+                            required,
                             is_method: false,
                             receiver: 0,
                             variadic: false,
@@ -3613,7 +3635,7 @@ pub fn assignable(target: &Ty, value: &Ty, classes: &HashMap<String, ClassInfo>)
             }
             is_subclass_with(classes, b, a)
         }
-        (Ty::Func { params: a_params, names: _, ret: a_ret }, Ty::Func { params: b_params, names: _, ret: b_ret }) => {
+        (Ty::Func { params: a_params, names: _, ret: a_ret, required: a_req }, Ty::Func { params: b_params, names: _, ret: b_ret, required: b_req }) if a_req == b_req => {
             a_params.len() == b_params.len()
                 && a_params
                     .iter()
@@ -3699,10 +3721,12 @@ fn is_subclass_with(classes: &HashMap<String, ClassInfo>, child: &str, base: &st
 fn builtin_ty(name: &str) -> Option<Ty> {
     fn func(params: Vec<Ty>, ret: Ty) -> Ty {
         let names = (0..params.len()).map(|i| format!("arg{i}")).collect::<Vec<_>>();
+        let required = params.len();
         Ty::Func {
             params: params.into(),
             names: names.into(),
             ret: Rc::new(ret),
+            required,
         }
     }
     match name {

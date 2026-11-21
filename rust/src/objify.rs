@@ -18,6 +18,10 @@ pub struct EmitOutcome {
     pub emitted: Vec<String>,
     pub skipped: Vec<String>,
     pub output: std::path::PathBuf,
+    /// (class, method, TIR function index, parameter count, return kind) entries
+    /// to register with the standalone native runtime before `un_main` runs.
+    /// Return kind: 0 Int, 1 Float, 2 Bool, 3 object handle.
+    pub class_methods: Vec<(String, String, usize, usize, u8)>,
 }
 
 #[derive(Clone)]
@@ -521,5 +525,6 @@ pub fn emit(program: &Program, output: &Path, entry: Option<&str>) -> Result<Emi
         emitted,
         skipped,
         output: output.to_path_buf(),
+        class_methods: Vec::new(),
     })
 }

@@ -225,7 +225,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
                 TirTy::Int => ArgKind::Int,
                 TirTy::Float => ArgKind::Float,
                 TirTy::Bool => ArgKind::Bool,
-                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => ArgKind::Int,
+                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => ArgKind::Int,
             })
             .collect();
         jit_cache::register_tir_entry(
@@ -289,7 +289,7 @@ fn emit_internal_bail<M: Module>(
         Some(TirTy::Bool) => {
             b.ins().return_(&[zero_i8, one_i8]);
         }
-        Some(TirTy::Str) | Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => {
+        Some(TirTy::Str) | Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda) => {
             b.ins().return_(&[zero_i64, one_i8]);
         }
         None => {
@@ -339,7 +339,9 @@ pub fn obj_compile(
         } else {
             format!("un_tir_{i}")
         };
-        let linkage = if is_entry { Linkage::Export } else { Linkage::Local };
+        // Method pointers are referenced from the generated driver, so every
+        // emitted function must be link-visible, not just the entry point.
+        let linkage = Linkage::Export;
         let sig = internal_signature(&module, f, NativeMode::Obj);
         match module.declare_function(&symbol, linkage, &sig) {
             Ok(fid) => {
@@ -387,10 +389,31 @@ pub fn obj_compile(
         .map_err(|e| format!("object emission failed: {e}"))?;
     std::fs::write(output, bytes).map_err(|e| format!("cannot write {}: {e}", output.display()))?;
 
+    let mut class_methods = Vec::new();
+    for (class_id, class_name) in tir.class_names.iter().enumerate() {
+        let Some(method_names) = tir.class_methods.get(class_id) else { continue };
+        for method_name in method_names.keys() {
+            let exact = tir.functions.iter().enumerate().find(|(_, f)| {
+                &f.name == method_name
+                    && f.params.first() == Some(&crate::tir::TirTy::Class(class_id as u16))
+            });
+            let by_name = tir.functions.iter().enumerate().find(|(_, f)| &f.name == method_name);
+            if let Some((tir_i, f)) = exact.or(by_name) {
+                let ret_kind = match f.ret {
+                    Some(crate::tir::TirTy::Int) => 0,
+                    Some(crate::tir::TirTy::Float) => 1,
+                    Some(crate::tir::TirTy::Bool) => 2,
+                    _ => 3,
+                };
+                class_methods.push((class_name.clone(), method_name.clone(), tir_i, f.params.len(), ret_kind));
+            }
+        }
+    }
     Ok(EmitOutcome {
         emitted,
         skipped,
         output: output.to_path_buf(),
+        class_methods,
     })
 }
 
@@ -417,7 +440,7 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
             TirTy::Int => types::I64,
             TirTy::Float => types::F64,
             TirTy::Bool => types::I8,
-            TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => types::I64,
+            TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => types::I64,
         }));
     }
     match &f.ret {
@@ -425,7 +448,7 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
         Some(TirTy::Float) => sig.returns.push(AbiParam::new(types::F64)),
         Some(TirTy::Bool) => sig.returns.push(AbiParam::new(types::I8)),
         Some(TirTy::Str) => sig.returns.push(AbiParam::new(types::I64)),
-        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => sig.returns.push(AbiParam::new(types::I64)),
+        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda) => sig.returns.push(AbiParam::new(types::I64)),
         None => {
             if mode == NativeMode::Obj {
                 sig.returns.push(AbiParam::new(types::I64));
@@ -488,9 +511,11 @@ struct FnEmit<'a> {
     terminated: bool,
     mode: NativeMode,
     active_handlers: Vec<cranelift_codegen::ir::Block>,
+    current_span: Option<(usize, usize)>,
     unrt_str_new: Option<cranelift_module::FuncId>,
     unrt_str_cat: Option<cranelift_module::FuncId>,
     unrt_call_native: Option<cranelift_module::FuncId>,
+    unrt_none: Option<cranelift_module::FuncId>,
     unrt_obj_int: Option<cranelift_module::FuncId>,
     unrt_obj_bool: Option<cranelift_module::FuncId>,
     unrt_obj_float: Option<cranelift_module::FuncId>,
@@ -509,6 +534,13 @@ struct FnEmit<'a> {
     unrt_list_set: Option<cranelift_module::FuncId>,
     unrt_list_push: Option<cranelift_module::FuncId>,
     unrt_write_error: Option<cranelift_module::FuncId>,
+    nrt_set_error_site: Option<cranelift_module::FuncId>,
+    nrt_push_frame: Option<cranelift_module::FuncId>,
+    nrt_pop_frame: Option<cranelift_module::FuncId>,
+    unrt_obj_closure: Option<cranelift_module::FuncId>,
+    unrt_call_obj: Option<cranelift_module::FuncId>,
+    unrt_global_get: Option<cranelift_module::FuncId>,
+    unrt_global_set: Option<cranelift_module::FuncId>,
     unrt_take_error: Option<cranelift_module::FuncId>,
     unrt_dump_uncaught: Option<cranelift_module::FuncId>,
     unrt_make_int_div_zero: Option<cranelift_module::FuncId>,
@@ -528,6 +560,7 @@ struct FnEmit<'a> {
     unrt_list_index_of: Option<cranelift_module::FuncId>,
     unrt_list_contains: Option<cranelift_module::FuncId>,
     unrt_obj_is_err: Option<cranelift_module::FuncId>,
+    unrt_obj_is_panic: Option<cranelift_module::FuncId>,
     unrt_obj_eq: Option<cranelift_module::FuncId>,
     unrt_len: Option<cranelift_module::FuncId>,
     str_literals: HashMap<Vec<u8>, cranelift_module::DataId>,
@@ -721,6 +754,11 @@ fn emit_internal<M: Module>(
     } else {
         None
     };
+    let unrt_obj_is_panic = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_obj_is_panic", vec![types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
     let unrt_dict_set = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_dict_set", vec![types::I64, types::I64, types::I64], Some(types::I64))?)
     } else {
@@ -741,6 +779,37 @@ fn emit_internal<M: Module>(
     } else {
         None
     };
+    let nrt_set_error_site = if mode == NativeMode::Obj {
+        Some(declare_import(module, "nrt_set_error_site", vec![types::I64, types::I64], None)?)
+    } else { None };
+    let nrt_push_frame = if mode == NativeMode::Obj {
+        Some(declare_import(module, "nrt_push_frame", vec![types::I64, types::I64, types::I64, types::I64], None)?)
+    } else { None };
+    let nrt_pop_frame = if mode == NativeMode::Obj {
+        Some(declare_import(module, "nrt_pop_frame", vec![], None)?)
+    } else { None };
+    let unrt_obj_closure = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_obj_closure",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else { None };
+    let unrt_call_obj = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_call_obj",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else { None };
+    let unrt_global_get = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_global_get", vec![types::I64], Some(types::I64))?)
+    } else { None };
+    let unrt_global_set = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_global_set", vec![types::I64, types::I64], Some(types::I64))?)
+    } else { None };
     let unrt_take_error = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_take_error", vec![], Some(types::I64))?)
     } else {
@@ -880,7 +949,7 @@ fn emit_internal<M: Module>(
                 TirTy::Int => types::I64,
                 TirTy::Float => types::F64,
                 TirTy::Bool => types::I8,
-                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => types::I64,
+                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => types::I64,
             })
         })
         .collect();
@@ -919,7 +988,7 @@ fn emit_internal<M: Module>(
                 };
                 builder.def_var(*var, v);
             }
-            TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
+            TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
                 let v = match unrt_none {
                     Some(id) => {
                         let none_ref = module.declare_func_in_func(id, builder.func);
@@ -980,9 +1049,11 @@ fn emit_internal<M: Module>(
         terminated: false,
         mode,
         active_handlers: Vec::new(),
+        current_span: None,
         unrt_str_new,
         unrt_str_cat,
         unrt_call_native,
+        unrt_none,
         unrt_obj_int,
         unrt_obj_bool,
         unrt_obj_float,
@@ -1001,6 +1072,13 @@ fn emit_internal<M: Module>(
         unrt_list_set,
         unrt_list_push,
         unrt_write_error,
+        nrt_set_error_site,
+        nrt_push_frame,
+        nrt_pop_frame,
+        unrt_obj_closure,
+        unrt_call_obj,
+        unrt_global_get,
+        unrt_global_set,
         unrt_take_error,
         unrt_dump_uncaught,
         unrt_make_int_div_zero,
@@ -1020,6 +1098,7 @@ fn emit_internal<M: Module>(
         unrt_list_index_of,
         unrt_list_contains,
         unrt_obj_is_err,
+        unrt_obj_is_panic,
         unrt_obj_eq,
         unrt_len,
         str_literals: HashMap::new(),
@@ -1105,7 +1184,7 @@ fn emit_internal_return<M: Module>(
         (Some(TirTy::Float), Some(v)) => returns.push(v),
         (Some(TirTy::Bool), Some(v)) => returns.push(v),
         (Some(TirTy::Str), Some(v)) => returns.push(v),
-        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj), Some(v)) => returns.push(v),
+        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda), Some(v)) => returns.push(v),
         (Some(TirTy::Int), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
@@ -1115,7 +1194,7 @@ fn emit_internal_return<M: Module>(
         (Some(TirTy::Str), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
-        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj), None) => {
+        (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
         (Some(TirTy::Bool), None) => {
@@ -1168,6 +1247,15 @@ fn emit_stmt<M: Module>(
             let var = emitter.vars[*slot as usize];
             let (value, _) = emit_expr(expr, emitter, builder, module, f);
             builder.def_var(var, value);
+            false
+        }
+        TirStmt::GlobalSet(index, expr) => {
+            let (value, ty) = emit_expr(expr, emitter, builder, module, f);
+            let value = wrap_as_obj(value, ty, emitter, builder, module);
+            let id = emitter.unrt_global_set.expect("global import required");
+            let r = module.declare_func_in_func(id, builder.func);
+            let idx = builder.ins().iconst(types::I64, *index as i64);
+            let _ = builder.ins().call(r, &[idx, value]);
             false
         }
         TirStmt::If { cond, then_body, else_body } => {
@@ -1415,7 +1503,7 @@ fn emit_stmt<M: Module>(
                 let (v, vty) = emit_expr(arg, emitter, builder, module, f);
                 let wrapped = match vty {
                     TirTy::Str => v,
-                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => v,
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => v,
                     TirTy::Int => {
                         let id = emitter.unrt_obj_int.expect("unrt import required for native calls");
                         let int_ref = module.declare_func_in_func(id, builder.func);
@@ -1528,8 +1616,30 @@ fn emit_stmt<M: Module>(
             false
         }
         TirStmt::Throw(expr) => {
+            let prev = emitter.current_span;
+            if let TirExpr::Located { span, inner } = expr {
+                emitter.current_span = Some(*span);
+                let (value, ty) = emit_expr(inner, emitter, builder, module, f);
+                let obj = wrap_as_obj(value, ty, emitter, builder, module);
+                emit_set_error_site(emitter, builder, module);
+                emitter.current_span = prev;
+                let wid = emitter.unrt_write_error.expect("unrt import required");
+                let wref = module.declare_func_in_func(wid, builder.func);
+                let _ = builder.ins().call(wref, &[obj]);
+                if let Some(&handler) = emitter.active_handlers.last() {
+                    builder.ins().jump(handler, &[]);
+                } else {
+                    let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+                    let d_ref = module.declare_func_in_func(d_id, builder.func);
+                    let _ = builder.ins().call(d_ref, &[]);
+                    builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+                }
+                emitter.terminated = true;
+                return true;
+            }
             let (value, ty) = emit_expr(expr, emitter, builder, module, f);
             let obj = wrap_as_obj(value, ty, emitter, builder, module);
+            emit_set_error_site(emitter, builder, module);
             let wid = emitter.unrt_write_error.expect("unrt import required");
             let wref = module.declare_func_in_func(wid, builder.func);
             let _ = builder.ins().call(wref, &[obj]);
@@ -1660,7 +1770,22 @@ fn list_elem_unbox<M: Module>(
             (builder.inst_results(res)[0], TirTy::Float)
         }
         TirTy::ListClass(id) => (raw, TirTy::Class(id)),
+        TirTy::ListLambda => (raw, TirTy::Lambda(u32::MAX)),
         _ => panic!("list method requires a list[int], list[float] or list[class]"),
+    }
+}
+
+fn emit_set_error_site<M: Module>(
+    emitter: &FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+) {
+    if let Some(id) = emitter.nrt_set_error_site {
+        let (start, len) = emitter.current_span.unwrap_or((0, 0));
+        let s = builder.ins().iconst(types::I64, start as i64);
+        let l = builder.ins().iconst(types::I64, len as i64);
+        let r = module.declare_func_in_func(id, builder.func);
+        let _ = builder.ins().call(r, &[s, l]);
     }
 }
 
@@ -1670,9 +1795,32 @@ fn emit_error_gate<M: Module>(
     module: &mut M,
     obj: cranelift_codegen::ir::Value,
 ) {
+    // Panics bypass catch handlers and terminate, like the VM.
+    if let Some(id) = emitter.unrt_obj_is_panic {
+        let r = module.declare_func_in_func(id, builder.func);
+        let res = builder.ins().call(r, &[obj]);
+        let raw_flag = builder.inst_results(res)[0];
+        let flag = builder.ins().ireduce(types::I8, raw_flag);
+        let panic_blk = builder.create_block();
+        let cont_blk = builder.create_block();
+        builder.ins().brif(flag, panic_blk, &[], cont_blk, &[]);
+        builder.seal_block(panic_blk);
+        builder.switch_to_block(panic_blk);
+        if let Some(w) = emitter.unrt_write_error {
+            let wref = module.declare_func_in_func(w, builder.func);
+            let _ = builder.ins().call(wref, &[obj]);
+        }
+        let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+        let d_ref = module.declare_func_in_func(d_id, builder.func);
+        let _ = builder.ins().call(d_ref, &[]);
+        builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+        builder.seal_block(cont_blk);
+        builder.switch_to_block(cont_blk);
+    }
     let is_err_id = match emitter.unrt_obj_is_err {
         Some(id) => id,
-        None => return,    };
+        None => return,
+    };
     let is_err_ref = module.declare_func_in_func(is_err_id, builder.func);
     let res = builder.ins().call(is_err_ref, &[obj]);
     let raw = builder.inst_results(res)[0];
@@ -1684,12 +1832,14 @@ fn emit_error_gate<M: Module>(
     builder.switch_to_block(err_blk);
     match emitter.active_handlers.last().copied() {
         Some(handler) => {
+            emit_set_error_site(emitter, builder, module);
             let wid = emitter.unrt_write_error.expect("unrt import required");
             let wref = module.declare_func_in_func(wid, builder.func);
             let _ = builder.ins().call(wref, &[obj]);
             builder.ins().jump(handler, &[]);
         }
         None => {
+            emit_set_error_site(emitter, builder, module);
             let wid = emitter.unrt_write_error.expect("unrt import required");
             let wref = module.declare_func_in_func(wid, builder.func);
             let _ = builder.ins().call(wref, &[obj]);
@@ -1721,7 +1871,8 @@ fn emit_int_zero_guard<M: Module>(
         let mref = module.declare_func_in_func(mid, builder.func);
         let res = builder.ins().call(mref, &[]);
         let err = builder.inst_results(res)[0];
-        let wid = emitter.unrt_write_error.expect("unrt import required");
+        emit_set_error_site(emitter, builder, module);
+            let wid = emitter.unrt_write_error.expect("unrt import required");
         let wref = module.declare_func_in_func(wid, builder.func);
         let _ = builder.ins().call(wref, &[err]);
         if let Some(&handler) = emitter.active_handlers.last() {
@@ -1760,7 +1911,8 @@ fn emit_mod_zero_guard<M: Module>(
         let mref = module.declare_func_in_func(mid, builder.func);
         let res = builder.ins().call(mref, &[]);
         let err = builder.inst_results(res)[0];
-        let wid = emitter.unrt_write_error.expect("unrt import required");
+        emit_set_error_site(emitter, builder, module);
+            let wid = emitter.unrt_write_error.expect("unrt import required");
         let wref = module.declare_func_in_func(wid, builder.func);
         let _ = builder.ins().call(wref, &[err]);
         let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
@@ -1795,7 +1947,8 @@ fn emit_math_sqrt_guard<M: Module>(
         let mref = module.declare_func_in_func(mid, builder.func);
         let res = builder.ins().call(mref, &[]);
         let err = builder.inst_results(res)[0];
-        let wid = emitter.unrt_write_error.expect("unrt import required");
+        emit_set_error_site(emitter, builder, module);
+            let wid = emitter.unrt_write_error.expect("unrt import required");
         let wref = module.declare_func_in_func(wid, builder.func);
         let _ = builder.ins().call(wref, &[err]);
         if let Some(&handler) = emitter.active_handlers.last() {
@@ -1832,7 +1985,8 @@ fn emit_math_log_guard<M: Module>(
         let mref = module.declare_func_in_func(mid, builder.func);
         let res = builder.ins().call(mref, &[]);
         let err = builder.inst_results(res)[0];
-        let wid = emitter.unrt_write_error.expect("unrt import required");
+        emit_set_error_site(emitter, builder, module);
+            let wid = emitter.unrt_write_error.expect("unrt import required");
         let wref = module.declare_func_in_func(wid, builder.func);
         let _ = builder.ins().call(wref, &[err]);
         if let Some(&handler) = emitter.active_handlers.last() {
@@ -1955,7 +2109,7 @@ fn wrap_as_obj<M: Module>(
             builder.inst_results(res)[0]
         }
         TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
-        | TirTy::Class(_) | TirTy::ErrorObj => v,
+        | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => v,
     }
 }
 
@@ -1997,6 +2151,94 @@ fn emit_expr<M: Module>(
     f: &TirFn,
 ) -> (cranelift_codegen::ir::Value, TirTy) {
     match expr {
+        TirExpr::NoneValue => {
+            let id = emitter.unrt_none.expect("unrt import required for None");
+            let r = module.declare_func_in_func(id, builder.func);
+            let call = builder.ins().call(r, &[]);
+            (builder.inst_results(call)[0], TirTy::Str)
+        }
+        TirExpr::GlobalGet(index) => {
+            let id = emitter.unrt_global_get.expect("global import required");
+            let r = module.declare_func_in_func(id, builder.func);
+            let idx = builder.ins().iconst(types::I64, *index as i64);
+            let call = builder.ins().call(r, &[idx]);
+            let obj = builder.inst_results(call)[0];
+            (unbox_obj(obj, TirTy::Int, emitter, builder, module), TirTy::Int)
+        }
+        TirExpr::Located { span, inner } => {
+            let prev = emitter.current_span;
+            emitter.current_span = Some(*span);
+            let result = emit_expr(inner, emitter, builder, module, f);
+            emitter.current_span = prev;
+            result
+        }
+        TirExpr::MakeClosure { func_index, captures, .. } => {
+            let index = builder.ins().iconst(types::I64, *func_index as i64);
+            let slot = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                (8 * captures.len()) as u32,
+                8,
+            ));
+            let capture_tys = emitter.fns.get(*func_index as usize)
+                .map(|f| f.params[..captures.len().min(f.params.len())].to_vec())
+                .unwrap_or_default();
+            for (i, slot_idx) in captures.iter().enumerate() {
+                let v = builder.use_var(emitter.vars[*slot_idx as usize]);
+                let ty = capture_tys.get(i).copied().unwrap_or(TirTy::Int);
+                let v = wrap_as_obj(v, ty, emitter, builder, module);
+                let addr = builder.ins().stack_addr(types::I64, slot, (8 * i) as i32);
+                builder.ins().store(MemFlagsData::new(), v, addr, 0);
+            }
+            let cap_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            let cap_len = builder.ins().iconst(types::I64, captures.len() as i64);
+            let id = emitter.unrt_obj_closure.expect("closure import required");
+            let r = module.declare_func_in_func(id, builder.func);
+            let call = builder.ins().call(r, &[index, cap_ptr, cap_len]);
+            (builder.inst_results(call)[0], TirTy::Lambda(*func_index))
+        }
+        TirExpr::CallObj { callee, args, ret } => {
+            let (cv, _) = emit_expr(callee, emitter, builder, module, f);
+            if emitter.mode == NativeMode::Obj {
+                if let Some(push) = emitter.nrt_push_frame {
+                    let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
+                    let np = builder.ins().symbol_value(types::I64, gv);
+                    let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
+                    let (start, len) = emitter.current_span.unwrap_or((0, 0));
+                    let s = builder.ins().iconst(types::I64, start as i64);
+                    let l = builder.ins().iconst(types::I64, len as i64);
+                    let push_ref = module.declare_func_in_func(push, builder.func);
+                    let _ = builder.ins().call(push_ref, &[np, nl, s, l]);
+                }
+            }
+            let mut vals = Vec::with_capacity(args.len());
+            for a in args {
+                let (v, ty) = emit_expr(a, emitter, builder, module, f);
+                vals.push(wrap_as_obj(v, ty, emitter, builder, module));
+            }
+            let slot = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                (8 * vals.len()) as u32,
+                8,
+            ));
+            for (i, v) in vals.iter().enumerate() {
+                let addr = builder.ins().stack_addr(types::I64, slot, (8 * i) as i32);
+                builder.ins().store(MemFlagsData::new(), *v, addr, 0);
+            }
+            let ap = builder.ins().stack_addr(types::I64, slot, 0);
+            let ac = builder.ins().iconst(types::I64, vals.len() as i64);
+            let id = emitter.unrt_call_obj.expect("closure call import required");
+            let r = module.declare_func_in_func(id, builder.func);
+            let call = builder.ins().call(r, &[cv, ap, ac]);
+            if emitter.mode == NativeMode::Obj {
+                if let Some(pop) = emitter.nrt_pop_frame {
+                    let pop_ref = module.declare_func_in_func(pop, builder.func);
+                    let _ = builder.ins().call(pop_ref, &[]);
+                }
+            }
+            let obj = builder.inst_results(call)[0];
+            emit_error_gate(emitter, builder, module, obj);
+            (unbox_obj(obj, *ret, emitter, builder, module), *ret)
+        }
         TirExpr::Int(v) => (builder.ins().iconst(types::I64, *v), TirTy::Int),
         TirExpr::Str(s) => {
             let id = emitter.unrt_str_new.expect("unrt import required for Str");
@@ -2050,6 +2292,10 @@ fn emit_expr<M: Module>(
                 TirTy::Class(id) => (
                     emitter.unrt_list_from_elems.expect("unrt import required for class lists"),
                     TirTy::ListClass(id),
+                ),
+                TirTy::Lambda(_) => (
+                    emitter.unrt_list_from_elems.expect("unrt import required for lambda lists"),
+                    TirTy::ListLambda,
                 ),
                 _ => panic!("core lists require int/float/class elements"),
             };
@@ -2242,6 +2488,18 @@ fn emit_expr<M: Module>(
             }
         }
         TirExpr::NativeCallExpr { module: mod_name, member: member_name, args, ret } => {
+            if emitter.mode == NativeMode::Obj {
+                if let Some(push) = emitter.nrt_push_frame {
+                    let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
+                    let np = builder.ins().symbol_value(types::I64, gv);
+                    let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
+                    let (start, len) = emitter.current_span.unwrap_or((0, 0));
+                    let s = builder.ins().iconst(types::I64, start as i64);
+                    let l = builder.ins().iconst(types::I64, len as i64);
+                    let pr = module.declare_func_in_func(push, builder.func);
+                    let _ = builder.ins().call(pr, &[np, nl, s, l]);
+                }
+            }
             let id = emitter
                 .unrt_call_native
                 .expect("unrt import required for native calls");
@@ -2270,6 +2528,12 @@ fn emit_expr<M: Module>(
             let res = builder.ins().call(call_ref, &[mod_ptr, mod_len, member_ptr, member_len, sp, argc]);
             let raw = builder.inst_results(res)[0];
             emit_error_gate(emitter, builder, module, raw);
+            if emitter.mode == NativeMode::Obj {
+                if let Some(pop) = emitter.nrt_pop_frame {
+                    let pr = module.declare_func_in_func(pop, builder.func);
+                    let _ = builder.ins().call(pr, &[]);
+                }
+            }
             match ret {
                 TirTy::Int => {
                     let ub = emitter.unrt_int_from_obj.expect("unrt import required to unbox ints");
@@ -2401,6 +2665,7 @@ fn emit_expr<M: Module>(
                     (builder.inst_results(res)[0], TirTy::Float)
                 }
                 TirTy::ListClass(id) => (raw, TirTy::Class(id)),
+                TirTy::ListLambda => (raw, TirTy::Lambda(u32::MAX)),
                 _ => panic!("indexing requires a list[int], list[float] or list[class]"),
             }
         }
@@ -2427,7 +2692,7 @@ fn emit_expr<M: Module>(
                     TirTy::Int => (builder.ins().ineg(value), TirTy::Int),
                     TirTy::Float => (builder.ins().fneg(value), TirTy::Float),
                     TirTy::Str => unreachable!("validator forbids neg of str"),
-                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
                         unreachable!("validator forbids neg of collection")
                     }
                     TirTy::Bool => unreachable!("validator forbids neg of bool"),
@@ -2442,7 +2707,7 @@ fn emit_expr<M: Module>(
                     }
                     TirTy::Float => unreachable!("validator forbids not of float"),
                     TirTy::Str => unreachable!("validator forbids not of str"),
-                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => {
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
                         unreachable!("validator forbids not of collection")
                     }
                 },
@@ -2465,6 +2730,33 @@ fn emit_expr<M: Module>(
             for arg in args {
                 let (v, _) = emit_expr(arg, emitter, builder, module, f);
                 arg_vals.push(v);
+            }
+            // Record the call site so a deeper error can print a trace frame.
+            if emitter.mode == NativeMode::Obj {
+                if let (Some(push), Some(pop)) = (emitter.nrt_push_frame, emitter.nrt_pop_frame) {
+                    let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
+                    let np = builder.ins().symbol_value(types::I64, gv);
+                    let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
+                    let (start, len) = emitter.current_span.unwrap_or((0, 0));
+                    let s = builder.ins().iconst(types::I64, start as i64);
+                    let l = builder.ins().iconst(types::I64, len as i64);
+                    let push_ref = module.declare_func_in_func(push, builder.func);
+                    let _ = builder.ins().call(push_ref, &[np, nl, s, l]);
+                    let call = {
+                        let callee_ref = module.declare_func_in_func(calleefid, builder.func);
+                        builder.ins().call(callee_ref, &arg_vals)
+                    };
+                    let pop_ref = module.declare_func_in_func(pop, builder.func);
+                    let _ = builder.ins().call(pop_ref, &[]);
+                    let results = builder.inst_results(call).to_vec();
+                    if emitter.mode == NativeMode::Obj {
+                        return match callee_ret {
+                            Some(t) => (results[0], t),
+                            None => (builder.ins().iconst(types::I8, 0), TirTy::Bool),
+                        };
+                    }
+                    unreachable!()
+                }
             }
             let callee_ref = module.declare_func_in_func(calleefid, builder.func);
             let call = builder.ins().call(callee_ref, &arg_vals);
@@ -2617,7 +2909,7 @@ fn ensure_float(
         TirTy::Int => builder.ins().fcvt_from_sint(types::F64, v),
         TirTy::Str => unreachable!("validator forbids str arithmetic"),
         TirTy::Bool => unreachable!("validator forbids bool arithmetic"),
-        TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => unreachable!("validator forbids collection-class arithmetic"),
+        TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => unreachable!("validator forbids collection-class arithmetic"),
     }
 }
 
@@ -2726,7 +3018,7 @@ fn emit_ffi(
                 TirTy::Float => builder.ins().bitcast(types::F64, MemFlagsData::new(), v),
                 TirTy::Bool => builder.ins().ireduce(types::I8, v),
                 TirTy::Str => v,
-                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj => v,
+                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => v,
             }
         })
         .collect();
@@ -2762,7 +3054,7 @@ fn emit_ffi(
             builder.ins().store(MemFlagsData::new(), zero, hp, 0);
             builder.ins().store(MemFlagsData::new(), two, hp, 8);
         }
-        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj) => {
+        Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda) => {
             let zero = builder.ins().iconst(types::I64, 0);
             let two = builder.ins().iconst(types::I64, TAG_BAIL);
             builder.ins().store(MemFlagsData::new(), zero, hp, 0);
