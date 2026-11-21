@@ -55,7 +55,8 @@ $env:TEMP\embed_test.exe
 ```
 
 `un build --embed`는 클래스를 사용하는 프로그램도 원본과 동일한 출력을 낸다.
-plain `un build`도 임의의 annotated 클래스를 지원한다(`<classes_init>`을 exe 초기화 시 한 번 등록).
+plain `un build`도 임의의 annotated 클래스를 지원한다(클래스는 TIR 메타데이터로
+네이티브 등록되며, 이전 경로가 쓰던 `<classes_init>` 바이트코드는 현재 plain exe에 없다).
 
 `scripts\obj-demo.ps1`가 PASS(`obj-demo: fib = 55` + `obj-demo (un build): 55` + `obj-demo (un build class): 37` + `obj-demo (un build class list): 37`)를
 반환한다. 오브젝트 심볼은 `llvm-nm`으로 확인할 수 있다: `un_main`(export),
@@ -70,7 +71,7 @@ plain `un build`도 임의의 annotated 클래스를 지원한다(`<classes_init
 `scripts\exe-diff.ps1`은 **exe 검증**을 담당한다 — `test/compile/*.un`을 `un build --embed`로
 링크한 exe와, `test/compile/build/*.un`(plain native 빌드 가능 프로그램만 두는 디렉터리)을
 plain `un build`로 링크한 exe가 각각 `un run`과 stdout/stderr/exit code 바이트 동일한지
-검사한다 (현재 31 checks: embed 9 + plain 21 + no-VM 마커 1). Part B는 바이트
+검사한다 (현재 32 checks: embed 9 + plain 22 + no-VM 마커 1). Part B는 바이트
 동일성만 확인하므로, Part C가 `bare_for.un`에서 no-VM 마커와 exe 크기(<10 MB)를
 별도로 검증한다. 새 기능을 지원할 때마다 이 디렉터리에 빌드 가능 픽스처를 추가하면
 plain exe 회귀를 잡을 수 있다.
@@ -92,7 +93,7 @@ plain exe 회귀를 잡을 수 있다.
 - `list[class]`: `list[int]`/`list[float]`와 같은 모든 위치(리터럴, 파라미터/렛/대입,
   `for v in xs`, 호출 인자/반환, `xs[i]` read/write, `add`/`insert`/`reverse`/`sort`/`pop`/`pop(i)`/
   `contains`/`index_of`, `len(xs)`)에서 native 컴파일된다. 정적 타입이 element 타입이므로
-  list 조작은 VM 런타임 브릿지를 거치고, `for v in xs`의 `v`는 Class Obj 핸들이다.
+  list 조작은 NRT 런타임 함수(`unrt_*`)를 거치고, `for v in xs`의 `v`는 Class Obj 핸들이다.
   `list[int]`/`list[float]`가 거부하는 것(빈 리스트, 중첩 리스트, 비 str 키 등)은 동일하게 거부한다.
 - `list[int]`/`list[float]` 메서드: `add(v)`(append), `insert(v, i)`(인덱스 clamp),
   `reverse()`, `sort()`(VM comparator), `pop()`/`pop(i)`(원소 반환),
@@ -131,18 +132,17 @@ plain exe 회귀를 잡을 수 있다.
   활성 핸들러가 없는 상황에서 leaf 오류가 나면 `unrt_dump_uncaught`가 exit(1)로
   종료한다. `Vm` 모드에서 try/catch/throw를 쓰는 함수는 인터프리터로 bail되어
   항상 인터프리터와 동일하게 동작한다.
-- `unrt_dump_uncaught`는 인터프리터의 `report()`와 마찬가지로 stdout에 출력한다
-  (소스 컨텍스트 traceback은 frozen exe에 없다).
-- 클래스 지원 (Obj 경로): plain `un build`(`un obj`)가 클래스도 네이티브로
-  지원한다. 프로그램 시작 시 exe에 박혀 있는 `<classes_init>` 프로토가 VM의
-  `unrt_register_classes`에 의해 실행되어 인터프리터와 동일하게 클래스 템플릿을
-  world에 등록한다(한 번만 실행). 네이티브 코드의 클래스 연산은 전부 VM
-  브릿지 경유: `ClassNew`→`tobj_call`(clone_obj + `__init__`), field get/set과
-  method call은 `get_attr`/`set_attr`과 동일한 의미론(프로퍼티, `__getattr__`,
-  super/parent 체인 포함)으로 `unrt_obj_int`류 브릿지처럼 수행된다. 상속받은
-  메서드/필드도 base 체인 lookup을 통해 정적 체커가 인지한다.
-  class/property/method dispatch는 전부 VM 런타임으로 재진입하는 브릿지이므로
-  Int-catchable 외의 mis-run 위험이 없다.
+- `unrt_dump_uncaught`는 인터프리터의 `report()`와 마찬가지로 stdout에 출력한다.
+  NRT는 소스/프레임/에러 위치를 등록하므로 plain exe도 소스 컨텍스트 traceback을
+  `un run`과 byte-identical하게 생성한다(이전 "frozen exe에는 없다"는 제한은 해소됨).
+- 클래스 지원 (plain exe): plain `un build`(`un obj`)가 클래스도 네이티브로
+  지원한다. 클래스 템플릿은 TIR 메타데이터에서 네이티브 등록되고, 메서드는
+  `un_tir_N` 함수 포인터로 직접 호출된다. 이전 구현이 쓰던 `<classes_init>`
+  바이트코드 실행과 `unrt_register_classes`는 plain 경로에서 제거됐다.
+  `ClassNew`→`__init__`, field get/set, method/property dispatch, 상속 체인
+  lookup은 모두 NRT(`libnrt.a`)가 기계어로 수행하며, VM 브릿지로 재진입하지
+  않는다. 상속받은 메서드/필드도 base 체인 lookup을 통해 정적 체커가 인지한다.
+  자세한 현재 구현은 아래 "No-VM plain executable" 섹션 참고.
   - 임의 기본값은 항상 바인딩된 클래스의 등록 스파인(임의 표현식 허용)을 쓰므로
     `@decorator`류 참조도 동작한다(기본값 표현식/데코레이터가 쓰는 모듈 함수는
     `bind_module_functions`가 미리 바인딩).

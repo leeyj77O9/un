@@ -742,6 +742,7 @@ impl<'a> Checker<'a> {
                     }
                     NodeKind::Assign => {
                         if let Some((name, ty)) = member_field(child, self) {
+                            if !info.field_order.contains(&name) { info.field_order.push(name.clone()); }
                             merge_field(&mut info.fields, name, ty);
                         }
                     }
@@ -750,7 +751,7 @@ impl<'a> Checker<'a> {
             }
             for child in &body.children {
                 if child.kind == NodeKind::Function {
-                    scan_self_assignments(child, &mut info.fields, self.source);
+                    scan_self_assignments(child, &mut info.fields, self.source, &mut info.field_order);
                 }
             }
             for child in &body.children {
@@ -963,8 +964,8 @@ fn refine_unknown(ty: Ty) -> Ty {
     }
 }
 
-fn scan_self_assignments(node: &Node, fields: &mut HashMap<String, Ty>, source: &Source) {
-    fn visit(node: &Node, fields: &mut HashMap<String, Ty>, source: &Source) {
+fn scan_self_assignments(node: &Node, fields: &mut HashMap<String, Ty>, source: &Source, order: &mut Vec<String>) {
+    fn visit(node: &Node, fields: &mut HashMap<String, Ty>, source: &Source, order: &mut Vec<String>) {
         if node.kind == NodeKind::Assign {
             if let Some(target) = node.children.first() {
                 if target.kind == NodeKind::Property {
@@ -974,6 +975,7 @@ fn scan_self_assignments(node: &Node, fields: &mut HashMap<String, Ty>, source: 
                             && source.span(receiver.start, receiver.length) == "self"
                         {
                             let name = source.span(member.start, member.length);
+                            if !order.contains(&name) { order.push(name.to_string()); }
                             fields.entry(name).or_insert(Ty::Unknown);
                         }
                     }
@@ -981,10 +983,10 @@ fn scan_self_assignments(node: &Node, fields: &mut HashMap<String, Ty>, source: 
             }
         }
         for child in &node.children {
-            visit(child, fields, source);
+            visit(child, fields, source, order);
         }
     }
-    visit(node, fields, source);
+    visit(node, fields, source, order);
 }
 
 fn assigned_names(node: &Node, source: &Source) -> Vec<String> {

@@ -11,9 +11,9 @@
 | `un check` / `un native` 기존 회귀 (`scripts/test.ps1`) | **green** — Positive 48 files / 1570 passed / 0 failed / 0 crashed, Negative 51 matched, Known 0 |
 | `scripts/differential.ps1` (UV_JIT=0 vs JIT 바이트 비교) | **green** — 99 files, 0 differences |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | **green** — 48 identical, 0 mismatched (negative 42 identical, 9 compile-rejected skip) |
-| `cargo test --release --workspace` | **green** — 227 passed (lib 219 + playground 8) |
+| `cargo test --release --workspace` | **green** — 230 passed (nrt 3 + lib 219 + playground 8) |
 | `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 23 passed, 0 failed |
-| `scripts/exe-diff.ps1` (exe ↔ `un run` 바이트 비교) | **green** — 31 passed, 0 failed (embed 9 + plain 21 + no-VM 마커 1) |
+| `scripts/exe-diff.ps1` (exe ↔ `un run` 바이트 비교) | **green** — 32 passed, 0 failed (embed 9 + plain 22 + no-VM 마커 1) |
 | `un native` 바이너리 정확성 (native 실행 vs interpreter 실행) | **검증됨** — typed_pass.un, loop/recursion/collatz 벤치필, div-zero·재귀 bail 경로 포함 |
 
 ## 실행 방법

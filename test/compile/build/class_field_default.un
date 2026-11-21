@@ -1,0 +1,19 @@
+use io
+
+class Point
+    x: int = 0
+    y: int = 0
+    fn __init__(px: int, py: int)
+        self.x = px
+        self.y = py
+    fn norm() -> int
+        -> self.x * self.x + self.y * self.y
+
+fn main() -> int
+    p = Point(3, 4)
+    io.write(p.x)
+    io.write(p.y)
+    io.write(p.norm())
+    -> 0
+
+main()
