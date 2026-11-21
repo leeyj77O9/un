@@ -6,9 +6,9 @@ edition = "2021"
 [lib]
 name = "unvm"
 path = "src/lib.rs"
-# Also produced as a static library so programs compiled with `un build` can
-# link the whole VM runtime (Obj model, natives, collections, exceptions)
-# directly into a standalone executable.
+# Also produced as a static library for `un build --embed`, which bundles the
+# whole VM runtime (Obj model, natives, collections, exceptions) into one exe.
+# Plain `un build` links `nrt` (libnrt.a) instead and contains no VM.
 crate-type = ["rlib", "staticlib"]
 
 [[bin]]
@@ -16,7 +16,10 @@ name = "un"
 path = "src/main.rs"
 
 [workspace]
-members = [".", "playground"]
+members = [".", "playground", "nrt"]
+# `cargo build --release --manifest-path rust/Cargo.toml` must also produce
+# libnrt.a, which `un build` links for no-VM executables.
+default-members = [".", "nrt"]
 
 [dependencies]
 cranelift-codegen = "0.137.1"

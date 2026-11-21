@@ -1,0 +1,10 @@
+[package]
+name = "nrt"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone native runtime used by `un build`. It implements the unrt_*/un_math_*
+# C ABI that Cranelift-emitted object files call, without depending on the VM.
+[lib]
+name = "nrt"
+crate-type = ["staticlib"]
