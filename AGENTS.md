@@ -148,18 +148,37 @@ C:\dev\un
   추가로 `Str`(리터럴/concat/`str == str`), `list[int]`/`list[float]`(리터럴,
   `for ... in`, `xs[i]` read/write, 리스트 메서드 `add`/`insert`/`reverse`/`sort`/`pop`/`contains`/`index_of`)와
   `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write), `len(x)`까지
-  지원하며 VM 런타임을 `unrt_*` C ABI로 호출한다. 등록된 list/dict 멤버 시그니처는
-  정적 체크에도 반영된다.
+  지원하며 `unrt_*` C ABI로 런타임 연산을 호출한다(plain build에서는 이 ABI를
+  `libnrt.a`가 구현하고, `--embed`에서는 VM이 구현한다). 등록된 list/dict 멤버
+  시그니처는 정적 체크에도 반영된다.
   class/예외(`try`/`catch`/`finally` + `catch`할 수 없는 int `%` 0 포함) 역시
-  네이티브로 컴파일된다. 클래스는 소스에 있으면 `<classes_init>` 프로토가 exe에
-  같이 박히고, 시작 시 `unrt_register_classes`가 실행 전 한 번 등록한다.
+  네이티브로 컴파일된다. 클래스는 TIR 메타데이터로 네이티브 등록하고
+  `<classes_init>` 바이트코드를 쓰지 않는다.
   필드는 annotated 되어 있어야 하고, 순수 getter property(타입 `any`)는 plain
   native에서 거부된다(`--embed`). `un native`(Vm 모드)는 클래스를 인터프리터로
   fallback시킨다.
   `.unbc` 경로는 Int 코어만 지원한다.
   `un build <file.un> [-o out.exe]`는 소스 → .obj → 링크 → 실행형까지 단일 명령으로
-  수행한다 (rustup self-contained mingw gcc 경유 rustc). 검증은 `scripts\obj-demo.ps1`,
-  진행 상황은 `docs/compile/OBJ_MILESTONES.md`.
+  수행한다 (rustup self-contained mingw gcc 경유 rustc). **plain exe는 VM을 전혀
+  포함하지 않는다**: `rust/nrt/`(`libnrt.a`)의 독립 네이티브 런타임을 링크하고
+  Int/Float/Bool/Str, list/dict, 클래스(필드·메서드·상속), try/catch, 네이티브 모듈
+  (io/math/iter/os/sys/fs/codes/re/time/types)을 모두 기계어로 실행한다.
+  `random`은 시간 기반 시드라 `un run`과 byte-identical할 수 없어 plain build가
+  거부하고 `--embed`를 안내한다.
+  클래스는 TIR 메타데이터로 네이티브 등록하고 `<classes_init>` 바이트코드를 쓰지
+  않는다. 약 5 MB exe이며, `un run`과 stdout/stderr/exit code가 바이트 단위로 같다.
+  기본값 인자, lambda(캡처 + closure 객체로 escape/리스트 저장 포함), 단순 사용자
+  모듈 import도 no-VM exe에서 동작한다: 기본값은 TIR 호출부에 채워지고, lambda는
+  NRT closure 객체(tag 8)로 생성돼 간접 호출되며, 사용자 모듈은 빌드 시 텍스트로
+  인라인된다. traceback도 NRT가 생성해 VM과 byte-identical이다(소스/프레임/에러
+  위치를 NRT에 등록).
+  단순 모듈 전역 상태(NRT 전역 슬롯)도 지원한다. 동적 타입(`Ty::Any`/Union,
+  타입 없는 파라미터)과 lambda 값의 `any` 전달·반환은 plain build가 거부하고
+  `un build --embed`를 안내한다.
+  `tir::nrt_supported`가 경계를 판정하고, `tir::core_rejection_reason`이
+  어노테이션 힌트를 출력한다. 검증은 `scripts\obj-demo.ps1`, `scripts\exe-diff.ps1`
+  (no-VM 마커 + exe 크기 + 클래스/모듈 출력 비교), 진행 상황은
+  `docs/compile/OBJ_MILESTONES.md`.
 - `Runner.RunCore` 대응: 파싱 → desugar → optimize → compile → evaluate를 순서대로 수행한다.
   `Runner.Load`는 `Global.PATH` 기준으로 파일을 읽고 CRLF를 LF로 정규화한다.
 - `Scope`는 부모 체인을 갖는 슬롯 기반 심볼 테이블이다. `Scope`의 slot table에서

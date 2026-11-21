@@ -13,7 +13,7 @@
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | **green** — 48 identical, 0 mismatched (negative 42 identical, 9 compile-rejected skip) |
 | `cargo test --release --workspace` | **green** — 227 passed (lib 219 + playground 8) |
 | `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 23 passed, 0 failed |
-| `scripts/exe-diff.ps1` (exe ↔ `un run` 바이트 비교) | **green** — 14 passed, 0 failed |
+| `scripts/exe-diff.ps1` (exe ↔ `un run` 바이트 비교) | **green** — 31 passed, 0 failed (embed 9 + plain 21 + no-VM 마커 1) |
 | `un native` 바이너리 정확성 (native 실행 vs interpreter 실행) | **검증됨** — typed_pass.un, loop/recursion/collatz 벤치필, div-zero·재귀 bail 경로 포함 |
 
 ## 실행 방법
@@ -41,7 +41,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | `test/compile/build/bare_for.un` | plain native exe 게이트 — 로컬 어노테이션 초기화(`dp: list[int] = [0]`)와 반복 변수 없는 `for 0..100`을 쓰는 프로그램을 `scripts/exe-diff.ps1`이 plain `un build` exe로 링크해 `un run`과 바이트 비교 |
 | `test/compile/iter_array.un` | `iter.array(v, n)` intrinsic — v가 int/float이면 `list[int]`/`list[float]`, `dp: list[int] = iter.array(...)`까지 포함해 interpreter와 `un native`/`un build --embed`가 바이트 동일 |
 | `test/compile/build/iter_minmax.un` | plain native exe 게이트 — `iter.min`/`iter.max(list[int]/list[float])` — `scripts/exe-diff.ps1`이 plain `un build` exe로 링크해 `un run`과 바이트 비교 |
-| `test/compile/build/native_modules.un` | plain native exe 게이트 — Int/Float/Bool/Str 결과 네이티브 모듈 멤버(math/os/sys/time/fs/codes/random/re)를 native exe로 링크해 `un run`과 stdout/stderr/exit code 바이트 비교 |
+| `test/compile/build/native_modules.un` | plain native exe 게이트 — Int/Float/Bool/Str 결과 네이티브 모듈 멤버(math/os/sys/time/fs/codes/re)를 native exe로 링크해 `un run`과 stdout/stderr/exit code 바이트 비교. `random`은 시간 시드라 plain build가 거부 |
 | `test/compile/native_modules.un` | 같은 내용의 interpreter ↔ `un native` 교차 검증 (assert 모듈 사용) |
 | `test/compile/build/iter_array.un` | `iter_array.un`의 plain exe 게이트 — `iter.array` + 인덱스 write + `len`/`xs[i]` 읽기 — `scripts/exe-diff.ps1`이 plain `un build` exe로 링크해 `un run`과 바이트 비교 |
 | `scripts/exe-diff.ps1` | `test/compile/*.un` → `--embed` exe 바이트 비교 + `test/compile/build/*.un` → plain exe 바이트 비교 (exit/stdout/stderr 전부) |

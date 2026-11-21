@@ -33,7 +33,7 @@ self-contained mingw gcc를 경유한 `rustc`가 담당한다.
 |---|---|---|
 | 1 | 수직 슬라이스: core 부분집합(Int 상수/지역변수/산술/비교/`JmpIf`/직접 호출/`Return`) → COFF `.obj`, fib 데모 | **완료** |
 | 2 | `for i in a..b` / `while` 반복 하강 | **완료** (소스 경로: TIR ForRange/While을 그대로 하강; 루프 경계 가드 포함) |
-| 3 | VM 정적 링크 ABI — 생성 코드가 VM 런타임을 정적 링크해 Object 호출 | **3b 진행 중** (3a: `unvm`이 `staticlib`로 빌드되고 `unrt`(`rust/src/unrt.rs`)가 C ABI 제공. `un build --embed`는 임의의 Un 프로그램을 독립 exe로 빌드 — class/예외 포함. 3b: 생성 코드가 `unrt_call_native`/`unrt_obj_int` 등으로 VM 런타임을 직접 호출 — `io.write`, Str 리터럴/concat/`str == str`, `list[int]`/`list[float]`/`list[class]`(리터럴, `for ... in`, `-> list[int]`, `io.write` 인자, `xs[i]` read/write, `len`, list 메서드)와 `dict[str, int]`/`dict[str, float]`(리터럴, `d["k"]` read/write, 함수 인자/반환), **`try`/`catch`/`finally`와 `throw`와 클래스**까지 네이티브 컴파일. 인터프리터와 출력 바이트 동일(보통 함수 body에서 `->`/`break`/`skip`이 안 쓰일 때). 클래스는 `<classes_init>` 스파인을 exe에 임베드해 시작 시 한 번 등록(`unrt_register_classes`); 임의 annotation 기본값/모듈 데코레이터도 동작) |
+| 3 | 런타임 ABI — 생성 코드의 `unrt_*` 호출 | **완료** (`un build --embed`는 `libunvm.a`(VM), plain `un build`는 `libnrt.a`(독립 런타임)를 링크. 두 경로 모두 `io.write`, Str, list/dict, 클래스(상속 포함), 예외, 기본값 인자, 람다/closure, 단순 모듈 import/전역, byte-identical traceback 지원. 아래 "No-VM plain executable" 섹션 참고) |
 | 4 | `.un` 소스에서 바로 `un obj` (typeck/TIR 재사용) | **완료** |
 | 5 | `un build` — 링크까지 자동화 (self-contained mingw gcc 자동 탐지) | **완료** |
 
@@ -70,13 +70,18 @@ plain `un build`도 임의의 annotated 클래스를 지원한다(`<classes_init
 `scripts\exe-diff.ps1`은 **exe 검증**을 담당한다 — `test/compile/*.un`을 `un build --embed`로
 링크한 exe와, `test/compile/build/*.un`(plain native 빌드 가능 프로그램만 두는 디렉터리)을
 plain `un build`로 링크한 exe가 각각 `un run`과 stdout/stderr/exit code 바이트 동일한지
-검사한다 (현재 7 checks). 새 코어 기능을 지원할 때마다 이 디렉터리에 빌드 가능 픽스처를
-추가하면 plain exe 회귀를 잡을 수 있다.
+검사한다 (현재 31 checks: embed 9 + plain 21 + no-VM 마커 1). Part B는 바이트
+동일성만 확인하므로, Part C가 `bare_for.un`에서 no-VM 마커와 exe 크기(<10 MB)를
+별도로 검증한다. 새 기능을 지원할 때마다 이 디렉터리에 빌드 가능 픽스처를 추가하면
+plain exe 회귀를 잡을 수 있다.
 
 ## 제한 사항
 
-- 상수: `Int`/`Bool`/`Str` 리터럴을 지원한다 (`Float`/딕셔너리/집합/튜플/클래스/클로저/예외/모듈 로딩은 skip).
-  네이티브 exe가 지원하는 문자열은 `unrt_*`를 통해 VM Str을 사용한다.
+아래 초기 제한 목록은 역사적 기록이다. 현재 상태는 "No-VM plain executable" 섹션을
+참고할 것 — Float/딕셔너리/클래스/클로저/예외/모듈 로딩/전역 상태 대부분이 이제
+지원된다. 남은 제한은 동적 타입(`Any`/Union), 시간 시드 `random`, 모듈 최상위
+부수 효과, Float 인자/반환을 가진 closure/메서드(ABI 제약), 기본값이 있는 base
+  클래스 ctor 파라미터의 인자 순서, 메서드 오버라이드 시 기본값 선택이다.
 - `list[int]`/`list[float]`: 리터럴(`[1, 2, 3]`), 파라미터/렛/대입, `for v in xs` 또는
   `for v in [1, 2, 3]`(리터럴 직접 반복),
   호출 인자/반환(`-> list[int]`), `io.write(xs)` 네이티브 출력까지 지원한다.
@@ -170,13 +175,89 @@ plain `un build`로 링크한 exe가 각각 `un run`과 stdout/stderr/exit code 
   `for 0..n`(디스카드 슬롯에는 `'$'` 접두 합성 이름을 씀)은 compile mode에서 지원된다
   (2026-11-20). interpreter와 동작이 같다. `x: T`만 단독으로 쓰는 어노테이션 문장은 여전히
   거부된다.
-- `un build`의 드라이버는 `unrt_init()` → `un_main()` → `unrt_flush_stdout()` 순서로
-  호출한다. Str 출력은 VM runtime의 stdout 버퍼를 통해 나간다. 엔트리 반환이
-  float/bool이면 값을 출력하지 않고 숫자 그대로/0으로 출력한다.
-  **plain exe는 모듈 최상위 문장을 실행하지 않는다** — 진입 proto(`fn main`, `un_main`으로
-  export)만 실행된다. 이에 반해 `un run` / `un native` / `--embed`는 인터프리터 의미론이라
-  모듈 최상위 문장이 한 번 실행되고 `main()`은 파일이 직접 호출할 때만 실행된다.
-  함정 예: top-level의 `io.write("boot")`는 plain exe에서 조용히 무시된다.
+- `un build`의 생성 드라이버는 소스/프레임/클래스/closure/전역을 NRT에 등록한 뒤
+  `un_main()`을 호출하고 그 반환값을 exit code로 쓴다. `io.write`는 NRT가 stdout에
+  직접 쓴다(VM stdout 버퍼 아님).
+  **plain exe는 메인 파일의 모듈 최상위 문장을 실행하지 않는다** — 진입 proto(`fn main`,
+  `un_main`으로 export)만 실행된다. 인라인된 사용자 모듈의 최상위 전역 초기화는
+  `main` 본문 앞에 삽입되어 실행된다. `un run` / `un native` / `--embed`는 인터프리터
+  의미론이라 모듈 최상위 문장이 한 번 실행되고 `main()`은 파일이 직접 호출할 때만 실행된다.
+  함정 예: 메인 파일 top-level의 `io.write("boot")`는 plain exe에서 조용히 무시된다.
 - `use`로 가져와야 하는 모듈이라도 `io.write`처럼 **네이티브 테이블에 등록된** native 호출은
-  `unrt_call_native`로 연결되므로 독립 exe에서 바로 동작한다. 일반 모듈 import(사용자 `.un` 파일 등)는
-  여전히 embed 런타임(`--embed`)을 쓴다.
+  `unrt_call_native`로 연결되므로 독립 exe에서 바로 동작한다. 사용자 `.un` 모듈 import도
+  빌드 시 텍스트 인라인으로 지원한다(단순 함수/전역 초기화만; 전역 재할당 등 부수 효과는
+  `--embed` 전용).
+
+## No-VM plain executable (2026-11-21, 전체 네이티브 런타임 이식)
+
+- **plain `un build`는 이제 `libunvm.a`를 절대 링크하지 않는다.** `rust/nrt/`
+  (`libnrt.a`)가 VM 브릿지 43개(`unrt_*`)와 `un_math_*`를 전부 독립 구현한다.
+  Cranelift가 만든 `.obj` + `libnrt.a`만 링크하고, 결과 exe는 약 5 MB(VM 링크 시
+  약 17 MB), `un run`과 stdout/stderr/exit code가 바이트 단위로 같다.
+- 이식 범위: Int/Float/Bool/Str, `list[int|float]`, `dict[str,int|float]`,
+  클래스(필드·메서드·`__init__`), `try`/`catch`/`finally`/`throw`, pending error,
+  그리고 `io`/`math`/`iter`/`os`/`sys`/`fs`/`codes`/`re`/`time`/`types`/`random`
+  모듈 멤버. `re`는 VM의 순수 Rust regex 엔진(`native/regex/`)을 그대로 복사해
+  사용하므로 의미론이 같다.
+- 클래스: `obj_compile`이 TIR의 `class_names`/`class_fields`/`class_methods`를 읽어
+  `(class, method, TIR index, arity, return kind)` 목록을 `EmitOutcome`으로 반환하고,
+  생성 드라이버가 `nrt_register_class/field/method`를 호출한다. 메서드는 `.obj`의
+  `un_tir_N` 함수 포인터로 등록되고, `<classes_init>` 바이트코드와
+  `unrt_register_classes`는 plain 경로에서 제거됐다. 메서드가 Int/Float/Bool를
+  raw로 반환하므로 NRT가 Obj 핸들로 boxing한다(`ret_kind`).
+- `tir::core_rejection_reason`이 core-subset 이탈 사유(파라미터/로컬 타입, 어노테이션
+  힌트)를 알려주고, `un build` 실패 시 출력된다. `UV_TIR_DEBUG=1`에서도 표시된다.
+- 기본값 인자: `TirFn.defaults: Vec<Option<TirExpr>>`가 파라미터별 기본값을 들고
+  있고, `TirProgram::pad_default_args()`가 모든 함수 lowering 후 호출부에서 빠진
+  인자를 채운다. `unrt_class_new`/`unrt_method_call`도 네이티브 메서드에
+  파라미터 종류(`kinds`)를 전달해 Obj 핸들을 raw Int/Float/Bool로 unbox한다
+  (명시적 `__init__`이 있는 클래스도 VM과 바이트 동일). 파라미터를 참조하는
+  기본값(예: `fn f(a, b = a + 1)`)은 호출부에서 슬롯이 달라지므로 TIR이 거부한다.
+- Lambda(정적 해석 서브셋): `synthesize_lambda`가 lambda 본문을 별도 `TirFn`으로
+  합성하고, 외부 함수의 지역변수를 캡처하면 합성 함수의 leading 파라미터로 넘긴다.
+  `f = fn(...)`의 `f(…)` 호출과 `(fn(…))(…)` 즉시 호출은 `TirExpr::Call`로 rewrite
+  되므로 NRT/natcode 변경 없이 기계어 직접 호출이 된다. lambda 값을 컨테이너에
+  저장하거나 반환하는 형태(escape)는 거부한다.
+- 클래스 상속: typeck의 `collect_class`가 base 클래스의 ctor 파라미터와 required
+  개수를 파생 클래스에 병합하도록 수정(VM은 base 인자를 먼저 받음). 생성 드라이버의
+  `un_tir_N` extern 선언을 중복 제거해, base 메서드가 여러 클래스에서 참조돼도 링크된다.
+- 사용자 모듈 import: `inline_user_modules_text`가 빌드 시 `use a.b as alias`를
+  텍스트 기반으로 인라인하고 함수명을 `alias_`로 mangle한 뒤 `alias.member(`를
+  `alias_member(`로 치환한다. 모듈 최상위에 함수 선언 외 문장(전역 상태 등)이
+  있으면 거부한다.
+- VM이 필요한 나머지 기능(동적 타입, lambda escape, 모듈 전역 효과)은 plain
+  build가 `un build --embed` 안내와 함께 거부한다. 거부된 프로그램이 조용히 VM을
+  링크하는 일은 없다.
+- 드라이버 ABI 주의: `unrt_len`은 raw i64가 아닌 **Obj 핸들**을 반환하고,
+  `io.write`는 값 사이에 `" "`를 넣고 마지막에 `"\n"`을 붙인다.
+  `unrt_take_error()`는 pending error가 없으면 `0`을 반환한다.
+- 검증: `scripts/exe-diff.ps1` Part C가 "no-VM native runtime" 마커와 10 MB 미만
+  exe 크기를 확인하고, Part B의 `bare_for`/`iter_array`/`iter_minmax`/
+  `native_modules`/`class_list`가 모두 no-VM 경로로 `un run`과 바이트 비교된다.
+  `scripts/obj-demo.ps1`의 클래스 exe도 같은 경로로 통과한다.
+- Traceback: 드라이버가 `nrt_register_source`로 소스 텍스트/경로를 등록하고,
+  `nrt_push_frame`으로 `<module>` 프레임과 호출부 프레임을 기록한다. TIR의
+  `TirExpr::Located { span, inner }`가 에러 발생식의 위치를 natcode에 전달하고,
+  `nrt_set_error_site`가 caret 위치를 기록한다. NRT `unrt_dump_uncaught`가
+  VM의 `trace_string` + `LangError::display`와 동일한 형식으로 출력한다.
+  uncatchable Panic(`% 0`)은 tag 10으로 구분해 위치 없이 메시지만 출력한다
+  (`test/compile/build/traceback.un`으로 byte 비교 검증).
+- Lambda escape: lambda가 NRT의 tag 8 closure 객체(코드 포인터 + 캡처 값 +
+  파라미터 종류)로 생성된다. 드라이버가 `nrt_register_lambda`로 각 lambda 함수
+  포인터를 등록하고, `TirExpr::MakeClosure`가 `unrt_obj_closure`를 호출한다.
+  호출부는 `TirExpr::CallObj` → `unrt_call_obj`로 인자를 boxing/unescaping해
+  간접 호출한다. `list[lambda]` 요소도 지원하므로 `xs = [f]; xs[0](4)`가 동작한다
+  (`test/compile/build/lambda_escape.un`). NRT에 `iter.map`/`filter`의 closure
+  호출 구현도 추가했다.
+- 모듈 전역 상태: `inline_user_modules_text`가 모듈 최상위 `name = ...`을 수집해
+  `alias_name`으로 mangle하고 본문의 참조도 word-boundary로 치환한다. 드라이버가
+  `nrt_register_global`로 전역을 등록하고, TIR의 `GlobalGet`/`GlobalSet`이 NRT의
+  `unrt_global_get`/`unrt_global_set`으로 읽기/쓰기한다. 모듈 init 문장은 `main`
+  본문 앞에 삽입된다(`test/compile/build/module_globals.un`은 init + 읽기를
+  검증한다; 함수 내 전역 재할당은 VM의 `StoreLocal` 의미론과 달라 아직 미지원).
+- 알려진 제한: lambda를 `any` 타입 파라미터로 넘기거나 반환하는 형태, 동적 타입
+  코드(`Ty::Any`/Union, 타입 없는 함수 파라미터)는 여전히 `un build --embed`
+  전용이다. `test/assert.un`처럼 타입 없는 함수가 있는 모듈은 전역 상태가
+  인라인돼도 typeck에서 거부된다.
+  이들은 TIR의 정적 타입 모델을 넘어서는 기능으로, 완전 지원은 별도 백엔드
+  확장(closure 객체 + 간접 호출, 전역 슬롯, 태그 기반 동적 연산)이 필요하다.

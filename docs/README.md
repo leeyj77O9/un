@@ -297,12 +297,14 @@ runs in the interpreter with identical semantics.
   (the whole VM runtime, statically). This works for **any** Un program —
   classes, collections, IO, string interpolation — not just the Int core
   subset, and the binary is fully self-contained.
-- Plain `un build` (without `--embed`) supports classes and exceptions natively
-  too: classes in the source are baked into the object and registered once at
-  startup, and Int/Float/Bool fields (annotated) plus methods, `__init__`,
-  inheritance and property access run through the VM bridge with exactly the
-  interpreter's semantics. Computed property getters with `any` return types
-  are rejected and need `un build --embed`.
+- Plain `un build` (without `--embed`) contains **no VM at all**: it links
+  `libnrt.a` (the standalone native runtime) and produces a ~5 MB exe. Classes
+  (fields, methods, `__init__`, inheritance), exceptions, strings/lists/dicts,
+  native modules (io/math/iter/os/sys/fs/codes/re/time/types), default
+  arguments, lambdas (including captured and list-stored closures), simple
+  user-module imports/globals, and byte-identical tracebacks all work natively.
+  Programs needing dynamic `Any`/union types, time-seeded `random`, or
+  module-level side effects beyond simple assignments need `un build --embed`.
 - `un lsp` runs a Language Server Protocol server over stdin/stdout. It reports
   lexer/parser diagnostics by default; Compile Mode type diagnostics are opt-in
   via `initializationOptions.compileMode` or the `un/compileMode` notification.

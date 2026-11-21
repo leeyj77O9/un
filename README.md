@@ -291,11 +291,12 @@ Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일�
   이 경로는 **모든 Un 프로그램**(class, collection, IO, 문자열 보간 등 Int core
   부분집합에 속하지 않는 것 포함)에서 완전하게 동작하며, 소스는 물론 공유 런타임
   없이도 단일 실행형이다.
-- plain `un build`(`--embed` 없이)도 클래스와 예외를 네이티브로 지원한다.
-  클래스는 `.unbc`와 함께 exe에 박혀 시작 시 한 번 등록되며, Int/Float/Bool 필드
-  (annotated)와 메서드, `__init__`, 상속, 프로퍼티 접근은 VM 브릿지를 통해
-  인터프리터와 동일하게 동작한다. 순수 getter property(any 반환 타입)는 거부되며
-  `un build --embed`를 써야 한다.
+- plain `un build`(`--embed` 없이)는 **VM을 전혀 포함하지 않는다**. 대신 `libnrt.a`
+  (독립 네이티브 런타임)를 링크하며 exe는 약 5 MB다. 클래스(필드·메서드·`__init__`·상속),
+  예외, 문자열/리스트/딕트, 네이티브 모듈(io/math/iter/os/sys/fs/codes/re/time/types),
+  기본값 인자, 람다(캡처·closure·리스트 저장), 단순 사용자 모듈 import/전역,
+  VM과 byte-identical한 traceback을 지원한다. 동적 타입(`Any`/Union), 시간 기반
+  `random`, 모듈 최상위 부수 효과가 있는 프로그램은 `un build --embed`를 써야 한다.
 - `un lsp`는 stdin/stdout으로 LSP 언어 서버를 실행한다. 기본은 lexer/parser
   오류만 보고하며, Compile Mode 타입 진단은 `initializationOptions.compileMode`
   또는 `un/compileMode` 알림으로 opt-in한다. Rust를 쓰지 않는 클라이언트도

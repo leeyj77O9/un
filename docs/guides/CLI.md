@@ -260,11 +260,17 @@ garbage). See `docs/compile/OBJ_MILESTONES.md` for milestones.
 ### `un build <file.un> [-o out.exe]`
 
 One command from source to a standalone native executable: emits the object
-file as above, then links it against a tiny generated driver that calls
-`un_main()` and prints the i64 result, using rustup's self-contained mingw
-gcc via `rustc`. If the object imports the VM runtime (e.g. `io.write` from a
-native-eligible path), the link fails with unresolved symbols — the Int core
-currently has no runtime imports, which is what makes standalone builds work.
+file as above, then links it against a generated driver and `libnrt.a` (the
+standalone native runtime), using rustup's self-contained mingw gcc via
+`rustc`. **Plain exe contains no VM** — it is ~5 MB vs ~17 MB for
+`un build --embed`. `libnrt.a` implements the `unrt_*`/`un_math_*` C ABI used
+by the emitted object, including Str/list/dict, classes (with inheritance),
+exceptions, closures, native modules (`io`, `math`, `iter`, `os`, `sys`, `fs`,
+`codes`, `re`, `time`, `types`), simple user-module imports/globals, and
+byte-identical tracebacks. Default arguments and lambdas (including captured
+and stored-in-list closures) are supported. Programs needing dynamic
+`Any`/union types, time-seeded `random`, or module-level side effects beyond
+simple assignments are rejected with an `un build --embed` hint.
 
 **Entry semantics.** A plain native executable runs **only** the Un `main`
 function (the entry proto, exported as `un_main`): the module's top-level
