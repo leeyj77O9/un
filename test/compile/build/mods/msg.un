@@ -1,0 +1,5 @@
+count = 10
+use io
+fn show() -> int
+    io.write("count is here")
+    -> count

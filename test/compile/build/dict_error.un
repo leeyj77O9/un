@@ -1,0 +1,6 @@
+use io
+fn main() -> int
+    d = {"a": 1}
+    io.write(d["z"])
+    -> 0
+main()

@@ -1,0 +1,7 @@
+use mods.base as b
+use io
+value = b.x + 1
+fn main() -> int
+    io.write(value)
+    -> 0
+main()

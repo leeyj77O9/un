@@ -1,0 +1,9 @@
+use mods.mathutil as m
+use io
+
+fn main() -> int
+    io.write(m.double(5))
+    io.write(m.add(3, 4))
+    -> 0
+
+main()

@@ -1,0 +1,12 @@
+use io
+use codes
+fn main() -> int
+    r = 0
+    try
+        x = codes.chr(0xD800)
+        r = 1
+    catch e
+        r = 2
+    io.write(r)
+    -> 0
+main()

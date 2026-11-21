@@ -1,0 +1,17 @@
+use io
+
+class Base(x: int)
+    fn get() -> int
+        -> self.x
+
+class Child(y: int): Base
+    fn total() -> int
+        -> self.x + self.y
+
+fn main() -> int
+    c = Child(10, 20)
+    io.write(c.get())
+    io.write(c.total())
+    -> 0
+
+main()

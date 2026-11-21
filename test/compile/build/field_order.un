@@ -1,0 +1,8 @@
+use io
+class C(z: int, a: int)
+fn main() -> int
+    c = C(1, 2)
+    io.write(c.z)
+    io.write(c.a)
+    -> 0
+main()

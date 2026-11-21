@@ -115,6 +115,32 @@ if (Test-Path $partBDir) {
     }
 }
 
+# Part C: a plain build that needs no VM bridge must emit the no-VM marker
+# and an exe far smaller than the libunvm.a-linked fallback (~17 MB).
+$nrtFixture = Join-Path $Root "test\compile\build\bare_for.un"
+if (Test-Path $nrtFixture) {
+    $exePath = Join-Path $Tmp "nrt_bare_for.exe"
+    $run = Invoke-Raw -FilePath $Exe -ArgumentList @("run", $nrtFixture) -Tag "nrt_run" -WorkDir $Root
+    $build = Invoke-Raw -FilePath $Exe -ArgumentList @("build", $nrtFixture, "-o", $exePath) -Tag "nrt_build" -WorkDir $Root
+    $marker = [Text.Encoding]::UTF8.GetString($build.out)
+    if ($build.code -ne 0 -or $marker -notmatch 'no-VM native runtime') {
+        Write-Host "[FAIL] nrt/bare_for.un (no-VM marker missing)" -ForegroundColor Red
+        $script:fail += 1
+    } elseif (-not (Test-Path $exePath) -or (Get-Item $exePath).Length -gt 10MB) {
+        Write-Host "[FAIL] nrt/bare_for.un (exe too large — VM likely linked)" -ForegroundColor Red
+        $script:fail += 1
+    } else {
+        $exe = Invoke-Raw -FilePath $exePath -ArgumentList @() -Tag "nrt_exe" -WorkDir $Root
+        if ((Bytes-Equal $run.out $exe.out) -and (Bytes-Equal $run.err $exe.err) -and ($run.code -eq $exe.code)) {
+            Write-Host "[PASS] nrt/bare_for.un (no VM linked)" -ForegroundColor Green
+            $script:pass += 1
+        } else {
+            Write-Host "[FAIL] nrt/bare_for.un (output differs)" -ForegroundColor Red
+            $script:fail += 1
+        }
+    }
+}
+
 Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "exe-diff: $pass passed, $fail failed"

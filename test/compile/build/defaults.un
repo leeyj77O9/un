@@ -1,0 +1,24 @@
+use io
+
+fn add(a: int, b: int = 10) -> int
+    -> a + b
+
+class P
+    x: int
+    y: int
+    fn __init__(x: int, y: int = 5)
+        self.x = x
+        self.y = y
+    fn sum() -> int
+        -> self.x + self.y
+
+fn main() -> int
+    io.write(add(1))
+    io.write(add(1, 20))
+    p = P(7)
+    io.write(p.sum())
+    q = P(7, 8)
+    io.write(q.sum())
+    -> 0
+
+main()

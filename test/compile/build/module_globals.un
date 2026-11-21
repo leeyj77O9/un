@@ -1,0 +1,9 @@
+use mods.counter as c
+use io
+
+fn main() -> int
+    io.write(c.get())
+    io.write(c.get())
+    -> 0
+
+main()

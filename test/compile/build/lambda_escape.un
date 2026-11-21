@@ -1,0 +1,14 @@
+use io
+
+fn main() -> int
+    f = fn(x: int) -> x * 3
+    io.write(f(7))
+    xs = [f]
+    io.write(xs[0](4))
+    n = 5
+    g = fn(x: int) -> x + n
+    ys = [g]
+    io.write(ys[0](10))
+    -> 0
+
+main()

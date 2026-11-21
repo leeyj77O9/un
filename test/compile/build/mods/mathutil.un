@@ -1,0 +1,5 @@
+fn double(x: int) -> int
+    -> x * 2
+
+fn add(a: int, b: int) -> int
+    -> a + b

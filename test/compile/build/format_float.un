@@ -1,0 +1,6 @@
+use io
+fn main() -> int
+    io.write(1e20)
+    io.write(1e-5)
+    -> 0
+main()

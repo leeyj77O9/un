@@ -1,0 +1,12 @@
+use io
+
+fn main() -> int
+    f = fn(x: int) -> x * 2
+    io.write(f(5))
+    io.write((fn(y: int) -> y + 1)(10))
+    n = 10
+    g = fn(x: int) -> x + n
+    io.write(g(5))
+    -> 0
+
+main()

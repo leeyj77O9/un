@@ -1,0 +1,6 @@
+use io
+class Point(x: int, y: int)
+fn main() -> int
+    io.write(Point(1, 2))
+    -> 0
+main()

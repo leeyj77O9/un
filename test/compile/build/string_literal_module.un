@@ -1,0 +1,6 @@
+use mods.msg as m
+use io
+fn main() -> int
+    m.show()
+    -> 0
+main()

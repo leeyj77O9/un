@@ -1,0 +1,6 @@
+use io
+fn main() -> int
+    f = fn(x: int) -> (fn(y: int) -> y + 1)(x) + 100
+    io.write(f(5))
+    -> 0
+main()

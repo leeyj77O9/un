@@ -1,0 +1,14 @@
+use io
+
+fn inner() -> int
+    x = 1 // 0
+    -> x
+
+fn outer() -> int
+    -> inner()
+
+fn main() -> int
+    io.write(outer())
+    -> 0
+
+main()
