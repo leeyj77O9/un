@@ -207,6 +207,10 @@ proto table   : count u32 + protos
 6. exception table의 `start < end`, handler가 instruction 경계, kind 유효.
 7. 256-register 제한( locals + max stack depth + 1 ).
 8. pattern 중첩 깊이 ≤ 64 (`MAX_PATTERN_DEPTH`).
+9. pattern tag는 `0` Wildcard, `1` Bind, `2` Literal, `3` Tuple, `4` Variant,
+   `5` Or, `6` Class, `7` Fields만 허용한다. `5`~`7`은 가산 확장이며 `VERSION`은
+   그대로 1이다(기존 0~4 파일 호환). Fields의 name 플래그는 `0` positional,
+   `1` named이고, named는 name 문자열 인덱스를 함께 읽는다.
 
 손상된 입력은 panic/abort가 아니라 exit 1 + 명확한 오류 메시지로 거부된다.
 `unbc-roundtrip.ps1 -IncludeNegative`가 Positive 50/50, compilable Negative 42 identical(9 compile-rejected skip)을 검증한다.

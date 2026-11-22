@@ -146,7 +146,7 @@ Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```
 
-`cargo test --release --workspace` covers the Rust side (234 tests: nrt 3 + lib 219 + un bin/LSP 4 + playground 8, including
+`cargo test --release --workspace` covers the Rust side (234 tests: nrt 3 + lib 229 + un bin/LSP 4 + playground 8, including
 the JIT entry-map isolation, repeated-native-call, sandbox path-confinement, and
 generic-type semantic-token regression guards). Additional runners compare
 execution shapes: `scripts/differential.ps1` runs every manifest file with

@@ -62,7 +62,7 @@ rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path ru
 # WASM 산출물 (un-playground용)
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --target wasm32-unknown-unknown --manifest-path rust/Cargo.toml -p unvm-playground
 
-# Rust 테스트 (nrt 3 + lib 219 + LSP 4 + playground 8 = 234 passed)
+# Rust 테스트 (nrt 3 + lib 229 + LSP 4 + playground 8 = 244 passed)
 rustup run stable-x86_64-pc-windows-gnu cargo test --release --workspace --manifest-path rust/Cargo.toml
 
 # 전체 테스트 runner ( Positive + Negative + KnownFailures + KnownDivergent 집계 )
@@ -194,6 +194,7 @@ C:\dev\un
   어노테이션 힌트를 출력한다. 검증은 `scripts\obj-demo.ps1`, `scripts\exe-diff.ps1`
   (no-VM 마커 + exe 크기 + 클래스/모듈 출력 비교), 진행 상황은
   `docs/compile/OBJ_MILESTONES.md`.
+- **언어 기능(2026-11-23)**: 타입 별칭 `type Name = Ty`, 패턴 가드·or-pattern·중첩 구조 분해·`case x is T` narrowing, bytes 리터럴 `b"..."`과 `bytes` 모듈(12함수)·`fs.read_bytes`/`write_bytes`를 지원한다. `bytes`는 런타임에서 임시 `List<Int>` 표현을 쓰고(후속 `Payload::Bytes` 교체 지점은 `native/bytes.rs` 어댑터 3함수), plain build는 `nrt_supported`가 거부해 `--embed`를 안내한다. `un check`는 union narrowing과 exhaustiveness를 타입 수준에서 정밀화했다.
 - `Runner.RunCore` 대응: 파싱 → desugar → optimize → compile → evaluate를 순서대로 수행한다.
   `Runner.Load`는 `Global.PATH` 기준으로 파일을 읽고 CRLF를 LF로 정규화한다.
 - `Scope`는 부모 체인을 갖는 슬롯 기반 심볼 테이블이다. `Scope`의 slot table에서
@@ -235,7 +236,7 @@ C:\dev\un
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 50 files /
   1606 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
   Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다. (2026-11-23 재측정)
-  그 외 게이트: `cargo test --release --workspace` 234 passed, differential 101 파일 / 0 차이,
+  그 외 게이트: `cargo test --release --workspace` 244 passed, differential 101 파일 / 0 차이,
   `.unbc` 왕복 Positive 50/50 + Negative 42 identical(9 skip), compile-check 33/0, exe-diff 42/0.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).

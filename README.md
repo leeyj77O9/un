@@ -406,7 +406,7 @@ are documented divergences between implementations and are not counted as failur
 The current baseline is Positive 50 files / 1606 passed / 0 failed / 0 crashed,
 Negative 51 checks matched + 0 documented divergences, and Known 0 files
 (re-measured 2026-11-23). Rust tests: `cargo test --release --workspace` reports
-234 passed (nrt 3 + lib 219 + LSP 4 + playground 8). JIT differential: 101 files,
+244 passed (nrt 3 + lib 229 + LSP 4 + playground 8). JIT differential: 101 files,
 0 differences. `.unbc` round-trip: Positive 50/50, Negative 42 identical
 (9 compile-rejected skips), Compile cross-check 33/0, exe equality 42/0.
 
@@ -869,6 +869,8 @@ Implemented:
 - Bytecode compiler and register-based VM (lexer, parser, desugarer, optimizer, compiler, vm)
 - Hot-path Int Cranelift JIT (Int loops, arithmetic and bit ops, `iter.range`, FusedIntMulAdd, class methods over Int fields, IntVec/IntDict intrinsics, math Float intrinsics) (disable with `UV_JIT=0`, strict canary with `UV_JIT=2`). Includes Int-only IntDict intrinsics for `d[k] = v` / `d[k]` patterns and Bool returns.
 - Generic functions/classes (`fn f[T]`, `class Box[T]`) with call-site inference, explicit type arguments (`f[int](42)`), and bounds (`[T: numeric]`)
+- Type aliases (`type Id = int | str`), guarded/or-patterns, nested destructuring, and `is`-based narrowing in `match` / `un check`
+- Byte literals (`b"..."`), the `bytes` module, and `fs.read_bytes` / `fs.write_bytes` for binary file I/O (plain build requires `--embed` until NRT support lands)
 - Data-carrying enum variants (`Test.a(42)`) with `match` destructuring
 - Compile Mode (`un check`/`un native`) and standalone `un build`/`un obj` (libnrt.a, no VM)
 - LSP language server (`un lsp`) and the `un-language` VS Code extension
