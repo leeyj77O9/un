@@ -117,21 +117,46 @@ pub fn register_eligible(program: &Program, program_id: u64) {
     if !crate::jit_cache::jit_enabled() {
         return;
     }
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // A panic in the setup phase (before per-proto emit has its own
+    // catch_unwind) used to be swallowed here, silently disabling the whole
+    // JIT even under UV_JIT=2. Per-proto failures are recorded as `failed`
+    // and handled inside register_eligible_inner; only setup panics land here.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         register_eligible_inner(program, program_id)
     }));
+    if result.is_err() && crate::jit_cache::jit_strict() != 0 {
+        eprintln!("JITSTRICT: panic during JIT registration (program id {program_id})");
+        std::process::exit(2);
+    }
 }
 fn register_eligible_inner(program: &Program, program_id: u64) {
     let strict = crate::jit_cache::jit_strict();
     let mut failed: Vec<(usize, String)> = Vec::new();
-    if program_has_intrinsic_rebind(program) {
-        return;    }
     let ret_kinds = analyze_return_kinds(program);
 
     let candidates: Vec<usize> = (0..program.protos.len())
         .filter(|i| precheck_fn(program, *i).is_some())
         .collect();
     if candidates.is_empty() {
+        return;
+    }
+    // Rebinding a JIT intrinsic (math/iter/range/len) disables JIT for the
+    // whole program. It is outside the supported subset, but it also hid
+    // every *other* eligible proto in the same program from UV_JIT=2.
+    if program_has_intrinsic_rebind(program) {
+        if crate::jit_cache::jit_debug() {
+            eprintln!(
+                "JITDBG SKIP program: intrinsic rebind ({} candidate proto(s))",
+                candidates.len()
+            );
+        }
+        if strict != 0 {
+            eprintln!(
+                "JITSTRICT: program-wide intrinsic rebind disables JIT for {} candidate proto(s)",
+                candidates.len()
+            );
+            std::process::exit(2);
+        }
         return;
     }
     let native = match native_builder() {
@@ -218,19 +243,36 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     }
     let mut module = JITModule::new(builder);
 
+    // Every symbol declaration below is a prerequisite for emitting any
+    // candidate in this program. Losing one silently disabled the whole JIT
+    // (TD-51 class). Under UV_JIT=2 that must be a loud exit(2), never a
+    // quiet interpreter fallback.
+    macro_rules! jit_decl_failure {
+        ($label:expr) => {{
+            if crate::jit_cache::jit_debug() {
+                eprintln!("JITDBG SKIP program: declaring {} failed", $label);
+            }
+            if strict != 0 {
+                eprintln!("JITSTRICT: declaring {} for JIT failed", $label);
+                std::process::exit(2);
+            }
+            return;
+        }};
+    }
+
     let mut sig_enter = module.make_signature();
     sig_enter.returns.push(AbiParam::new(types::I64));
     let sig_exit = module.make_signature();    let fid_enter = match module
         .declare_function("un_jit_depth_enter", Linkage::Import, &sig_enter)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_jit_depth_enter"),
     };
     let fid_exit = match module
         .declare_function("un_jit_depth_exit", Linkage::Import, &sig_exit)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_jit_depth_exit"),
     };
     let mut sig_empty = module.make_signature();
     sig_empty.returns.push(AbiParam::new(types::I64));
@@ -238,7 +280,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_dict_int_empty", Linkage::Import, &sig_empty)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_dict_int_empty"),
     };
     let mut sig_set = module.make_signature();
     sig_set.params.push(AbiParam::new(types::I64));
@@ -249,7 +291,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_dict_int_set", Linkage::Import, &sig_set)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_dict_int_set"),
     };
     let mut sig_get = module.make_signature();
     sig_get.params.push(AbiParam::new(types::I64));
@@ -259,13 +301,13 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_dict_int_get", Linkage::Import, &sig_get)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_dict_int_get"),
     };
     let fid_dict_has = match module
         .declare_function("un_dict_int_has", Linkage::Import, &sig_get)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_dict_int_has"),
     };
     let mut sig_free = module.make_signature();
     sig_free.params.push(AbiParam::new(types::I64));
@@ -273,7 +315,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_dict_int_free", Linkage::Import, &sig_free)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_dict_int_free"),
     };
     let mut sig_ig = module.make_signature();
     sig_ig.params.push(AbiParam::new(types::I64));
@@ -281,7 +323,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     sig_ig.returns.push(AbiParam::new(types::I64));
     let fid_int_get = match module.declare_function("un_instance_int_get", Linkage::Import, &sig_ig) {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_instance_int_get"),
     };
     let mut sig_ionn = module.make_signature();
     sig_ionn.params.push(AbiParam::new(types::I64));
@@ -291,7 +333,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     sig_ionn.returns.push(AbiParam::new(types::I64));
     let fid_int_ok_name = match module.declare_function("un_instance_int_ok_name", Linkage::Import, &sig_ionn) {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_instance_int_ok_name"),
     };
     let mut sig_isn = module.make_signature();
     for _ in 0..5 {
@@ -300,7 +342,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     sig_isn.returns.push(AbiParam::new(types::I64));
     let fid_int_set_name = match module.declare_function("un_instance_int_set_name", Linkage::Import, &sig_isn) {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_instance_int_set_name"),
     };
     let mut sig_l_empty = module.make_signature();
     sig_l_empty.returns.push(AbiParam::new(types::I64));
@@ -308,7 +350,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_empty", Linkage::Import, &sig_l_empty)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_empty"),
     };
     let mut sig_l_push = module.make_signature();
     for _ in 0..3 {
@@ -319,13 +361,13 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_push", Linkage::Import, &sig_l_push)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_push"),
     };
     let fid_list_push_scalar = match module
         .declare_function("un_list_int_push_scalar", Linkage::Import, &sig_l_push)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_push_scalar"),
     };
     let mut sig_l_get = module.make_signature();
     sig_l_get.params.push(AbiParam::new(types::I64));
@@ -335,7 +377,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_get", Linkage::Import, &sig_l_get)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_get"),
     };
     let mut sig_l_set = module.make_signature();
     for _ in 0..4 {
@@ -346,13 +388,13 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_set", Linkage::Import, &sig_l_set)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_set"),
     };
     let fid_list_set_scalar = match module
         .declare_function("un_list_int_set_scalar", Linkage::Import, &sig_l_set)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_set_scalar"),
     };
     let mut sig_l_len = module.make_signature();
     sig_l_len.params.push(AbiParam::new(types::I64));
@@ -361,7 +403,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_len", Linkage::Import, &sig_l_len)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_len"),
     };
     let mut sig_l_slice = module.make_signature();
     sig_l_slice.params.push(AbiParam::new(types::I64));
@@ -372,7 +414,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_slice", Linkage::Import, &sig_l_slice)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_slice"),
     };
     let mut sig_l_free = module.make_signature();
     sig_l_free.params.push(AbiParam::new(types::I64));
@@ -380,7 +422,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_free", Linkage::Import, &sig_l_free)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_free"),
     };
     let mut sig_l_is = module.make_signature();
     sig_l_is.params.push(AbiParam::new(types::I64));
@@ -389,7 +431,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_is_handle", Linkage::Import, &sig_l_is)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_is_handle"),
     };
     let mut sig_iter_new = module.make_signature();
     sig_iter_new.params.push(AbiParam::new(types::I64));
@@ -398,7 +440,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_iter_new", Linkage::Import, &sig_iter_new)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_iter_new"),
     };
     let mut sig_iter_has = module.make_signature();
     sig_iter_has.params.push(AbiParam::new(types::I64));
@@ -407,7 +449,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_iter_has_next", Linkage::Import, &sig_iter_has)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_iter_has_next"),
     };
     let mut sig_iter_next = module.make_signature();
     sig_iter_next.params.push(AbiParam::new(types::I64));
@@ -416,7 +458,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_iter_next", Linkage::Import, &sig_iter_next)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_iter_next"),
     };
     let mut sig_iter_free = module.make_signature();
     sig_iter_free.params.push(AbiParam::new(types::I64));
@@ -424,7 +466,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         .declare_function("un_list_int_iter_free", Linkage::Import, &sig_iter_free)
     {
         Ok(fid) => fid,
-        Err(_) => return,
+        Err(_) => jit_decl_failure!("un_list_int_iter_free"),
     };
     let mut fid_class_make = Vec::with_capacity(9);
     for arity in 0..=8usize {
@@ -439,7 +481,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
             &sig,
         ) {
             Ok(fid) => fid_class_make.push(fid),
-            Err(_) => return,
+            Err(_) => jit_decl_failure!("un_class_make"),
         }
     }
 
@@ -463,7 +505,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         };
         match fid {
             Ok(f) => { fid_math.insert(mfn, f); }
-            Err(_) => return,
+            Err(_) => jit_decl_failure!("math FFI symbol"),
         }
     }
 
@@ -568,7 +610,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         if result.is_none() {
             let name = program.names.get(program.protos[idx].name).cloned().unwrap_or_else(|| "?".into());
             if std::env::var_os("UV_JIT_DEBUG").is_some() {
-                eprintln!("JITREJECT proto[{idx}] {name} (panic in JIT codegen, fallback stub)");
+                eprintln!("JITREJECT proto[{idx}] {name} (JIT codegen failed, fallback stub)");
             }
             failed.push((idx, name));
             if verbose {
@@ -719,6 +761,16 @@ impl<'a> Tr<'a> {
                 || self.intlist_iter_regs.contains(&r)
         })
     }
+    /// Compile-time rejection: this proto runs in the interpreter instead.
+    /// This is never a user-visible engine error, so the reason is only
+    /// printed when `UV_JIT_DEBUG=1` is set.
+    fn reject<T>(&self, reason: &str) -> Option<T> {
+        if crate::jit_cache::jit_debug() {
+            eprintln!("JITREJECT proto[{}] {}", self.proto_index, reason);
+        }
+        None
+    }
+
     /// Clear every specialized-type annotation on a register. This must be
     /// called whenever an instruction overwrites a register with a plain
     /// value; otherwise object annotations from an earlier value that reused
@@ -787,6 +839,12 @@ impl<'a> Tr<'a> {
             }
         }
         if argc > MAX_ARITY {
+            if crate::jit_cache::jit_debug() {
+                eprintln!(
+                    "JITREJECT proto[{}] emit_user_call: argc={argc} exceeds MAX_ARITY={MAX_ARITY}",
+                    self.proto_index
+                );
+            }
             return None;
         }
         let hp = builder.use_var(self.hp_var);
@@ -1560,7 +1618,10 @@ impl<'a> Tr<'a> {
 
             if self.emit_ins(builder, code, ip, ins).is_none() {
                 if crate::jit_cache::jit_debug() {
-                    eprintln!("JITREJECT emit_ins ip={ip} op={:?}", ins.op);
+                    eprintln!(
+                        "JITREJECT emit_ins ip={ip} op={:?} (see the JITREJECT reason line above, if any)",
+                        ins.op
+                    );
                 }
                 return None;
             }
@@ -1807,7 +1868,9 @@ impl<'a> Tr<'a> {
                             Some(Constant::Bool(b)) => {
                                 (builder.ins().iconst(types::I64, if *b { 1 } else { 0 }), true)
                             }
-                            _ => return None,
+                            _ => {
+                                return self.reject("LoadConst: constant kind is not Int/Float/Bool")
+                            }
                         };
                         builder.def_var(self.rv(ins.a as usize), v);
                         self.is_bool[ins.a as usize] = bool_lit;
@@ -1911,6 +1974,12 @@ impl<'a> Tr<'a> {
                                 self.ret_slot[ins.a as usize] = None;
                                 return Some(());
                             }
+                        }
+                        if crate::jit_cache::jit_debug() {
+                            eprintln!(
+                                "JITREJECT proto[{}] LoadName {name:?} is not a param/local/intrinsic/JIT callee",
+                                self.proto_index
+                            );
                         }
                         None
                     }
@@ -2376,6 +2445,12 @@ impl<'a> Tr<'a> {
                         return self.emit_user_call(builder, ins, argc, callee_reg, proto_index);
                     }
                 }
+                if crate::jit_cache::jit_debug() {
+                    eprintln!(
+                        "JITREJECT proto[{}] Call: callee is not a JIT intrinsic or a compiled JIT proto",
+                        self.proto_index
+                    );
+                }
                 None
             }
             Op::ToBool => {
@@ -2452,10 +2527,13 @@ impl<'a> Tr<'a> {
                 }
                 let divisor = match const_load_int_at(code, ip, ins.c as usize, self.proto, self.program) {
                     Some(n) if n != 0 => n,
-                    _ => return None,
+                    _ => {
+                        return self.reject("Idiv/Mod: divisor is not a non-zero Int constant")
+                    }
                 };
                 if self.is_float[ins.b as usize] {
-                    return None;                }
+                    return self.reject("Idiv/Mod: dividend is a Float (Int only)");
+                }
                 let lhs = builder.use_var(self.rv_i64(ins.b as usize));
                 let rhs = builder.ins().iconst(types::I64, divisor);
                 let v = if ins.op == Op::Idiv {
@@ -2536,13 +2614,14 @@ impl<'a> Tr<'a> {
                 let x = ((ins.d >> 10) & 0x3FF) as usize;
                 let y = (ins.d & 0x3FF) as usize;
                 if dst >= self.locals_len || x >= self.locals_len || y >= self.locals_len {
-                    return None;
+                    return self.reject("FusedIntMulAdd: local slot out of range");
                 }
                 if self.local_is_intdict[dst] || self.local_is_intdict[x] || self.local_is_intdict[y] {
-                    return None;
+                    return self.reject("FusedIntMulAdd: an operand is an IntDict handle");
                 }
                 if self.local_float[dst] || self.local_float[x] || self.local_float[y] {
-                    return None;                }
+                    return self.reject("FusedIntMulAdd: an operand is a Float local");
+                }
                 let mut acc = builder.use_var(self.lv_i64(dst));
                 let xv = builder.use_var(self.lv_i64(x));
                 let yv = builder.use_var(self.lv_i64(y));
@@ -2706,10 +2785,10 @@ impl<'a> Tr<'a> {
             }
             Op::BuildList => {
                 if ins.d != 0 {
-                    if crate::jit_cache::jit_debug() {
-                        eprintln!("JITREJECT buildlist n={}", ins.d);
-                    }
-                    return None;
+                    return self.reject(&format!(
+                        "BuildList: only empty literal lists are JIT-supported (n={})",
+                        ins.d
+                    ));
                 }
                 self.intlist_regs.remove(&(ins.a as usize));
                 let fid = self.fid_list_empty;
@@ -3010,7 +3089,10 @@ impl<'a> Tr<'a> {
                 self.emit_return_pair(builder, v, zero_v);
                 Some(())
             }
-            _ => None,
+            _ => self.reject(&format!(
+                "unsupported opcode {:?} (outside the JIT subset)",
+                ins.op
+            )),
         }
     }
 }
@@ -3829,6 +3911,16 @@ pub fn precheck_fn(program: &Program, proto_index: usize) -> Option<usize> {
     if proto.flags & PROTO_FUNCTION == 0 {
         return None;
     }
+    // Compiler-generated zero-argument wrappers are not user functions in the
+    // Int subset. The old `arity == 0` rejection excluded them by accident;
+    // now that real zero-argument functions are eligible, keep these out
+    // explicitly (a stub here would also trip UV_JIT=2 in every class/defer/
+    // go/lambda program).
+    if let Some(name) = program.names.get(proto.name) {
+        if matches!(name.as_str(), "<classes_init>" | "defer" | "go" | "lambda") {
+            return None;
+        }
+    }
     let has_field_local = proto.locals.iter().any(|&proto_ix| {
         proto
             .names
@@ -3839,10 +3931,11 @@ pub fn precheck_fn(program: &Program, proto_index: usize) -> Option<usize> {
     if has_field_local {
         return None;
     }
-    if proto.ext_type.is_some() {
-    }
     let arity = proto.params.len() + usize::from(proto.ext_type.is_some());
-    if arity == 0 || arity > MAX_ARITY {
+    // Zero-argument functions are in the Int subset too: vm::jit_call has an
+    // F0 signature for them. Rejecting them here silently sent otherwise
+    // eligible protos to the interpreter (and UV_JIT=2 could not see it).
+    if arity > MAX_ARITY {
         return None;
     }
     const ALLOWED: u16 = PARAM_ESSENTIAL | PARAM_OPTIONAL;

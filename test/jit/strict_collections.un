@@ -1,0 +1,60 @@
+use io
+use iter
+
+# ============================================================
+# JIT strict-mode canary (UV_JIT=2): IntVec / IntDict intrinsics
+# and nested JIT calls that pass a borrowed list handle.
+# Every proto here must compile into the bytecode JIT. A single
+# fallback stub makes UV_JIT=2 exit with code 2. If a value is
+# miscomputed, the OK marker is not printed.
+# Self-contained: no project modules needed.
+# Run: UV_JIT=2 un.exe run test/jit/strict_collections.un
+# ============================================================
+
+# IntVec: empty literal, add, set, get, len and for-in iteration.
+fn vec_sum(xs)
+    s = 0
+    for x in xs
+        s += x
+    -> s
+
+# Nested JIT call with a list handle argument (param_tags bit 0).
+fn vec_scale(xs, k)
+    s = vec_sum(xs)
+    -> s * k
+
+fn build_and_sum(n)
+    xs = []
+    for i in iter.range(0, n)
+        xs.add(i)
+    xs[0] = 100
+    n = len(xs)
+    -> vec_scale(xs, 2) + n
+
+# IntDict: empty literal, set/get inside register-reusing loops.
+fn dict_ops(n)
+    d = {}
+    for i in iter.range(0, n)
+        d[i] = i * 3
+    total = 0
+    for i in iter.range(0, n)
+        total += d[i]
+    -> total
+
+# Regression for the zero-argument JIT eligibility fix: vm::jit_call
+# has an F0 signature for proto with arity 0.
+fn zero_arg()
+    -> 42
+
+checks = 0
+if build_and_sum(5) == 225
+    checks += 1
+if dict_ops(100) == 14850
+    checks += 1
+if zero_arg() == 42
+    checks += 1
+
+if checks == 3
+    io.write("jit-strict-collections canary OK")
+else
+    io.write("jit-strict-collections canary MISMATCH")

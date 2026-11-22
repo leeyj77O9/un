@@ -85,3 +85,20 @@ jobs:
           $out
           if ($LASTEXITCODE -ne 0) { throw "float strict canary exited with $LASTEXITCODE" }
           if ($out -notmatch 'jit-float-strict canary OK') { throw "float strict canary marker not found (a value was computed wrong)" }
+
+      - name: JIT strict canary — collections / class / ops (UV_JIT=2)
+        shell: powershell
+        env:
+          UV_JIT: "2"
+        run: |
+          $fixtures = @(
+            @{ Path = 'test\jit\strict_collections.un'; Marker = 'jit-strict-collections canary OK' }
+            @{ Path = 'test\jit\strict_class.un';       Marker = 'jit-strict-class canary OK' }
+            @{ Path = 'test\jit\strict_ops.un';         Marker = 'jit-strict-ops canary OK' }
+          )
+          foreach ($f in $fixtures) {
+            $out = & .\rust\target\release\un.exe run $f.Path
+            $out
+            if ($LASTEXITCODE -ne 0) { throw "$($f.Path) strict canary exited with $LASTEXITCODE" }
+            if ($out -notmatch [regex]::Escape($f.Marker)) { throw "$($f.Path): marker not found (miscomputation)" }
+          }

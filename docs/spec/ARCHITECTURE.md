@@ -115,7 +115,11 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
 - Eligibility is decided by `precheck_fn`. Compilation is **lazy**: eligible
   protos are compiled on the first call through `try_call_jit` (one attempt
   per program). Protos that cannot be compiled are not registered at all;
-  the caller falls back to the interpreter.
+  the caller falls back to the interpreter. Zero-argument user functions are
+  eligible; compiler-synthesized protos (`<classes_init>`, `defer`, `go`,
+  `lambda`) are explicitly excluded. `UV_JIT=2` strict canaries now cover Int,
+  Float math, IntVec/IntDict with nested calls, Int-field class methods, and
+  arithmetic/bit ops (`test/jit/strict*.un`, 5 fixtures across 3 CI steps).
 - Class methods are eligible: the hidden `self` pointer arrives as a raw
   `Rc<ObjData>` at ABI position 2 (after the hidden result pointer and the
   `param_tags` hidden argument) and is pinned to local slot 0 in the entry

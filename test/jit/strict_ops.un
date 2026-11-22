@@ -1,0 +1,54 @@
+use io
+use iter
+
+# ============================================================
+# JIT strict-mode canary (UV_JIT=2): integer arithmetic core.
+# FusedIntMulAdd, bitwise ops, constant-divisor // and %,
+# comparisons and unary Neg. Every proto here must compile into
+# the bytecode JIT. A single fallback stub makes UV_JIT=2 exit 2.
+# Self-contained: no project modules needed.
+# Run: UV_JIT=2 un.exe run test/jit/strict_ops.un
+# ============================================================
+
+# Source pattern `acc += i * i` compiles to FusedIntMulAdd.
+fn dot_squares(n)
+    acc = 0
+    for i in iter.range(1, n)
+        acc += i * i
+    -> acc
+
+fn bitmix(a, b)
+    x = a & b
+    y = a | b
+    z = a ^ b
+    -> x + y + z
+
+fn divmod(n)
+    q = n // 7
+    r = n % 7
+    if q > 0
+        if r < 7
+            -> q * 10 + r
+    -> -1
+
+fn sign_flip(n)
+    if n == 0
+        -> 0
+    -> -n
+
+checks = 0
+if dot_squares(5) == 30
+    checks += 1
+if bitmix(12, 10) == 28
+    checks += 1
+if divmod(100) == 142
+    checks += 1
+if divmod(-8) == -1
+    checks += 1
+if sign_flip(9) == -9
+    checks += 1
+
+if checks == 5
+    io.write("jit-strict-ops canary OK")
+else
+    io.write("jit-strict-ops canary MISMATCH")

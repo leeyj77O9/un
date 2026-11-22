@@ -1,0 +1,42 @@
+use io
+
+# ============================================================
+# JIT strict-mode canary (UV_JIT=2): class methods that read and
+# write Int fields through the name-checked intrinsic.
+# Every proto here must compile into the bytecode JIT. A single
+# fallback stub makes UV_JIT=2 exit with code 2.
+# The receiver is supplied at the call site (the top-level script
+# is interpreted); the methods themselves run as JIT protos with
+# the hidden `self` pointer in slot 0.
+# Self-contained: no project modules needed.
+# Run: UV_JIT=2 un.exe run test/jit/strict_class.un
+# ============================================================
+
+class Counter
+    n: int = 0
+
+    # Direct Int field write and read inside a class method.
+    fn bump(self, by)
+        self.n = self.n + by
+        -> self.n
+
+    # Direct Int field read.
+    fn value(self)
+        -> self.n
+
+c = Counter()
+
+checks = 0
+if c.bump(7) == 7
+    checks += 1
+if c.value() == 7
+    checks += 1
+if c.bump(5) == 12
+    checks += 1
+if c.value() == 12
+    checks += 1
+
+if checks == 4
+    io.write("jit-strict-class canary OK")
+else
+    io.write("jit-strict-class canary MISMATCH")
