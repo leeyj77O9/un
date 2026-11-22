@@ -39,6 +39,19 @@ fn collatz_steps(n)
         steps += 1
     -> steps
 
+# Regression: the IntDict intrinsics must survive register reuse. The loop
+# index and the key temporaries occupy registers that held the dict itself in
+# the first loop; stale object annotations there used to reject the whole
+# proto, silently dropping it to the interpreter.
+fn dict_reuse(n)
+    d = {}
+    for i in iter.range(0, n)
+        d[i * 2] = i
+    total = 0
+    for i in iter.range(0, n)
+        total += d[i * 2]
+    -> total
+
 checks = 0
 if fib(20) == 6765
     checks += 1
@@ -48,8 +61,10 @@ if sum_digits(123456) == 21
     checks += 1
 if collatz_steps(27) == 111
     checks += 1
+if dict_reuse(5000) == 12497500
+    checks += 1
 
-if checks == 4
+if checks == 5
     io.write("jit-strict canary OK")
 else
     io.write("jit-strict canary MISMATCH")

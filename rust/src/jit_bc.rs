@@ -719,6 +719,26 @@ impl<'a> Tr<'a> {
                 || self.intlist_iter_regs.contains(&r)
         })
     }
+    /// Clear every specialized-type annotation on a register. This must be
+    /// called whenever an instruction overwrites a register with a plain
+    /// value; otherwise object annotations from an earlier value that reused
+    /// the same register survive and make arithmetic calls reject the proto.
+    fn clear_specialized(&mut self, reg: usize) {
+        self.int_dict_regs.remove(&reg);
+        self.instance_regs.remove(&reg);
+        self.class_ctor_regs.remove(&reg);
+        self.method_regs.remove(&reg);
+        self.intlist_regs.remove(&reg);
+        self.len_regs.remove(&reg);
+        self.intlist_iter_regs.remove(&reg);
+        self.math_regs.remove(&reg);
+        self.mathfn_regs.remove(&reg);
+        self.self_regs.remove(&reg);
+        self.call_candidate_regs.remove(&reg);
+        self.param_regs.remove(&reg);
+        self.param_idx.remove(&reg);
+    }
+
     fn int_dict_seen(&self, regs: &[usize]) -> bool {
         regs.iter().any(|&r| {
             self.int_dict_regs.contains(&r)
@@ -1463,11 +1483,7 @@ impl<'a> Tr<'a> {
         if self.field_locals.contains(&slot) {
             return None;
         }
-        self.class_ctor_regs.remove(&dst_reg);
-        self.instance_regs.remove(&dst_reg);
-        self.method_regs.remove(&dst_reg);
-        self.intlist_regs.remove(&dst_reg);
-        self.len_regs.remove(&dst_reg);
+        self.clear_specialized(dst_reg);
         if self.local_borrow_raw[slot] {
             self.param_regs.insert(dst_reg);
         } else {
@@ -1590,6 +1606,17 @@ impl<'a> Tr<'a> {
         }
         let i_var = self.lv_i64(i_slot);
 
+        // The loop index is always an Int. The local slot may have held a
+        // different value type earlier in this proto (register reuse), so
+        // clear every tracked specialization before the loop body reads it.
+        self.local_is_intdict[i_slot] = false;
+        self.local_is_instance[i_slot] = None;
+        self.local_is_list[i_slot] = 0;
+        self.local_is_bool[i_slot] = false;
+        self.local_is_none[i_slot] = false;
+        self.local_borrow_raw[i_slot] = false;
+        self.local_param_pos[i_slot] = None;
+
         let (inc_blk, _inc_i_var) = self.loop_inc.get(&patch.fornext_ip).copied()?;
         let header_blk = self.blocks.get(&patch.fornext_ip).copied()?;
         let body_blk = self.blocks.get(&patch.body_start_ip).copied()?;
@@ -1626,6 +1653,18 @@ impl<'a> Tr<'a> {
         let yield_var = self.rv_i64(yield_reg);
         builder.def_var(yield_var, i_v);
         self.is_float[yield_reg] = false;
+        self.is_bool[yield_reg] = false;
+        self.is_none[yield_reg] = false;
+        // The yield register may have held a dict (or other object) earlier;
+        // after ForNext it is a plain Int and the following StoreLocal reads
+        // these sets to infer the local's type.
+        self.int_dict_regs.remove(&yield_reg);
+        self.instance_regs.remove(&yield_reg);
+        self.method_regs.remove(&yield_reg);
+        self.intlist_regs.remove(&yield_reg);
+        self.len_regs.remove(&yield_reg);
+        self.math_regs.remove(&yield_reg);
+        self.class_ctor_regs.remove(&yield_reg);
 
         Some(())
     }
@@ -1708,6 +1747,7 @@ impl<'a> Tr<'a> {
                 | Op::GetAttr
                 | Op::Call
                 | Op::BuildList
+                | Op::BuildDict
                 | Op::Slice
                 | Op::PrepIter
                 | Op::ArgBegin
@@ -1719,6 +1759,8 @@ impl<'a> Tr<'a> {
             self.self_regs.remove(&(ins.a as usize));
         }
         if !preserve {
+            self.int_dict_regs.remove(&(ins.a as usize));
+            self.call_candidate_regs.remove(&(ins.a as usize));
             self.class_ctor_regs.remove(&(ins.a as usize));
             self.instance_regs.remove(&(ins.a as usize));
             self.method_regs.remove(&(ins.a as usize));
@@ -1743,6 +1785,7 @@ impl<'a> Tr<'a> {
     ) -> Option<()> {
         match ins.op {
             Op::LoadConst => {
+                self.clear_specialized(ins.a as usize);
                 let cv = self
                     .proto
                     .consts
@@ -1776,6 +1819,7 @@ impl<'a> Tr<'a> {
                 }
             }
             Op::LoadNone | Op::LoadNull => {
+                self.clear_specialized(ins.a as usize);
                 let v = builder.ins().iconst(types::I64, 0);
                 builder.def_var(self.rv_i64(ins.a as usize), v);
                 self.is_bool[ins.a as usize] = false;
@@ -2151,8 +2195,18 @@ impl<'a> Tr<'a> {
             Op::LoadLocal => self.emit_load_local(builder, ins.a as usize, ins.d as usize),
             Op::Add | Op::Sub | Op::Mul => {
                 if self.int_dict_seen(&[ins.b as usize, ins.c as usize]) {
+                    if crate::jit_cache::jit_debug() {
+                        eprintln!("JITREJECT arith ip={ip} b={} c={} b_dict={} c_dict={} b_iter={} c_iter={} b_len={} c_len={}",
+                            ins.b, ins.c,
+                            self.int_dict_regs.contains(&(ins.b as usize)), self.int_dict_regs.contains(&(ins.c as usize)),
+                            self.intlist_iter_regs.contains(&(ins.b as usize)), self.intlist_iter_regs.contains(&(ins.c as usize)),
+                            self.len_regs.contains(&(ins.b as usize)), self.len_regs.contains(&(ins.c as usize)));
+                    }
                     return None;
                 }
+                // The result is a fresh numeric value; the destination may have
+                // held an object earlier (register reuse).
+                self.clear_specialized(ins.a as usize);
                 let a_float = self.is_float[ins.b as usize];
                 let b_float = self.is_float[ins.c as usize];
                 if a_float || b_float {
@@ -2808,6 +2862,9 @@ impl<'a> Tr<'a> {
                     let f_ref = self.module.declare_func_in_func(fid, builder.func);
                     let call = builder.ins().call(f_ref, &[d_i, k_i]);
                     let res = builder.inst_results(call)[0];
+                    // The value read from an IntDict is an Int; the destination
+                    // register may have held a dict earlier (register reuse).
+                    self.clear_specialized(dst);
                     builder.def_var(self.rv_i64(dst), res);
                     self.is_bool[dst] = false;
                     self.is_none[dst] = false;
