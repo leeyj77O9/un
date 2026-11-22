@@ -8,10 +8,12 @@ use std::sync::OnceLock;
 
 use unvm::ast::{Node, NodeKind};
 use unvm::error::LangError;
+use unvm::json::write_json_string;
 use unvm::lexer::lex;
 use unvm::optimize::optimize;
 use unvm::parser::parse;
 use unvm::source::Source;
+use unvm::textual_infer::{self, InferredTypes};
 use unvm::token::{Token, TokenType};
 use unvm::typeck;
 
@@ -273,26 +275,6 @@ fn parse_json(text: &str) -> Result<Json, String> {
     Ok(value)
 }
 
-fn write_json_string(text: &str, out: &mut String) {
-    out.push('"');
-    for ch in text.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            ch if (ch as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", ch as u32));
-            }
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
-}
-
 fn write_json_value(value: &Json, out: &mut String) {
     match value {
         Json::Null => out.push_str("null"),
@@ -338,6 +320,22 @@ fn to_json(value: &Json) -> String {
 }
 
 
+/// Indices into `SEMANTIC_TOKEN_TYPES`. The discriminants are part of the
+/// semantic tokens legend, so they must never be reordered.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum SemanticToken {
+    Namespace = 0,
+    Class = 1,
+    Enum = 2,
+    EnumMember = 3,
+    Parameter = 4,
+    Variable = 5,
+    Property = 6,
+    Function = 7,
+    Type = 8,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DefKind {
     Function,
@@ -365,15 +363,15 @@ impl DefKind {
 
     fn semantic_token(self) -> u32 {
         match self {
-            DefKind::Namespace => 0,
-            DefKind::Class => 1,
-            DefKind::Enum => 2,
-            DefKind::EnumMember => 3,
-            DefKind::Parameter => 4,
-            DefKind::Variable => 5,
-            DefKind::Property => 6,
-            DefKind::Function | DefKind::Extension => 7,
-            DefKind::TypeParameter => 8,
+            DefKind::Namespace => SemanticToken::Namespace as u32,
+            DefKind::Class => SemanticToken::Class as u32,
+            DefKind::Enum => SemanticToken::Enum as u32,
+            DefKind::EnumMember => SemanticToken::EnumMember as u32,
+            DefKind::Parameter => SemanticToken::Parameter as u32,
+            DefKind::Variable => SemanticToken::Variable as u32,
+            DefKind::Property => SemanticToken::Property as u32,
+            DefKind::Function | DefKind::Extension => SemanticToken::Function as u32,
+            DefKind::TypeParameter => SemanticToken::Type as u32,
         }
     }
 
@@ -432,7 +430,7 @@ fn native_catalog() -> &'static NativeCatalog {
         let mut modules = HashMap::new();
         let mut module_names = Vec::new();
         for module in [
-            "io", "inspect", "math", "iter", "os", "sys", "fs", "types", "time", "random", "flow",
+            "io", "inspect", "math", "iter", "os", "sys", "fs", "bytes", "types", "time", "random", "flow",
             "atomic", "re", "codes", "http", "ws",
         ] {
             let Some(members) = unvm::runtime::world::native_members(module) else {
@@ -1001,14 +999,9 @@ fn annotation_name(node: &Node, source: &Source) -> Option<String> {
         .unwrap_or(&text)
         .trim()
         .to_string();
-    if head.is_empty() || !head.chars().next().unwrap().is_ascii_lowercase() {
-        // A simple lower-case base name like `list`, `str`, `date`, etc. — UDF class names
-        // (capitalized) already resolve via `defs`.
-        if is_builtin_type(&head) {
-            return Some(head);
-        }
-        return None;
-    }
+    // Only simple lower-case base names are member-completion types; UDF class
+    // names (capitalized) already resolve via `defs`. Both former branches
+    // reduced to the same builtin-type check.
     if is_builtin_type(&head) {
         Some(head)
     } else {
@@ -1022,10 +1015,13 @@ fn builtin_type_of_rhs(source: &Source, rhs: &Node) -> Option<String> {
     let text = source.span(rhs.start, rhs.length);
     let trimmed = text.trim_start();
     let head: String = trimmed
-        .split(['[', '|', '(', ' ', '('])
+        .split(['[', '|', '(', ' '])
         .next()
         .unwrap_or("")
         .to_string();
+    if textual_infer::is_bytes_literal(trimmed) {
+        return Some("bytes".to_string());
+    }
     // Collection literal prefixes
     if trimmed.starts_with('[') {
         return Some("list".to_string());
@@ -1037,16 +1033,39 @@ fn builtin_type_of_rhs(source: &Source, rhs: &Node) -> Option<String> {
         return Some("str".to_string());
     }
     match head.as_str() {
-        "list" | "dict" | "set" | "iter" | "date" | "stopwatch" | "str" => Some(head),
+        h if is_builtin_type(h) => Some(head),
         h if h.starts_with("iter.") || h.starts_with("iter") => Some("iter".to_string()),
         _ => None,
     }
 }
 
+/// Thin wrapper over the shared textual-inference builtin type set.
 fn is_builtin_type(name: &str) -> bool {
-    matches!(name, "list" | "dict" | "set" | "iter" | "date" | "stopwatch" | "str")
+    textual_infer::is_builtin_type(name)
 }
-/// Analyzes a single Un document (lex + parse + symbol collection, no VM).
+
+/// Declaration lines recognised by the fallback text scanner.
+///
+/// Every entry binds a name; `class`/`enum` additionally open an indented
+/// scope, and `skip_invalid` preserves where the original if-chain skipped the
+/// rest of a malformed line (a malformed `get`/`set` still reaches the
+/// assignment-hint scan below).
+struct DeclPrefix {
+    keyword: &'static str,
+    kind: DefKind,
+    opens_scope: bool,
+    type_params: bool,
+    skip_invalid: bool,
+}
+
+const DECL_PREFIXES: &[DeclPrefix] = &[
+    DeclPrefix { keyword: "class ", kind: DefKind::Class, opens_scope: true, type_params: true, skip_invalid: true },
+    DeclPrefix { keyword: "enum ", kind: DefKind::Enum, opens_scope: true, type_params: true, skip_invalid: true },
+    DeclPrefix { keyword: "fn ", kind: DefKind::Function, opens_scope: false, type_params: true, skip_invalid: true },
+    DeclPrefix { keyword: "get ", kind: DefKind::Property, opens_scope: false, type_params: false, skip_invalid: false },
+    DeclPrefix { keyword: "set ", kind: DefKind::Property, opens_scope: false, type_params: false, skip_invalid: false },
+];
+
 /// Text-scan a document when parsing fails (e.g. while the user is typing).
 /// Produces enough `defs`/namespace data to power completion, references and
 /// document symbols — no parser involved, so it works on broken documents.
@@ -1207,60 +1226,25 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
             i += 1;
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("class ") {
+        let decl = DECL_PREFIXES
+            .iter()
+            .find_map(|decl| trimmed.strip_prefix(decl.keyword).map(|rest| (decl, rest)));
+        if let Some((decl, rest)) = decl {
             let name = word(rest.trim());
             if is_ident(name) {
-                let start = line_start + indent_chars + "class ".len();
-                let def_index = push_def(&mut defs, DefKind::Class, name, start, scope);
-                push_decl_type_params(rest, line_start, indent_chars, "class ".len(), name.len());
-                scope += 1;
-                stack.push(Frame {
-                    indent,
-                    def_index,
-                });
-            }
-            i += 1;
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("enum ") {
-            let name = word(rest.trim());
-            if is_ident(name) {
-                let start = line_start + indent_chars + "enum ".len();
-                let def_index = push_def(&mut defs, DefKind::Enum, name, start, scope);
-                push_decl_type_params(rest, line_start, indent_chars, "enum ".len(), name.len());
-                scope += 1;
-                stack.push(Frame {
-                    indent,
-                    def_index,
-                });
-            }
-            i += 1;
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("fn ") {
-            let name = word(rest.trim());
-            if is_ident(name) {
-                let start = line_start + indent_chars + "fn ".len();
-                let _def_index = push_def(&mut defs, DefKind::Function, name, start, scope);
-                push_decl_type_params(rest, line_start, indent_chars, "fn ".len(), name.len());
-            }
-            i += 1;
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("get ") {
-            let name = word(rest.trim());
-            if is_ident(name) {
-                let start = line_start + indent_chars + "get ".len();
-                push_def(&mut defs, DefKind::Property, name, start, scope);
+                let start = line_start + indent_chars + decl.keyword.len();
+                let def_index = push_def(&mut defs, decl.kind, name, start, scope);
+                if decl.type_params {
+                    push_decl_type_params(rest, line_start, indent_chars, decl.keyword.len(), name.len());
+                }
+                if decl.opens_scope {
+                    scope += 1;
+                    stack.push(Frame { indent, def_index });
+                }
                 i += 1;
                 continue;
             }
-        }
-        if let Some(rest) = trimmed.strip_prefix("set ") {
-            let name = word(rest.trim());
-            if is_ident(name) {
-                let start = line_start + indent_chars + "set ".len();
-                push_def(&mut defs, DefKind::Property, name, start, scope);
+            if decl.skip_invalid {
                 i += 1;
                 continue;
             }
@@ -1312,7 +1296,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
                     .unwrap_or(after)
                     .trim()
                     .to_string();
-                if matches!(head.as_str(), "list" | "dict" | "set" | "iter" | "str" | "date" | "stopwatch") {
+                if is_builtin_type(&head) {
                     var_class_hints.insert(before.to_string(), head);
                 }
                 if stack.last().map(|f| indent > f.indent).unwrap_or(false) {
@@ -1344,6 +1328,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
     }
 }
 
+/// Analyzes a single Un document (lex + parse + symbol collection, no VM).
 fn analyze(text: &str, name: &str) -> Analysis {
     let mut source = Source::new(name, text);
     let tokens = match lex(&mut source) {
@@ -1486,6 +1471,9 @@ fn resolve_semantic(analysis: &Analysis, site: &UseSite) -> u32 {
     DefKind::Variable.semantic_token()
 }
 
+// Keep the legend in lockstep with `SemanticToken`; its order is observable.
+const _: () = assert!(SEMANTIC_TOKEN_TYPES.len() == SemanticToken::Type as u32 as usize + 1);
+
 const SEMANTIC_TOKEN_TYPES: [&str; 9] = [
     "namespace",
     "class",
@@ -1505,10 +1493,10 @@ fn semantic_tokens_json(analysis: &Analysis) -> Json {
         tokens.push((def.name_start, def.name_end, def.kind.semantic_token()));
     }
     for &(start, end) in &analysis.type_spans {
-        tokens.push((start, end, 8));
+        tokens.push((start, end, SemanticToken::Type as u32));
     }
     for &(start, end) in &analysis.namespace_spans {
-        tokens.push((start, end, 0));
+        tokens.push((start, end, SemanticToken::Namespace as u32));
     }
     for site in &analysis.uses {
         tokens.push((site.start, site.end, resolve_semantic(analysis, site)));
@@ -2196,25 +2184,7 @@ fn signature_help(analysis: &Analysis, offset: usize) -> Option<Json> {
 /// callee before it, and resolves UDF / built-in / native signatures from text.
 fn signature_help_textual(analysis: &Analysis, offset: usize) -> Option<(String, Vec<String>, usize)> {
     let code = &analysis.source.code;
-    // Walk backwards to the innermost unmatched '('.
-    let mut depth = 0i64;
-    let mut open = None;
-    let mut i = offset;
-    while i > 0 {
-        i -= 1;
-        match code[i] {
-            ')' => depth += 1,
-            '(' => {
-                if depth == 0 {
-                    open = Some(i);
-                    break;
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    let open = open?;
+    let open = textual_infer::innermost_open_paren(code, offset)?;
     // Callee text before the '(' — identifier characters and dots.
     let end = open;
     let mut start = end;    while start > 0 {
@@ -2232,18 +2202,7 @@ fn signature_help_textual(analysis: &Analysis, offset: usize) -> Option<(String,
     let (label, params) = signature_from_callee(analysis, callee_text.trim(), offset)
         .or_else(|| signature_from_callee_textual(analysis, callee_text.trim()))?;
     // Active parameter: top-level commas between the '(' and the cursor.
-    let mut active = 0usize;
-    let mut depth = 0i64;
-    let mut i = open + 1;
-    while i < offset && i < code.len() {
-        match code[i] {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            ',' if depth == 0 => active += 1,
-            _ => {}
-        }
-        i += 1;
-    }
+    let active = textual_infer::split_top_level_chars(code, open + 1, offset, ',').len().saturating_sub(1);
     Some((label, params, active))
 }
 
@@ -2267,22 +2226,8 @@ fn signature_from_callee_textual(analysis: &Analysis, callee_text: &str) -> Opti
             }
             if ident == name && j < code.len() && code[j] == '(' {
                 // read until matching ')'
-                let mut depth = 0i64;
-                let mut k = j;
-                while k < code.len() {
-                    match code[k] {
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    k += 1;
-                }
-                let params_text: String = code[j + 1..k.min(code.len())].iter().collect();
+                let k = textual_infer::matching_paren_chars(code, j).unwrap_or(code.len());
+                let params_text: String = code[j + 1..k].iter().collect();
                 let params: Vec<String> = params_text
                     .split(',')
                     .map(|p| p.trim().to_string())
@@ -2317,167 +2262,18 @@ fn signature_from_callee_textual(analysis: &Analysis, callee_text: &str) -> Opti
 }
 
 /// Lightweight type inference from textual shapes, shared by inlay hints and
-/// completion details. Returns variable types and function signatures.
-struct InferredTypes {
-    vars: HashMap<String, String>,
-    fn_params: HashMap<String, Vec<(String, String)>>,
-    fn_returns: HashMap<String, String>,
-}
-
+/// completion details. The implementation lives in `unvm::textual_infer` so the
+/// playground sees exactly the same results.
 fn infer_types(analysis: &Analysis) -> InferredTypes {
-    let mut vars = HashMap::new();
-    let mut fn_params = HashMap::new();
-    let mut fn_returns = HashMap::new();
-    let code = &analysis.source.code;
-    let mut i = 0usize;
-    while i < code.len() {
-        // Skip whitespace, then a line-based scan is sufficient for declarations.
-        let line_start = i;
-        while i < code.len() && code[i] != '\n' {
-            i += 1;
-        }
-        let line: String = code[line_start..i].iter().collect();
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            i += 1;
-            continue;
-        }
-        let indent = line.chars().take_while(|ch| *ch == ' ' || *ch == '\t').count();
-        // Assignment: `name = expr` or `name: Type = expr`
-        if let Some(eq) = trimmed.find('=') {
-            let left = trimmed[..eq].trim();
-            let rhs = trimmed[eq + 1..].trim();
-            let (name, declared) = if let Some(colon) = left.find(':') {
-                (left[..colon].trim(), Some(left[colon + 1..].trim().to_string()))
-            } else {
-                (left, None)
-            };
-            if !name.is_empty()
-                && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-                && !name.chars().next().unwrap().is_ascii_digit()
-            {
-                let inferred = declared
-                    .filter(|t| is_builtin_type(t))
-                    .or_else(|| infer_expr_type(rhs));
-                if let Some(t) = inferred {
-                    vars.insert(name.to_string(), t);
-                }
-            }
-        }
-        // Function declaration: `fn name(params) -> ret`
-        if let Some(rest) = trimmed.strip_prefix("fn ") {
-            let name: String = rest.chars().take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_').collect();
-            if !name.is_empty() {
-                if let Some(open) = rest.find('(') {
-                    if let Some(close) = matching_paren(rest, open) {
-                        let params_text = &rest[open + 1..close];
-                        let mut params = Vec::new();
-                        for part in split_top_level(params_text, ',') {
-                            let p = part.trim();
-                            if p.is_empty() {
-                                continue;
-                            }
-                            let pname: String = p.chars().take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_').collect();
-                            let ptype = if let Some(colon) = p.find(':') {
-                                p[colon + 1..].split(['=', ' ']).next().unwrap_or("").trim().to_string()
-                            } else {
-                                let default = p.find('=').map(|e| p[e + 1..].trim()).unwrap_or("");
-                                infer_expr_type(default).unwrap_or_else(|| "any".to_string())
-                            };
-                            params.push((pname, ptype));
-                        }
-                        fn_params.insert(name.clone(), params);
-                        let after = rest[close + 1..].trim();
-                        let ret = after.strip_prefix("->").map(|r| r.trim().split([' ', ':']).next().unwrap_or("").to_string());
-                        if let Some(ret) = ret {
-                            if !ret.is_empty() {
-                                fn_returns.insert(name, ret);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let _ = indent;
-        i += 1;
-    }
-    InferredTypes { vars, fn_params, fn_returns }
-}
-
-fn infer_expr_type(expr: &str) -> Option<String> {
-    let text = expr.trim();
-    if text.is_empty() {
-        return None;
-    }
-    if text.starts_with('"') || text.starts_with('\'') || text.starts_with('`') {
-        return Some("str".to_string());
-    }
-    if text == "true" || text == "false" {
-        return Some("bool".to_string());
-    }
-    if text.starts_with('[') {
-        return Some("list".to_string());
-    }
-    if text.starts_with('{') {
-        return Some("dict".to_string());
-    }
-    if text.starts_with("set(") {
-        return Some("set".to_string());
-    }
-    if text.starts_with("iter.") || text.starts_with("iter(") {
-        return Some("iter".to_string());
-    }
-    // integer / float
-    if text.chars().all(|ch| ch.is_ascii_digit() || ch == '_' || ch == '-') && text.chars().any(|ch| ch.is_ascii_digit()) {
-        return Some("int".to_string());
-    }
-    if text.chars().all(|ch| ch.is_ascii_digit() || ch == '_' || ch == '-' || ch == '.') && text.contains('.') {
-        return Some("float".to_string());
-    }
-    // simple variable reference
-    if text.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
-        // resolved by caller via vars map when needed
-        return None;
-    }
-    None
+    textual_infer::infer(&analysis.source.code)
 }
 
 fn matching_paren(text: &str, open: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut depth = 0i64;
-    for (i, ch) in text.char_indices().skip_while(|(i, _)| *i < open) {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    let _ = bytes;
-    None
+    textual_infer::matching_paren(text, open)
 }
 
 fn split_top_level(text: &str, sep: char) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut start = 0usize;
-    let mut depth = 0i64;
-    for (i, ch) in text.char_indices() {
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            c if c == sep && depth == 0 => {
-                result.push(&text[start..i]);
-                start = i + c.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    result.push(&text[start..]);
-    result
+    textual_infer::split_top_level(text, sep)
 }
 
 fn inlay_hints(analysis: &Analysis) -> Vec<Json> {

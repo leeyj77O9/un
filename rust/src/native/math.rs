@@ -2,11 +2,10 @@ use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
 use crate::runtime::world;
-use super::{arg, native};
+use super::messages::{CANNOT_COMPUTE_SQRT_NEGATIVE, EXPECTED_VALUE_GREATER_THAN_ZERO};
+use super::{arg, native, one, opt};
 const MAX_DIGITS: i64 = 15;
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
-    let one = |name: &str| vec![arg(name, true, false, false)];
-    let optional = |name: &str| vec![arg(name, false, true, false)];
     vec![
         (
             "round".to_owned(),
@@ -112,15 +111,15 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
         (
             "pi".to_owned(),
-            native(closure, "pi", optional("unused"), pi_impl),
+            native(closure, "pi", vec![opt("unused")], pi_impl),
         ),
         (
             "e".to_owned(),
-            native(closure, "e", optional("unused"), e_impl),
+            native(closure, "e", vec![opt("unused")], e_impl),
         ),
         (
             "tau".to_owned(),
-            native(closure, "tau", optional("unused"), tau_impl),
+            native(closure, "tau", vec![opt("unused")], tau_impl),
         ),
     ]
 }
@@ -261,7 +260,7 @@ fn sqrt_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     if v < 0.0 {
-        return obj::err("cannot compute sqrt of a negative number");
+        return obj::err(CANNOT_COMPUTE_SQRT_NEGATIVE);
     }
     obj::float(v.sqrt())
 }
@@ -322,7 +321,7 @@ fn log_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     if v <= 0.0 {
-        return obj::err("expected value greater than 0");
+        return obj::err(EXPECTED_VALUE_GREATER_THAN_ZERO);
     }
     if obj::is_none(&base) {
         return obj::float(v.ln());
@@ -340,7 +339,7 @@ fn log2_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     if v <= 0.0 {
-        return obj::err("expected value greater than 0");
+        return obj::err(EXPECTED_VALUE_GREATER_THAN_ZERO);
     }
     obj::float(v.log2())
 }
@@ -351,7 +350,7 @@ fn log10_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     if v <= 0.0 {
-        return obj::err("expected value greater than 0");
+        return obj::err(EXPECTED_VALUE_GREATER_THAN_ZERO);
     }
     obj::float(v.log10())
 }

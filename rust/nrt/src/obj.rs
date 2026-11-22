@@ -98,9 +98,9 @@ pub(crate) fn display(p: u64) -> String {
         }
     }
 }
-/// Build an error object with an owned message. Callers may pass `format!`
-/// results; leaking the string is safe because the process is short-lived.
-/// Match the VM's `runtime::prims::fmt_double` exactly.
+/// Deliberately duplicated from the VM's `runtime::prims::fmt_double` so this
+/// runtime stays independent of `libunvm`. Keep both implementations — and
+/// both parity tests — in lockstep; this is a replica, not a shared crate.
 pub(crate) fn fmt_double(v: f64) -> String {
     if v.is_nan() { return "NaN".to_string(); }
     if v.is_infinite() { return if v > 0.0 { "∞".to_string() } else { "-∞".to_string() }; }
@@ -128,6 +128,8 @@ pub(crate) fn fmt_double(v: f64) -> String {
     if neg { format!("-{body}") } else { body }
 }
 
+/// Build an error object with an owned message. Callers may pass `format!`
+/// results; leaking the string is safe because the process is short-lived.
 pub(crate) fn err(msg: &str) -> u64 {
     let leaked: &'static str = Box::leak(msg.to_string().into_boxed_str());
     unsafe { alloc(NObj { tag: 5, a: leaked.as_ptr() as i64, b: leaked.len() as i64 }) }
@@ -243,4 +245,40 @@ pub extern "C" fn unrt_make_math_expected_pos() -> u64 {
 #[no_mangle]
 pub extern "C" fn unrt_make_math_sqrt_neg() -> u64 {
     err("cannot compute sqrt of a negative number")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fmt_double;
+
+    fn case(v: f64, expected: &str) {
+        assert_eq!(fmt_double(v), expected, "{v}");
+    }
+
+    /// Mirror of `rust/src/runtime/prims.rs::tests::double_display_matches_reference`.
+    /// If the VM's expected output changes, update both tests and both copies of
+    /// `fmt_double` together — plain builds must stay byte-identical with `un run`.
+    #[test]
+    fn double_display_matches_vm_reference() {
+        case(1.0, "1");
+        case(1.5, "1.5");
+        case(0.0, "0");
+        case(-0.0, "-0");
+        case(3.0, "3");
+        case(1e14, "100000000000000");
+        case(1e15, "1000000000000000");
+        case(1e16, "10000000000000000");
+        case(9.9e15, "9900000000000000");
+        case(1.2345678901234567e16, "12345678901234568");
+        case(1e17, "1E+17");
+        case(1.2345678901234568e20, "1.2345678901234568E+20");
+        case(1e-4, "0.0001");
+        case(9.9e-5, "9.9E-05");
+        case(1e-5, "1E-05");
+        case(1.5e-10, "1.5E-10");
+        case(1.0000000000000002, "1.0000000000000002");
+        case(f64::INFINITY, "∞");
+        case(f64::NEG_INFINITY, "-∞");
+        case(f64::NAN, "NaN");
+    }
 }

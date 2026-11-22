@@ -18,6 +18,7 @@ pub mod inspect;
 pub mod io;
 pub mod iter;
 pub mod math;
+pub mod messages;
 pub mod members;
 pub mod net;
 pub mod os;
@@ -78,6 +79,24 @@ pub fn arg(name: &str, essential: bool, optional: bool, positional: bool) -> Arg
         keyword: false,
         default: None,
     }
+}
+
+/// 공통 인자 combinator. 각 native 모듈이 로컬 클로저/함수로 중복 정의하던 것을 한곳에 모은다.
+/// `ess`/`opt`는 단일 `ArgData`를, `one`/`two`/`three`는 `Vec<ArgData>`를 만든다.
+pub fn ess(name: &str) -> ArgData {
+    arg(name, true, false, false)
+}
+pub fn opt(name: &str) -> ArgData {
+    arg(name, false, true, false)
+}
+pub fn one(name: &str) -> Vec<ArgData> {
+    vec![ess(name)]
+}
+pub fn two(a: &str, b: &str) -> Vec<ArgData> {
+    vec![ess(a), ess(b)]
+}
+pub fn three(a: &str, b: &str, c: &str) -> Vec<ArgData> {
+    vec![ess(a), ess(b), ess(c)]
 }
 pub fn native(
     closure: &Context,

@@ -1,5 +1,10 @@
 ﻿use std::collections::HashSet;
 use std::path::Path;
+
+/// Columns of indentation contributed by one tab in the lexer's leading-
+/// whitespace scan. BOM stripping and CRLF normalisation below are unchanged.
+pub const TAB_WIDTH: usize = 4;
+
 #[derive(Debug, Clone)]
 pub struct Source {
     pub path: String,

@@ -5,6 +5,27 @@ use crate::bytecode::Program;
 use crate::runtime::function::Args;
 use crate::runtime::obj::{self, Obj};
 
+/// Convert the scalar tags of a `(value, tag)` JIT result into an `Obj`.
+///
+/// `TAG_INTLIST` is delegated to `on_intlist`: the `.unbc` path must snapshot
+/// and free the returned handle (and may reuse a borrowed argument's identity),
+/// while the TIR path has no list handles at all. Keeping that policy in the
+/// caller is what lets both paths share this conversion.
+fn jit_result_to_obj(
+    res: crate::vm::UnJitResult,
+    on_intlist: impl FnOnce(i64) -> Option<Obj>,
+) -> Option<Obj> {
+    match res.tag {
+        crate::jit_cache::TAG_INT => Some(obj::int(res.value)),
+        crate::jit_cache::TAG_FLOAT => Some(obj::float(f64::from_bits(res.value as u64))),
+        crate::jit_cache::TAG_BOOL => Some(obj::boolean(res.value != 0)),
+        crate::jit_cache::TAG_NONE => Some(obj::none()),
+        crate::jit_cache::TAG_INTLIST => on_intlist(res.value),
+        // `TAG_BAIL` and any unknown tag mean "fall back to the interpreter".
+        _ => None,
+    }
+}
+
 fn try_call_tir_entry(
     entry: crate::jit_cache::JitEntry,
     args: &Args,
@@ -28,15 +49,15 @@ fn try_call_tir_entry(
                 ints.push(v);
             }
             (crate::jit_cache::ArgKind::Float, crate::runtime::obj::Payload::Float(v)) => {
-                param_tags |= 1i64 << (32 + pos);
+                param_tags |= 1i64 << (crate::jit_cache::PARAM_MASK_FLOAT_BASE + pos);
                 ints.push(v.to_bits() as i64);
             }
             (crate::jit_cache::ArgKind::Float, crate::runtime::obj::Payload::Int(v)) => {
-                param_tags |= 1i64 << (32 + pos);
+                param_tags |= 1i64 << (crate::jit_cache::PARAM_MASK_FLOAT_BASE + pos);
                 ints.push((v as f64).to_bits() as i64);
             }
             (crate::jit_cache::ArgKind::Bool, crate::runtime::obj::Payload::Bool(b)) => {
-                param_tags |= 1i64 << (40 + pos);
+                param_tags |= 1i64 << (crate::jit_cache::PARAM_MASK_BOOL_BASE + pos);
                 ints.push(if b { 1 } else { 0 });
             }
             _ => return None,
@@ -46,13 +67,8 @@ fn try_call_tir_entry(
         return None;
     }
     let res = crate::vm::jit_call(entry, &ints, param_tags);
-    match res.tag {
-        crate::jit_cache::TAG_INT => Some(obj::int(res.value)),
-        crate::jit_cache::TAG_FLOAT => Some(obj::float(f64::from_bits(res.value as u64))),
-        crate::jit_cache::TAG_BOOL => Some(obj::boolean(res.value != 0)),
-        crate::jit_cache::TAG_NONE => Some(obj::none()),
-        _ => None,
-    }
+    // TIR entries never return an IntList handle, so there is nothing to free.
+    jit_result_to_obj(res, |_| None)
 }
 
 pub(crate) fn try_call_jit(
@@ -87,6 +103,11 @@ pub(crate) fn try_call_jit(
     };
     let entry = entry?;
     let mut ints = Vec::with_capacity(args.values.len() + if is_class_method { 1 } else { 0 });
+    // Low bits `1 << pos` mark handle-valued (unsafe) parameters and are read
+    // by `jit_bc`'s unsafe-param mask. For class methods `pos` already includes
+    // the receiver slot (`PARAM_MASK_UNSAFE_SHIFT`). Float/Bool tags occupy the
+    // disjoint high-bit space (`PARAM_MASK_FLOAT_BASE` / `_BOOL_BASE`) set in
+    // `try_call_tir_entry`; never conflate the two ranges.
     let mut param_tags: i64 = 0;
     let mut list_args: Vec<(Obj, i64)> = Vec::new();
     fn drain(list_args: Vec<(Obj, i64)>) {
@@ -148,7 +169,8 @@ pub(crate) fn try_call_jit(
             .all(|(_, handle)| crate::runtime::int_list::snapshot(*handle).is_some());
         if !all_ok {
             drain(list_args);
-            return None;        }
+            return None;
+        }
         for (original, handle) in list_args {
             let returned = res.tag == crate::jit_cache::TAG_INTLIST && res.value == handle;
             let _ = crate::runtime::int_list::sync_into(&original, handle);
@@ -160,17 +182,12 @@ pub(crate) fn try_call_jit(
     } else {
         drain(list_args);
     }
-    match res.tag {
-        crate::jit_cache::TAG_INT => Some(obj::int(res.value)),
-        crate::jit_cache::TAG_FLOAT => Some(obj::float(f64::from_bits(res.value as u64))),
-        crate::jit_cache::TAG_BAIL => None,        crate::jit_cache::TAG_BOOL => Some(obj::boolean(res.value != 0)),        crate::jit_cache::TAG_NONE => Some(obj::none()),        crate::jit_cache::TAG_INTLIST => {
-            if let Some(identity) = returned_arg_identity {
-                return Some(identity);
-            }
-            let items = crate::runtime::int_list::snapshot(res.value)?;
-            crate::runtime::int_list::un_list_int_free(res.value);
-            Some(crate::runtime::collections::list(items))
+    jit_result_to_obj(res, move |handle| {
+        if let Some(identity) = returned_arg_identity {
+            return Some(identity);
         }
-        _ => None,
-    }
+        let items = crate::runtime::int_list::snapshot(handle)?;
+        crate::runtime::int_list::un_list_int_free(handle);
+        Some(crate::runtime::collections::list(items))
+    })
 }

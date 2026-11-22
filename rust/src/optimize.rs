@@ -27,22 +27,7 @@ fn desugar_local(node: &Node) -> Option<Node> {
 }
 fn desugar_assign(node: &Node) -> Option<Node> {
     let op = node.op?;
-    let op2 = match op {
-        TokenType::PlusAssign => Some(TokenType::Plus),
-        TokenType::MinusAssign => Some(TokenType::Minus),
-        TokenType::AsteriskAssign => Some(TokenType::Asterisk),
-        TokenType::SlashAssign => Some(TokenType::Slash),
-        TokenType::PercentAssign => Some(TokenType::Percent),
-        TokenType::DoubleAsteriskAssign => Some(TokenType::DoubleAsterisk),
-        TokenType::DoubleSlashAssign => Some(TokenType::DoubleSlash),
-        TokenType::BAndAssign => Some(TokenType::BAnd),
-        TokenType::BOrAssign => Some(TokenType::BOr),
-        TokenType::BXorAssign => Some(TokenType::BXor),
-        TokenType::LeftShiftAssign => Some(TokenType::LeftShift),
-        TokenType::RightShiftAssign => Some(TokenType::RightShift),
-        TokenType::DoubleQuestionAssign => Some(TokenType::DoubleQuestion),
-        _ => None,
-    }?;
+    let op2 = op.as_compound_binary()?;
     if node.children.len() != 2 {
         return None;
     }

@@ -12,6 +12,52 @@ pub const TAG_BOOL: i64 = 3;
 pub const TAG_NONE: i64 = 5;
 pub const TAG_INTLIST: i64 = 6;
 
+/// Layout of the 16-byte hidden-pointer result slot every JIT entry writes:
+/// `[ value @ RESULT_VALUE_OFFSET, tag @ RESULT_TAG_OFFSET ]`.
+/// Kept in lockstep with `vm::jit_call`'s `[i64; 2]` out buffer.
+pub const RESULT_VALUE_OFFSET: i32 = 0;
+pub const RESULT_TAG_OFFSET: i32 = 8;
+
+/// Return-kind *bits* used by `jit_bc::ret_kinds` to describe which runtime
+/// tags a callee may produce. These are bit flags, not tags: a proto that can
+/// return either an Int or an IntList carries `RET_INT | RET_INTLIST`.
+pub const RET_INT: u8 = 0x1;
+pub const RET_FLOAT: u8 = 0x2;
+pub const RET_BOOL: u8 = 0x4;
+pub const RET_INTLIST: u8 = 0x8;
+const RET_INT_OR_INTLIST: u8 = RET_INT | RET_INTLIST;
+
+/// Map a pure `RET_*` kind to the single tag the JIT expects in the hidden
+/// pointer. The heterogeneous `RET_INT | RET_INTLIST` case normalizes to
+/// `TAG_INTLIST` because such a callee materializes its Ints as list handles
+/// before returning. `None` means no single tag compare can validate it, so
+/// the caller must reject the proto.
+pub fn ret_kind_to_tag(kind: u8) -> Option<i64> {
+    match kind {
+        RET_INT => Some(TAG_INT),
+        RET_FLOAT => Some(TAG_FLOAT),
+        RET_BOOL => Some(TAG_BOOL),
+        RET_INTLIST => Some(TAG_INTLIST),
+        RET_INT_OR_INTLIST => Some(TAG_INTLIST),
+        _ => None,
+    }
+}
+
+/// Bit positions inside the second JIT argument (`param_tags`, host -> JIT).
+///
+/// **Two disjoint bit spaces — do not merge them:**
+/// * low bits `1 << pos` (plus [`PARAM_MASK_UNSAFE_SHIFT`] for class methods)
+///   are the bytecode JIT's *unsafe-param mask*: they mark parameters whose
+///   handle/foreign value must bail rather than reach arithmetic;
+/// * [`PARAM_MASK_FLOAT_BASE`] / [`PARAM_MASK_BOOL_BASE`] are the high bits
+///   `jit_fast` sets for Float/Bool arguments. Those live in the host->JIT
+///   `param_tags` word but are never consumed by the unsafe-param check.
+pub const PARAM_MASK_FLOAT_BASE: usize = 32;
+pub const PARAM_MASK_BOOL_BASE: usize = 40;
+/// Class-method calls reserve argument slot 0 for the receiver, so the
+/// unsafe-param bit for user argument `k` is `1 << (k + PARAM_MASK_UNSAFE_SHIFT)`.
+pub const PARAM_MASK_UNSAFE_SHIFT: usize = 1;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ArgKind {
     Unbc,

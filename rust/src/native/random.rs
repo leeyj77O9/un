@@ -68,6 +68,14 @@ fn with_gen<T>(scope: &Scope, f: impl FnOnce(&mut Rng) -> T) -> T {
         None => RANDOM.with(|r| f(&mut r.borrow_mut())),
     }
 }
+/// 정수 인자를 읽는다. 에러 문자열 생성 규칙은 기존 리터럴과 동일하다:
+/// `expected '<fn_name>' argument '<arg_name>' is int`
+fn expect_int_arg(scope: &Scope, fn_name: &str, arg_name: &str) -> Result<i64, Obj> {
+    match obj::payload(&scope::get(scope, arg_name)) {
+        Payload::Int(v) => Ok(v),
+        _ => Err(obj::err(format!("expected '{fn_name}' argument '{arg_name}' is int"))),
+    }
+}
 pub fn rng_obj() -> Obj {
     obj::obj_new(
         "random",
@@ -229,15 +237,13 @@ fn next_impl(scope: &Scope) -> Obj {
     obj::int(value as i64)
 }
 fn int_impl(scope: &Scope) -> Obj {
-    let min = scope::get(scope, "min");
-    let max = scope::get(scope, "max");
-    let min = match obj::payload(&min) {
-        Payload::Int(v) => v,
-        _ => return obj::err("expected 'random.int' argument 'min' is int"),
+    let min = match expect_int_arg(scope, "random.int", "min") {
+        Ok(v) => v,
+        Err(e) => return e,
     };
-    let max = match obj::payload(&max) {
-        Payload::Int(v) => v,
-        _ => return obj::err("expected 'random.int' argument 'max' is int"),
+    let max = match expect_int_arg(scope, "random.int", "max") {
+        Ok(v) => v,
+        Err(e) => return e,
     };
     if min > max {
         return obj::err("'min' cannot be greater than 'max'");
@@ -274,10 +280,9 @@ fn bool_impl(scope: &Scope) -> Obj {
     obj::boolean(value)
 }
 fn bytes_impl(scope: &Scope) -> Obj {
-    let length = scope::get(scope, "length");
-    let length = match obj::payload(&length) {
-        Payload::Int(v) => v,
-        _ => return obj::err("expected 'random.bytes' argument 'length' is int"),
+    let length = match expect_int_arg(scope, "random.bytes", "length") {
+        Ok(v) => v,
+        Err(e) => return e,
     };
     if length < 0 {
         return obj::err("'length' cannot be negative");
@@ -328,14 +333,13 @@ fn choice_impl(scope: &Scope) -> Obj {
 }
 fn choices_impl(scope: &Scope) -> Obj {
     let target = scope::get(scope, "obj");
-    let count = scope::get(scope, "count");
     let list = match obj::payload(&target) {
         Payload::List(list) => list.clone(),
         _ => return obj::err("expected 'random.choices' argument 'obj' is list"),
     };
-    let count = match obj::payload(&count) {
-        Payload::Int(v) => v,
-        _ => return obj::err("expected 'random.choices' argument 'count' is int"),
+    let count = match expect_int_arg(scope, "random.choices", "count") {
+        Ok(v) => v,
+        Err(e) => return e,
     };
     if count < 0 {
         return obj::err("'count' cannot be negative");
@@ -357,14 +361,13 @@ fn choices_impl(scope: &Scope) -> Obj {
 }
 fn sample_impl(scope: &Scope) -> Obj {
     let target = scope::get(scope, "obj");
-    let count = scope::get(scope, "count");
     let list = match obj::payload(&target) {
         Payload::List(list) => list.clone(),
         _ => return obj::err("expected 'random.sample' argument 'obj' is list"),
     };
-    let count = match obj::payload(&count) {
-        Payload::Int(v) => v,
-        _ => return obj::err("expected 'random.sample' argument 'count' is int"),
+    let count = match expect_int_arg(scope, "random.sample", "count") {
+        Ok(v) => v,
+        Err(e) => return e,
     };
     let items = list.borrow().clone();
     if count > items.len() as i64 {
@@ -390,10 +393,9 @@ fn chance_impl(scope: &Scope) -> Obj {
     obj::boolean(hit)
 }
 fn seed_impl(scope: &Scope) -> Obj {
-    let seed = scope::get(scope, "seed");
-    let value = match obj::payload(&seed) {
-        Payload::Int(v) => v,
-        _ => return obj::err("expected 'random.seed' argument 'seed' is int"),
+    let value = match expect_int_arg(scope, "random.seed", "seed") {
+        Ok(v) => v,
+        Err(e) => return e,
     };
 
     match gen_self(scope) {
@@ -426,10 +428,9 @@ fn uuid_impl(scope: &Scope) -> Obj {
 }
 fn str_impl(scope: &Scope) -> Obj {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let length = scope::get(scope, "length");
-    let length = match obj::payload(&length) {
-        Payload::Int(v) => v,
-        _ => return obj::err("expected 'random.string' argument 'length' is int"),
+    let length = match expect_int_arg(scope, "random.string", "length") {
+        Ok(v) => v,
+        Err(e) => return e,
     };
     if length < 0 {
         return obj::err("'length' cannot be negative");
@@ -485,18 +486,17 @@ fn weighted_impl(scope: &Scope) -> Obj {
     value_list.last().cloned().unwrap_or_else(obj::none)
 }
 fn range_impl(scope: &Scope) -> Obj {
-    let start = scope::get(scope, "start");
     let end = scope::get(scope, "end");
-    let start_value = match obj::payload(&start) {
-        Payload::Int(v) => v,
-        _ => return obj::err("expected 'random.range' argument 'start' is int"),
+    let start_value = match expect_int_arg(scope, "random.range", "start") {
+        Ok(v) => v,
+        Err(e) => return e,
     };
     let (min, max) = if obj::is_none(&end) {
         (0, start_value - 1)
     } else {
-        let end_value = match obj::payload(&end) {
-            Payload::Int(v) => v,
-            _ => return obj::err("expected 'random.range' argument 'end' is int"),
+        let end_value = match expect_int_arg(scope, "random.range", "end") {
+            Ok(v) => v,
+            Err(e) => return e,
         };
         (start_value, end_value)
     };

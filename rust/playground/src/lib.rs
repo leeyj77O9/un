@@ -15,6 +15,8 @@ use unvm::runtime::world;
 use unvm::source::Source;
 use unvm::vm::{err_header, err_message, panic_display, Outcome, VM};
 use unvm::error::LangError;
+use unvm::json::json_string;
+use unvm::textual_infer as shared_infer;
 
 const DEFAULT_ALLOWED: &[&str] = &[
     "io", "math", "iter", "re", "random", "time", "builtin", "atomic",
@@ -150,33 +152,15 @@ pub fn run(
     }
 }
 
-fn escape_json(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 16);
-    for ch in text.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 pub fn result_to_json(result: &PlaygroundResult) -> String {
     let error = match &result.error {
-        Some(text) => format!("\"{}\"", escape_json(text)),
+        Some(text) => json_string(text),
         None => "null".to_string(),
     };
 
     format!(
-        "{{\"stdout\": \"{}\", \"error\": {}, \"timedOut\": {}, \"exitCode\": {}, \"needsInput\": {}}}",
-        escape_json(&result.stdout),
+        "{{\"stdout\": {}, \"error\": {}, \"timedOut\": {}, \"exitCode\": {}, \"needsInput\": {}}}",
+        json_string(&result.stdout),
         error,
         if result.timed_out { "true" } else { "false" },
         result.exit_code,
@@ -257,7 +241,7 @@ fn diagnostic(error: &LangError, source: &Source, map: &[usize], end: usize) -> 
     }
 }
 
-/// Lightweight textual inference copied from `lsp.rs::infer_types`. It still
+/// Thin wrapper over the shared textual inference used by the LSP. It still
 /// produces useful types for top-level scripts (which `typeck` reports through
 /// function locals only) and while the document is too broken to type-check.
 fn textual_infer(code: &[char]) -> (
@@ -265,165 +249,8 @@ fn textual_infer(code: &[char]) -> (
     HashMap<String, Vec<(String, String)>>,
     HashMap<String, String>,
 ) {
-    let mut vars = HashMap::new();
-    let mut fn_params = HashMap::new();
-    let mut fn_returns = HashMap::new();
-    let mut i = 0usize;
-    while i < code.len() {
-        let line_start = i;
-        while i < code.len() && code[i] != '\n' {
-            i += 1;
-        }
-        if i < code.len() {
-            i += 1;
-        }
-        let line: String = code[line_start..i].iter().collect();
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        // `name = expr` / `name: Type = expr`
-        if let Some(eq) = trimmed.find('=') {
-            let left = trimmed[..eq].trim();
-            let rhs = trimmed[eq + 1..].trim();
-            let (name, declared) = match left.find(':') {
-                Some(colon) => (&left[..colon], Some(left[colon + 1..].trim().to_string())),
-                None => (left, None),
-            };
-            if !name.is_empty()
-                && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-                && !name.chars().next().unwrap().is_ascii_digit()
-            {
-                let inferred = declared
-                    .filter(|t| is_builtin_type(t))
-                    .or_else(|| infer_expr_type(rhs));
-                if let Some(t) = inferred {
-                    vars.insert(name.to_string(), t);
-                }
-            }
-        }
-        // `fn name(params) -> ret`
-        if let Some(rest) = trimmed.strip_prefix("fn ") {
-            let name: String = rest
-                .chars()
-                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-                .collect();
-            if !name.is_empty() {
-                if let Some(open) = rest.find('(') {
-                    if let Some(close) = matching_paren(rest, open) {
-                        let mut params = Vec::new();
-                        for part in split_top_level(&rest[open + 1..close], ',') {
-                            let p = part.trim();
-                            if p.is_empty() {
-                                continue;
-                            }
-                            let pname: String = p
-                                .chars()
-                                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-                                .collect();
-                            let ptype = if let Some(colon) = p.find(':') {
-                                p[colon + 1..]
-                                    .trim()
-                                    .split(['=', ' '])
-                                    .next()
-                                    .unwrap_or("")
-                                    .to_string()
-                            } else {
-                                let default = p.find('=').map(|e| p[e + 1..].trim()).unwrap_or("");
-                                infer_expr_type(default).unwrap_or_else(|| "any".to_string())
-                            };
-                            params.push((pname, ptype));
-                        }
-                        fn_params.insert(name.clone(), params);
-                        let after = rest[close + 1..].trim();
-                        if let Some(ret) = after.strip_prefix("->") {
-                            let ret = ret.split([' ', ':']).next().unwrap_or("").to_string();
-                            if !ret.is_empty() {
-                                fn_returns.insert(name, ret);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    (vars, fn_params, fn_returns)
-}
-
-fn is_builtin_type(name: &str) -> bool {
-    matches!(name, "list" | "dict" | "set" | "iter" | "str" | "date" | "stopwatch")
-}
-
-fn infer_expr_type(expr: &str) -> Option<String> {
-    let text = expr.trim();
-    if text.is_empty() {
-        return None;
-    }
-    if text.starts_with('"') || text.starts_with('\'') || text.starts_with('`') {
-        return Some("str".to_string());
-    }
-    if text == "true" || text == "false" {
-        return Some("bool".to_string());
-    }
-    if text.starts_with('[') {
-        return Some("list".to_string());
-    }
-    if text.starts_with('{') {
-        return Some("dict".to_string());
-    }
-    if text.starts_with("set(") {
-        return Some("set".to_string());
-    }
-    if text.starts_with("iter.") || text.starts_with("iter(") {
-        return Some("iter".to_string());
-    }
-    if text.chars().all(|ch| ch.is_ascii_digit() || ch == '_' || ch == '-')
-        && text.chars().any(|ch| ch.is_ascii_digit())
-    {
-        return Some("int".to_string());
-    }
-    if text.chars().all(|ch| ch.is_ascii_digit() || ch == '_' || ch == '-' || ch == '.')
-        && text.contains('.')
-    {
-        return Some("float".to_string());
-    }
-    None
-}
-
-fn matching_paren(text: &str, open: usize) -> Option<usize> {
-    let mut depth = 0i64;
-    for (i, ch) in text.char_indices().skip_while(|(i, _)| *i < open) {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn split_top_level(text: &str, sep: char) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut start = 0usize;
-    let mut depth = 0i64;
-    for (i, ch) in text.char_indices() {
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            c if c == sep && depth == 0 => {
-                result.push(&text[start..i]);
-                start = i + c.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    result.push(&text[start..]);
-    result
+    let inferred = shared_infer::infer(code);
+    (inferred.vars, inferred.fn_params, inferred.fn_returns)
 }
 
 pub fn check_source(code: &str, file_name: &str) -> CheckResult {
@@ -522,19 +349,19 @@ fn check_result_to_json(result: &CheckResult) -> String {
         .iter()
         .map(|d| {
             format!(
-                "{{\"start\":{},\"length\":{},\"line\":{},\"column\":{},\"message\":\"{}\"}}",
+                "{{\"start\":{},\"length\":{},\"line\":{},\"column\":{},\"message\":{}}}",
                 d.start,
                 d.length,
                 d.line,
                 d.column,
-                escape_json(&d.message)
+                json_string(&d.message)
             )
         })
         .collect();
     let vars: Vec<String> = result
         .vars
         .iter()
-        .map(|(name, ty)| format!("[\"{}\",\"{}\"]", escape_json(name), escape_json(ty)))
+        .map(|(name, ty)| format!("[{},{}]", json_string(name), json_string(ty)))
         .collect();
     let fn_params: Vec<String> = result
         .fn_params
@@ -542,15 +369,15 @@ fn check_result_to_json(result: &CheckResult) -> String {
         .map(|(name, params)| {
             let params: Vec<String> = params
                 .iter()
-                .map(|(name, ty)| format!("[\"{}\",\"{}\"]", escape_json(name), escape_json(ty)))
+                .map(|(name, ty)| format!("[{},{}]", json_string(name), json_string(ty)))
                 .collect();
-            format!("[\"{}\",[{}]]", escape_json(name), params.join(","))
+            format!("[{},[{}]]", json_string(name), params.join(","))
         })
         .collect();
     let fn_returns: Vec<String> = result
         .fn_returns
         .iter()
-        .map(|(name, ty)| format!("[\"{}\",\"{}\"]", escape_json(name), escape_json(ty)))
+        .map(|(name, ty)| format!("[{},{}]", json_string(name), json_string(ty)))
         .collect();
     format!(
         "{{\"ok\":{},\"diagnostics\":[{}],\"vars\":[{}],\"fnParams\":[{}],\"fnReturns\":[{}]}}",

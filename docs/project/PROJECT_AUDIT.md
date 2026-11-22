@@ -175,8 +175,8 @@ symbol with exactly one occurrence in its own definition file is reported as
 re-measured **2026-11-23 at HEAD 660559b**, are Positive **50 files / 1606 passed** /
 0 failed / 0 crashed, Negative **51 matched / 0 divergences**, differential
 **101 files / 0 differences**, roundtrip **50/50 positive + 42 identical negative**
-(9 compile-rejected skip), and `cargo test --release --workspace` **244 passed / 0 failed**
-(nrt 3 + lib 229 + un bin/LSP 4 + playground 8). `docs/guides/TEST_GUIDE.md` is the baseline
+(9 compile-rejected skip), and `cargo test --release --workspace` **254 passed / 0 failed**
+(nrt 4 + lib 238 + un bin/LSP 4 + playground 8). `docs/guides/TEST_GUIDE.md` is the baseline
 mirror. The numbers below are kept as the historical record of the audit run.)
 
 - Build: `cargo build --release` → **exit 0, 0 warnings**.

@@ -2,17 +2,10 @@ use crate::runtime::collections;
 use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
+use super::messages::REGEX_BACKTRACKING_LIMIT;
 use super::regex::{self, Regex};
-use super::{arg, native};
+use super::{arg, native, three, two};
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
-    let two = |a: &str, b: &str| vec![arg(a, true, false, false), arg(b, true, false, false)];
-    let three = |a: &str, b: &str, c: &str| {
-        vec![
-            arg(a, true, false, false),
-            arg(b, true, false, false),
-            arg(c, true, false, false),
-        ]
-    };
     vec![
         (
             "test".to_owned(),
@@ -81,7 +74,7 @@ fn compile(pattern: &str) -> Result<Regex, Obj> {
 }
 
 fn limit_error() -> Obj {
-    obj::err("regex backtracking limit exceeded")
+    obj::err(REGEX_BACKTRACKING_LIMIT)
 }
 fn test_impl(scope: &Scope) -> Obj {
     let (pattern, text) = match pattern_and_text(scope) {

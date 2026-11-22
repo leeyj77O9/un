@@ -234,6 +234,10 @@ impl Op {
         }
     }
 }
+
+/// Maximum number of register slots a compiled proto may use.
+pub const MAX_REGS: usize = 256;
+
 pub const FLAG_JUMP_TRUE: u16 = 1 << 0;
 pub const FLAG_JUMP_POP: u16 = 1 << 1;
 pub const FLAG_STRICT: u16 = 1 << 2;
@@ -261,6 +265,46 @@ pub const FLAG_FUNC_EXT: u16 = 1 << 1;
 pub const FLAG_FUNC_PROP: u16 = 1 << 2;
 pub const FLAG_CLASS_PARAMS: u16 = 1 << 0;
 pub const FLAG_CLASS_BASES: u16 = 1 << 1;
+
+/// Relative jump target as a signed value, so callers can range-check it.
+#[inline]
+pub fn jump_target_i64(ip: usize, delta: i32) -> i64 {
+    ip as i64 + 1 + delta as i64
+}
+
+/// Relative jump target: `ip + 1 + delta` (the convention shared by the VM,
+/// the register translator and the bytecode compiler).
+#[inline]
+pub fn jump_target(ip: usize, delta: i32) -> usize {
+    jump_target_i64(ip, delta) as usize
+}
+
+/// Number of explicitly provided slice bounds (start/end/step) encoded in `flags`.
+#[inline]
+pub fn slice_bound_count(flags: u16) -> usize {
+    (flags & (FLAG_SLICE_START | FLAG_SLICE_END | FLAG_SLICE_STEP)).count_ones() as usize
+}
+
+/// Largest slot index encodable in a fused-int-muladd operand.
+pub const FUSED_MULADD_SLOT_MASK: u32 = 0x3FF;
+
+/// Pack three slot indices as `(dst << 20) | (x << 10) | y`.
+#[inline]
+pub fn pack_fused_muladd(dst: u32, x: u32, y: u32) -> i32 {
+    ((dst << 20) | (x << 10) | y) as i32
+}
+
+/// Inverse of [`pack_fused_muladd`]: `(dst, x, y)`.
+#[inline]
+pub fn unpack_fused_muladd(operand: i32) -> (usize, usize, usize) {
+    let mask = FUSED_MULADD_SLOT_MASK as i32;
+    (
+        ((operand >> 20) & mask) as usize,
+        ((operand >> 10) & mask) as usize,
+        (operand & mask) as usize,
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Instr {
     pub op: u8,
@@ -363,5 +407,20 @@ mod tests {
             assert!(Op::from_u8(v).is_some(), "{v:#04x} is a hole in the opcode table");
         }
         assert_eq!(Op::from_u8(0x00), None);
+    }
+    #[test]
+    fn slice_bound_count_counts_only_present_bounds() {
+        assert_eq!(slice_bound_count(0), 0);
+        assert_eq!(slice_bound_count(FLAG_SLICE_START), 1);
+        assert_eq!(slice_bound_count(FLAG_SLICE_END | FLAG_SLICE_STEP), 2);
+        assert_eq!(slice_bound_count(FLAG_SLICE_START | FLAG_SLICE_END | FLAG_SLICE_STEP), 3);
+        assert_eq!(slice_bound_count(0xBEEF), 3);
+    }
+    #[test]
+    fn fused_muladd_pack_unpack_round_trip() {
+        let packed = pack_fused_muladd(0x3FF, 0x2AA, 0x155);
+        assert_eq!(packed, ((0x3FFu32 << 20) | (0x2AAu32 << 10) | 0x155) as i32);
+        assert_eq!(unpack_fused_muladd(packed), (0x3FF, 0x2AA, 0x155));
+        assert_eq!(unpack_fused_muladd(pack_fused_muladd(0, 0, 0)), (0, 0, 0));
     }
 }

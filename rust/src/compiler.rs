@@ -250,8 +250,12 @@ impl<'a> Compiler<'a> {
                     let sx = original_code[i + 1].operand as u32;
                     let sy = original_code[i + 2].operand as u32;
                     let store_dst = original_code[i + 8].operand as u32;
-                    if dst == store_dst && sx <= 0x3FF && sy <= 0x3FF && dst <= 0x3FF {
-                        let fused = ((dst << 20) | (sx << 10) | sy) as i32;
+                    if dst == store_dst
+                        && sx <= FUSED_MULADD_SLOT_MASK
+                        && sy <= FUSED_MULADD_SLOT_MASK
+                        && dst <= FUSED_MULADD_SLOT_MASK
+                    {
+                        let fused = pack_fused_muladd(dst, sx, sy);
                         for offset in 0..=8 {
                             original_to_new[i + offset] = new_code.len();
                         }
@@ -286,7 +290,7 @@ impl<'a> Compiler<'a> {
                         new_code.len()
                     )
                 });
-            let original_target = original_ip + 1 + new_code[ip].operand as usize;
+            let original_target = jump_target(original_ip, new_code[ip].operand);
             let new_target = original_to_new[original_target];
             let operand = new_target as i32 - ip as i32 - 1;
             new_code[ip].operand = operand;
@@ -641,7 +645,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Dup, 0, 0, span);
                 self.code(&pattern.children[0])?;
                 let flags = self.slice_bounds(pattern)?;
-                self.emit(Op::SetSlice, flags, flags.count_ones() as i32, span);
+                self.emit(Op::SetSlice, flags, slice_bound_count(flags) as i32, span);
                 self.emit(Op::Pop, 0, 0, span);
                 self.emit(Op::Pop, 0, 0, span);
             }
@@ -1972,7 +1976,7 @@ impl<'a> Compiler<'a> {
 
             let get = self.emit_jump(Op::JmpIf, FLAG_JUMP_NONE | FLAG_JUMP_TRUE, span);
             let flags = self.slice_bounds(node)?;
-            self.emit(Op::Slice, flags, flags.count_ones() as i32, span);
+            self.emit(Op::Slice, flags, slice_bound_count(flags) as i32, span);
             let end = self.emit_jump(Op::Jmp, 0, span);
             let target = self.ip();
             self.patch(get, target);
@@ -1983,7 +1987,7 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
         let flags = self.slice_bounds(node)?;
-        self.emit(Op::Slice, flags, flags.count_ones() as i32, span);
+        self.emit(Op::Slice, flags, slice_bound_count(flags) as i32, span);
         self.emit(Op::Unwrap, 0, 0, span);
         Ok(())
     }

@@ -40,7 +40,7 @@ use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
 
-use super::{arg, native};
+use super::{arg, native, one, two};
 
 /// `bytes` 값의 type name. RT-03이 전용 타입을 정하면 그 이름으로 맞춘다.
 pub const TYPE_NAME: &str = "bytes";
@@ -91,13 +91,6 @@ pub fn is_bytes(value: &Obj) -> bool {
 // ---------------------------------------------------------------------------
 
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
-    let one = |name: &str| vec![arg(name, true, false, false)];
-    let two = |a: &str, b: &str| {
-        vec![
-            arg(a, true, false, false),
-            arg(b, true, false, false),
-        ]
-    };
     vec![
         (
             "from_str".to_owned(),

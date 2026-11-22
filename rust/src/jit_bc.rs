@@ -15,8 +15,15 @@ use crate::bytecode::Constant;
 use crate::bytecode::Program;
 use crate::bytecode::Proto;
 use crate::bytecode::instr::*;
+use crate::jit_cache::{
+    PARAM_MASK_UNSAFE_SHIFT, RET_BOOL, RET_FLOAT, RET_INT, RET_INTLIST, RESULT_TAG_OFFSET,
+    RESULT_VALUE_OFFSET,
+};
 use crate::vm::{Ins, ProtoPlan};
 
+/// Maximum number of user arguments passed to a JIT'd proto. The value is
+/// intentionally identical to `tir::MAX_CORE_ARITY` (Compile Mode), which is
+/// private to that module; keep both at 8 so the two JIT paths agree.
 pub const MAX_ARITY: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -660,6 +667,17 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
     crate::jit_cache::stash_module(program_id, module);
 }
 
+/// Mismatch-path style used by [`Tr::emit_check_callee_result`].
+/// The two call sites historically wrote `TAG_BAIL` through different (but
+/// equivalent) helpers; keep the distinction so each site stays recognizable.
+#[derive(Clone, Copy)]
+enum CalleeBail {
+    /// Write the `(0, TAG_BAIL)` pair via `emit_return_pair` (user-call site).
+    ReturnPair,
+    /// Write it via `emit_bail_exit` (class-method-call site).
+    BailExit,
+}
+
 struct Tr<'a> {
     program: &'a Program,
     proto: &'a Proto,
@@ -868,46 +886,7 @@ impl<'a> Tr<'a> {
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
         builder.ins().call(func_ref, &arg_vals);
         let pure_kind = callee_kind & (RET_INT | RET_FLOAT | RET_BOOL | RET_INTLIST);
-        let int_or_vec = pure_kind == RET_INT | RET_INTLIST;
-        let expected_tag = match pure_kind {
-            RET_INT => 0i64,
-            RET_FLOAT => 1i64,
-            RET_BOOL => 3i64,
-            RET_INTLIST => 6i64,
-            k if k == RET_INT | RET_INTLIST => 6i64,
-            _k => {
-                if crate::jit_cache::jit_debug() {
-                    eprintln!("JITREJECT emit_user_call callee_kind={callee_kind:#x} (heterogeneous)");
-                }
-                return None;
-            }
-        };
-        let val = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 0);
-        let tag = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 8);
-        let is_expected = if int_or_vec {
-            let zero_v = builder.ins().iconst(types::I64, 0);
-            let six_v = builder.ins().iconst(types::I64, 6);
-            let id_base_v = builder.ins().iconst(types::I64, crate::runtime::int_list::id_base());
-            let is_int = builder.ins().icmp(IntCC::Equal, tag, zero_v);
-            let is_list = builder.ins().icmp(IntCC::Equal, tag, six_v);
-            let vint = builder.ins().icmp(IntCC::SignedLessThan, val, id_base_v);
-            let int_ok = builder.ins().band(is_int, vint);
-            builder.ins().bor(int_ok, is_list)
-        } else {
-            let expected_v = builder.ins().iconst(types::I64, expected_tag);
-            builder.ins().icmp(IntCC::Equal, tag, expected_v)
-        };
-        let bail_blk = builder.create_block();
-        let cont_blk = builder.create_block();
-        builder.ins().brif(is_expected, cont_blk, &[], bail_blk, &[]);
-         self.terminated = true;
-        builder.seal_block(bail_blk);
-        builder.seal_block(cont_blk);
-        self.goto(builder, bail_blk);
-        let zero = builder.ins().iconst(types::I64, 0);
-        let bail_tag = builder.ins().iconst(types::I64, 2);
-        self.emit_return_pair(builder, zero, bail_tag);
-        self.goto(builder, cont_blk);
+        let val = self.emit_check_callee_result(builder, hp, callee_kind, CalleeBail::ReturnPair)?;
         builder.def_var(self.rv_i64(ins.a as usize), val);
         self.ret_slot[ins.a as usize] = None;
         self.class_ctor_regs.remove(&(ins.a as usize));
@@ -1038,7 +1017,11 @@ impl<'a> Tr<'a> {
         for k in 0..argc {
             let r = ins.b as usize + 1 + k;
             if self.intlist_regs.contains_key(&r) || self.param_idx.contains_key(&r) {
-                let bit = builder.ins().iconst(types::I64, 1i64 << (k + 1));
+                // Class method: slot 0 is the receiver, so user arg `k` shifts up.
+                let bit = builder.ins().iconst(
+                    types::I64,
+                    1i64 << (k + PARAM_MASK_UNSAFE_SHIFT),
+                );
                 tags = builder.ins().bor(tags, bit);
             }
         }
@@ -1051,44 +1034,7 @@ impl<'a> Tr<'a> {
         }
         builder.ins().call(func_ref, &arg_vals);
         let pure_kind = callee_kind & (RET_INT | RET_FLOAT | RET_BOOL | RET_INTLIST);
-        let int_or_vec = pure_kind == RET_INT | RET_INTLIST;
-        let expected_tag = match pure_kind {
-            RET_INT => 0i64,
-            RET_FLOAT => 1i64,
-            RET_BOOL => 3i64,
-            RET_INTLIST => 6i64,
-            k if k == RET_INT | RET_INTLIST => 6i64,
-            _k => {
-                if crate::jit_cache::jit_debug() {
-                    eprintln!("JITREJECT emit_user_call callee_kind={callee_kind:#x} (heterogeneous)");
-                }
-                return None;
-            }
-        };
-        let val = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 0);
-        let tag = builder.ins().load(types::I64, cranelift_codegen::ir::MemFlagsData::new(), hp, 8);
-        let is_expected = if int_or_vec {
-            let zero_v = builder.ins().iconst(types::I64, 0);
-            let six_v = builder.ins().iconst(types::I64, 6);
-            let id_base_v = builder.ins().iconst(types::I64, crate::runtime::int_list::id_base());
-            let is_int = builder.ins().icmp(IntCC::Equal, tag, zero_v);
-            let is_list = builder.ins().icmp(IntCC::Equal, tag, six_v);
-            let vint = builder.ins().icmp(IntCC::SignedLessThan, val, id_base_v);
-            let int_ok = builder.ins().band(is_int, vint);
-            builder.ins().bor(int_ok, is_list)
-        } else {
-            let expected_v = builder.ins().iconst(types::I64, expected_tag);
-            builder.ins().icmp(IntCC::Equal, tag, expected_v)
-        };
-        let bail_blk = builder.create_block();
-        let cont_blk = builder.create_block();
-        builder.ins().brif(is_expected, cont_blk, &[], bail_blk, &[]);
-         self.terminated = true;
-        builder.seal_block(bail_blk);
-        builder.seal_block(cont_blk);
-        self.goto(builder, bail_blk);
-        self.emit_bail_exit(builder);
-        self.goto(builder, cont_blk);
+        let val = self.emit_check_callee_result(builder, hp, callee_kind, CalleeBail::BailExit)?;
         builder.def_var(self.rv_i64(ins.a as usize), val);
         self.ret_slot[ins.a as usize] = None;
         self.int_dict_regs.remove(&(ins.a as usize));
@@ -1455,6 +1401,72 @@ impl<'a> Tr<'a> {
         }
     }
 
+    /// Validate a callee's hidden-pointer result against its static `RET_*`
+    /// kind, branch to a bail path on mismatch, and return the loaded value.
+    ///
+    /// This is the single home for the `.tag` match + hidden-pointer loads +
+    /// bail branch formerly duplicated at the user-call and class-method-call
+    /// sites. `callee_kind` is still consumed by each caller for post-call
+    /// register metadata; only the *validation* is shared here.
+    fn emit_check_callee_result(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        hp: cranelift_codegen::ir::Value,
+        callee_kind: u8,
+        bail: CalleeBail,
+    ) -> Option<cranelift_codegen::ir::Value> {
+        let pure_kind = callee_kind & (RET_INT | RET_FLOAT | RET_BOOL | RET_INTLIST);
+        let int_or_vec = pure_kind == RET_INT | RET_INTLIST;
+        let Some(expected_tag) = crate::jit_cache::ret_kind_to_tag(pure_kind) else {
+            if crate::jit_cache::jit_debug() {
+                eprintln!("JITREJECT emit_user_call callee_kind={callee_kind:#x} (heterogeneous)");
+            }
+            return None;
+        };
+        let val = builder.ins().load(
+            types::I64,
+            cranelift_codegen::ir::MemFlagsData::new(),
+            hp,
+            RESULT_VALUE_OFFSET,
+        );
+        let tag = builder.ins().load(
+            types::I64,
+            cranelift_codegen::ir::MemFlagsData::new(),
+            hp,
+            RESULT_TAG_OFFSET,
+        );
+        let is_expected = if int_or_vec {
+            let int_tag_v = builder.ins().iconst(types::I64, crate::jit_cache::TAG_INT);
+            let list_tag_v = builder.ins().iconst(types::I64, crate::jit_cache::TAG_INTLIST);
+            let id_base_v = builder.ins().iconst(types::I64, crate::runtime::int_list::id_base());
+            let is_int = builder.ins().icmp(IntCC::Equal, tag, int_tag_v);
+            let is_list = builder.ins().icmp(IntCC::Equal, tag, list_tag_v);
+            let vint = builder.ins().icmp(IntCC::SignedLessThan, val, id_base_v);
+            let int_ok = builder.ins().band(is_int, vint);
+            builder.ins().bor(int_ok, is_list)
+        } else {
+            let expected_v = builder.ins().iconst(types::I64, expected_tag);
+            builder.ins().icmp(IntCC::Equal, tag, expected_v)
+        };
+        let bail_blk = builder.create_block();
+        let cont_blk = builder.create_block();
+        builder.ins().brif(is_expected, cont_blk, &[], bail_blk, &[]);
+        self.terminated = true;
+        builder.seal_block(bail_blk);
+        builder.seal_block(cont_blk);
+        self.goto(builder, bail_blk);
+        match bail {
+            CalleeBail::ReturnPair => {
+                let zero = builder.ins().iconst(types::I64, 0);
+                let bail_tag = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
+                self.emit_return_pair(builder, zero, bail_tag);
+            }
+            CalleeBail::BailExit => self.emit_bail_exit(builder),
+        }
+        self.goto(builder, cont_blk);
+        Some(val)
+    }
+
     fn emit_bail_exit(&mut self, builder: &mut FunctionBuilder<'_>) {
         if self.needs_depth {
             let exit_ref = self.module.declare_func_in_func(self.fid_exit, builder.func);
@@ -1464,8 +1476,8 @@ impl<'a> Tr<'a> {
         let hp = builder.use_var(self.hp_var);
         let zero = builder.ins().iconst(types::I64, 0);
         let two = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero, hp, 0);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hp, 8);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero, hp, RESULT_VALUE_OFFSET);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hp, RESULT_TAG_OFFSET);
         builder.ins().return_(&[]);
         self.terminated = true;
     }
@@ -1495,8 +1507,8 @@ impl<'a> Tr<'a> {
         }
         self.emit_int_cleanup(builder, keep_all_intlist);
         let hp = builder.use_var(self.hp_var);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), bits, hp, 0);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tag, hp, 8);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), bits, hp, RESULT_VALUE_OFFSET);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), tag, hp, RESULT_TAG_OFFSET);
         builder.ins().return_(&[]);
          self.terminated = true;
     }
@@ -1636,8 +1648,8 @@ impl<'a> Tr<'a> {
             let hp = builder.use_var(self.hp_var);
             let zero = builder.ins().iconst(types::I64, 0);
             let two = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
-            builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero, hp, 0);
-            builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hp, 8);
+            builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero, hp, RESULT_VALUE_OFFSET);
+            builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hp, RESULT_TAG_OFFSET);
             builder.ins().return_(&[]);
             self.terminated = true;
         }
@@ -3190,10 +3202,6 @@ fn match_range_for_next(code: &[Ins], arena: &[String], ip: usize) -> Option<Ran
     })
 }
 
-const RET_INT: u8 = 0x1;
-const RET_FLOAT: u8 = 0x2;
-const RET_INTLIST: u8 = 0x8;
-const RET_BOOL: u8 = 0x4;
 const INTLIST_BORROWED: u8 = 8;
 const INTLIST_UNION: u8 = 9;
 
@@ -3962,9 +3970,9 @@ pub fn emit_fallback_stub_in_module(
     builder.switch_to_block(entry);
     builder.seal_block(entry);
     let zero = builder.ins().iconst(types::I64, 0);
-    let two = builder.ins().iconst(types::I64, 2);
-    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero, hp_in, 0);
-    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hp_in, 8);
+    let two = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
+    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero, hp_in, RESULT_VALUE_OFFSET);
+    builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hp_in, RESULT_TAG_OFFSET);
     builder.ins().return_(&[]);
     builder.seal_all_blocks();
     builder.finalize(module.target_config());
@@ -4141,8 +4149,8 @@ fn emit_fn_in_module(
         builder.switch_to_block(bail_blk);
         let zero2 = builder.ins().iconst(types::I64, 0);
         let two = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero2, hidden_ptr, 0);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hidden_ptr, 8);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero2, hidden_ptr, RESULT_VALUE_OFFSET);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two, hidden_ptr, RESULT_TAG_OFFSET);
         builder.ins().return_(&[]);
         builder.switch_to_block(cont_blk);
     }
@@ -4192,9 +4200,9 @@ fn emit_fn_in_module(
         builder.seal_block(cont_entry_blk);
         builder.switch_to_block(bail_entry_blk);
         let zero_e = builder.ins().iconst(types::I64, 0);
-        let two_e = builder.ins().iconst(types::I64, 2);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero_e, hidden_ptr, 0);
-        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two_e, hidden_ptr, 8);
+        let two_e = builder.ins().iconst(types::I64, crate::jit_cache::TAG_BAIL);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), zero_e, hidden_ptr, RESULT_VALUE_OFFSET);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), two_e, hidden_ptr, RESULT_TAG_OFFSET);
         builder.ins().return_(&[]);
         entry_blk = cont_entry_blk;
     } else {

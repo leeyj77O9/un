@@ -1,9 +1,8 @@
 
 use crate::runtime::context::Context;
-use crate::runtime::function::ArgData;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
-use super::native;
+use super::{ess, native};
 
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     let mut out: Vec<(String, Obj)> = Vec::new();
@@ -14,9 +13,6 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     out.push(("ord".to_owned(), native(closure, "ord", vec![ess("ch")], ord_impl)));
     out.push(("ascii".to_owned(), native(closure, "ascii", vec![ess("value")], ascii_impl)));
     out
-}
-fn ess(name: &str) -> ArgData {
-    super::arg(name, true, false, false)
 }
 fn int_of(scope: &Scope, name: &str, message: &str) -> Result<i64, Obj> {
     match obj::payload(&scope::get(scope, name)) {

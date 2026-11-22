@@ -6,10 +6,13 @@ pub mod unbc;
     FLAG_FUNC_PROP, FLAG_HOST_ERROR, FLAG_JUMP_NONE, FLAG_JUMP_POP, FLAG_JUMP_TRUE,
     FLAG_LOCAL_ONLY, FLAG_OPT_CHAIN, FLAG_SCOPE_FUNCTION, FLAG_SCOPE_LOOP, FLAG_SLICE_END,
     FLAG_SLICE_START, FLAG_SLICE_STEP, FLAG_STRICT, FLAG_SCOPE_SET, PROTO_FUNCTION,
-    PROTO_HAS_SELF, PROTO_HAS_SUPER,
+    PROTO_HAS_SELF, PROTO_HAS_SUPER, MAX_REGS, FUSED_MULADD_SLOT_MASK, jump_target,
+    jump_target_i64, pack_fused_muladd, slice_bound_count, unpack_fused_muladd,
 };
 pub const MAGIC: [u8; 4] = *b"UNB1";
 pub const VERSION: u16 = 1;
+/// Shared nesting limit for pattern validation (bytecode and .unbc reader).
+pub const MAX_PATTERN_DEPTH: usize = 64;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     Int(i64),
@@ -135,7 +138,7 @@ impl Proto {
     }
 
     pub fn jump_target(&self, ip: usize, delta: i32) -> usize {
-        (ip as i64 + 1 + delta as i64) as usize
+        instr::jump_target(ip, delta)
     }
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -291,9 +294,9 @@ impl Program {
             let scratch_base = proto.locals.len();
             let max_depth = depths.iter().flatten().copied().max().unwrap_or(0).max(0) as usize;
             let reg_count = scratch_base + max_depth + 1;
-            if reg_count > 256 {
+            if reg_count > MAX_REGS {
                 return Err(format!(
-                    "{label}: function uses {reg_count} registers (locals {scratch_base} + max depth {max_depth} + 1), exceeds limit 256",
+                    "{label}: function uses {reg_count} registers (locals {scratch_base} + max depth {max_depth} + 1), exceeds limit {MAX_REGS}",
                 ));
             }
         }
@@ -330,8 +333,8 @@ fn check_indices(
         | Op::MakeEnum
         | Op::AddMember => index_range(label, "name", operand, proto.names.len()),
         Op::ArgBegin => {
-            if operand > 256 {
-                return Err(format!("{label}: argument count {operand} exceeds 256"));
+            if operand > MAX_REGS {
+                return Err(format!("{label}: argument count {operand} exceeds {MAX_REGS}"));
             }
             Ok(())
         }
@@ -346,8 +349,8 @@ fn check_indices(
         Op::BuildTupleNamed => {
             let first = flags as usize;
             index_range(label, "names", first, proto.names.len())?;
-            if operand > 256 {
-                return Err(format!("{label}: tuple name count {operand} exceeds 256"));
+            if operand > MAX_REGS {
+                return Err(format!("{label}: tuple name count {operand} exceeds {MAX_REGS}"));
             }
             if first + operand > proto.names.len() {
                 return Err(format!("{label}: tuple name slot out of range"));
@@ -358,9 +361,7 @@ fn check_indices(
             index_range(label, "slot", operand, proto.locals.len())
         }
         Op::FusedIntMulAdd => {
-            let dst = ((operand >> 20) & 0x3FF) as usize;
-            let x = ((operand >> 10) & 0x3FF) as usize;
-            let y = (operand & 0x3FF) as usize;
+            let (dst, x, y) = unpack_fused_muladd(operand as i32);
             if dst >= proto.locals.len() {
                 return Err(format!("{label}: destination slot {dst} out of range"));
             }
@@ -409,7 +410,6 @@ fn index_range(label: &str, what: &str, index: usize, len: usize) -> Result<(), 
     Ok(())
 }
 fn validate_pattern(label: &str, pattern: &Pattern, program: &Program, depth: usize) -> Result<(), String> {
-    const MAX_PATTERN_DEPTH: usize = 64;
     if depth > MAX_PATTERN_DEPTH {
         return Err(format!("{label}: pattern nesting exceeds {MAX_PATTERN_DEPTH}"));
     }
@@ -559,8 +559,8 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
 
         Op::MakeProperty => -2,
 
-        Op::Slice => -slice_bounds(flags) + 1,
-        Op::SetSlice => -slice_bounds(flags),
+        Op::Slice => -(slice_bound_count(flags) as i64),
+        Op::SetSlice => -(slice_bound_count(flags) as i64 + 1),
         Op::JmpIf => {
             if flags & FLAG_JUMP_POP != 0 {
                 -1
@@ -571,23 +571,24 @@ pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {
         Op::Call => -count,
     }
 }
-fn slice_bounds(flags: u16) -> i64 {
-    let mut n = 1;
-    if flags & FLAG_SLICE_START != 0 {
-        n += 1;
-    }
-    if flags & FLAG_SLICE_END != 0 {
-        n += 1;
-    }
-    if flags & FLAG_SLICE_STEP != 0 {
-        n += 1;
-    }
-    n
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slice_stack_effect_matches_the_original_bound_formula() {
+        for bits in 0u16..8 {
+            let flags = if bits & 1 != 0 { FLAG_SLICE_START } else { 0 }
+                | if bits & 2 != 0 { FLAG_SLICE_END } else { 0 }
+                | if bits & 4 != 0 { FLAG_SLICE_STEP } else { 0 };
+            let old_bounds = 1
+                + (flags & FLAG_SLICE_START != 0) as i64
+                + (flags & FLAG_SLICE_END != 0) as i64
+                + (flags & FLAG_SLICE_STEP != 0) as i64;
+            assert_eq!(stack_effect(Op::Slice, flags, 0), -old_bounds + 1);
+            assert_eq!(stack_effect(Op::SetSlice, flags, 0), -old_bounds);
+        }
+    }
 
     #[test]
     fn validate_rejects_too_many_locals() {

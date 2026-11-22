@@ -2,7 +2,7 @@
 use crate::jit_cache::{self, ArgKind, JitEntry, TAG_BAIL, TAG_BOOL, TAG_FLOAT, TAG_INT, TAG_NONE};
 use crate::bytecode::Program;
 use crate::objify::EmitOutcome;
-use crate::tir::{elem_of_tir, tir_is_ref, tir_of_elem, TirBinOp, TirCmp, TirExpr, TirFn, TirProgram, TirStmt, TirTy, TirUnOp};
+use crate::tir::{abi_kind, elem_of_tir, tir_is_ref, tir_of_elem, TirBinOp, TirCmp, TirExpr, TirFn, TirProgram, TirStmt, TirTy, TirUnOp};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{types, Block, AbiParam, InstBuilder, MemFlagsData, UserFuncName};
@@ -20,6 +20,19 @@ use std::collections::HashMap;
 pub enum NativeMode {
     Vm,
     Obj,
+}
+
+impl ArgKind {
+    /// Derive the JIT parameter class from the single `TirTy` ABI table.
+    /// Object-handle kinds are passed as i64 bits, exactly like Int.
+    pub(crate) fn from_tir(ty: TirTy) -> Self {
+        match abi_kind(ty) {
+            0 => ArgKind::Int,
+            1 => ArgKind::Float,
+            2 => ArgKind::Bool,
+            _ => ArgKind::Int,
+        }
+    }
 }
 
 pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> Vec<String> {
@@ -232,16 +245,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
                 eprintln!("TIRDBG OK   proto={} {}", proto_index, f.name);
             }
         }
-        let arg_kinds: Vec<ArgKind> = f
-            .params
-            .iter()
-            .map(|t| match t {
-                TirTy::Int => ArgKind::Int,
-                TirTy::Float => ArgKind::Float,
-                TirTy::Bool => ArgKind::Bool,
-                TirTy::Bytes | TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => ArgKind::Int,
-            })
-            .collect();
+        let arg_kinds: Vec<ArgKind> = f.params.iter().copied().map(ArgKind::from_tir).collect();
         jit_cache::register_tir_entry(
             program_id,
             proto_index,
@@ -413,12 +417,7 @@ pub fn obj_compile(
             });
             let by_name = tir.functions.iter().enumerate().find(|(_, f)| &f.name == method_name);
             if let Some((tir_i, f)) = exact.or(by_name) {
-                let ret_kind = match f.ret {
-                    Some(crate::tir::TirTy::Int) => 0,
-                    Some(crate::tir::TirTy::Float) => 1,
-                    Some(crate::tir::TirTy::Bool) => 2,
-                    _ => 3,
-                };
+                let ret_kind = f.ret.map_or(3, abi_kind);
                 class_methods.push((class_name.clone(), method_name.clone(), tir_i, f.params.len(), ret_kind));
             }
         }

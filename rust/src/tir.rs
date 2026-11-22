@@ -101,9 +101,24 @@ pub(crate) fn tir_of_elem(elem: ObjElem) -> TirTy {
     }
 }
 
+/// NRT C ABI scalar kind for a TIR type.
+///
+/// The values are part of the standalone runtime ABI and must not change:
+/// `0` Int, `1` Float, `2` Bool, `3` object handle. Code generators and the
+/// generated driver use this table so a new `TirTy` variant is classified in
+/// exactly one place.
+pub fn abi_kind(ty: TirTy) -> u8 {
+    match ty {
+        TirTy::Int => 0,
+        TirTy::Float => 1,
+        TirTy::Bool => 2,
+        _ => 3,
+    }
+}
+
 /// True for every type whose native ABI value is an object handle (I64).
 pub(crate) fn tir_is_ref(ty: TirTy) -> bool {
-    !matches!(ty, TirTy::Int | TirTy::Float | TirTy::Bool)
+    abi_kind(ty) == 3
 }
 
 fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
@@ -501,7 +516,8 @@ pub struct TirProgram {
 /// runtime (`libnrt.a`) without any VM bridge. Supported: scalars, Str, lists
 /// and dicts, classes (incl. inheritance), closures, try/catch, native modules
 /// (except `random`, which is time-seeded and cannot match `un run` byte for
-/// byte). Dynamic `Any`/union code and module-global side effects beyond simple
+/// byte, and `bytes`/binary fs helpers, which have no standalone NRT ABI).
+/// Dynamic `Any`/union code and module-global side effects beyond simple
 /// inlined assignments stay on the `--embed` path.
 pub fn nrt_supported(tir: &TirProgram) -> bool {
     fn ty_ok(ty: TirTy) -> bool {
@@ -544,13 +560,8 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             TirExpr::DictGet(a, b) => expr_ok(a) && expr_ok(b),
             TirExpr::ListRepeat { value, len, .. } => expr_ok(value) && expr_ok(len),
             TirExpr::Math(_, args) | TirExpr::Call(_, args) => args.iter().all(expr_ok),
-            // `bytes` has no standalone NRT implementation yet, and neither
-            // do the binary fs helpers. Keep such programs on `--embed`,
-            // exactly like the time-seeded `random` module.
-            TirExpr::NativeCallExpr { module, args, ret, .. } => {
-                module.as_ref() != "random"
-                    && module.as_ref() != "bytes"
-                    && *ret != TirTy::Bytes
+            TirExpr::NativeCallExpr { module, member, args, ret, .. } => {
+                native_call_ok(module.as_ref(), member.as_ref(), Some(*ret))
                     && args.iter().all(expr_ok)
             }
             TirExpr::ClassNew { args, .. } | TirExpr::MethodCall { args, .. } => args.iter().all(expr_ok),
@@ -584,10 +595,21 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             TirStmt::ListAdd { receiver, arg }
             | TirStmt::ListInsert { receiver, arg, .. } => expr_ok(receiver) && expr_ok(arg),
             TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver } => expr_ok(receiver),
-            // `random.*` is seeded from wall-clock time, so a native exe could
-            // never be byte-identical to `un run`. Keep it on the VM path.
-            TirStmt::NativeCall { module, args, .. } => module != "random" && args.iter().all(expr_ok),
+            TirStmt::NativeCall { module, member, args } => {
+                native_call_ok(module.as_str(), member.as_str(), None)
+                    && args.iter().all(expr_ok)
+            }
         }
+    }
+    // Both expression and statement lowering reach native calls, so they must
+    // share one gate. `random` is time-seeded; `bytes` and the binary fs
+    // helpers have no standalone NRT implementation. Statement calls carry no
+    // `ret`, hence the explicit member check for the fs pair.
+    fn native_call_ok(module: &str, member: &str, ret: Option<TirTy>) -> bool {
+        module != "random"
+            && module != "bytes"
+            && ret != Some(TirTy::Bytes)
+            && !matches!((module, member), ("fs", "read_bytes") | ("fs", "write_bytes"))
     }
     // Closures and class methods are invoked through an all-integer C ABI shim
     // in NRT; Float params/returns need XMM registers and would be garbage.
@@ -2113,6 +2135,10 @@ fn native_call_shape<'a>(
 pub(crate) use crate::typeck::native_module_ret_type;
 
 fn core_ty_of(ty: &Ty) -> Option<CoreTy> {
+    // Deliberately no `Ty::Bytes` arm: the standalone native core has no bytes
+    // ABI, so such programs must stay on the VM/`--embed` path. The typed
+    // pipeline still produces `TirTy::Bytes` via `tir_ty_from_ty`; this helper
+    // is only for the restricted core lowering.
     match ty {
         Ty::Int => Some(CoreTy::Int),
         Ty::Float => Some(CoreTy::Float),
@@ -2534,10 +2560,8 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
                 let func_index = ctx.lambda_base + idx;
                 let (kinds, ret_kind) = {
                     let f = &ctx.lambdas[idx as usize];
-                    let k = f.params.iter().map(|t| match t {
-                        TirTy::Int => 0u8, TirTy::Float => 1, TirTy::Bool => 2, _ => 3,
-                    }).collect();
-                    let r = match f.ret { Some(TirTy::Int) => 0, Some(TirTy::Float) => 1, Some(TirTy::Bool) => 2, _ => 3 };
+                    let k = f.params.iter().copied().map(abi_kind).collect();
+                    let r = f.ret.map_or(3, abi_kind);
                     (k, r)
                 };
                 let closure = TirExpr::MakeClosure { func_index, captures: captures.clone(), kinds, ret_kind };
@@ -4199,6 +4223,9 @@ fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> 
 }
 
 fn ty_to_tir_simple(ty: &Ty) -> Result<TirTy, String> {
+    // Deliberately no `Ty::Bytes` arm: `TirTy::Bytes` is intentionally outside
+    // the standalone NRT allowlist, so bytes fields/annotations are rejected
+    // here and routed to `un build --embed` instead. No behavior change.
     Ok(match ty {
         Ty::Int => TirTy::Int,
         Ty::Float => TirTy::Float,
@@ -4926,5 +4953,108 @@ impl TirProgram {
             validate(f, self).map_err(|e| TirError(format!("{}: {}", f.name, e)))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod abi_tests {
+    use super::*;
+
+    /// Exhaustive on purpose: adding a `TirTy` variant without updating this
+    /// table (and `abi_kind`) is a compile error, which is the synchronization
+    /// check we want.
+    fn expected_abi_kind(ty: TirTy) -> u8 {
+        match ty {
+            TirTy::Int => 0,
+            TirTy::Float => 1,
+            TirTy::Bool => 2,
+            TirTy::Bytes | TirTy::Str | TirTy::ListInt | TirTy::ListFloat
+            | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
+            | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj
+            | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj
+            | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => 3,
+        }
+    }
+
+    fn all_types() -> Vec<TirTy> {
+        vec![
+            TirTy::Int,
+            TirTy::Float,
+            TirTy::Bool,
+            TirTy::Str,
+            TirTy::Bytes,
+            TirTy::ListInt,
+            TirTy::ListFloat,
+            TirTy::ListClass(0),
+            TirTy::DictStrInt,
+            TirTy::DictStrFloat,
+            TirTy::DictIntInt,
+            TirTy::Class(0),
+            TirTy::ErrorObj,
+            TirTy::Lambda(0),
+            TirTy::ListLambda,
+            TirTy::Obj,
+            TirTy::ListGen(ObjElem::Obj),
+            TirTy::DictGen(ObjElem::Str, ObjElem::Int),
+            TirTy::SetGen(ObjElem::Bool),
+        ]
+    }
+
+    #[test]
+    fn abi_kind_is_stable_for_every_variant() {
+        for ty in all_types() {
+            let kind = abi_kind(ty);
+            assert!(kind <= 3, "NRT kind out of range for {ty:?}: {kind}");
+            assert_eq!(kind, expected_abi_kind(ty), "NRT kind changed for {ty:?}");
+            assert_eq!(tir_is_ref(ty), kind == 3, "tir_is_ref drifted for {ty:?}");
+        }
+    }
+
+    #[test]
+    fn arg_kind_from_tir_follows_abi_table() {
+        use crate::jit_cache::ArgKind;
+        for ty in all_types() {
+            let expected = match abi_kind(ty) {
+                0 => ArgKind::Int,
+                1 => ArgKind::Float,
+                2 => ArgKind::Bool,
+                _ => ArgKind::Int,
+            };
+            assert!(ArgKind::from_tir(ty) == expected, "ArgKind drifted for {ty:?}");
+        }
+    }
+
+    fn program_with_native_stmt(module: &str, member: &str) -> TirProgram {
+        TirProgram {
+            functions: vec![TirFn {
+                name: "main".into(),
+                proto_span: (0, 0),
+                index: 0,
+                params: vec![],
+                defaults: vec![],
+                ret: None,
+                locals: vec![],
+                body: vec![TirStmt::NativeCall {
+                    module: module.into(),
+                    member: member.into(),
+                    args: vec![],
+                }],
+            }],
+            class_names: vec![],
+            class_fields: vec![],
+            class_methods: vec![],
+            class_setters: vec![],
+            class_field_order: vec![],
+            has_global_write: false,
+        }
+    }
+
+    #[test]
+    fn statement_native_calls_share_expression_gate() {
+        assert!(!nrt_supported(&program_with_native_stmt("random", "int")));
+        assert!(!nrt_supported(&program_with_native_stmt("bytes", "len")));
+        assert!(!nrt_supported(&program_with_native_stmt("fs", "read_bytes")));
+        assert!(!nrt_supported(&program_with_native_stmt("fs", "write_bytes")));
+        assert!(nrt_supported(&program_with_native_stmt("io", "print")));
     }
 }

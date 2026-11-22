@@ -3,30 +3,28 @@ use crate::runtime::collections;
 use crate::runtime::context::Context;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
-use super::{arg, native};
+use super::{arg, native, one, two};
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
-    let path = |name: &str| vec![arg(name, true, false, false)];
-    let two = |a: &str, b: &str| vec![arg(a, true, false, false), arg(b, true, false, false)];
     vec![
         (
             "exists".to_owned(),
-            native(closure, "exists", path("path"), exists_impl),
+            native(closure, "exists", one("path"), exists_impl),
         ),
         (
             "file".to_owned(),
-            native(closure, "file", path("path"), file_impl),
+            native(closure, "file", one("path"), file_impl),
         ),
         (
             "dir".to_owned(),
-            native(closure, "dir", path("path"), dir_impl),
+            native(closure, "dir", one("path"), dir_impl),
         ),
         (
             "read".to_owned(),
-            native(closure, "read", path("path"), read_impl),
+            native(closure, "read", one("path"), read_impl),
         ),
         (
             "read_bytes".to_owned(),
-            native(closure, "read_bytes", path("path"), read_bytes_impl),
+            native(closure, "read_bytes", one("path"), read_bytes_impl),
         ),
         (
             "write".to_owned(),
@@ -57,7 +55,7 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
         (
             "delete".to_owned(),
-            native(closure, "delete", path("path"), delete_impl),
+            native(closure, "delete", one("path"), delete_impl),
         ),
         (
             "copy".to_owned(),
@@ -73,11 +71,11 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
         (
             "touch".to_owned(),
-            native(closure, "touch", path("path"), touch_impl),
+            native(closure, "touch", one("path"), touch_impl),
         ),
         (
             "mkdir".to_owned(),
-            native(closure, "mkdir", path("path"), mkdir_impl),
+            native(closure, "mkdir", one("path"), mkdir_impl),
         ),
         (
             "rmdir".to_owned(),
@@ -90,43 +88,43 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
         (
             "list".to_owned(),
-            native(closure, "list", path("path"), list_impl),
+            native(closure, "list", one("path"), list_impl),
         ),
         (
             "files".to_owned(),
-            native(closure, "files", path("path"), files_impl),
+            native(closure, "files", one("path"), files_impl),
         ),
         (
             "dirs".to_owned(),
-            native(closure, "dirs", path("path"), dirs_impl),
+            native(closure, "dirs", one("path"), dirs_impl),
         ),
         (
             "walk".to_owned(),
-            native(closure, "walk", path("path"), walk_impl),
+            native(closure, "walk", one("path"), walk_impl),
         ),
         (
             "size".to_owned(),
-            native(closure, "size", path("path"), size_impl),
+            native(closure, "size", one("path"), size_impl),
         ),
         (
             "created".to_owned(),
-            native(closure, "created", path("path"), created_impl),
+            native(closure, "created", one("path"), created_impl),
         ),
         (
             "modified".to_owned(),
-            native(closure, "modified", path("path"), modified_impl),
+            native(closure, "modified", one("path"), modified_impl),
         ),
         (
             "accessed".to_owned(),
-            native(closure, "accessed", path("path"), accessed_impl),
+            native(closure, "accessed", one("path"), accessed_impl),
         ),
         (
             "readonly".to_owned(),
-            native(closure, "readonly", path("path"), readonly_impl),
+            native(closure, "readonly", one("path"), readonly_impl),
         ),
         (
             "hidden".to_owned(),
-            native(closure, "hidden", path("path"), hidden_impl),
+            native(closure, "hidden", one("path"), hidden_impl),
         ),
         (
             "join".to_owned(),
@@ -139,23 +137,23 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
         (
             "parent".to_owned(),
-            native(closure, "parent", path("path"), parent_impl),
+            native(closure, "parent", one("path"), parent_impl),
         ),
         (
             "name".to_owned(),
-            native(closure, "name", path("path"), name_impl),
+            native(closure, "name", one("path"), name_impl),
         ),
         (
             "stem".to_owned(),
-            native(closure, "stem", path("path"), stem_impl),
+            native(closure, "stem", one("path"), stem_impl),
         ),
         (
             "ext".to_owned(),
-            native(closure, "ext", path("path"), ext_impl),
+            native(closure, "ext", one("path"), ext_impl),
         ),
         (
             "absolute".to_owned(),
-            native(closure, "absolute", path("path"), absolute_impl),
+            native(closure, "absolute", one("path"), absolute_impl),
         ),
         (
             "relative".to_owned(),
@@ -163,12 +161,12 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
         ),
         (
             "normalize".to_owned(),
-            native(closure, "normalize", path("path"), normalize_impl),
+            native(closure, "normalize", one("path"), normalize_impl),
         ),
         ("cwd".to_owned(), native(closure, "cwd", Vec::new(), cwd_impl)),
         (
             "chdir".to_owned(),
-            native(closure, "chdir", path("path"), chdir_impl),
+            native(closure, "chdir", one("path"), chdir_impl),
         ),
         (
             "temp".to_owned(),

@@ -98,67 +98,46 @@ fn expand_vars_impl(scope: &Scope) -> Obj {
     let text = scope::get(scope, "text");
     super::os::expand_vars_of(&text)
 }
-fn pid_impl(_scope: &Scope) -> Obj {
-    obj::int(std::process::id() as i64)
+fn pid_impl(scope: &Scope) -> Obj {
+    super::os::pid_impl(scope)
 }
-fn name_impl(_scope: &Scope) -> Obj {
-    if cfg!(target_os = "windows") {
-        return obj::str("windows");
-    }
-    if cfg!(target_os = "linux") {
-        return obj::str("linux");
-    }
-    if cfg!(target_os = "macos") {
-        return obj::str("macos");
-    }
-    obj::str("unknown")
+fn name_impl(scope: &Scope) -> Obj {
+    super::os::name_impl(scope)
 }
-fn arch_impl(_scope: &Scope) -> Obj {
-    if cfg!(target_arch = "x86_64") {
-        obj::str("X64")
-    } else if cfg!(target_arch = "aarch64") {
-        obj::str("Arm64")
-    } else if cfg!(target_arch = "x86") {
-        obj::str("X86")
-    } else {
-        obj::str("unknown")
-    }
+fn arch_impl(scope: &Scope) -> Obj {
+    super::os::arch_impl(scope)
 }
 fn version_impl(_scope: &Scope) -> Obj {
+    // os.version()은 "<OS> (Un <version>)" 형식이지만 sys.version()은 "Un <version>"이다.
+    // 형식이 다르므로 위임하지 않고 VM 현재 출력을 그대로 유지한다.
     obj::str(&format!("Un {}", env!("CARGO_PKG_VERSION")))
 }
-fn cpu_count_impl(_scope: &Scope) -> Obj {
-    obj::int(std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(1))
+fn cpu_count_impl(scope: &Scope) -> Obj {
+    super::os::cpu_count_impl(scope)
 }
-fn is_64bit_impl(_scope: &Scope) -> Obj {
-    obj::boolean(cfg!(target_pointer_width = "64"))
+fn is_64bit_impl(scope: &Scope) -> Obj {
+    super::os::is_64bit_impl(scope)
 }
-fn hostname_impl(_scope: &Scope) -> Obj {
-    obj::str(&std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_default())
+fn hostname_impl(scope: &Scope) -> Obj {
+    super::os::hostname_impl(scope)
 }
-fn username_impl(_scope: &Scope) -> Obj {
-    obj::str(&std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_default())
+fn username_impl(scope: &Scope) -> Obj {
+    super::os::username_impl(scope)
 }
-fn args_impl(_scope: &Scope) -> Obj {
-    let args: Vec<Obj> = std::env::args().map(|a| obj::str(&a)).collect();
-    crate::runtime::collections::list(args)
+fn args_impl(scope: &Scope) -> Obj {
+    super::os::args_impl(scope)
 }
-fn sep_impl(_scope: &Scope) -> Obj {
-    obj::str(if cfg!(target_os = "windows") { "\\" } else { "/" })
+fn sep_impl(scope: &Scope) -> Obj {
+    super::os::sep_impl(scope)
 }
-fn pathsep_impl(_scope: &Scope) -> Obj {
-    obj::str(if cfg!(target_os = "windows") { ";" } else { ":" })
+fn pathsep_impl(scope: &Scope) -> Obj {
+    super::os::pathsep_impl(scope)
 }
-fn linesep_impl(_scope: &Scope) -> Obj {
-    obj::str(crate::error::nl())
+fn linesep_impl(scope: &Scope) -> Obj {
+    super::os::linesep_impl(scope)
 }
-fn tick_count_impl(_scope: &Scope) -> Obj {
-
-    obj::int(crate::runtime::clock::unix_millis())
+fn tick_count_impl(scope: &Scope) -> Obj {
+    super::os::tick_count_impl(scope)
 }
 fn get_call_depth_impl(_scope: &Scope) -> Obj {
     obj::int(world::max_recursion_depth() as i64)

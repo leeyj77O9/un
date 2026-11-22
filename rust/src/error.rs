@@ -1,4 +1,5 @@
 ﻿use crate::source::Source;
+use crate::vm::Outcome;
 use std::rc::Rc;
 pub fn nl() -> &'static str {
     if cfg!(windows) {
@@ -7,6 +8,23 @@ pub fn nl() -> &'static str {
         "\n"
     }
 }
+/// Turns a control-flow outcome that escaped a module body into its
+/// diagnostic. The message literals are part of the stderr contract.
+pub fn outcome_error(outcome: &Outcome) -> Option<LangError> {
+    match outcome {
+        Outcome::Return(_, start, length) => {
+            Some(LangError::new(*start, *length, "'->' outside function"))
+        }
+        Outcome::Break(start, length) => {
+            Some(LangError::new(*start, *length, "'break' outside loop"))
+        }
+        Outcome::Skip(start, length) => {
+            Some(LangError::new(*start, *length, "'skip' outside loop"))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Panic {
     pub name: String,

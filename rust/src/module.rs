@@ -1,5 +1,5 @@
 ﻿use std::rc::Rc;
-use crate::error::LangError;
+use crate::error::{outcome_error, LangError};
 use crate::runtime::context;
 use crate::runtime::modules;
 use crate::runtime::obj::{self, Obj};
@@ -156,26 +156,10 @@ fn load_file(path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, 
             let error = LangError::new(start, length, err_message(&value)).with_header(err_header(&value));
             return Err(ModuleError::Error(error));
         }
-        Outcome::Return(_, start, length) => {
-            return Err(ModuleError::Error(LangError::new(
-                start,
-                length,
-                "'->' outside function",
-            )))
-        }
-        Outcome::Break(start, length) => {
-            return Err(ModuleError::Error(LangError::new(
-                start,
-                length,
-                "'break' outside loop",
-            )))
-        }
-        Outcome::Skip(start, length) => {
-            return Err(ModuleError::Error(LangError::new(
-                start,
-                length,
-                "'skip' outside loop",
-            )))
+        other => {
+            if let Some(error) = outcome_error(&other) {
+                return Err(ModuleError::Error(error));
+            }
         }
     }
     Ok(scope::local_symbols(&module_scope))

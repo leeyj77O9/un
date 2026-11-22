@@ -20,7 +20,7 @@ pub struct EmitOutcome {
     pub output: std::path::PathBuf,
     /// (class, method, TIR function index, parameter count, return kind) entries
     /// to register with the standalone native runtime before `un_main` runs.
-    /// Return kind: 0 Int, 1 Float, 2 Bool, 3 object handle.
+    /// Return kind: `crate::tir::abi_kind` (0 Int, 1 Float, 2 Bool, 3 object handle).
     pub class_methods: Vec<(String, String, usize, usize, u8)>,
 }
 

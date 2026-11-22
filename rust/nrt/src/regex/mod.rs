@@ -1,5 +1,11 @@
-// This is a verbatim copy of the VM's regex engine. The NRT uses only a
-// subset of its API, so silence warnings for code that is unused here.
+// Verbatim replica of the VM's `rust/src/native/regex/` engine. It stays a
+// copy rather than a shared crate because the plain-build runtime must have
+// zero external dependencies and must never link `libunvm`. NRT uses only a
+// subset of the API, so silence warnings for code that is unused here.
+//
+// DRIFT POLICY: every edit to the VM engine must be mirrored here (and vice
+// versa) before `scripts/exe-diff.ps1` counts as green. Extracting a common
+// path crate requires explicit policy approval — do not do it inline.
 #![allow(dead_code, unused_imports)]
 
 mod charclass;

@@ -16,7 +16,7 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
     let scratch_base = proto.locals.len();
     let max_depth = depths.iter().flatten().copied().max().unwrap_or(0).max(0) as usize;
     let reg_count = scratch_base + max_depth + 1;
-    if reg_count > 256 {
+    if reg_count > MAX_REGS {
         return Err(format!(
             "{}: function too complex: {} registers",
             proto_name(program, proto),
@@ -30,7 +30,13 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             .instruction(ip)
             .ok_or_else(|| format!("{}: opcode {:#06x} at {ip} is not defined", proto_name(program, proto), proto.code[ip].op))?;
         let depth = depths[ip].unwrap_or(0);
-        let s = |k: i64| if !(0..=255).contains(&k) { scratch_base } else { scratch_base + k as usize };
+        let s = |k: i64| {
+            if !(0..=(MAX_REGS as i64 - 1)).contains(&k) {
+                scratch_base
+            } else {
+                scratch_base + k as usize
+            }
+        };
         let emit = |op, a, b, c, d, flags| Ins { op, a, b, c, d, flags };
         let ins = match op {
             Op::LoadNone
@@ -110,7 +116,7 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             Op::Slice => {
                 let eff = crate::bytecode::stack_effect(op, flags, operand) as i64;
                 let dst = scratch_base as i64 + depth as i64 + eff - 1;
-                if dst < 0 || dst > 255 {
+                if dst < 0 || dst > MAX_REGS as i64 - 1 {
                     return Err(format!(
                         "{}: slice destination slot {dst} out of register range",
                         proto_name(program, proto)
@@ -121,13 +127,13 @@ fn compile_proto(program: &Program, proto: &Proto) -> Result<ProtoPlan, String> 
             Op::SetSlice => {
                 let eff = crate::bytecode::stack_effect(op, flags, operand) as i64;
                 let dst = scratch_base as i64 + depth as i64 + eff - 1;
-                if dst < 0 || dst > 255 {
+                if dst < 0 || dst > MAX_REGS as i64 - 1 {
                     return Err(format!(
                         "{}: slice destination slot {dst} out of register range",
                         proto_name(program, proto)
                     ));
                 }
-                let bb = slice_bounds(flags) - 1;
+                let bb = slice_bound_count(flags) as i64;
                 emit(op, dst as u8, s(depth - 1 - bb) as u8, 0, operand, flags)
             }
 
@@ -243,7 +249,7 @@ fn run_worklist(
                 return Err(format!("stack depth {next_depth} at ip {ip}"));
             }
             if matches!(op, Op::Jmp | Op::JmpIf | Op::ForNext | Op::Break | Op::Skip) {
-                let target = ip as i64 + 1 + operand as i64;
+                let target = jump_target_i64(ip, operand);
                 if target < 0 || target > proto.code.len() as i64 {
                     return Err(format!("jump target {target} out of range"));
                 }
@@ -286,20 +292,6 @@ fn run_worklist(
         }
     }
     Ok(())
-}
-
-fn slice_bounds(flags: u16) -> i64 {
-    let mut n = 1;
-    if flags & FLAG_SLICE_START != 0 {
-        n += 1;
-    }
-    if flags & FLAG_SLICE_END != 0 {
-        n += 1;
-    }
-    if flags & FLAG_SLICE_STEP != 0 {
-        n += 1;
-    }
-    n
 }
 
 pub fn dump_register_plan(program: &Program) -> Result<String, String> {

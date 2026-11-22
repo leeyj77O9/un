@@ -156,4 +156,47 @@ impl Node {
         self.annotations = Some(annotations);
         self
     }
+
+    /// Function/extension name child. Indices mirror the parser layout:
+    /// `Function` = 0, `Extension` = 1 (receiver type is child 0).
+    pub fn function_name(&self) -> Option<&Node> {
+        let index = match self.kind {
+            NodeKind::Function => 0,
+            NodeKind::Extension => 1,
+            _ => return None,
+        };
+        self.children.get(index)
+    }
+
+    /// Parameter tuple child. `Function` = 1, `Extension` = 2, `Lambda` = 0.
+    pub fn function_params(&self) -> Option<&Node> {
+        let index = match self.kind {
+            NodeKind::Function => 1,
+            NodeKind::Extension => 2,
+            NodeKind::Lambda => 0,
+            _ => return None,
+        };
+        self.children.get(index)
+    }
+
+    /// Optional return-type child. `Function` = 3, `Extension` = 4. A trailing
+    /// `TypeParams` child may occupy that slot when no return type was written,
+    /// so it is filtered out.
+    pub fn function_ret(&self) -> Option<&Node> {
+        let index = match self.kind {
+            NodeKind::Function => 3,
+            NodeKind::Extension => 4,
+            _ => return None,
+        };
+        let child = self.children.get(index)?;
+        (child.kind != NodeKind::TypeParams).then_some(child)
+    }
+
+    /// Trailing `[T, U]` type-parameter list, if this node carries one.
+    pub fn type_params(&self) -> Option<&Node> {
+        self.children
+            .iter()
+            .rev()
+            .find(|child| child.kind == NodeKind::TypeParams)
+    }
 }

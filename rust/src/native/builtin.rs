@@ -1,11 +1,10 @@
 use crate::runtime::context::Context;
 use crate::runtime::collections;
-use crate::runtime::function::ArgData;
 use crate::runtime::obj::{self, Obj, Payload};
 use crate::runtime::scope::{self, Scope};
 use crate::runtime::types::Types;
 use crate::runtime::world;
-use super::native;
+use super::{ess, native, opt};
 pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     let mut out: Vec<(String, Obj)> = Vec::new();
     out.push(("len".to_owned(), native(closure, "len", vec![ess("value")], len_impl)));
@@ -36,12 +35,6 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
     ));
     out.push(("repr".to_owned(), native(closure, "repr", vec![ess("value")], repr_impl)));
     out
-}
-fn ess(name: &str) -> ArgData {
-    super::arg(name, true, false, false)
-}
-fn opt(name: &str) -> ArgData {
-    super::arg(name, false, true, false)
 }
 fn len_impl(scope: &Scope) -> Obj {
     obj::len(&scope::get(scope, "value"))

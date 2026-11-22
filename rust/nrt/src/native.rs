@@ -9,6 +9,22 @@ use crate::obj::{
     display, err, obj, unrt_obj_bool, unrt_obj_float, unrt_obj_int, unrt_obj_none,
 };
 
+/// Format shared by `sys.version()` and `os.version()`. The VM builds these
+/// with the same pieces (`rust/src/native/sys.rs` and `native/os.rs`). Both
+/// crates currently declare version 0.1.0, so plain-build output stays
+/// byte-identical with `un run`; keep the two Cargo.toml versions in lockstep.
+const UN_VERSION: &str = concat!("Un ", env!("CARGO_PKG_VERSION"));
+
+// Plain builds are shipped for x86_64-pc-windows-gnu today. These constants
+// name the values the Windows branches already produced; using them does not
+// change any non-Windows branch. Widening platform coverage is a separate
+// decision (see the NRT-06 report) because it would change non-Windows output.
+const OS_NAME_WINDOWS: &str = "windows";
+const ARCH_X64: &str = "X64";
+const SEP_WINDOWS: &str = "\\";
+const PATHSEP_WINDOWS: &str = ";";
+const LINESEP_WINDOWS: &str = "\r\n";
+
 fn as_i64(p: u64) -> Option<i64> {
     unsafe { if obj(p).tag == 0 { Some(obj(p).a) } else { None } }
 }
@@ -321,24 +337,24 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
             int(std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(1))
         }
         ("os", "is64bit") | ("sys", "is64bit") => boolean(cfg!(target_pointer_width = "64")),
-        ("os", "name") | ("sys", "name") => string(if cfg!(windows) { "windows" } else { "unknown" }),
-        ("os", "arch") | ("sys", "arch") => string("X64"),
+        ("os", "name") | ("sys", "name") => string(if cfg!(windows) { OS_NAME_WINDOWS } else { "unknown" }),
+        ("os", "arch") | ("sys", "arch") => string(ARCH_X64),
         ("os", "hostname") | ("sys", "hostname") => string(
             &std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default(),
         ),
         ("os", "username") | ("sys", "username") => string(
             &std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default(),
         ),
-        ("os", "version") => string(&format!("{} (Un 0.1.0)", std::env::consts::OS)),
-        ("sys", "version") => string("Un 0.1.0"),
+        ("os", "version") => string(&format!("{} ({UN_VERSION})", std::env::consts::OS)),
+        ("sys", "version") => string(UN_VERSION),
         ("os", "tickCount") | ("sys", "tickCount") => int(
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64).unwrap_or(0),
         ),
         ("sys", "getcalldepth") | ("sys", "getrecursionlimit") => int(1000),
-        ("os", "sep") | ("sys", "sep") => string("\\"),
-        ("os", "pathsep") | ("sys", "pathsep") => string(";"),
-        ("os", "linesep") | ("sys", "linesep") => string("\r\n"),
+        ("os", "sep") | ("sys", "sep") => string(SEP_WINDOWS),
+        ("os", "pathsep") | ("sys", "pathsep") => string(PATHSEP_WINDOWS),
+        ("os", "linesep") | ("sys", "linesep") => string(LINESEP_WINDOWS),
 
         ("fs", "exists") => match str_arg(args, 0) { Ok(s) => boolean(fs_path(&s).exists()), Err(e) => e },
         ("fs", "file") => match str_arg(args, 0) { Ok(s) => boolean(fs_path(&s).is_file()), Err(e) => e },

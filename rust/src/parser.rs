@@ -904,12 +904,12 @@ impl Parser {
     }
     fn parse_assignment(&mut self) -> Result<Node, LangError> {
         let left = self.parse_assignment_target()?;
-        if !self.is_assignment_operator(self.current().typ) {
+        if !self.current().typ.is_assignment_operator() {
             return Ok(left);
         }
         let op = self.next();
         let right = self.parse_comma()?;
-        if self.is_assignment_operator(self.current().typ) {
+        if self.current().typ.is_assignment_operator() {
             let token = self.current();
             return Err(LangError::new(
                 token.start,
@@ -1917,26 +1917,6 @@ impl Parser {
             NodeKind::Tuple => node.children.iter().all(|child| self.is_valid_assignment_target(child)),
             _ => false,
         }
-    }
-    fn is_assignment_operator(&self, typ: TokenType) -> bool {
-        matches!(
-            typ,
-            TokenType::Assign
-                | TokenType::ColonAssign
-                | TokenType::PlusAssign
-                | TokenType::MinusAssign
-                | TokenType::AsteriskAssign
-                | TokenType::SlashAssign
-                | TokenType::DoubleSlashAssign
-                | TokenType::DoubleAsteriskAssign
-                | TokenType::PercentAssign
-                | TokenType::BAndAssign
-                | TokenType::BOrAssign
-                | TokenType::BXorAssign
-                | TokenType::LeftShiftAssign
-                | TokenType::RightShiftAssign
-                | TokenType::DoubleQuestionAssign
-        )
     }
     fn get_binary_precedence(typ: TokenType) -> usize {
         match typ {

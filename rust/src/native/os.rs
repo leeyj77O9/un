@@ -202,10 +202,10 @@ fn expand_environment_variables(text: &str) -> String {
     }
     out
 }
-fn pid_impl(_scope: &Scope) -> Obj {
+pub(crate) fn pid_impl(_scope: &Scope) -> Obj {
     obj::int(std::process::id() as i64)
 }
-fn name_impl(_scope: &Scope) -> Obj {
+pub(crate) fn name_impl(_scope: &Scope) -> Obj {
     if cfg!(target_os = "windows") {
         return obj::str("windows");
     }
@@ -217,7 +217,7 @@ fn name_impl(_scope: &Scope) -> Obj {
     }
     obj::str("unknown")
 }
-fn arch_impl(_scope: &Scope) -> Obj {
+pub(crate) fn arch_impl(_scope: &Scope) -> Obj {
     if cfg!(target_arch = "x86_64") {
         obj::str("X64")
     } else if cfg!(target_arch = "aarch64") {
@@ -235,36 +235,36 @@ fn version_impl(_scope: &Scope) -> Obj {
         env!("CARGO_PKG_VERSION")
     ))
 }
-fn cpu_count_impl(_scope: &Scope) -> Obj {
+pub(crate) fn cpu_count_impl(_scope: &Scope) -> Obj {
     obj::int(std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(1))
 }
-fn is_64bit_impl(_scope: &Scope) -> Obj {
+pub(crate) fn is_64bit_impl(_scope: &Scope) -> Obj {
     obj::boolean(cfg!(target_pointer_width = "64"))
 }
-fn hostname_impl(_scope: &Scope) -> Obj {
+pub(crate) fn hostname_impl(_scope: &Scope) -> Obj {
     obj::str(&std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_default())
 }
-fn username_impl(_scope: &Scope) -> Obj {
+pub(crate) fn username_impl(_scope: &Scope) -> Obj {
     obj::str(&std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_default())
 }
-fn args_impl(_scope: &Scope) -> Obj {
+pub(crate) fn args_impl(_scope: &Scope) -> Obj {
     let args: Vec<Obj> = std::env::args().map(|a| obj::str(&a)).collect();
     collections::list(args)
 }
-fn sep_impl(_scope: &Scope) -> Obj {
+pub(crate) fn sep_impl(_scope: &Scope) -> Obj {
     obj::str(if cfg!(target_os = "windows") { "\\" } else { "/" })
 }
-fn pathsep_impl(_scope: &Scope) -> Obj {
+pub(crate) fn pathsep_impl(_scope: &Scope) -> Obj {
     obj::str(if cfg!(target_os = "windows") { ";" } else { ":" })
 }
-fn linesep_impl(_scope: &Scope) -> Obj {
+pub(crate) fn linesep_impl(_scope: &Scope) -> Obj {
     obj::str(crate::error::nl())
 }
-fn tick_count_impl(_scope: &Scope) -> Obj {
+pub(crate) fn tick_count_impl(_scope: &Scope) -> Obj {
 
     obj::int(crate::runtime::clock::unix_millis())
 }

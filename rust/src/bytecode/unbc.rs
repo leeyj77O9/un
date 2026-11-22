@@ -1,5 +1,7 @@
 ﻿use crate::bytecode::instr::Instr;
-use crate::bytecode::{Constant, ExcEntry, ExcKind, Param, Pattern, Program, Proto, MAGIC, VERSION};
+use crate::bytecode::{
+    Constant, ExcEntry, ExcKind, Param, Pattern, Program, Proto, MAGIC, MAX_PATTERN_DEPTH, VERSION,
+};
 const NONE: u32 = u32::MAX;
 const CONST_INT: u8 = 0;
 const CONST_FLOAT: u8 = 1;
@@ -381,7 +383,6 @@ fn read_pattern(reader: &mut Reader) -> Result<Pattern, String> {
     read_pattern_depth(reader, 0)
 }
 fn read_pattern_depth(reader: &mut Reader, depth: usize) -> Result<Pattern, String> {
-    const MAX_PATTERN_DEPTH: usize = 64;
     if depth > MAX_PATTERN_DEPTH {
         return Err(format!("pattern nesting exceeds {MAX_PATTERN_DEPTH}"));
     }

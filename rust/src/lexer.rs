@@ -1,6 +1,49 @@
 ﻿use crate::error::LangError;
-use crate::source::Source;
+use crate::source::{Source, TAB_WIDTH};
 use crate::token::{Token, TokenType};
+
+/// First character of an identifier. Kept identical to the original inline
+/// predicate (`ASCII letter` or `_`) so contextual `b"..."` / `type` paths are
+/// unaffected.
+pub fn is_ident_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+/// Continuation character of an identifier: ASCII letter, digit or `_`.
+pub fn is_ident_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Multi-character operators in the exact order the original `match_str`
+/// chain checked them: all 3-character compound assignments first, then the
+/// 2-character forms. Order is load-bearing (longest match wins).
+const MULTI_CHAR_OPERATORS: &[(&str, TokenType, usize)] = &[
+    ("??=", TokenType::DoubleQuestionAssign, 3),
+    ("<<=", TokenType::LeftShiftAssign, 3),
+    (">>=", TokenType::RightShiftAssign, 3),
+    ("//=", TokenType::DoubleSlashAssign, 3),
+    ("**=", TokenType::DoubleAsteriskAssign, 3),
+    ("??", TokenType::DoubleQuestion, 2),
+    ("?.", TokenType::QuestionDot, 2),
+    ("+=", TokenType::PlusAssign, 2),
+    ("-=", TokenType::MinusAssign, 2),
+    ("*=", TokenType::AsteriskAssign, 2),
+    ("/=", TokenType::SlashAssign, 2),
+    ("%=", TokenType::PercentAssign, 2),
+    ("&=", TokenType::BAndAssign, 2),
+    ("|=", TokenType::BOrAssign, 2),
+    ("^=", TokenType::BXorAssign, 2),
+    ("==", TokenType::Equal, 2),
+    ("!=", TokenType::Unequal, 2),
+    ("<=", TokenType::LessOrEqual, 2),
+    (">=", TokenType::GreaterOrEqual, 2),
+    ("<<", TokenType::LeftShift, 2),
+    (">>", TokenType::RightShift, 2),
+    ("//", TokenType::DoubleSlash, 2),
+    ("**", TokenType::DoubleAsterisk, 2),
+    ("->", TokenType::Return, 2),
+];
+
 pub fn lex(source: &mut Source) -> Result<Vec<Token>, LangError> {
     let mut lexer = Lexer::new(source);
     lexer.lex()
@@ -88,7 +131,7 @@ impl<'a> Lexer<'a> {
                     if self.consume(' ') {
                         indent += 1;
                     } else if self.consume('\t') {
-                        indent += 4;
+                        indent += TAB_WIDTH;
                     } else {
                         break;
                     }
@@ -158,7 +201,7 @@ impl<'a> Lexer<'a> {
                     self.get_bytes_token()?
                 }
                 c if c.is_ascii_digit() => self.get_number_token()?,
-                c if c.is_ascii_alphabetic() || c == '_' => self.get_identifier_token()?,
+                c if is_ident_start(c) => self.get_identifier_token()?,
                 _ => self.get_operator_token()?,
             };
             tokens.push(token);
@@ -333,7 +376,7 @@ impl<'a> Lexer<'a> {
         if self.last_underscore {
             return Err(self.error(start, "number cannot end with underscore"));
         }
-        if self.consume_pred(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if self.consume_pred(is_ident_continue) {
             return Err(self.error(start, "invalid number format"));
         }
         Ok(Token::new(
@@ -395,10 +438,10 @@ impl<'a> Lexer<'a> {
     }
     fn get_identifier_token(&mut self) -> Result<Token, LangError> {
         let start = self.index;
-        if !self.consume_pred(|c| c.is_ascii_alphabetic() || c == '_') {
+        if !self.consume_pred(is_ident_start) {
             return Err(self.error(start, "expected identifier"));
         }
-        while self.consume_pred(|c| c.is_ascii_alphanumeric() || c == '_') {}
+        while self.consume_pred(is_ident_continue) {}
         let text: String = self.source.code[start..self.index].iter().collect();
         let typ = match text.as_str() {
             "fn" => TokenType::Func,
@@ -475,80 +518,16 @@ impl<'a> Lexer<'a> {
     }
     fn get_complex_operator_token(&mut self) -> Result<Token, LangError> {
         let start = self.index;
-        if self.match_str("??=") {
-            return Ok(self.tok(start, TokenType::DoubleQuestionAssign, 3));
-        }
-        if self.match_str("<<=") {
-            return Ok(self.tok(start, TokenType::LeftShiftAssign, 3));
-        }
-        if self.match_str(">>=") {
-            return Ok(self.tok(start, TokenType::RightShiftAssign, 3));
-        }
-        if self.match_str("//=") {
-            return Ok(self.tok(start, TokenType::DoubleSlashAssign, 3));
-        }
-        if self.match_str("**=") {
-            return Ok(self.tok(start, TokenType::DoubleAsteriskAssign, 3));
-        }
-        if self.match_str("??") {
-            return Ok(self.tok(start, TokenType::DoubleQuestion, 2));
-        }
-        if self.match_str("?.") {
-            return Ok(self.tok(start, TokenType::QuestionDot, 2));
+        // Ordered longest-first so `<<=` wins over `<<` and `+=` over `+`.
+        // `..` is handled separately below: it uses `peek_at`, not `match_str`,
+        // and must keep that end-of-input behaviour.
+        for (text, typ, length) in MULTI_CHAR_OPERATORS {
+            if self.match_str(text) {
+                return Ok(self.tok(start, *typ, *length));
+            }
         }
         if self.peek_is('.') && self.peek_at(1) == '.' {
             return Ok(self.tok(start, TokenType::DotDot, 2));
-        }
-        if self.match_str("+=") {
-            return Ok(self.tok(start, TokenType::PlusAssign, 2));
-        }
-        if self.match_str("-=") {
-            return Ok(self.tok(start, TokenType::MinusAssign, 2));
-        }
-        if self.match_str("*=") {
-            return Ok(self.tok(start, TokenType::AsteriskAssign, 2));
-        }
-        if self.match_str("/=") {
-            return Ok(self.tok(start, TokenType::SlashAssign, 2));
-        }
-        if self.match_str("%=") {
-            return Ok(self.tok(start, TokenType::PercentAssign, 2));
-        }
-        if self.match_str("&=") {
-            return Ok(self.tok(start, TokenType::BAndAssign, 2));
-        }
-        if self.match_str("|=") {
-            return Ok(self.tok(start, TokenType::BOrAssign, 2));
-        }
-        if self.match_str("^=") {
-            return Ok(self.tok(start, TokenType::BXorAssign, 2));
-        }
-        if self.match_str("==") {
-            return Ok(self.tok(start, TokenType::Equal, 2));
-        }
-        if self.match_str("!=") {
-            return Ok(self.tok(start, TokenType::Unequal, 2));
-        }
-        if self.match_str("<=") {
-            return Ok(self.tok(start, TokenType::LessOrEqual, 2));
-        }
-        if self.match_str(">=") {
-            return Ok(self.tok(start, TokenType::GreaterOrEqual, 2));
-        }
-        if self.match_str("<<") {
-            return Ok(self.tok(start, TokenType::LeftShift, 2));
-        }
-        if self.match_str(">>") {
-            return Ok(self.tok(start, TokenType::RightShift, 2));
-        }
-        if self.match_str("//") {
-            return Ok(self.tok(start, TokenType::DoubleSlash, 2));
-        }
-        if self.match_str("**") {
-            return Ok(self.tok(start, TokenType::DoubleAsterisk, 2));
-        }
-        if self.match_str("->") {
-            return Ok(self.tok(start, TokenType::Return, 2));
         }
         match self.peek() {
             '=' => Ok(self.tok(start, TokenType::Assign, 1)),

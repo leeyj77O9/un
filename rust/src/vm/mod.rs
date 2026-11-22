@@ -156,43 +156,23 @@ impl VM {
         program.validate()?;
         world::set_proto_executor(Some(Rc::new(
             |program: &Rc<Program>, ctx: &Context, proto_index: usize| {
-                let plan = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    plan_for(program)
-                })) {
+                let plan = match catch_internal(|| plan_for(program)) {
                     Ok(plan) => plan,
-                    Err(payload) => {
-                        let message = panic_payload_message(&payload);
-                        return function::Flow::Panic(obj::panic(
-                            "panic",
-                            format!("internal error (please report): {message}"),
-                        ));
+                    Err(message) => {
+                        return function::Flow::Panic(obj::panic("panic", message));
                     }
                 };
                 execute_proto(program, ctx, proto_index, plan)
             },
         )));
-        let plan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plan_for(&program)))
-            .map_err(|payload| {
-                let message = panic_payload_message(&payload);
-                format!("internal error (please report): {message}")
-            })?;
+        let plan = catch_internal(|| plan_for(&program))?;
         let root = entry;
-        let reg_count = plan.protos[root].reg_count;
-        Ok(Self {
-            ctx: context::new(world::global_scope(), source, context::new_frames()),
-            ip: 0,
+        Ok(Self::init(
+            context::new(world::global_scope(), source, context::new_frames()),
             program,
-            proto_idx: root,
+            root,
             plan,
-            regs: vec![world::none_obj(); reg_count],
-            args: Vec::new(),
-            tries: Vec::new(),
-            slot_scope: None,
-            pending: None,
-            pending_finally_error: None,
-            pending_return: None,
-            pending_propagate: None,
-        })
+        ))
     }
 
     fn new_proto(
@@ -201,6 +181,10 @@ impl VM {
         proto_idx: usize,
         ctx: Context,
     ) -> Self {
+        Self::init(ctx, program, proto_idx, plan)
+    }
+
+    fn init(ctx: Context, program: Rc<Program>, proto_idx: usize, plan: Rc<Plan>) -> Self {
         let reg_count = plan.protos[proto_idx].reg_count;
         Self {
             ctx,
@@ -263,18 +247,9 @@ impl VM {
                 return Outcome::Value(value);
             };
             let depth_before = self.plan().depths[self.ip] as usize;
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.step(&ins, depth_before)
-            }));
-            let result = match result {
+            let result = match catch_internal(|| self.step(&ins, depth_before)) {
                 Ok(result) => result,
-                Err(payload) => {
-                    let message = panic_payload_message(&payload);
-                    Err(Outcome::Panic(obj::panic(
-                        "panic",
-                        format!("internal error (please report): {message}"),
-                    )))
-                }
+                Err(message) => Err(Outcome::Panic(obj::panic("panic", message))),
             };
             match result {
                 Ok(advance) => {
@@ -308,28 +283,9 @@ impl VM {
         _source: Rc<Source>,
         ctx: Context,
     ) -> Result<Self, String> {
-        let plan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plan_for(&program)))
-            .map_err(|payload| {
-                let message = panic_payload_message(&payload);
-                format!("internal error (please report): {message}")
-            })?;
+        let plan = catch_internal(|| plan_for(&program))?;
         let root = program.root;
-        let reg_count = plan.protos[root].reg_count;
-        Ok(Self {
-            ctx,
-            ip: 0,
-            program,
-            proto_idx: root,
-            plan,
-            regs: vec![world::none_obj(); reg_count],
-            args: Vec::new(),
-            tries: Vec::new(),
-            slot_scope: None,
-            pending: None,
-            pending_finally_error: None,
-            pending_return: None,
-            pending_propagate: None,
-        })
+        Ok(Self::init(ctx, program, root, plan))
     }
 
     fn handle(&mut self, outcome: &Outcome) -> bool {
@@ -359,7 +315,7 @@ impl VM {
                     context::set_scope(&self.ctx, catch_scope.clone());
                     self.slot_scope = None;
                     if let Some(slot) = entry.var_slot {
-                        let name = self.plan_name(slot);
+                        let name = self.name(slot);
                         let error = obj::err_with_header(&e.header, &e.message);
                         scope::set(&catch_scope, &name, error);
                     }
@@ -410,10 +366,6 @@ impl VM {
         }
     }
 
-    fn plan_name(&self, slot: usize) -> String {
-        self.program.name(self.proto(), slot).to_string()
-    }
-
     fn s(&self, k: usize) -> usize {
         self.plan().scratch_base + k
     }
@@ -425,7 +377,7 @@ impl VM {
     }
 
     fn slice_bounds(&mut self, flags: u16) -> (Option<Obj>, Option<Obj>, Option<Obj>) {
-        let nb = slice_bounds_count(flags);
+        let nb = 1 + slice_bound_count(flags);
         let base = self.depth_of_current();
         let target = base - nb;
         let s_i = target + 1;
@@ -441,12 +393,6 @@ impl VM {
     fn depth_of_current(&self) -> usize {
         self.plan().depths[self.ip] as usize
     }
-}
-
-fn slice_bounds_count(flags: u16) -> usize {
-    1 + (flags & FLAG_SLICE_START != 0) as usize
-        + (flags & FLAG_SLICE_END != 0) as usize
-        + (flags & FLAG_SLICE_STEP != 0) as usize
 }
 
 impl VM {
@@ -469,7 +415,7 @@ impl VM {
                 let name = self.name(ins.d as usize);
                 let scope = context::scope(&self.ctx);
                 if let Some(v) = scope::get_opt(&scope, &name) {
-                    self.regs[src(depth)] = if function::is_field_ref(&v) { function::field_get(&v) } else { v };
+                    self.regs[src(depth)] = deref_field(v);
                 } else if let Some(v) = world::try_get_global(&name) {
                     self.regs[src(depth)] = v;
                 } else if world::get_class(&name).is_some() {
@@ -480,11 +426,7 @@ impl VM {
             }
             Op::StoreName => {
                 let scope_set = ins.flags & FLAG_SCOPE_SET != 0;
-                let value = if scope_set {
-                    self.regs[src(depth - 1)].clone()
-                } else {
-                    self.regs[src(depth - 1)].clone()
-                };
+                let value = self.regs[src(depth - 1)].clone();
                 let name = self.name(ins.d as usize);
                 let local_only = ins.flags & FLAG_LOCAL_ONLY != 0;
                 let scope = context::scope(&self.ctx);
@@ -512,14 +454,14 @@ impl VM {
                     d.slots.get(slot).cloned().filter(|v| !world::is_uninitialized(v))
                 };
                 if let Some(v) = slot_opt {
-                    self.regs[src(depth)] = if function::is_field_ref(&v) { function::field_get(&v) } else { v };
+                    self.regs[src(depth)] = deref_field(v);
                     return Ok(true);
                 }
                 let scope = context::scope(&self.ctx);
                 let name_idx = self.proto().locals.get(slot).copied().unwrap_or(0);
                 let name = self.name(name_idx);
                 if let Some(v) = scope::get_opt(&scope, &name) {
-                    self.regs[src(depth)] = if function::is_field_ref(&v) { function::field_get(&v) } else { v };
+                    self.regs[src(depth)] = deref_field(v);
                     return Ok(true);
                 }
                 if let Some(v) = world::try_get_global(&name) {
@@ -533,12 +475,7 @@ impl VM {
                 return Err(self.error(format!("undefined variable '{name}'"), span));
             }
             Op::StoreLocal => {
-                let scope_set = ins.flags & FLAG_SCOPE_SET != 0;
-                let value = if scope_set {
-                    self.regs[src(depth - 1)].clone()
-                } else {
-                    self.regs[src(depth - 1)].clone()
-                };
+                let value = self.regs[src(depth - 1)].clone();
                 let slot = ins.d as usize;
                 let scope = context::scope(&self.ctx);
                 if let Some(current) = scope::get_slot(&scope, slot) {
@@ -595,7 +532,7 @@ impl VM {
                 let n = ins.d as usize;
                 let mut names = Vec::with_capacity(n);
                 for i in 0..n {
-                    names.push(self.program.name(self.proto(), first + i).to_string());
+                    names.push(self.name(first + i));
                 }
                 let values: Vec<Obj> = (src(depth - n)..src(depth)).map(|i| self.regs[i].clone()).collect();
                 self.args.pop();
@@ -705,9 +642,7 @@ impl VM {
                 self.regs[ins.a as usize] = b;
             }
             Op::FusedIntMulAdd => {
-                let dst = ((ins.d >> 20) & 0x3FF) as usize;
-                let x = ((ins.d >> 10) & 0x3FF) as usize;
-                let y = (ins.d & 0x3FF) as usize;
+                let (dst, x, y) = unpack_fused_muladd(ins.d);
                 let scope = context::scope(&self.ctx);
                 let owner = self.cur_slot_scope();
 
@@ -719,7 +654,7 @@ impl VM {
                     let name_idx = self.proto().locals.get(slot).copied().unwrap_or(0);
                     let name = self.name(name_idx);
                     if let Some(v) = scope::get_opt(&scope, &name) {
-                        if function::is_field_ref(&v) { function::field_get(&v) } else { v }
+                        deref_field(v)
                     } else if let Some(v) = world::try_get_global(&name) {
                         v
                     } else if world::get_class(&name).is_some() {
@@ -730,15 +665,15 @@ impl VM {
                 };
 
                 let a = match a {
-                    Some(v) => if function::is_field_ref(&v) { function::field_get(&v) } else { v },
+                    Some(v) => deref_field(v),
                     None => load(dst),
                 };
                 let b = match b {
-                    Some(v) => if function::is_field_ref(&v) { function::field_get(&v) } else { v },
+                    Some(v) => deref_field(v),
                     None => load(x),
                 };
                 let c = match c {
-                    Some(v) => if function::is_field_ref(&v) { function::field_get(&v) } else { v },
+                    Some(v) => deref_field(v),
                     None => load(y),
                 };
 
@@ -1873,6 +1808,24 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send + 'static)) -> Stri
         message.clone()
     } else {
         "unknown panic".to_string()
+    }
+}
+
+/// Run a panic-prone closure, mapping any panic to the engine's internal-error text.
+fn catch_internal<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .map_err(|payload| internal_error_message(&payload))
+}
+
+fn internal_error_message(payload: &(dyn std::any::Any + Send + 'static)) -> String {
+    format!("internal error (please report): {}", panic_payload_message(payload))
+}
+
+fn deref_field(v: Obj) -> Obj {
+    if function::is_field_ref(&v) {
+        function::field_get(&v)
+    } else {
+        v
     }
 }
 
