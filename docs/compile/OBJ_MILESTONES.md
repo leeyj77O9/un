@@ -194,7 +194,7 @@ plain exe 회귀를 잡을 수 있다.
   (`libnrt.a`)가 VM 브릿지 43개(`unrt_*`)와 `un_math_*`를 전부 독립 구현한다.
   Cranelift가 만든 `.obj` + `libnrt.a`만 링크하고, 결과 exe는 약 5 MB(VM 링크 시
   약 17 MB), `un run`과 stdout/stderr/exit code가 바이트 단위로 같다.
-- 이식 범위: Int/Float/Bool/Str, `list[int|float]`, `dict[str,int|float]`,
+- 이식 범위: Int/Float/Bool/Str, `list[int|float]`, `dict[str,int|float]`, `dict[int,int]`,
   클래스(필드·메서드·`__init__`), `try`/`catch`/`finally`/`throw`, pending error,
   그리고 `io`/`math`/`iter`/`os`/`sys`/`fs`/`codes`/`re`/`time`/`types`/`random`
   모듈 멤버. `re`는 VM의 순수 Rust regex 엔진(`native/regex/`)을 그대로 복사해

@@ -1,0 +1,23 @@
+use io
+use test.assert as assert
+
+# dict[int, int] is a core type: literal, parameter, return, read, write and len.
+fn make(n: int) -> dict[int, int]
+    -> {0: n, 1: n + 1, 2: n + 2}
+
+fn lookup(d: dict[int, int], key: int) -> int
+    -> d[key]
+
+fn sum_pairs(n: int) -> int
+    d: dict[int, int] = {0: 0, 1: 1}
+    for i in 0..n
+        d[i * 2] = i
+    total = 0
+    for i in 0..n
+        total += d[i * 2]
+    -> total + d[0] + len(d) * 100
+
+assert.assert_eq(make(7)[2], 9, "dict[int,int] literal and read")
+assert.assert_eq(lookup(make(10), 1), 11, "dict[int,int] parameter")
+assert.assert_eq(sum_pairs(8), 28 + 0 + 900, "dict[int,int] writes, reads and len")
+io.write("dict[int,int] OK")

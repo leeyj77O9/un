@@ -167,5 +167,5 @@
   호출해 같은 프로세스의 다른 테스트가 방금 등록한 entry를 지울 수 있는
   순서 경쟁이 있다 (CI에서도 scheduling에 따라 재현 가능).
 - 결정: 테스트를 수정하지 않는다 (AGENTS.md: 1570 passed/0 crashed 기준이며,
-  이 루트는 cargo test 결과 227 passed). 다음 유지보수 세션에서
+  이 루트는 cargo test 결과 230 passed). 다음 유지보수 세션에서
   `--test-threads=1` 또는 테스트별 program_id 격리로 고정하는 것을 권장한다.

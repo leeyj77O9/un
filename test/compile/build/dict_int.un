@@ -1,0 +1,17 @@
+use io
+
+fn dict_work(n: int) -> int
+    d: dict[int, int] = {0: 0, 1: 1}
+    for i in 0..n
+        d[i * 2] = i
+    total = 0
+    for i in 0..n
+        total += d[i * 2]
+    -> total + d[0] + len(d) * 100
+
+fn main() -> int
+    r = dict_work(8)
+    io.write(r)
+    -> 0
+
+main()
