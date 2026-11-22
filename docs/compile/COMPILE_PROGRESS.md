@@ -14,10 +14,65 @@
 | 3 | `tir` (Typed IR + 검증기) | **완료** | core 판정 통과 함수 5개(add/square/mixed/id_bool/fib) native 실행 |
 | 4 | `natcode` (Cranelift 코드젠) | **완료** | `un native` 바이너리 fib(24) native 실행, bail 경로 interpreter와 출력 동일 |
 | 5 | 런타임 통합 (jit_cache 등록, VM 경로) | **완료** | TIR entries는 `UV_JIT` 우회 등록(`get_tir_entry`), `try_call_jit`에서 최우선 조회 |
-| 6 | 고급 기능 (class/collection/union/any) | **완료** — union/any는 설계대로 interpreter fallback (Vm 모드) | core 부분집합: Int/Float/Bool/Str/None/Class + `list[int]`/`list[float]`/`list[class]` + `dict[str, int]`/`dict[str, float]`; class는 plain `un build`에서 native (`<classes_init>` 등록 + VM 브릿지); union/any는 bail로 안전 동작 |
+| 6 | 고급 기능 (class/collection/union/any) | **완료** — union/any는 설계대로 interpreter fallback (Vm 모드) | core 부분집합: Int/Float/Bool/Str/None/Class + `list[int]`/`list[float]`/`list[class]` + `dict[str, int]`/`dict[str, float]`/`dict[int, int]`; class는 plain `un build`에서 native (TIR 메타데이터 등록 + `libnrt.a`, `<classes_init>`/VM 브릿지 아님); union/any는 bail로 안전 동작 |
 | 7 | 테스트/벤치마크/문서 | **완료** | `scripts/compile-check.ps1`, `compile-bench.ps1`, 문서 |
 
 ## 완료 항목 (이번 세션)
+
+### no-VM exe 성능 개선 (2026-11-23)
+- trace frame을 소유 `String` 대신 정적 이름 포인터로 저장해 호출당 할당을 제거했다
+  (`nrt/trace.rs`). `fib24` 5.89ms → 2.66ms, `call200000` 8.17ms → 3.58ms(Node 추월).
+- 클래스 필드/메서드 조회를 raw 바이트 비교로 바꾸고,`__init__`/메서드 디스크립터를
+  뮤텍스 밖으로 복사해 재진입 교착을 피했다(`nrt/class.rs`). `class1000` 0.612ms → 0.403ms.
+- 소정수(0..16384) boxed 객체를 지연 캐시하고 리스트 반복값은 한 객체를 공유한다
+  (`nrt/obj.rs`, `nrt/list.rs`). `iter10000` 0.743ms → 0.314ms, `dict5000` 1.02ms → 0.62ms.
+- 정수 dict 해시를 SipHash에서 splitmix64로 경량화했다(`nrt/dict.rs`).
+- `sieve30000` 2.41ms → 0.43ms, `mergesort1000` 1.57ms → 0.67ms, `qsort500` 0.80ms → 0.56ms.
+- `BENCHMARK.md`는 `scripts/bench.ps1 -Group all -Report`로 갱신했다.
+
+### 검수 수정 (2026-11-23)
+- 다중 인스턴스 제네릭이 proto_span을 공유해 JIT 캐시에서 덮어써지던 문제를 수정했다.
+  공유 proto는 JIT 등록을 건너뛰고 VM이 해석한다 (`natcode.rs`).
+- 파서가 `d[k](1)`을 명시적 타입 인자로 오인하던 회귀를 수정했다. generic 함수 이름만
+  타입 인자 문법으로 해석한다 (`parser.rs`).
+- NRT dict 해시를 `eq_obj` 동치에 맞게 정규화하고, 교차 타입 키는 전체 탐색으로 폴백한다
+  (`nrt/src/dict.rs`).
+- 제네릭 본문에서만 호출되는 제네릭 함수도 인스턴스를 생성하도록 확장했다 (`tir.rs`).
+  mangled 이름에 `__mono_` 접두어를 붙여 사용자 함수와 충돌하지 않게 했다.
+- `[T: numeric]` 제약이 union 타입을 거짓 거부하지 않도록 수정했다 (`typeck.rs`).
+- JIT `BuildDict`가 preserve 목록에 누락돼 dict 표시가 지워지던 회귀를 수정했다 (`jit_bc.rs`).
+- CI에 `compile-check`/`exe-diff`/`edge-fuzz` 스텝을 추가하고 README 한/영에 제네릭을 반영했다.
+
+### 제네릭 Phase 2–4 (2026-11-22)
+- **Phase 2 — 모노모피제이션**: `expand_generics`가 호출부에서 추론된 타입 인자별로
+  `FnCheck`를 복제·치환해 `identity__int` 같은 구체 인스턴스를 만든다. `@dep:` 마커로
+  재귀/교차 제네릭 호출도 인스턴스에 연결한다. `un native`와 plain `un build` 모두
+  제네릭 함수를 네이티브 실행한다 (`test/compile/build/generics.un`).
+- **Phase 3 — 제네릭 클래스**: `class Box[T]`의 필드·생성자·메서드에서 타입 변수를 사용할 수
+  있다. 클래스 제네릭을 포함한 프로그램은 TIR 네이티브 경로에서 제외되고 VM/`--embed`로
+  실행된다 (`test/compile/generic_class.un`).
+- **Phase 4 — 제약**: `[T: numeric]` / `[T: int]` 등의 bound를 파싱·검증한다. 위반 시
+  `type argument ... does not satisfy bound` 오류 (`test/compile/errors/generic_bound.un`).
+- Vm 모드의 정상 폴백(Str/heap/native-call)에서 panic 메시지가 새어나가지 않도록
+  `native_compile`이 해당 함수를 미리 제외한다.
+
+### 제네릭 Phase 1 (2026-11-22)
+- `Ty::Generic { id, name }` 추가, `fn name[T, U](...)` 문법 파싱. 타입 파라미터 노드는
+  함수 노드의 마지막 자식으로 저장해 기존 위치 기반 reader를 유지했다.
+- 호출부 추론: `apply_sig`가 인자 타입과 시그니처를 unify하고 반환 타입에 치환한다.
+  충돌/미해결은 `any`로 widen해 동적 폴백. `name[int](x)` 명시적 타입 인자도 지원.
+- VM은 typeck을 쓰지 않으므로 소거 패스 불필요. `un native`는 TIR이 제네릭을
+  non-core로 판정해 인터프리터로 폴백(Phase 2에서 모노모피제이션 예정).
+- 추가 테스트: `test/compile/generics.un`, `test/compile/errors/generic_arg_type.un`.
+
+### dict 성능/지원 확장 (2026-11-22)
+- JIT 바이트코드 번역기가 레지스터 재사용 시 객체 타입 표시를 남겨 IntDict 루프를
+  거절하던 버그를 수정했다 (`clear_specialized`). `dict5000` JIT 3.74ms → 0.26ms.
+- Compile Mode core 타입에 `dict[int, int]`를 추가했다 (TIR 하향·검증·natcode 박싱,
+  `unrt_*` C ABI는 타입 비의존적이라 무변경). `test/compile/dict_int.un`,
+  `test/compile/build/dict_int.un` 추가.
+- NRT dict를 선형 탐색에서 값 기반 해시 인덱스로 교체하고 `time.monotonic()` 해상도를
+  마이크로초로 높였다. no-VM exe `dict5000` 74.9ms → 1.10ms, `un native` 19.7ms → 3.71ms.
 
 ### typeck 수정 (인터프리터 무영향, `un native`/`un check` 경로만 변경)
 - Pass-1 선언 수집이 **함수 본문의 지역 변수까지 모듈 전역으로 등록**하던 버그를
@@ -56,7 +111,7 @@
 - `scripts/test.ps1`: Positive 48/1570, Negative 51 — **baseline 유지**.
 - `scripts/differential.ps1`: 99 files 0 differences — **green**.
 - `scripts/unbc-roundtrip.ps1 -IncludeNegative`: 48 files identical, negative 42 — **green**.
-- `cargo test --release`: 227 passed (1회 `a_cleared_jit_program_runs_identically`가
+- `cargo test --release`: 230 passed (nrt 3 + lib 219 + playground 8; 1회 `a_cleared_jit_program_runs_identically`가
   flake로 1회 실패했으나 재실행 green; 기존 테스트 순서 경쟁, 본 변경과 무관 — F-022 참조).
 - `scripts/compile-check.ps1`: 18 passed (fixture 6 + untyped-source-rejected + errors 11).
 - `scripts/exe-diff.ps1`: **신규** — `test/compile/*.un`을 `un build --embed`로 링크한 exe가
@@ -75,10 +130,13 @@
 
 ## 완료 (v2)
 
-1. class/collection native 지원 — Int/Float 코어 + 클래스 생성·메서드·필드·상속 (plain `un build`, `<classes_init>` 임베드 등록) + `dict[str, int]`/`dict[str, float]` + `list[int]`/`list[float]` + `list[class]`. union/`any`의 narrowing 결과는 Vm 모드에서 interpreter fallback이 의도된 설계.
-2. TIR 인트린직 — class intrinsic (`unrt_*` VM 브릿지), Float math intrinsics, `int(x)`/`float(x)` 언어 cast 인라인.
+1. class/collection native 지원 — Int/Float 코어 + 클래스 생성·메서드·필드·상속 (plain `un build`, TIR 메타데이터로 네이티브 등록 + `libnrt.a`) + `dict[str, int]`/`dict[str, float]` + `list[int]`/`list[float]` + `list[class]`. union/`any`의 narrowing 결과는 Vm 모드에서 interpreter fallback이 의도된 설계.
+2. TIR 인트린직 — class intrinsic (`unrt_*` NRT 런타임 함수; 과거 VM 브릿지는 plain 경로에서 제거), Float math intrinsics, `int(x)`/`float(x)` 언어 cast 인라인.
 3. 실패 테스트 프레임워크 — `test/compile/errors/` + manifest (11 fixtures), `compile-check.ps1`가 `un check`/`un native` 양쪽 exit 1 + 부분문자열 검사.
-4. 벤치마크 compile-mode 열 — `scripts/bench.ps1 -Group native` (fib(24) 정수; un native ≈ 167ms vs un run ≈ 200ms vs unjit ≈ 230ms).
+4. 벤치마크 compile-mode 열 — `scripts/bench.ps1 -Group native` (fib(24) 정수;
+   현재 기준 un native ≈ 171 ms, un run(VM) ≈ 191 ms, un jit ≈ 1.9 ms,
+   standalone exe ≈ 6 ms). 이전 "unjit ≈ 230 ms" 수치는 JIT 퇴화기
+   (AUDIT-001)의 것으로 현재는 유효하지 않다.
 5. exhaustiveness 검사 — bool/none 은 해당 arm(또는 wildcard) 필수, 그 외 타입은 `_` arm 필수 (F-014 해결). 픽스처 `test/compile/matches.un`.
 
 ## 다음 작업 (v3 후보)
@@ -90,7 +148,7 @@
 
 ## 완료 (v1.5)
 
-- class 네이티브 지원 (plain `un build`, `<classes_init>` 실행 등록·브릿지).
+- class 네이티브 지원 (plain `un build`, TIR 메타데이터 등록 + `libnrt.a` 독립 런타임).
 - `int / int`·`//` 0 나누기·`int % 0` — 인터프리터와 바이트 동일한 catch 동작.
 - Int/Float math intrinsic + `int(x)`/`float(x)` cast를 TIR에 인라인.
 - match exhaustiveness 분석 — bool/none 은 해당 arm만, 그 외 타입은 `_` wildcard arm 필수.

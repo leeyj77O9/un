@@ -56,6 +56,9 @@ pub enum NodeKind {
     IfCase,
     Branch,
     Tagged,
+    /// Type parameter list `[T, U]` on a function declaration. Always appended
+    /// as the last child so positional readers (`children[0..2]`) stay valid.
+    TypeParams,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Const {

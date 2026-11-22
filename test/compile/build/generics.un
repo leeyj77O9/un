@@ -1,0 +1,22 @@
+use io
+
+# Plain no-VM build: generic functions are monomorphized into concrete TIR
+# instances (`identity__int`, `twice__int`, `countdown__int`).
+
+fn identity[T](x: T) -> T
+    -> x
+
+fn twice[T](x: T) -> T
+    -> identity(identity(x))
+
+fn countdown[T](n: int, x: T) -> T
+    if n == 0
+        -> x
+    -> countdown(n - 1, identity(x))
+
+fn main() -> int
+    io.write(twice(21) + identity(1))
+    io.write(countdown(5, 40))
+    -> 0
+
+main()

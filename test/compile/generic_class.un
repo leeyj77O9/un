@@ -1,0 +1,20 @@
+use io
+use test.assert as assert
+
+# Generic classes: type parameters in fields, constructor and methods.
+class Box[T]
+    value: T
+
+    fn __init__(value: T)
+        self.value = value
+
+    fn get() -> T
+        -> self.value
+
+fn main() -> int
+    b = Box(42)
+    assert.assert_eq(b.value, 42, "generic class field")
+    assert.assert_eq(b.get(), 42, "generic class method")
+    io.write("generic class OK")
+
+main()

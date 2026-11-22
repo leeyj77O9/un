@@ -52,8 +52,10 @@ Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(�
 
 ### 타입 시스템 (실험적)
 
-- 선택적 타입 어노테이션: `x: int`, `a: list[int]`, `dict[str, int]`, `int | str`
+- 선택적 타입 어노테이션: `x: int`, `a: list[int]`, `dict[str, int]`, `dict[int, int]`, `int | str`
   파라미터와 반환타입 (`fn add(a: int, b: int) -> int`)
+- **제네릭**: `fn identity[T](x: T) -> T`, `class Box[T]` — 호출부에서 타입을 추론하며
+  명시적 타입 인자 `identity[int](42)`도 쓸 수 있다. `[T: numeric]` 같은 제약을 지정할 수 있다
 - 어노테이션은 현재 가독성과 점진적 검사를 위한 용도이며, 엄격한 런타임 검사는 강화 중이다
 
 ### 동시성 (안정)
@@ -188,6 +190,26 @@ enum Color
 
 io.write(Color.RED, Color.GREEN, Color.BLUE)   # 0 1 2
 ```
+
+필드를 가진 variant도 선언할 수 있다. 러스트의 enum과 비슷하지만 들여쓰기 기반이고
+`이름: 타입` 형태로 한 개의 페이로드를 선언한다. 타입 파라미터(`[T, U]`)도 쓸 수 있다.
+
+```un
+enum Test[T, U]
+    a: int
+    b: T
+    c: tuple[int, U]
+
+x = Test.a(42)
+io.write(x)             # Test.a(42)
+io.write(x.value)       # 42
+```
+
+- `Test.a(42)`처럼 enum 이름 아래 variant를 호출해 생성하고, `.value`로 값을 읽는다.
+- enum 이름·variant·페이로드가 모두 같으면 `==`가 참이며 dict 키로도 쓸 수 있다.
+- `match x { Test.a(v) -> v, Test.b(v) -> v, _ -> 0 }`로 페이로드를 분해할 수 있다.
+- 필드 타입은 `un check`에서 정적으로 검사하고, `un run`에서는 타입을 지운다.
+- 데이터 variant가 있는 enum은 Compile Mode의 VM 경로로 실행된다(no-VM `un build`는 미지원).
 
 범위 연산자 `..`는 반개구간이고 값을 즉시 만들지 않는다. 우선순위는 덧셈과 비교
 사이에 있어 `1 + 2..10`은 `(1 + 2)..10`이다. 경계는 정수 또는 정수값을 가진

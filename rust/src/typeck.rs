@@ -23,6 +23,9 @@ pub enum Ty {
     Tuple(Rc<[Ty]>),
     Union(Rc<[Ty]>),
     Any,
+    /// A function type parameter. `id` is unique per declaration; two
+    /// declarations both naming their parameter `T` never compare equal.
+    Generic { id: u32, name: Rc<str> },
     Class(Rc<str>),
     Func {
         params: Rc<[Ty]>,
@@ -94,6 +97,7 @@ impl Ty {
                 .collect::<Vec<_>>()
                 .join(" | "),
             Ty::Any => "any".to_string(),
+            Ty::Generic { name, .. } => name.to_string(),
             Ty::Class(name) => name.to_string(),
             Ty::Func { params, ret, .. } => {
                 let inner = params
@@ -107,7 +111,7 @@ impl Ty {
         }
     }
     fn is_numeric(&self) -> bool {
-        matches!(self, Ty::Int | Ty::Float | Ty::Any)
+        matches!(self, Ty::Int | Ty::Float | Ty::Any | Ty::Generic { .. })
     }
     fn is_integer_ish(&self) -> bool {
         matches!(self, Ty::Int | Ty::Any)
@@ -150,6 +154,13 @@ pub struct FnCheck {
     pub local_types: HashMap<String, Ty>,
 }
 
+/// Concrete type arguments inferred at one call site of a generic function.
+#[derive(Clone, Debug)]
+pub struct CallInstance {
+    pub callee: String,
+    pub type_args: Vec<Ty>,
+}
+
 #[derive(Default)]
 pub struct CheckedProgram {
     pub sigs: HashMap<String, FnSig>,
@@ -157,10 +168,25 @@ pub struct CheckedProgram {
     pub aliases: HashMap<String, Ty>,
     pub functions: Vec<FnCheck>,
     pub fn_by_span: HashMap<usize, usize>,
+    /// Type parameters per generic function, in declaration order.
+    pub fn_generics: HashMap<String, Vec<(String, u32)>>,
+    /// Type-variable id -> bound name (`numeric`, `int`, `str`, class name, ...).
+    pub generic_bounds: HashMap<u32, String>,
+    /// Inferred instantiations, keyed by the call node's source start offset.
+    pub call_instances: HashMap<usize, CallInstance>,
+}
+
+/// Static information for an `enum Name[T]` with data-carrying variants.
+#[derive(Clone, Default)]
+struct EnumInfo {
+    generics: Vec<(String, u32)>,
+    variants: HashMap<String, Ty>,
 }
 
 #[derive(Clone, Default)]
 pub struct ClassInfo {
+    /// Class type parameters, in declaration order.
+    pub generics: Vec<(String, u32)>,
     pub fields: HashMap<String, Ty>,
     pub methods: HashMap<String, Ty>,
     pub bases: Vec<String>,
@@ -194,9 +220,17 @@ pub struct Checker<'a> {
     globals: HashMap<String, Ty>,
     import_names: Vec<String>,
     enums: Vec<String>,
+    enum_infos: HashMap<String, EnumInfo>,
     current_ret: Option<Ty>,
     fn_sigs: HashMap<String, FnSig>,
     sigs_by_span: HashMap<usize, FnSig>,
+    /// Type parameters of each declared function, keyed by function name.
+    fn_generics: HashMap<String, Vec<(String, u32)>>,
+    generic_bounds: HashMap<u32, String>,
+    /// Type parameters currently in scope while parsing annotations/checking a body.
+    active_generics: HashMap<String, u32>,
+    next_generic_id: u32,
+    call_instances: HashMap<usize, CallInstance>,
     silence: u32,
     checked_functions: Vec<FnCheck>,
     checked_by_span: HashMap<usize, usize>,
@@ -215,9 +249,15 @@ impl<'a> Checker<'a> {
             globals: HashMap::new(),
             import_names: Vec::new(),
             enums: Vec::new(),
+            enum_infos: HashMap::new(),
             current_ret: None,
             fn_sigs: HashMap::new(),
             sigs_by_span: HashMap::new(),
+            fn_generics: HashMap::new(),
+            generic_bounds: HashMap::new(),
+            active_generics: HashMap::new(),
+            next_generic_id: 0,
+            call_instances: HashMap::new(),
             silence: 0,
             checked_functions: Vec::new(),
             checked_by_span: HashMap::new(),
@@ -418,6 +458,9 @@ impl<'a> Checker<'a> {
                 }
             }
             _ => {
+                if let Some(&id) = self.active_generics.get(name) {
+                    return Ty::Generic { id, name: Rc::from(name) };
+                }
                 if let Some(alias) = self.aliases.get(name) {
                     return alias.clone();
                 }
@@ -606,13 +649,7 @@ impl<'a> Checker<'a> {
                 }
             }
             NodeKind::Class => self.collect_class(node),
-            NodeKind::Enum => {
-                if let Some(name) = first_identifier_text(node, self.source) {
-                    if !self.enums.iter().any(|n| n == &name) {
-                        self.enums.push(name);
-                    }
-                }
-            }
+            NodeKind::Enum => self.collect_enum(node),
             NodeKind::Use => self.collect_use(node),
             NodeKind::Assign | NodeKind::Typed => {
                 self.collect_module_var(node);
@@ -658,13 +695,7 @@ impl<'a> Checker<'a> {
                 }
             }
             NodeKind::Class => self.collect_class(node),
-            NodeKind::Enum => {
-                if let Some(name) = first_identifier_text(node, self.source) {
-                    if !self.enums.iter().any(|n| n == &name) {
-                        self.enums.push(name);
-                    }
-                }
-            }
+            NodeKind::Enum => self.collect_enum(node),
             NodeKind::Use => {}
             NodeKind::Assign | NodeKind::Typed => {}
             _ => {
@@ -685,10 +716,66 @@ impl<'a> Checker<'a> {
         });
     }
 
+    fn declare_generic_params(&mut self, tp: &Node) -> Vec<(String, u32)> {
+        let mut generics = Vec::new();
+        for name_node in &tp.children {
+            let pname = self.text_of(name_node);
+            let id = self.next_generic_id;
+            self.next_generic_id += 1;
+            if let Some(Const::Str(bound)) = &name_node.value {
+                if bound != &pname {
+                    self.generic_bounds.insert(id, bound.clone());
+                }
+            }
+            generics.push((pname.clone(), id));
+            self.active_generics.insert(pname, id);
+        }
+        generics
+    }
+
+    fn collect_enum(&mut self, node: &'a Node) {
+        let Some(name) = first_identifier_text(node, self.source) else {
+            return;
+        };
+        if !self.enums.iter().any(|n| n == &name) {
+            self.enums.push(name.clone());
+        }
+        if self.enum_infos.contains_key(&name) {
+            return;
+        }
+        let saved_generics = std::mem::replace(&mut self.active_generics, HashMap::new());
+        let generics = node
+            .children
+            .iter()
+            .find(|c| c.kind == NodeKind::TypeParams)
+            .map(|tp| self.declare_generic_params(tp))
+            .unwrap_or_default();
+        let mut variants = HashMap::new();
+        for child in &node.children {
+            if child.kind != NodeKind::Typed {
+                continue;
+            }
+            let variant = self.text_of(&child.children[0]);
+            let type_node = &child.children[1];
+            let ty = self.parse_type_text(
+                &self.text_of(type_node),
+                self.span(type_node),
+                0,
+            );
+            variants.insert(variant, ty);
+        }
+        self.active_generics = saved_generics;
+        self.enum_infos.insert(name, EnumInfo { generics, variants });
+    }
+
     fn collect_class(&mut self, node: &'a Node) {
         let name = first_identifier_text(node, self.source).unwrap_or_default();
         let class_tag = name.clone();
+        let saved_generics = std::mem::replace(&mut self.active_generics, HashMap::new());
         let mut info = ClassInfo::default();
+        if let Some(tp) = node.children.iter().find(|c| c.kind == NodeKind::TypeParams) {
+            info.generics = self.declare_generic_params(tp);
+        }
         if let Some(bases_node) = node.children.iter().find(|c| c.kind == NodeKind::ClassBases) {
             for base in &bases_node.children {
                 info.bases.push(self.text_of(base));
@@ -807,6 +894,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        self.active_generics = saved_generics;
     }
 
     fn collect_use(&mut self, node: &'a Node) {
@@ -1258,6 +1346,9 @@ impl<'a> Checker<'a> {
             aliases: std::mem::take(&mut self.aliases),
             functions,
             fn_by_span,
+            fn_generics: std::mem::take(&mut self.fn_generics),
+            generic_bounds: std::mem::take(&mut self.generic_bounds),
+            call_instances: std::mem::take(&mut self.call_instances),
         }
     }
 
@@ -1310,6 +1401,19 @@ impl<'a> Checker<'a> {
             receiver: if decl.is_method { 1 } else { 0 },
             variadic: false,
         });
+        let mut generics: HashMap<String, u32> = self
+            .fn_generics
+            .get(&decl.name)
+            .map(|params| params.iter().cloned().collect())
+            .unwrap_or_default();
+        if let Some(class_name) = &decl.class_name {
+            if let Some(info) = self.classes.get(class_name) {
+                for (name, id) in &info.generics {
+                    generics.insert(name.clone(), *id);
+                }
+            }
+        }
+        let saved_generics = std::mem::replace(&mut self.active_generics, generics);
         for (i, name) in sig.param_names.iter().enumerate() {
             env.declare(name, sig.params[i].clone());
         }
@@ -1345,6 +1449,7 @@ impl<'a> Checker<'a> {
             locals,
             local_types,
         });
+        self.active_generics = saved_generics;
     }
 
     fn check_class_defaults(&mut self, node: &'a Node, env: &mut Env) {
@@ -1530,6 +1635,35 @@ impl<'a> Checker<'a> {
                 variadic: false,
             };
         }
+        // Bring this declaration's type parameters into scope before parsing
+        // annotations, so `x: T` resolves to a type variable instead of an
+        // unknown type error.
+        let saved_generics = std::mem::replace(&mut self.active_generics, HashMap::new());
+        let mut type_params = Vec::new();
+        if let Some(tp) = node.children.iter().find(|c| c.kind == NodeKind::TypeParams) {
+            for name_node in &tp.children {
+                let name = self.text_of(name_node);
+                let id = self.next_generic_id;
+                self.next_generic_id += 1;
+                if let Some(Const::Str(bound)) = &name_node.value {
+                    if bound != &name {
+                        self.generic_bounds.insert(id, bound.clone());
+                    }
+                }
+                type_params.push((name.clone(), id));
+                self.active_generics.insert(name, id);
+            }
+        }
+        // Methods see their declaring class's type parameters.
+        if let Some(class_name) = &decl.class_name {
+            if let Some(info) = self.classes.get(class_name) {
+                for (name, id) in &info.generics {
+                    self.active_generics.insert(name.clone(), *id);
+                }
+            }
+        }
+        self.fn_generics.insert(decl.name.clone(), type_params);
+
         let mut params: Vec<Ty> = Vec::new();
         let mut param_names: Vec<String> = Vec::new();
         let mut required = 0usize;
@@ -1609,6 +1743,7 @@ impl<'a> Checker<'a> {
                 }
             }
         };
+        self.active_generics = saved_generics;
         FnSig {
             name: decl.name.clone(),
             params,
@@ -2441,6 +2576,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Ty::Int | Ty::Float | Ty::Str | Ty::Unknown | Ty::Any | Ty::Union(_) | Ty::Tuple(_)
+            | Ty::Generic { .. }
                 if !matches!(scrut_ty, Ty::Bool) => {
                 self.error_match_exhaustive(
                     node,
@@ -2479,6 +2615,31 @@ impl<'a> Checker<'a> {
                     let elem = elems.get(index).cloned().unwrap_or(Ty::Unknown);
                     self.check_pattern(item, &elem, env);
                 }
+            }
+            NodeKind::Call => {
+                let Some(callee) = pattern.children.first() else {
+                    self.error(pattern, "invalid enum variant pattern (expected Enum.variant(pattern))");
+                    return;
+                };
+                let Some((enum_name, variant, field, generics)) = self.enum_call_info(callee) else {
+                    self.error(pattern, "invalid enum variant pattern (expected Enum.variant(pattern))");
+                    return;
+                };
+                let Some(field) = field else {
+                    self.error(callee, format!("'{enum_name}' object has no attribute '{variant}'"));
+                    return;
+                };
+                let Some(args) = pattern.children.get(1) else {
+                    self.error(pattern, "enum variant pattern expects exactly one value");
+                    return;
+                };
+                if args.children.len() != 1 {
+                    self.error(pattern, "enum variant pattern expects exactly one value");
+                    return;
+                }
+                let subst: HashMap<u32, Ty> = generics.iter().map(|(_, id)| (*id, Ty::Any)).collect();
+                let binding_ty = substitute_generic(&field, &subst);
+                self.check_pattern(&args.children[0], &binding_ty, env);
             }
             _ => {
                 let lit = literal_ty(pattern).unwrap_or(Ty::Any);
@@ -2617,10 +2778,15 @@ impl<'a> Checker<'a> {
                 let scrut_ty = scrutinee.map(|s| self.check_expr(s, env)).unwrap_or(Ty::Any);
                 self.check_match_exhaustive(node, &scrut_ty);
                 let mut arm_types = Vec::new();
+                let base = env.clone();
                 for child in &node.children {
                     if child.kind == NodeKind::Case {
+                        let mut arm = base.fork();
+                        if let Some(pattern) = child.children.first() {
+                            self.check_pattern(pattern, &scrut_ty, &mut arm);
+                        }
                         if let Some(body) = child.children.get(1) {
-                            arm_types.push(self.check_expr(body, env));
+                            arm_types.push(self.check_expr(body, &mut arm));
                         }
                     }
                 }
@@ -2948,9 +3114,88 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Recognises `Enum.variant(...)`. The returned field type is `None` when
+    /// the enum exists but the named variant does not.
+    fn enum_call_info(&self, callee: &Node) -> Option<(String, String, Option<Ty>, Vec<(String, u32)>)> {
+        if callee.kind != NodeKind::Property {
+            return None;
+        }
+        let receiver = callee.children.first()?;
+        if receiver.kind != NodeKind::Identifier {
+            return None;
+        }
+        let enum_name = self.text_of(receiver);
+        let info = self.enum_infos.get(&enum_name)?;
+        let variant = self.text_of(callee.children.get(1)?);
+        let field = info.variants.get(&variant).cloned();
+        Some((enum_name, variant, field, info.generics.clone()))
+    }
+
+    fn check_data_variant_call(
+        &mut self,
+        node: &'a Node,
+        callee: &'a Node,
+        env: &mut Env,
+        info: (String, String, Option<Ty>, Vec<(String, u32)>),
+    ) -> Ty {
+        let (enum_name, variant, field, generics) = info;
+        let Some(field) = field else {
+            self.error(
+                callee,
+                format!("'{enum_name}' object has no attribute '{variant}'"),
+            );
+            return Ty::Unknown;
+        };
+        let args = node.children.get(1);
+        let count = args.map(|a| a.children.len()).unwrap_or(0);
+        if count != 1 {
+            self.error(
+                callee,
+                format!("enum variant '{enum_name}.{variant}' expects 1 argument, {count} given"),
+            );
+        }
+        if let Some(args) = args {
+            for (index, arg) in args.children.iter().enumerate() {
+                let arg_ty = self.check_expr(arg, env);
+                if index != 0 {
+                    continue;
+                }
+                let mut subst = HashMap::new();
+                unify_generic(&field, &arg_ty, &mut subst);
+                let expected = substitute_generic(&field, &subst);
+                if !assignable(&expected, &arg_ty, &self.classes) {
+                    self.error(
+                        arg,
+                        format!(
+                            "argument of enum variant '{enum_name}.{variant}' expects '{expected}', got '{arg_ty}'"
+                        ),
+                    );
+                }
+                for (name, id) in &generics {
+                    if let Some(bound) = self.generic_bounds.get(id).cloned() {
+                        if let Some(ty) = subst.get(id) {
+                            if !bound_ok(&bound, ty, &self.classes) {
+                                self.error(
+                                    arg,
+                                    format!(
+                                        "type argument '{ty}' for '{name}' of '{enum_name}.{variant}' does not satisfy bound '{bound}'"
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ty::Any
+    }
+
     fn check_call(&mut self, node: &'a Node, env: &mut Env) -> Ty {        let Some(callee) = node.children.first() else {
             return Ty::Any;
         };
+        if let Some(info) = self.enum_call_info(callee) {
+            return self.check_data_variant_call(node, callee, env, info);
+        }
         match callee.kind {
             NodeKind::Identifier => {
                 let name = self.text_of(callee);
@@ -3229,15 +3474,58 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Remember the concrete type arguments inferred at this call so the TIR
+    /// phase can emit one monomorphized function per instantiation.
+    fn record_call_instance(
+        &mut self,
+        node: &Node,
+        sig: &FnSig,
+        generics: &[(String, u32)],
+        subst: &HashMap<u32, Ty>,
+    ) {
+        if generics.is_empty() {
+            return;
+        }
+        let type_args = generics
+            .iter()
+            .map(|(_, id)| subst.get(id).cloned().unwrap_or(Ty::Any))
+            .collect();
+        self.call_instances.insert(
+            node.start,
+            CallInstance { callee: sig.name.clone(), type_args },
+        );
+    }
+
     fn apply_sig(&mut self, sig: &FnSig, node: &'a Node, receiver: usize, env: &mut Env) -> Ty {
         let args = node.children.get(1);
         let _ = receiver;
+        let mut generics = self.fn_generics.get(&sig.name).cloned().unwrap_or_default();
+        if generics.is_empty() {
+            if let Some(info) = self.classes.get(&sig.name) {
+                generics = info.generics.clone();
+            }
+        }
+        let mut subst: HashMap<u32, Ty> = HashMap::new();
+        // Explicit type arguments: `id[int](42)`. They seed the substitution
+        // and still unify with arguments (an incompatible pair widens to any).
+        if let Some(type_args) = node
+            .children
+            .get(2)
+            .filter(|c| c.kind == NodeKind::TypeParams)
+        {
+            for (name_node, (_, id)) in type_args.children.iter().zip(generics.iter()) {
+                let ty = self.parse_annotation_node(name_node);
+                subst.insert(*id, ty);
+            }
+        }
         let Some(args) = args else {
-            return sig.ret.clone();
+            self.record_call_instance(node, sig, &generics, &subst);
+            return inferred_ret(sig, &subst, &generics);
         };
         if args.kind != NodeKind::Tuple {
             self.check_expr(args, env);
-            return sig.ret.clone();
+            self.record_call_instance(node, sig, &generics, &subst);
+            return inferred_ret(sig, &subst, &generics);
         }
         let mut positional: Vec<&Node> = Vec::new();
         let mut kwargs: Vec<(String, &Node)> = Vec::new();
@@ -3302,6 +3590,7 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let vty = self.check_expr(arg, env);
+            unify_generic(&sig.params[slot], &vty, &mut subst);
             let expected = &sig.params[slot];
             if !assignable(expected, &vty, &self.classes) {
                 self.error(
@@ -3334,6 +3623,7 @@ impl<'a> Checker<'a> {
                 self.error(value, format!("parameter '{name}' is bound twice"));
                 continue;
             }
+            unify_generic(&sig.params[slot], &vty, &mut subst);
             let expected = &sig.params[slot];
             if !assignable(expected, &vty, &self.classes) {
                 self.error(
@@ -3346,7 +3636,21 @@ impl<'a> Checker<'a> {
             }
             bound[slot] = true;
         }
-        sig.ret.clone()
+        for (name, id) in &generics {
+            if let (Some(bound), Some(ty)) = (self.generic_bounds.get(id), subst.get(id)) {
+                if !bound_ok(bound, ty, &self.classes) {
+                    self.error(
+                        node,
+                        format!(
+                            "type argument '{ty}' for '{name}' of '{}' does not satisfy bound '{bound}'",
+                            sig.name
+                        ),
+                    );
+                }
+            }
+        }
+        self.record_call_instance(node, sig, &generics, &subst);
+        inferred_ret(sig, &subst, &generics)
     }
 
     fn check_call_args_any(&mut self, args: Option<&'a Node>, env: &mut Env) {
@@ -3493,6 +3797,7 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
 fn eq_comparable(lty: &Ty, rty: &Ty) -> bool {
     match (lty, rty) {
         (Ty::Any, _) | (_, Ty::Any) => true,
+        (Ty::Generic { .. }, _) | (_, Ty::Generic { .. }) => true,
         (Ty::None_, _) | (_, Ty::None_) => true,
         (Ty::Int, Ty::Int) | (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) | (Ty::Float, Ty::Float) => true,
         (Ty::Bool, Ty::Bool) => true,
@@ -3513,6 +3818,7 @@ fn eq_comparable(lty: &Ty, rty: &Ty) -> bool {
 fn lt_comparable(lty: &Ty, rty: &Ty) -> bool {
     match (lty, rty) {
         (Ty::Any, _) | (_, Ty::Any) => true,
+        (Ty::Generic { .. }, _) | (_, Ty::Generic { .. }) => true,
         (Ty::Int, Ty::Int) | (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) | (Ty::Float, Ty::Float) => true,
         (Ty::Str, Ty::Str) => true,
         (Ty::Union(members), other) | (other, Ty::Union(members)) => {
@@ -3610,8 +3916,127 @@ fn dict_member_sig(key: &Ty, value: &Ty, name: &str) -> Option<(Vec<Ty>, Vec<Str
     }
 }
 
+/// Bind a type variable from a call-site argument. Repeated incompatible
+/// bindings widen to `Any` (the dynamic escape hatch) instead of failing.
+fn bound_ok(bound: &str, ty: &Ty, classes: &HashMap<String, ClassInfo>) -> bool {
+    if matches!(ty, Ty::Any | Ty::Unknown | Ty::Generic { .. }) {
+        return true;
+    }
+    if let Ty::Union(members) = ty {
+        return members.iter().all(|m| bound_ok(bound, m, classes));
+    }
+    match bound {
+        "numeric" => ty.is_numeric(),
+        "int" => matches!(ty, Ty::Int),
+        "float" => matches!(ty, Ty::Float),
+        "bool" => matches!(ty, Ty::Bool),
+        "str" => matches!(ty, Ty::Str),
+        "list" => matches!(ty, Ty::List(_)),
+        "dict" => matches!(ty, Ty::Dict(_, _)),
+        other => match ty {
+            Ty::Class(name) => name.as_ref() == other || is_subclass_with(classes, name, other),
+            _ => false,
+        },
+    }
+}
+
+fn bind_inferred(subst: &mut HashMap<u32, Ty>, id: u32, actual: &Ty) {
+    let value = if matches!(actual, Ty::Unknown) {
+        Ty::Any
+    } else {
+        actual.clone()
+    };
+    match subst.get(&id) {
+        None => {
+            subst.insert(id, value);
+        }
+        Some(prev) if prev == &value || matches!(prev, Ty::Any) => {}
+        Some(_) => {
+            subst.insert(id, Ty::Any);
+        }
+    }
+}
+
+/// Infer type-variable bindings by matching a signature's parameter type
+/// against the type of the argument supplied at the call site.
+fn unify_generic(pattern: &Ty, actual: &Ty, subst: &mut HashMap<u32, Ty>) {
+    match pattern {
+        Ty::Generic { id, .. } => bind_inferred(subst, *id, actual),
+        Ty::List(a) => {
+            if let Ty::List(b) = actual {
+                unify_generic(a, b, subst);
+            }
+        }
+        Ty::Set(a) => {
+            if let Ty::Set(b) = actual {
+                unify_generic(a, b, subst);
+            }
+        }
+        Ty::Dict(ka, va) => {
+            if let Ty::Dict(kb, vb) = actual {
+                unify_generic(ka, kb, subst);
+                unify_generic(va, vb, subst);
+            }
+        }
+        Ty::Tuple(items) => {
+            if let Ty::Tuple(others) = actual {
+                for (a, b) in items.iter().zip(others.iter()) {
+                    unify_generic(a, b, subst);
+                }
+            }
+        }
+        Ty::Union(members) => {
+            for m in members.iter() {
+                unify_generic(m, actual, subst);
+            }
+        }
+        Ty::Func { params, ret, .. } => {
+            if let Ty::Func { params: others, ret: other_ret, .. } = actual {
+                for (a, b) in params.iter().zip(others.iter()) {
+                    unify_generic(a, b, subst);
+                }
+                unify_generic(ret, other_ret, subst);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn substitute_generic(ty: &Ty, subst: &HashMap<u32, Ty>) -> Ty {
+    match ty {
+        Ty::Generic { id, .. } => subst.get(id).cloned().unwrap_or(Ty::Any),
+        Ty::List(a) => Ty::List(Rc::new(substitute_generic(a, subst))),
+        Ty::Set(a) => Ty::Set(Rc::new(substitute_generic(a, subst))),
+        Ty::Dict(k, v) => Ty::Dict(
+            Rc::new(substitute_generic(k, subst)),
+            Rc::new(substitute_generic(v, subst)),
+        ),
+        Ty::Tuple(items) => Ty::Tuple(items.iter().map(|t| substitute_generic(t, subst)).collect()),
+        Ty::Union(members) => Ty::union(members.iter().map(|t| substitute_generic(t, subst)).collect()),
+        Ty::Func { params, names, ret, required } => Ty::Func {
+            params: params.iter().map(|t| substitute_generic(t, subst)).collect(),
+            names: names.clone(),
+            ret: Rc::new(substitute_generic(ret, subst)),
+            required: *required,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Substitute inferred bindings into a call's result type. Unconstrained
+/// variables become `Any`, so an under-determined generic call stays dynamic.
+fn inferred_ret(sig: &FnSig, subst: &HashMap<u32, Ty>, generics: &[(String, u32)]) -> Ty {
+    let mut full = subst.clone();
+    for (_, id) in generics {
+        full.entry(*id).or_insert(Ty::Any);
+    }
+    substitute_generic(&sig.ret, &full)
+}
+
 pub fn assignable(target: &Ty, value: &Ty, classes: &HashMap<String, ClassInfo>) -> bool {
-    if matches!(target, Ty::Any) || matches!(value, Ty::Any) {
+    if matches!(target, Ty::Any | Ty::Generic { .. })
+        || matches!(value, Ty::Any | Ty::Generic { .. })
+    {
         return true;
     }
     if matches!(target, Ty::Unknown) || matches!(value, Ty::Unknown) {
@@ -3690,7 +4115,7 @@ pub(crate) fn native_module_ret_type(module: &str, member: &str) -> Option<Ty> {
 }
 
 fn assignable_elem(a: &Ty, b: &Ty) -> bool {
-    if matches!(a, Ty::Any) || matches!(b, Ty::Any) {
+    if matches!(a, Ty::Any | Ty::Generic { .. }) || matches!(b, Ty::Any | Ty::Generic { .. }) {
         return true;
     }
     a == b

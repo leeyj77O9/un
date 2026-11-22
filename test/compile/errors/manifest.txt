@@ -13,3 +13,7 @@ test/compile/errors/match_missing_wildcard.un|match exhaustiveness: expected a w
 test/compile/errors/match_bool_partial.un|match exhaustiveness: expected 'true' and 'false' arms
 test/compile/errors/fixed_width_builtin.un|fixed-width aliases require 'use types'
 test/compile/errors/fixed_width_range.un|out of range for
+test/compile/errors/generic_arg_type.un|unsupported operand types for '+': 'str' and 'int'
+test/compile/errors/generic_bound.un|does not satisfy bound 'numeric'
+test/compile/errors/enum_arg_type.un|expects 'int', got 'str'
+test/compile/errors/enum_unknown_variant.un|'E' object has no attribute 'nope'

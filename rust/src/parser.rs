@@ -12,6 +12,9 @@ pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
     source: Rc<Source>,
+    /// Names declared with `fn name[T]`, used to disambiguate
+    /// `id[int](x)` (type arguments) from `d[k](x)` (index then call).
+    generic_names: std::collections::HashSet<String>,
 }
 type Span = (usize, usize);
 fn n(node: &Node) -> Span {
@@ -41,6 +44,7 @@ impl Parser {
             tokens,
             position: 0,
             source,
+            generic_names: std::collections::HashSet::new(),
         }
     }
 
@@ -339,9 +343,39 @@ impl Parser {
             vec![expr],
         ))
     }
+    /// Parses an optional `[T, U: bound, ...]` type parameter list.
+    /// Callers append the result as the last child so positional readers
+    /// (`children[0]`, `children[1]`, ...) keep working.
+    fn parse_type_params(&mut self) -> Result<Option<Node>, LangError> {
+        if self.current().typ != TokenType::LBrack {
+            return Ok(None);
+        }
+        let lbrack = self.expect(TokenType::LBrack, "expected '['")?;
+        let mut names = Vec::new();
+        loop {
+            let mut name = self.parse_identifier()?;
+            if self.match_(TokenType::Colon) {
+                let bound = self.parse_identifier()?;
+                name = name.with_value(Const::Str(self.get_text(bound.start, bound.length)));
+            }
+            names.push(name);
+            if !self.match_(TokenType::Comma) {
+                break;
+            }
+        }
+        let rbrack = self.expect(TokenType::RBrack, "expected ']' after type parameters")?;
+        Ok(Some(Node::with_children(
+            lbrack.start,
+            len(t(&lbrack), t(&rbrack)),
+            NodeKind::TypeParams,
+            None,
+            names,
+        )))
+    }
     fn parse_class(&mut self, annotations: Vec<Node>) -> Result<Node, LangError> {
         let keyword = self.expect(TokenType::Class, "expected 'class' keyword")?;
         let name = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
         let parameters = if self.current().typ == TokenType::LParen {
             Some(self.parse_parameters()?)
         } else {
@@ -376,11 +410,27 @@ impl Parser {
             children.push(bases);
         }
         children.push(body);
+        if let Some(type_params) = type_params {
+            children.push(type_params);
+        }
         Ok(Node::with_children(keyword.start, length, NodeKind::Class, None, children)
             .with_annotations(annotations))
     }
     fn parse_enum_member(&mut self) -> Result<Node, LangError> {
         let name = self.parse_identifier()?;
+        // `variant: type` declares a data-carrying variant. The type is kept
+        // as a `Typed` node so both the checker and the compiler can recognise
+        // it without adding a new NodeKind.
+        if self.match_(TokenType::Colon) {
+            let type_node = self.parse_type()?;
+            return Ok(Node::with_children(
+                name.start,
+                len(n(&name), n(&type_node)),
+                NodeKind::Typed,
+                None,
+                vec![name, type_node],
+            ));
+        }
         if !self.match_(TokenType::Assign) {
             return Ok(name);
         }
@@ -396,6 +446,7 @@ impl Parser {
     fn parse_enum(&mut self, annotations: Vec<Node>) -> Result<Node, LangError> {
         let keyword = self.expect(TokenType::Enum, "expected 'enum' keyword")?;
         let name = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
         self.expect(TokenType::NewLine, "expected newline after enum name")?;
         self.expect(TokenType::Indent, "expected indented enum members")?;
         let mut members: Vec<Node> = Vec::new();
@@ -417,6 +468,9 @@ impl Parser {
         let closer = self.expect(TokenType::Dedent, "expected end of enum block")?;
         let mut children = vec![name];
         children.extend(members);
+        if let Some(type_params) = type_params {
+            children.push(type_params);
+        }
         Ok(
             Node::with_children(
                 keyword.start,
@@ -876,15 +930,65 @@ impl Parser {
         }
         self.parse_postfix()
     }
+    /// At `[` in postfix position, decide whether this is an explicit type
+    /// argument list (`id[int](x)`) rather than indexing (`xs[0](x)`).
+    fn looks_like_type_args(&self, expr: &Node) -> bool {
+        if self.current().typ != TokenType::LBrack || expr.kind != NodeKind::Identifier {
+            return false;
+        }
+        let callee = self.get_text(expr.start, expr.length);
+        if !self.generic_names.contains(&callee) {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut i = self.position;
+        while i < self.tokens.len() {
+            match self.tokens[i].typ {
+                TokenType::LBrack => depth += 1,
+                TokenType::RBrack => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i + 1 < self.tokens.len()
+                            && self.tokens[i + 1].typ == TokenType::LParen;
+                    }
+                }
+                TokenType::Identifier | TokenType::Comma => {}
+                _ => return false,
+            }
+            i += 1;
+        }
+        false
+    }
+
+    fn parse_type_arg_list(&mut self) -> Result<Node, LangError> {
+        let lbrack = self.expect(TokenType::LBrack, "expected '[' before type arguments")?;
+        let mut names = Vec::new();
+        loop {
+            names.push(self.parse_identifier()?);
+            if !self.match_(TokenType::Comma) {
+                break;
+            }
+        }
+        let rbrack = self.expect(TokenType::RBrack, "expected ']' after type arguments")?;
+        Ok(Node::with_children(
+            lbrack.start,
+            len(t(&lbrack), t(&rbrack)),
+            NodeKind::TypeParams,
+            None,
+            names,
+        ))
+    }
+
     fn parse_postfix(&mut self) -> Result<Node, LangError> {
         let mut expr = self.parse_primary()?;
+        let mut type_args: Option<Node> = None;
         loop {
             if self.current().typ == TokenType::Question && self.is_ternary_question() {
                 break;
             }
             match self.current().typ {
                 TokenType::LParen => {
-                    expr = self.parse_call(expr)?;
+                    expr = self.parse_call(expr, type_args.take())?;
                     continue;
                 }
                 TokenType::Dot => {
@@ -917,6 +1021,10 @@ impl Parser {
                     continue;
                 }
                 TokenType::LBrack => {
+                    if self.looks_like_type_args(&expr) {
+                        type_args = Some(self.parse_type_arg_list()?);
+                        continue;
+                    }
                     expr = self.parse_index_or_slice(expr)?;
                     continue;
                 }
@@ -982,14 +1090,19 @@ impl Parser {
         }
         Ok(args)
     }
-    fn parse_call(&mut self, expr: Node) -> Result<Node, LangError> {
+    fn parse_call(&mut self, expr: Node, type_args: Option<Node>) -> Result<Node, LangError> {
         let opener = self.expect(TokenType::LParen, "expected '(' before arguments")?;
         let args = self.parse_arguments()?;
         let closer = self.expect(TokenType::RParen, "expected ')' after arguments")?;
         let length = len(t(&opener), t(&closer));
         let tuple = Node::with_children(opener.start, length, NodeKind::Tuple, None, args);
+        let start = expr.start;
         let length = len(n(&expr), t(&closer));
-        Ok(Node::with_children(expr.start, length, NodeKind::Call, None, vec![expr, tuple]))
+        let mut children = vec![expr, tuple];
+        if let Some(type_args) = type_args {
+            children.push(type_args);
+        }
+        Ok(Node::with_children(start, length, NodeKind::Call, None, children))
     }
     fn parse_index_or_slice(&mut self, expr: Node) -> Result<Node, LangError> {
         let lbrack = self.expect(TokenType::LBrack, "expected '[' before index or slice")?;
@@ -1301,6 +1414,12 @@ impl Parser {
         } else {
             (NodeKind::Function, Vec::new(), first)
         };
+        // Optional type parameter list: `fn id[T](x: T) -> T`. Stored as a
+        // trailing child so existing positional readers stay unchanged.
+        let type_params = self.parse_type_params()?;
+        if type_params.is_some() {
+            self.generic_names.insert(self.get_text(name.start, name.length));
+        }
         let parameters = self.parse_parameters()?;
         self.skip_new_lines();
         let ret_type = if self.match_(TokenType::Return) {
@@ -1316,6 +1435,9 @@ impl Parser {
         children.push(body);
         if let Some(ret_type) = ret_type {
             children.push(ret_type);
+        }
+        if let Some(type_params) = type_params {
+            children.push(type_params);
         }
         Ok(
             Node::with_children(func.start, length, kind, None, children)

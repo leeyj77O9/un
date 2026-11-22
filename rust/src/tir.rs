@@ -5,6 +5,23 @@ use crate::token::TokenType;
 use crate::typeck::{CheckedProgram, FnCheck, Ty};
 use std::collections::HashMap;
 
+/// Element/key kind stored in the generic (handle-based) native collections.
+///
+/// The standalone runtime stores every collection element as an opaque object
+/// handle, so a collection only needs the *kind* of its elements to know how
+/// to box on write and unbox on read. `Obj` is an opaque handle whose static
+/// type is intentionally unknown to the code generator.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ObjElem {
+    Obj,
+    Int,
+    Float,
+    Bool,
+    Str,
+    Class(u16),
+    Lambda,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TirTy {
     Int,
@@ -16,12 +33,53 @@ pub enum TirTy {
     ListClass(u16),
     DictStrInt,
     DictStrFloat,
+    DictIntInt,
     Class(u16),
     ErrorObj,
     /// A statically resolved lambda: index of the synthesized `TirFn`.
     Lambda(u32),
     /// A list whose elements are closure objects.
     ListLambda,
+    /// An opaque object handle (e.g. an element of a generic collection whose
+    /// precise static type is not needed by the emitted code).
+    Obj,
+    /// A list whose element kind is carried explicitly rather than hardcoded.
+    ListGen(ObjElem),
+    /// A dict whose key/value kinds are carried explicitly.
+    DictGen(ObjElem, ObjElem),
+    /// A set whose element kind is carried explicitly.
+    SetGen(ObjElem),
+}
+
+/// Collapse a TIR type into the element kind used by native collections.
+fn elem_of_tir(ty: TirTy) -> ObjElem {
+    match ty {
+        TirTy::Int => ObjElem::Int,
+        TirTy::Float => ObjElem::Float,
+        TirTy::Bool => ObjElem::Bool,
+        TirTy::Str => ObjElem::Str,
+        TirTy::Class(id) => ObjElem::Class(id),
+        TirTy::Lambda(_) => ObjElem::Lambda,
+        _ => ObjElem::Obj,
+    }
+}
+
+/// The TIR type of a value read out of a generic collection element.
+fn tir_of_elem(elem: ObjElem) -> TirTy {
+    match elem {
+        ObjElem::Obj => TirTy::Obj,
+        ObjElem::Int => TirTy::Int,
+        ObjElem::Float => TirTy::Float,
+        ObjElem::Bool => TirTy::Bool,
+        ObjElem::Str => TirTy::Str,
+        ObjElem::Class(id) => TirTy::Class(id),
+        ObjElem::Lambda => TirTy::Lambda(u32::MAX),
+    }
+}
+
+/// True for every type whose native ABI value is an object handle (I64).
+fn tir_is_ref(ty: TirTy) -> bool {
+    !matches!(ty, TirTy::Int | TirTy::Float | TirTy::Bool)
 }
 
 fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
@@ -36,19 +94,203 @@ fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
             Ty::Float => Some(TirTy::ListFloat),
             Ty::Class(name) => classes.id(name).map(TirTy::ListClass),
             Ty::Func { .. } => Some(TirTy::ListLambda),
-            _ => None,
+            other => Some(TirTy::ListGen(
+                tir_ty_from_ty(classes, other).map_or(ObjElem::Obj, elem_of_tir),
+            )),
         },
-        Ty::Dict(key, value) => match key.as_ref() {
-            Ty::Str => match value.as_ref() {
-                Ty::Int => Some(TirTy::DictStrInt),
-                Ty::Float => Some(TirTy::DictStrFloat),
+        Ty::Dict(key, value) => {
+            let k = match key.as_ref() {
+                Ty::Str => Some(ObjElem::Str),
+                Ty::Int => Some(ObjElem::Int),
                 _ => None,
-            },
-            _ => None,
-        },
+            };
+            match k {
+                Some(k) => {
+                    let v = tir_ty_from_ty(classes, value).map_or(ObjElem::Obj, elem_of_tir);
+                    match (k, v) {
+                        (ObjElem::Str, ObjElem::Int) => Some(TirTy::DictStrInt),
+                        (ObjElem::Str, ObjElem::Float) => Some(TirTy::DictStrFloat),
+                        (ObjElem::Int, ObjElem::Int) => Some(TirTy::DictIntInt),
+                        _ => Some(TirTy::DictGen(k, v)),
+                    }
+                }
+                None => None,
+            }
+        }
+        Ty::Set(elem) => tir_ty_from_ty(classes, elem).map(|t| TirTy::SetGen(elem_of_tir(t))),
         Ty::Func { .. } => Some(TirTy::Lambda(u32::MAX)),
         _ => None,
     }
+}
+
+/// Replace type variables in a `Ty` with their inferred concrete types.
+fn subst_ty(ty: &Ty, subst: &HashMap<u32, Ty>) -> Ty {
+    match ty {
+        Ty::Generic { id, .. } => subst.get(id).cloned().unwrap_or(Ty::Any),
+        Ty::List(a) => Ty::List(std::rc::Rc::new(subst_ty(a, subst))),
+        Ty::Set(a) => Ty::Set(std::rc::Rc::new(subst_ty(a, subst))),
+        Ty::Dict(k, v) => Ty::Dict(
+            std::rc::Rc::new(subst_ty(k, subst)),
+            std::rc::Rc::new(subst_ty(v, subst)),
+        ),
+        Ty::Tuple(items) => Ty::Tuple(items.iter().map(|t| subst_ty(t, subst)).collect()),
+        Ty::Union(members) => Ty::union(members.iter().map(|t| subst_ty(t, subst)).collect()),
+        Ty::Func { params, names, ret, required } => Ty::Func {
+            params: params.iter().map(|t| subst_ty(t, subst)).collect(),
+            names: names.clone(),
+            ret: std::rc::Rc::new(subst_ty(ret, subst)),
+            required: *required,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Identifier-safe rendering of a concrete type for mangled instance names.
+fn mangle_ty(ty: &Ty) -> String {
+    match ty {
+        Ty::Int => "int".into(),
+        Ty::Float => "float".into(),
+        Ty::Bool => "bool".into(),
+        Ty::Str => "str".into(),
+        Ty::None_ => "none".into(),
+        Ty::Any | Ty::Unknown | Ty::Generic { .. } => "any".into(),
+        Ty::List(a) => format!("list_{}", mangle_ty(a)),
+        Ty::Set(a) => format!("set_{}", mangle_ty(a)),
+        Ty::Dict(k, v) => format!("dict_{}_{}", mangle_ty(k), mangle_ty(v)),
+        Ty::Tuple(items) => format!("tuple_{}", items.iter().map(mangle_ty).collect::<Vec<_>>().join("_")),
+        Ty::Union(members) => format!("union_{}", members.iter().map(mangle_ty).collect::<Vec<_>>().join("_")),
+        Ty::Class(name) => format!("class_{}", name),
+        Ty::Func { .. } => "fn".into(),
+    }
+}
+
+/// The result of expanding generic functions into concrete instances.
+struct Expanded {
+    checked: CheckedProgram,
+    /// Call node start -> mangled callee name for that instantiation.
+    call_names: HashMap<usize, String>,
+    /// Mangled instance name -> (original function name, concrete type args).
+    instance_args: HashMap<String, (String, Vec<Ty>)>,
+    /// (source function node start, checked-function index) pairs to lower.
+    lower: Vec<(usize, usize)>,
+}
+
+/// Clone each generic function once per distinct set of concrete type
+/// arguments inferred at its call sites, and rewrite call sites to the
+/// mangled instance names. Original generic declarations stay in the program
+/// (so name-based lookups during validation still resolve) but are not lowered.
+fn expand_generics(checked: &CheckedProgram) -> Expanded {
+    let mut out = CheckedProgram {
+        sigs: checked.sigs.clone(),
+        classes: checked.classes.clone(),
+        aliases: checked.aliases.clone(),
+        functions: checked.functions.clone(),
+        fn_by_span: checked.fn_by_span.clone(),
+        fn_generics: checked.fn_generics.clone(),
+        generic_bounds: checked.generic_bounds.clone(),
+        call_instances: checked.call_instances.clone(),
+    };
+    let mut call_names: HashMap<usize, String> = HashMap::new();
+    let mut instance_args: HashMap<String, (String, Vec<Ty>)> = HashMap::new();
+    let mut extra: Vec<(usize, usize)> = Vec::new();
+
+    // Every concrete type-argument set seen anywhere in the program. Instances
+    // are created for the cross product with generic functions of matching
+    // arity, so a generic callee reached only from another generic body still
+    // has an instance to dispatch to.
+    let mut arg_sets: Vec<Vec<Ty>> = Vec::new();
+    for inst in checked.call_instances.values() {
+        if inst.type_args.iter().any(|t| matches!(t, Ty::Generic { .. })) {
+            continue;
+        }
+        if inst.type_args.is_empty() {
+            continue;
+        }
+        if !arg_sets.contains(&inst.type_args) {
+            arg_sets.push(inst.type_args.clone());
+        }
+    }
+
+    let generic_names: Vec<String> = checked
+        .fn_generics
+        .iter()
+        .filter(|(_, params)| !params.is_empty())
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in generic_names {
+        let Some(orig_idx) = checked.functions.iter().position(|f| f.sig.name == name) else {
+            continue;
+        };
+        let params = &checked.fn_generics[&name];
+        let node_start = checked
+            .fn_by_span
+            .iter()
+            .find(|(_, &idx)| idx == orig_idx)
+            .map(|(span, _)| *span);
+        let Some(node_start) = node_start else { continue };
+
+        for type_args in arg_sets.iter().filter(|a| a.len() == params.len()) {
+            let subst: HashMap<u32, Ty> = params
+                .iter()
+                .zip(type_args.iter())
+                .map(|((_, id), ty)| (*id, ty.clone()))
+                .collect();
+            let mangled = format!(
+                "__mono_{}__{}",
+                name,
+                type_args.iter().map(mangle_ty).collect::<Vec<_>>().join("__")
+            );
+            if instance_args.contains_key(&mangled) {
+                continue;
+            }
+            let mut func = checked.functions[orig_idx].clone();
+            func.sig.name = mangled.clone();
+            func.sig.params = func.sig.params.iter().map(|t| subst_ty(t, &subst)).collect();
+            func.sig.ret = subst_ty(&func.sig.ret, &subst);
+            func.locals = func.locals.iter().map(|(n, t)| (n.clone(), subst_ty(t, &subst))).collect();
+            func.local_types = func.local_types.iter().map(|(n, t)| (n.clone(), subst_ty(t, &subst))).collect();
+            let index = out.functions.len();
+            out.functions.push(func);
+            out.sigs.insert(mangled.clone(), out.functions[index].sig.clone());
+            instance_args.insert(mangled.clone(), (name.clone(), type_args.clone()));
+            extra.push((node_start, index));
+        }
+    }
+
+    // Resolved call sites bind to their own instance; calls still carrying type
+    // variables are resolved through the enclosing instance's arguments.
+    for (&span, inst) in &checked.call_instances {
+        if inst.type_args.iter().any(|t| matches!(t, Ty::Generic { .. })) || inst.type_args.is_empty() {
+            call_names.insert(span, format!("@dep:{}", inst.callee));
+            continue;
+        }
+        let mangled = format!(
+            "__mono_{}__{}",
+            inst.callee,
+            inst.type_args.iter().map(mangle_ty).collect::<Vec<_>>().join("__")
+        );
+        call_names.insert(span, mangled);
+    }
+
+    let generic_set: std::collections::HashSet<String> = checked
+        .fn_generics
+        .iter()
+        .filter(|(_, params)| !params.is_empty())
+        .map(|(name, _)| name.clone())
+        .collect();
+    let mut lower = Vec::new();
+    for (idx, f) in checked.functions.iter().enumerate() {
+        if generic_set.contains(&f.sig.name) {
+            continue;
+        }
+        let span = checked.fn_by_span.iter().find(|(_, &i)| i == idx).map(|(s, _)| *s);
+        if let Some(span) = span {
+            lower.push((span, idx));
+        }
+    }
+    lower.extend(extra);
+
+    Expanded { checked: out, call_names, instance_args, lower }
 }
 
 
@@ -247,11 +489,16 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
                 | TirTy::ListFloat
                 | TirTy::DictStrInt
                 | TirTy::DictStrFloat
+                | TirTy::DictIntInt
                 | TirTy::Class(_)
                 | TirTy::ListClass(_)
                 | TirTy::ErrorObj
                 | TirTy::Lambda(_)
                 | TirTy::ListLambda
+                | TirTy::Obj
+                | TirTy::ListGen(_)
+                | TirTy::DictGen(_, _)
+                | TirTy::SetGen(_)
         )
     }
     fn expr_ok(e: &TirExpr) -> bool {
@@ -472,6 +719,7 @@ fn same_ty(a: TirTy, b: TirTy) -> bool {
     match (a, b) {
         (TirTy::Class(_), TirTy::Class(_)) => true,
         (TirTy::ListClass(_), TirTy::ListClass(_)) => true,
+        (TirTy::Obj, _) | (_, TirTy::Obj) if tir_is_ref(a) && tir_is_ref(b) => true,
         _ => a == b,
     }
 }
@@ -510,6 +758,77 @@ pub fn fn_uses_str(f: &TirFn) -> bool {
         return true;
     }
     f.body.iter().any(stmt_uses_str)
+}
+
+/// True when a native-module call needs the `unrt_call_native` bridge, which
+/// only exists in Obj mode. Vm-mode codegen must fall back for such functions.
+pub fn fn_uses_native_call(f: &TirFn) -> bool {
+    f.defaults.iter().flatten().any(expr_uses_native)
+        || f.body.iter().any(stmt_uses_native)
+}
+
+fn expr_uses_native(e: &TirExpr) -> bool {
+    match e {
+        TirExpr::NativeCallExpr { .. } => true,
+        TirExpr::Promote(x) | TirExpr::Un(_, x) | TirExpr::Len(x) | TirExpr::ListPop(x)
+        | TirExpr::CastInt(x) | TirExpr::CastFloat(x) | TirExpr::DictGet(_, x)
+        | TirExpr::ListGet(_, x) | TirExpr::MemberGet { receiver: x, .. }
+        | TirExpr::Located { inner: x, .. } => expr_uses_native(x),
+        TirExpr::Select { cond, then_expr, else_expr } => {
+            expr_uses_native(cond) || expr_uses_native(then_expr) || expr_uses_native(else_expr)
+        }
+        TirExpr::Bin(_, a, b) | TirExpr::Cmp(_, a, b) | TirExpr::ListPopAt(a, b)
+        | TirExpr::ListContains(a, b) | TirExpr::ListIndexOf(a, b) => {
+            expr_uses_native(a) || expr_uses_native(b)
+        }
+        TirExpr::List(items) | TirExpr::Call(_, items) | TirExpr::Math(_, items)
+        | TirExpr::ClassNew { args: items, .. } => items.iter().any(expr_uses_native),
+        TirExpr::MethodCall { receiver, args, .. } => {
+            expr_uses_native(receiver) || args.iter().any(expr_uses_native)
+        }
+        TirExpr::CallObj { callee, args, .. } => {
+            expr_uses_native(callee) || args.iter().any(expr_uses_native)
+        }
+        TirExpr::Dict(items) => items.iter().any(|(k, v)| expr_uses_native(k) || expr_uses_native(v)),
+        TirExpr::ListRepeat { value, len, .. } => expr_uses_native(value) || expr_uses_native(len),
+        TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_)
+        | TirExpr::Local(_) | TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_)
+        | TirExpr::NoneValue => false,
+    }
+}
+
+fn stmt_uses_native(s: &TirStmt) -> bool {
+    match s {
+        TirStmt::NativeCall { .. } => true,
+        TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::Throw(e) | TirStmt::ExprStmt(e)
+        | TirStmt::GlobalSet(_, e) => expr_uses_native(e),
+        TirStmt::If { cond, then_body, else_body } => {
+            expr_uses_native(cond) || then_body.iter().any(stmt_uses_native) || else_body.iter().any(stmt_uses_native)
+        }
+        TirStmt::While { cond, body } => expr_uses_native(cond) || body.iter().any(stmt_uses_native),
+        TirStmt::ForRange { start, end, step, body, .. } => {
+            expr_uses_native(start) || expr_uses_native(end) || expr_uses_native(step)
+                || body.iter().any(stmt_uses_native)
+        }
+        TirStmt::ForEach { collection, body, .. } => {
+            expr_uses_native(collection) || body.iter().any(stmt_uses_native)
+        }
+        TirStmt::ListSet { list, index, value } | TirStmt::DictSet { dict: list, key: index, value } => {
+            expr_uses_native(list) || expr_uses_native(index) || expr_uses_native(value)
+        }
+        TirStmt::MemberSet { receiver, value, .. } | TirStmt::ListAdd { receiver, arg: value }
+        | TirStmt::ListInsert { receiver, arg: value, .. } => {
+            expr_uses_native(receiver) || expr_uses_native(value)
+        }
+        TirStmt::Try { body, catch_body, finally_body, .. } => {
+            body.iter().any(stmt_uses_native)
+                || catch_body.iter().any(stmt_uses_native)
+                || finally_body.as_ref().is_some_and(|b| b.iter().any(stmt_uses_native))
+        }
+        TirStmt::Return(Some(e)) => expr_uses_native(e),
+        TirStmt::ListReverse { .. } | TirStmt::ListSort { .. } | TirStmt::Break | TirStmt::Skip
+        | TirStmt::Return(None) => false,
+    }
 }
 
 pub fn fn_uses_classes(f: &TirFn) -> bool {
@@ -601,7 +920,7 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
 pub fn fn_uses_heap(f: &TirFn) -> bool {
     if f.locals
         .iter()
-        .any(|t| matches!(t, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_)))
+        .any(|t| matches!(t, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_)))
     {
         return true;
     }
@@ -758,7 +1077,7 @@ pub fn core_rejection_reason(fcheck: &FnCheck) -> Option<String> {
     }
     if let Some((name, ty)) = sig.param_names.iter().zip(&sig.params).find(|(_, ty)| !is_core_ty(ty)) {
         return Some(format!(
-            "parameter '{name}' of '{}' has non-core type '{ty}' - annotate it with int/float/bool/str/list[int]/dict[str,int] to enable native compilation",
+            "parameter '{name}' of '{}' has non-core type '{ty}' - annotate it with int/float/bool/str/list[int]/dict[str,int]/dict[int,int] to enable native compilation",
             sig.name
         ));
     }
@@ -770,11 +1089,14 @@ pub fn core_rejection_reason(fcheck: &FnCheck) -> Option<String> {
             }
         }
         Ty::Dict(key, value) => {
-            if !matches!((key.as_ref(), value.as_ref()), (Ty::Str, Ty::Int | Ty::Float)) {
+            if !matches!(
+                (key.as_ref(), value.as_ref()),
+                (Ty::Str, Ty::Int | Ty::Float) | (Ty::Int, Ty::Int)
+            ) {
                 return Some(format!("'{}' returns a non-core dict", sig.name));
             }
         }
-        Ty::Class(_) => {}
+        Ty::Class(_) | Ty::Generic { .. } => {}
         other => return Some(format!("'{}' returns non-core type '{other}'", sig.name)),
     }
     if let Some((name, ty)) = locals.iter().find(|(_, ty)| !is_core_ty(ty)) {
@@ -793,9 +1115,32 @@ pub fn is_core_fn(fcheck: &FnCheck) -> bool {
 fn is_core_ty(ty: &Ty) -> bool {
     match ty {
         Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::None_ | Ty::Class(_) => true,
-        Ty::List(elem) => matches!(elem.as_ref(), Ty::Int | Ty::Float | Ty::Class(_) | Ty::Func { .. }),
-        Ty::Dict(key, value) => matches!(key.as_ref(), Ty::Str) && matches!(value.as_ref(), Ty::Int | Ty::Float),
+        Ty::List(elem) => is_core_elem(elem),
+        Ty::Dict(key, value) => {
+            matches!(key.as_ref(), Ty::Str | Ty::Int) && is_core_elem(value)
+        }
+        Ty::Set(elem) => is_core_elem(elem),
         Ty::Func { .. } => true,
+        // A type variable is resolved into a concrete instance before lowering;
+        // keep the original declaration eligible for name-based lookups.
+        Ty::Generic { .. } => true,
+        _ => false,
+    }
+}
+
+/// A collection element may be any core type, plus `Any`/unions (stored as an
+/// opaque handle) and nested collections.
+fn is_core_elem(ty: &Ty) -> bool {
+    is_core_ty(ty) || matches!(ty, Ty::Any | Ty::Union(_))
+}
+
+fn ty_has_generic(ty: &Ty) -> bool {
+    match ty {
+        Ty::Generic { .. } => true,
+        Ty::List(a) | Ty::Set(a) => ty_has_generic(a),
+        Ty::Dict(k, v) => ty_has_generic(k) || ty_has_generic(v),
+        Ty::Tuple(items) | Ty::Union(items) => items.iter().any(ty_has_generic),
+        Ty::Func { params, ret, .. } => params.iter().any(ty_has_generic) || ty_has_generic(ret),
         _ => false,
     }
 }
@@ -810,6 +1155,11 @@ fn tirdbg_reject(node: &Node) {
 }
 
 fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: &FnCheck, globals: &std::collections::HashMap<String, u16>) -> bool {
+    // Generic classes have type-variable fields; their instances are not
+    // represented in TIR yet, so keep the whole program on the VM path.
+    if checked.classes.values().any(|c| !c.generics.is_empty()) {
+        return false;
+    }
     let Some(body) = body_block_of(node) else {
         return false;
     };
@@ -1324,6 +1674,9 @@ impl TirProgram {
 
     pub fn lower(source: &Source, root: &Node, checked: &CheckedProgram, global_names: &[String]) -> Result<TirProgram, TirError> {
         let debug_trace = std::env::var_os("UV_TIR_DEBUG").is_some();
+        let expanded = expand_generics(checked);
+        let checked = &expanded.checked;
+        let call_names = &expanded.call_names;
         let globals: std::collections::HashMap<String, u16> = global_names.iter()
             .cloned().enumerate().map(|(i, n)| (n, i as u16)).collect();
         let fn_nodes = collect_fn_nodes(root);
@@ -1343,11 +1696,24 @@ impl TirProgram {
                 }
             }
         }
-        let mut eligible: Vec<usize> = Vec::new();        for node in &fn_nodes {
-            let Some(&fn_index) = checked.fn_by_span.get(&node.start) else {
+        let node_by_start: HashMap<usize, &Node> = fn_nodes
+            .iter()
+            .map(|node| (node.start, *node))
+            .collect();
+        let mut eligible: Vec<usize> = Vec::new();
+        for (node_start, fn_index) in &expanded.lower {
+            let Some(node) = node_by_start.get(node_start) else {
                 continue;
             };
-            let fcheck = &checked.functions[fn_index];
+            let fcheck = &checked.functions[*fn_index];
+            // Uninstantiated generics (class methods with type variables, or a
+            // generic function never called) have no concrete TIR type.
+            if fcheck.sig.params.iter().any(ty_has_generic)
+                || ty_has_generic(&fcheck.sig.ret)
+                || fcheck.locals.iter().any(|(_, t)| ty_has_generic(t))
+            {
+                continue;
+            }
             let core_ok = is_core_fn(fcheck);
             let body_ok = body_is_core(node, source, checked, fcheck, &globals);
             if debug_trace {
@@ -1358,7 +1724,7 @@ impl TirProgram {
                 }
             }
             if core_ok && body_ok {
-                eligible.push(fn_index);
+                eligible.push(*fn_index);
             }
         }
         let tir_index: HashMap<usize, usize> = eligible
@@ -1371,15 +1737,15 @@ impl TirProgram {
         let mut lambdas = Vec::new();
         let mut functions = Vec::with_capacity(eligible.len());
         let mut any_global_write = false;
-        for node in &fn_nodes {
-            let Some(&fn_index) = checked.fn_by_span.get(&node.start) else {
+        for (node_start, fn_index) in &expanded.lower {
+            let Some(node) = node_by_start.get(node_start) else {
                 continue;
             };
-            let Some(tir_i) = tir_index.get(&fn_index).copied() else {
+            let Some(tir_i) = tir_index.get(fn_index).copied() else {
                 continue;
             };
-            let fcheck = &checked.functions[fn_index];
-            let lowered = lower_function(node, source, fcheck, checked, tir_i, &tir_index, &classes, &mut lambdas, lambda_base, &globals, &mut any_global_write)
+            let fcheck = &checked.functions[*fn_index];
+            let lowered = lower_function(node, source, fcheck, checked, tir_i, &tir_index, call_names, &expanded.instance_args, &classes, &mut lambdas, lambda_base, &globals, &mut any_global_write)
                 .map_err(|e| TirError(format!("{}: {}", fcheck.sig.name, e)))?;
             functions.push(lowered);
         }
@@ -1390,6 +1756,9 @@ impl TirProgram {
                 source,
                 checked,
                 tir_index: &tir_index,
+                call_names,
+                current_instance: String::new(),
+                instance_args: &expanded.instance_args,
                 slots: HashMap::new(),
                 locals: Vec::new(),
                 classes: &classes,
@@ -1444,9 +1813,14 @@ enum CoreTy {
     ListClass(u16),
     DictStrInt,
     DictStrFloat,
+    DictIntInt,
     Class(u16),
     Lambda(u32),
     ListLambda,
+    Obj,
+    ListGen(ObjElem),
+    DictGen(ObjElem, ObjElem),
+    SetGen(ObjElem),
     None_,
 }
 
@@ -1462,10 +1836,15 @@ impl From<TirTy> for CoreTy {
             TirTy::ListClass(id) => CoreTy::ListClass(id),
             TirTy::DictStrInt => CoreTy::DictStrInt,
             TirTy::DictStrFloat => CoreTy::DictStrFloat,
+            TirTy::DictIntInt => CoreTy::DictIntInt,
             TirTy::Class(id) => CoreTy::Class(id),
             TirTy::ErrorObj => CoreTy::Class(u16::MAX),
             TirTy::ListLambda => CoreTy::ListLambda,
             TirTy::Lambda(index) => CoreTy::Lambda(index),
+            TirTy::Obj => CoreTy::Obj,
+            TirTy::ListGen(e) => CoreTy::ListGen(e),
+            TirTy::DictGen(k, v) => CoreTy::DictGen(k, v),
+            TirTy::SetGen(e) => CoreTy::SetGen(e),
         }
     }
 }
@@ -1474,6 +1853,12 @@ struct LowerCtx<'a> {
     source: &'a Source,
     checked: &'a CheckedProgram,
     tir_index: &'a HashMap<usize, usize>,
+    /// Call node start -> mangled callee name for generic instantiations.
+    call_names: &'a HashMap<usize, String>,
+    /// Name of the function currently being lowered; dependency markers resolve through it.
+    current_instance: String,
+    /// Mangled instance name -> (original name, concrete type args).
+    instance_args: &'a HashMap<String, (String, Vec<Ty>)>,
     slots: HashMap<String, u16>,
     locals: Vec<TirTy>,
     classes: &'a ClassTable,
@@ -1496,6 +1881,8 @@ fn lower_function<'a>(
     checked: &CheckedProgram,
     tir_i: usize,
     tir_index: &HashMap<usize, usize>,
+    call_names: &HashMap<usize, String>,
+    instance_args: &HashMap<String, (String, Vec<Ty>)>,
     classes: &ClassTable,
     lambdas: &mut Vec<TirFn>,
     lambda_base: u32,
@@ -1506,6 +1893,9 @@ fn lower_function<'a>(
         source,
         checked,
         tir_index,
+        call_names,
+        current_instance: fcheck.sig.name.clone(),
+        instance_args,
         slots: HashMap::new(),
         locals: Vec::new(),
         classes,
@@ -1951,6 +2341,9 @@ fn synthesize_lambda(
         source: ctx.source,
         checked: ctx.checked,
         tir_index: ctx.tir_index,
+        call_names: ctx.call_names,
+        current_instance: ctx.current_instance.clone(),
+        instance_args: ctx.instance_args,
         slots: HashMap::new(),
         locals: Vec::new(),
         classes: ctx.classes,
@@ -2188,9 +2581,19 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
                     out.push(TirStmt::DictSet { dict: c_expr, key: k_expr, value: v_expr });
                     Ok(())
                 }
-                (CoreTy::DictStrInt | CoreTy::DictStrFloat, other) => {
+                (CoreTy::DictIntInt, CoreTy::Int) => {
+                    if v_ty != CoreTy::Int {
+                        return Err("dict values must all have the same type".to_string());
+                    }
+                    out.push(TirStmt::DictSet { dict: c_expr, key: k_expr, value: v_expr });
+                    Ok(())
+                }
+                (
+                    CoreTy::DictStrInt | CoreTy::DictStrFloat | CoreTy::DictIntInt,
+                    other,
+                ) => {
                     let _ = other;
-                    Err("dict keys must be strings".to_string())
+                    Err("dict keys must be strings or ints".to_string())
                 }
                 (CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_), _) => {
                     Err("list index must be an int".to_string())
@@ -2273,6 +2676,7 @@ fn tir_ty_of(ty: CoreTy) -> Result<TirTy, String> {
         CoreTy::ListLambda => Ok(TirTy::ListLambda),
         CoreTy::DictStrInt => Ok(TirTy::DictStrInt),
         CoreTy::DictStrFloat => Ok(TirTy::DictStrFloat),
+        CoreTy::DictIntInt => Ok(TirTy::DictIntInt),
         CoreTy::None_ => {
             Err("cannot infer a concrete local type in the core".to_string())
         }
@@ -2537,6 +2941,7 @@ fn class_member_ty(ctx: &LowerCtx, ty: &Ty) -> Result<CoreTy, String> {
         Ty::Dict(key, value) => match (key.as_ref(), value.as_ref()) {
             (Ty::Str, Ty::Int) => Ok(CoreTy::DictStrInt),
             (Ty::Str, Ty::Float) => Ok(CoreTy::DictStrFloat),
+            (Ty::Int, Ty::Int) => Ok(CoreTy::DictIntInt),
             (Ty::Str, other) => Err(format!("field of type 'dict[str, {}]' is not supported in the core", other.display())),
             (other, _) => Err(format!("field of type 'dict[{}, ...]' is not supported in the core", other.display())),
         },
@@ -2569,6 +2974,7 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         NodeKind::None => Ok((TirExpr::NoneValue, CoreTy::None_)),
         NodeKind::Dict => {
             let mut entries: Vec<(TirExpr, TirExpr)> = Vec::with_capacity(node.children.len());
+            let mut key_cty: Option<CoreTy> = None;
             let mut value_cty: Option<CoreTy> = None;
             for child in &node.children {
                 if child.kind != NodeKind::Pair {
@@ -2583,8 +2989,15 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                     .get(1)
                     .ok_or_else(|| "dict pair without a value".to_string())?;
                 let (ke, kty) = lower_expr(key_node, ctx)?;
-                if kty != CoreTy::Str {
-                    return Err("dict keys must be strings in the core".to_string());
+                if kty != CoreTy::Str && kty != CoreTy::Int {
+                    return Err("dict keys must be strings or ints in the core".to_string());
+                }
+                if let Some(prev) = key_cty {
+                    if prev != kty {
+                        return Err("dict keys must all have the same type".to_string());
+                    }
+                } else {
+                    key_cty = Some(kty);
                 }
                 let (ve, vty) = lower_expr(value_node, ctx)?;
                 if let Some(prev) = value_cty {
@@ -2599,10 +3012,11 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             if entries.is_empty() {
                 return Err("empty dict literal cannot be typed in the core".to_string());
             }
-            let ret = match value_cty.expect("non-empty dict") {
-                CoreTy::Int => CoreTy::DictStrInt,
-                CoreTy::Float => CoreTy::DictStrFloat,
-                _ => return Err("dict values must be int or float in the core".to_string()),
+            let ret = match (key_cty.expect("non-empty dict"), value_cty.expect("non-empty dict")) {
+                (CoreTy::Str, CoreTy::Int) => CoreTy::DictStrInt,
+                (CoreTy::Str, CoreTy::Float) => CoreTy::DictStrFloat,
+                (CoreTy::Int, CoreTy::Int) => CoreTy::DictIntInt,
+                _ => return Err("dict must be dict[str, int], dict[str, float] or dict[int, int] in the core".to_string()),
             };
             Ok((TirExpr::Dict(entries), ret))
         }
@@ -2617,14 +3031,15 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 .ok_or_else(|| "index without a key".to_string())?;
             let (target, tty) = lower_expr(target_node, ctx)?;
             match tty {
-                CoreTy::DictStrInt | CoreTy::DictStrFloat => {
+                CoreTy::DictStrInt | CoreTy::DictStrFloat | CoreTy::DictIntInt => {
                     let elem_cty = match tty {
-                        CoreTy::DictStrInt => CoreTy::Int,
+                        CoreTy::DictStrInt | CoreTy::DictIntInt => CoreTy::Int,
                         _ => CoreTy::Float,
                     };
+                    let expected_key = if tty == CoreTy::DictIntInt { CoreTy::Int } else { CoreTy::Str };
                     let (key, kty) = lower_expr(key_node, ctx)?;
-                    if kty != CoreTy::Str {
-                        return Err("dict key must be a string".to_string());
+                    if kty != expected_key {
+                        return Err("dict key type does not match the dict".to_string());
                     }
                     Ok((
                         TirExpr::Located {
@@ -3424,7 +3839,8 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         }
         let (arg, arg_ty) = lower_expr(&args_node.children[0], ctx)?;
         match arg_ty {
-            CoreTy::Str | CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_) | CoreTy::DictStrInt | CoreTy::DictStrFloat => {}
+            CoreTy::Str | CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_)
+            | CoreTy::DictStrInt | CoreTy::DictStrFloat | CoreTy::DictIntInt => {}
             _ => return Err("len() requires a string or collection in the core".to_string()),
         }
         return Ok((TirExpr::Len(Box::new(arg)), CoreTy::Int));
@@ -3447,8 +3863,24 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             CoreTy::Class(cid),
         ));
     }
-    if !ctx.checked.sigs.contains_key(&name) {
-        return Err(format!("call to unknown function '{name}'"));
+    // A call to a generic function is rewritten to its concrete instance.
+    let mangled = ctx.call_names.get(&node.start).cloned().map(|m| {
+        if let Some(callee) = m.strip_prefix("@dep:") {
+            // Resolve a call inside a generic body to the instance matching the
+            // enclosing instance's concrete type arguments.
+            let args = ctx.instance_args.get(&ctx.current_instance).map(|(_, a)| a.clone()).unwrap_or_default();
+            ctx.instance_args
+                .iter()
+                .find(|(_, (orig, a))| orig == callee && *a == args)
+                .map(|(name, _)| name.clone())
+                .unwrap_or_else(|| callee.to_string())
+        } else {
+            m
+        }
+    });
+    let effective = mangled.as_deref().unwrap_or(&name);
+    if !ctx.checked.sigs.contains_key(effective) {
+        return Err(format!("call to unknown function '{effective}'"));
     }
     let args_node = node
         .children
@@ -3458,8 +3890,13 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         return Err("call arguments must be positional in the core".to_string());
     }
     let args = lower_arg_list(args_node, ctx)?;
-    let Some(fn_index) = fn_index_of(ctx.checked, &name, node.start) else {
-        return Err(format!("call to non-core function '{name}'"));
+    let fn_index = if let Some(ref m) = mangled {
+        ctx.checked.functions.iter().position(|f| f.sig.name == *m)
+    } else {
+        fn_index_of(ctx.checked, &name, node.start)
+    };
+    let Some(fn_index) = fn_index else {
+        return Err(format!("call to non-core function '{effective}'"));
     };
     let fcheck = &ctx.checked.functions[fn_index];
     let Some(&tir_i) = ctx.tir_index.get(&fn_index) else {
@@ -3488,6 +3925,7 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         Ty::Dict(key, value) => match (key.as_ref(), value.as_ref()) {
             (Ty::Str, Ty::Int) => CoreTy::DictStrInt,
             (Ty::Str, Ty::Float) => CoreTy::DictStrFloat,
+            (Ty::Int, Ty::Int) => CoreTy::DictIntInt,
             _ => {
                 return Err(format!(
                     "'{name}' returns 'dict' with non-core key/value types"
@@ -3676,6 +4114,7 @@ fn ty_to_tir_simple(ty: &Ty) -> Result<TirTy, String> {
         Ty::Dict(key, value) => match (key.as_ref(), value.as_ref()) {
             (Ty::Str, Ty::Int) => TirTy::DictStrInt,
             (Ty::Str, Ty::Float) => TirTy::DictStrFloat,
+            (Ty::Int, Ty::Int) => TirTy::DictIntInt,
             (Ty::Str, other) => return Err(format!("dict[str, {}] field is not supported", other.display())),
             (other, _) => return Err(format!("dict[{}, ...] field is not supported", other.display())),
         },
@@ -3755,7 +4194,8 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
         }
         TirExpr::Len(arg) => {
             match expr_ty(arg, f, program, locals)? {
-                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat => {
+                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)
+                | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt => {
                     Ok(TirTy::Int)
                 }
                 _ => Err("len() requires a string or collection in the core".to_string()),
@@ -3776,10 +4216,19 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             if entries.is_empty() {
                 return Err("empty dict literal cannot be typed in the core".to_string());
             }
+            let mut kty = None;
             let mut vty = None;
             for (key, value) in entries {
-                if expr_ty(key, f, program, locals)? != TirTy::Str {
-                    return Err("dict keys must be strings".to_string());
+                let k = expr_ty(key, f, program, locals)?;
+                if k != TirTy::Str && k != TirTy::Int {
+                    return Err("dict keys must be strings or ints".to_string());
+                }
+                if let Some(prev) = kty {
+                    if prev != k {
+                        return Err("dict keys must all have the same type".to_string());
+                    }
+                } else {
+                    kty = Some(k);
                 }
                 let t = expr_ty(value, f, program, locals)?;
                 if let Some(prev) = vty {
@@ -3790,20 +4239,22 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     vty = Some(t);
                 }
             }
-            match vty {
-                Some(TirTy::Int) => Ok(TirTy::DictStrInt),
-                Some(TirTy::Float) => Ok(TirTy::DictStrFloat),
-                _ => Err("dict values must be int or float in the core".to_string()),
+            match (kty, vty) {
+                (Some(TirTy::Str), Some(TirTy::Int)) => Ok(TirTy::DictStrInt),
+                (Some(TirTy::Str), Some(TirTy::Float)) => Ok(TirTy::DictStrFloat),
+                (Some(TirTy::Int), Some(TirTy::Int)) => Ok(TirTy::DictIntInt),
+                _ => Err("dict must be dict[str, int], dict[str, float] or dict[int, int] in the core".to_string()),
             }
         }
         TirExpr::DictGet(target, key) => {
-            if expr_ty(key, f, program, locals)? != TirTy::Str {
-                return Err("dict key must be a string".to_string());
-            }
+            let key_ty = expr_ty(key, f, program, locals)?;
             match expr_ty(target, f, program, locals)? {
-                TirTy::DictStrInt => Ok(TirTy::Int),
-                TirTy::DictStrFloat => Ok(TirTy::Float),
-                _ => Err("indexing requires a dict[str, int] or dict[str, float]".to_string()),
+                TirTy::DictStrInt if key_ty == TirTy::Str => Ok(TirTy::Int),
+                TirTy::DictStrFloat if key_ty == TirTy::Str => Ok(TirTy::Float),
+                TirTy::DictIntInt if key_ty == TirTy::Int => Ok(TirTy::Int),
+                _ => Err(
+                    "indexing requires a dict[str, int], dict[str, float] or dict[int, int]".to_string(),
+                ),
             }
         }
         TirExpr::ClassNew { name, args, ret } => {
@@ -3988,7 +4439,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             let b = expr_ty(rhs, f, program, locals)?;
             let numeric_pair = matches!((a, b), (TirTy::Int, TirTy::Int) | (TirTy::Int, TirTy::Float) | (TirTy::Float, TirTy::Int) | (TirTy::Float, TirTy::Float));
             if numeric_pair
-                || (same_ty(a, b) && !matches!(a, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::Class(_)))
+                || (same_ty(a, b) && !matches!(a, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_)))
             {
                 return Ok(TirTy::Bool);
             }
@@ -4003,7 +4454,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Bool => Err("negation of bool".to_string()),
                     TirTy::Str => Err("negation of str".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
-                    | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
+                    | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
                         Err("negation of collection or class instance".to_string())
                     }
                 },
@@ -4013,7 +4464,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Float => Err("'not' requires a bool or int".to_string()),
                     TirTy::Str => Err("'not' requires a bool or int".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
-                    | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
+                    | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
                         Err("'not' requires a bool or int".to_string())
                     }
                 },
@@ -4061,6 +4512,7 @@ fn param_name(ty: TirTy) -> &'static str {
         TirTy::ListClass(_) => "list[class]",
         TirTy::DictStrInt => "dict[str, int]",
         TirTy::DictStrFloat => "dict[str, float]",
+        TirTy::DictIntInt => "dict[int, int]",
         TirTy::Class(_) => "class",
         TirTy::ErrorObj => "error-obj",
         TirTy::Lambda(_) => "lambda",
@@ -4186,13 +4638,14 @@ fn validate_stmt(
             TirStmt::DictSet { dict, key, value } => {
                 let dict_ty = expr_ty(dict, f, program, locals)?;
                 let key_ty = expr_ty(key, f, program, locals)?;
-                if key_ty != TirTy::Str {
-                    return Err("dict key must be a string".to_string());
-                }
-                let elem_ty = match dict_ty {
-                    TirTy::DictStrInt => TirTy::Int,
-                    TirTy::DictStrFloat => TirTy::Float,
-                    _ => return Err("index assignment requires a dict[str, int] or dict[str, float]".to_string()),
+                let elem_ty = match (dict_ty, key_ty) {
+                    (TirTy::DictStrInt, TirTy::Str) => TirTy::Int,
+                    (TirTy::DictStrFloat, TirTy::Str) => TirTy::Float,
+                    (TirTy::DictIntInt, TirTy::Int) => TirTy::Int,
+                    _ => return Err(
+                        "index assignment requires a dict[str, int], dict[str, float] or dict[int, int]"
+                            .to_string(),
+                    ),
                 };
                 if expr_ty(value, f, program, locals)? != elem_ty {
                     return Err("dict values must all have the same type".to_string());

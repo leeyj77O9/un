@@ -369,10 +369,10 @@ fn native(args: &[String]) {
             exit(1);
         }
     };
-    let failed = unvm::natcode::native_compile(program.id, &program, &lowered);
-    for name in &failed {
-        eprintln!("warning: '{name}' could not be natively compiled; the VM runs it in the interpreter");
-    }
+    // Falling back to the interpreter is normal in Vm mode (Str/heap/native
+    // calls are not emitted there). Stay silent so `un run` and `un native`
+    // produce byte-identical output.
+    let _failed = unvm::natcode::native_compile(program.id, &program, &lowered);
     let mut vm = match VM::new(Rc::new(program), source.clone()) {
         Ok(vm) => vm,
         Err(message) => {

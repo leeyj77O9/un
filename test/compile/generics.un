@@ -1,0 +1,52 @@
+use io
+use test.assert as assert
+
+# Function generics: type variables, call-site inference, substitution into
+# the result type, and erasure to `any` for the interpreter.
+
+fn identity[T](x: T) -> T
+    y: T = x
+    -> y
+
+fn pair[A, B](a: A, b: B) -> tuple[A, B]
+    -> (a, b)
+
+fn first_of[A, B](p: tuple[A, B]) -> A
+    -> p[0]
+
+fn head[T](xs: list[T]) -> T
+    -> xs[0]
+
+fn twice[T](x: T, f: any) -> T
+    -> f(f(x))
+
+# Nested and recursive generic calls resolve to the enclosing instance.
+fn nest[T](x: T) -> T
+    -> identity(identity(x))
+
+fn countdown[T](n: int, x: T) -> T
+    if n == 0
+        -> x
+    -> countdown(n - 1, identity(x))
+
+# Numeric bound: only int/float instantiations are accepted.
+fn add[T: numeric](a: T, b: T) -> T
+    -> a + b
+
+assert.assert_eq(identity(42) + 1, 43, "generic int inference")
+assert.assert_eq(identity("hi") + "!", "hi!", "generic str inference")
+assert.assert_eq(pair(1, "a")[1], "a", "two type parameters")
+assert.assert_eq(first_of((7, "x")), 7, "generic tuple parameter")
+assert.assert_eq(head([3, 4, 5]), 3, "generic list element inference")
+assert.assert_eq(twice(4, identity), 4, "generic passed as a callback value")
+assert.assert_eq(identity[int](11), 11, "explicit type arguments")
+assert.assert_eq(nest(5), 5, "nested generic calls")
+assert.assert_eq(countdown(5, 7), 7, "recursive generic call")
+assert.assert_eq(add(3, 4), 7, "numeric bound with int")
+assert.assert_eq(add(1.5, 2.5), 4.0, "numeric bound with float")
+# Exact type checks catch wrong-instance JIT dispatch (assert_eq's == is
+# permissive about int vs float).
+assert.assert_true(type(add(3, 4)) == type(1), "int instance type")
+assert.assert_true(type(add(1.5, 2.5)) == type(1.0), "float instance type")
+assert.assert_true(type(nest(5)) == type(1), "nested instance type")
+io.write("generics OK")

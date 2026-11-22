@@ -52,8 +52,10 @@ Design goals:
 
 ### Type system (experimental)
 
-- Optional type annotations: `x: int`, `a: list[int]`, `dict[str, int]`, `int | str`
+- Optional type annotations: `x: int`, `a: list[int]`, `dict[str, int]`, `dict[int, int]`, `int | str`
   parameter types and return types (`fn add(a: int, b: int) -> int`)
+- **Generics**: `fn identity[T](x: T) -> T`, `class Box[T]` — type arguments are inferred at call
+  sites; explicit `identity[int](42)` is also supported. Bounds such as `[T: numeric]` can be specified.
 - Annotations are currently used for readability and gradual checking; strict runtime enforcement is being strengthened
 
 ### Concurrency (stable)
@@ -192,6 +194,28 @@ enum Color
 
 io.write(Color.RED, Color.GREEN, Color.BLUE)   # 0 1 2
 ```
+
+Variants can also carry a payload, similar to Rust enums but with indentation
+and a `name: type` declaration. Type parameters (`[T, U]`) are supported.
+
+```un
+enum Test[T, U]
+    a: int
+    b: T
+    c: tuple[int, U]
+
+x = Test.a(42)
+io.write(x)             # Test.a(42)
+io.write(x.value)       # 42
+```
+
+- Construct with `Test.a(42)` and read the payload with `.value`.
+- Two values are `==` when the enum, variant and payload all match; they also
+  work as dictionary keys.
+- `match x { Test.a(v) -> v, Test.b(v) -> v, _ -> 0 }` destructures the payload.
+- Field types are checked statically by `un check` and erased by `un run`.
+- Enums with data variants execute through the Compile Mode VM path; the
+  no-VM `un build` path does not support them.
 
 The `..` operator builds a half-open range and does not materialize the values
 eagerly. Its precedence sits between addition and comparison, so `1 + 2..10`
