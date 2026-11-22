@@ -9,6 +9,14 @@ use std::rc::Rc;
 const MAX_ERRORS: usize = 50;
 const MAX_ALIAS_DEPTH: usize = 8;
 
+/// FE-01 adds `NodeKind::{TypeAlias, Guard, OrPattern, Bytes}` in parallel.
+/// This worktree does not own `ast.rs`, so matching the derived `Debug` name
+/// keeps this module source-compatible both before and after those variants
+/// land (and avoids depending on their exact discriminants).
+fn kind_is(node: &Node, name: &str) -> bool {
+    format!("{:?}", node.kind) == name
+}
+
 
 #[derive(Clone, PartialEq)]
 pub enum Ty {
@@ -16,6 +24,10 @@ pub enum Ty {
     Float,
     Bool,
     Str,
+    /// Binary byte string produced by `bytes.*` / `fs.read_bytes` (NAT-07).
+    /// It is a distinct static type so binary data is not silently treated as
+    /// `str` or `list[int]`. Runtime representation is owned by RT-03/NAT-07.
+    Bytes,
     None_,
     List(Rc<Ty>),
     Dict(Rc<Ty>, Rc<Ty>),
@@ -79,6 +91,7 @@ impl Ty {
             Ty::Float => "float".to_string(),
             Ty::Bool => "bool".to_string(),
             Ty::Str => "str".to_string(),
+            Ty::Bytes => "bytes".to_string(),
             Ty::None_ => "none".to_string(),
             Ty::List(item) => format!("list[{}]", item.display()),
             Ty::Dict(k, v) => format!("dict[{}, {}]", k.display(), v.display()),
@@ -360,6 +373,7 @@ impl<'a> Checker<'a> {
             "float" => Some(Ty::Float),
             "bool" => Some(Ty::Bool),
             "str" => Some(Ty::Str),
+            "bytes" => Some(Ty::Bytes),
             "none" => Some(Ty::None_),
             "any" => Some(Ty::Any),
             _ => {
@@ -447,6 +461,7 @@ impl<'a> Checker<'a> {
             "float" => Ty::Float,
             "bool" => Ty::Bool,
             "str" => Ty::Str,
+            "bytes" => Ty::Bytes,
             "none" => Ty::None_,
             "any" => Ty::Any,
             n if is_fixed_width_alias(n) => {
@@ -645,6 +660,10 @@ impl<'a> Checker<'a> {
     }
 
     fn collect_stmt(&mut self, node: &'a Node) {
+        if kind_is(node, "TypeAlias") {
+            self.collect_type_alias_shape(node);
+            return;
+        }
         match node.kind {
             NodeKind::Function | NodeKind::Extension => {
                 self.collect_function_decl(node);
@@ -912,6 +931,29 @@ impl<'a> Checker<'a> {
                 self.import_names.push(name);
             }
         }
+    }
+
+    /// Wiring point for FE-01's explicit `type Name = Ty` declaration node.
+    ///
+    /// Kept shape-based (no `NodeKind::TypeAlias` reference) so this compiles
+    /// before the syntax node lands. The expected shape is `children[0]` =
+    /// alias name identifier, `children[1]` = type expression. ARC-00 only
+    /// needs to add one `collect_stmt`/`collect_nested_stmt` arm that calls
+    /// this method once FE-01 introduces the node. The legacy implicit alias
+    /// (`Name = int | str`) keeps working through `collect_module_var`.
+    pub fn collect_type_alias_shape(&mut self, node: &'a Node) {
+        if node.children.len() < 2 {
+            return;
+        }
+        let name = self.text_of(&node.children[0]);
+        if name.is_empty() {
+            return;
+        }
+        let ty = self.parse_annotation_node(&node.children[1]);
+        if matches!(ty, Ty::Unknown) {
+            return;
+        }
+        self.aliases.insert(name, ty);
     }
 
     fn collect_module_var(&mut self, node: &'a Node) {
@@ -1790,6 +1832,11 @@ impl<'a> Checker<'a> {
     }
 
     fn check_stmt(&mut self, node: &'a Node, env: &mut Env) {
+        // A type alias is a declaration, not a value: its children are the
+        // name and the type-expression text, never expressions to evaluate.
+        if kind_is(node, "TypeAlias") {
+            return;
+        }
         match node.kind {
             NodeKind::Block => self.check_block(node, env),
             NodeKind::Assign => self.check_assign(node, env),
@@ -2272,6 +2319,77 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// FE-01 represents `case p if cond -> body` as
+    /// `Case[Guard[p, cond], body]`; `Case.children[1]` stays the body.
+    fn case_pattern_and_guard<'n>(&self, case: &'n Node) -> (&'n Node, Option<&'n Node>) {
+        let Some(first) = case.children.first() else {
+            return (case, None);
+        };
+        if kind_is(first, "Guard") {
+            (
+                first.children.first().unwrap_or(first),
+                first.children.get(1),
+            )
+        } else {
+            (first, None)
+        }
+    }
+
+    /// Collect static narrowing facts from a condition. Only `and`-joined
+    /// `is` / `is not` tests on identifiers with a resolvable static type are
+    /// considered; everything else is deliberately ignored (no false facts).
+    fn narrowing_facts(&self, cond: &Node, env: &Env) -> Vec<NarrowFact> {
+        let mut out = Vec::new();
+        self.collect_narrowing(cond, env, &mut out);
+        out
+    }
+
+    fn collect_narrowing(&self, cond: &Node, env: &Env, out: &mut Vec<NarrowFact>) {
+        if cond.kind == NodeKind::Binary && cond.op == Some(TokenType::And) {
+            if cond.children.len() == 2 {
+                self.collect_narrowing(&cond.children[0], env, out);
+                self.collect_narrowing(&cond.children[1], env, out);
+            }
+            return;
+        }
+        if cond.kind != NodeKind::Binary
+            || !matches!(cond.op, Some(TokenType::Is) | Some(TokenType::IsNot))
+            || cond.children.len() != 2
+        {
+            return;
+        }
+        let lhs = &cond.children[0];
+        let rhs = &cond.children[1];
+        if lhs.kind != NodeKind::Identifier {
+            return;
+        }
+        let name = self.text_of(lhs);
+        let Some(current) = env.lookup(&name).cloned() else {
+            return;
+        };
+        let Some(test) = is_type_rhs(self, rhs) else {
+            return;
+        };
+        let positive = intersect_ty(&current, &test);
+        let negative = subtract_ty(&current, &test);
+        let (when_true, when_false) = if cond.op == Some(TokenType::Is) {
+            (
+                positive.unwrap_or_else(|| current.clone()),
+                negative.unwrap_or(current),
+            )
+        } else {
+            (
+                negative.unwrap_or_else(|| current.clone()),
+                positive.unwrap_or(current),
+            )
+        };
+        out.push(NarrowFact {
+            name,
+            when_true,
+            when_false,
+        });
+    }
+
     fn check_if(&mut self, node: &'a Node, env: &mut Env) {
         if node.kind == NodeKind::If && has_if_cases(node) {
             self.check_if_branches(node, env);
@@ -2286,9 +2404,11 @@ impl<'a> Checker<'a> {
             self.check_condition(cond, env);
         }
         let base = env.clone();
+        let facts = cond.map(|c| self.narrowing_facts(c, &base)).unwrap_or_default();
         let mut arm_envs: Vec<Env> = Vec::new();
         if let Some(body) = body {
             let mut arm = base.fork();
+            apply_narrow(&mut arm, &facts, true);
             self.check_block_no_terminate_reset(body, &mut arm);
             arm_envs.push(arm);
         } else {
@@ -2296,6 +2416,7 @@ impl<'a> Checker<'a> {
         }
         if let Some(else_branch) = else_branch {
             let mut arm = base.fork();
+            apply_narrow(&mut arm, &facts, false);
             self.check_stmt(else_branch, &mut arm);
             arm_envs.push(arm);
         } else {
@@ -2308,6 +2429,9 @@ impl<'a> Checker<'a> {
     fn check_if_branches(&mut self, node: &'a Node, env: &mut Env) {
         let base = env.clone();
         let mut arm_envs: Vec<Env> = Vec::new();
+        // Facts accumulated from earlier conditions being false; each `elif`
+        // body also sees its own condition as true, and `else` sees all false.
+        let mut prior_false: Vec<NarrowFact> = Vec::new();
         for child in &node.children {
             match child.kind {
                 NodeKind::Branch | NodeKind::ElIf | NodeKind::IfCase => {
@@ -2317,6 +2441,12 @@ impl<'a> Checker<'a> {
                         self.check_condition(cond, env);
                     }
                     let mut arm = base.fork();
+                    apply_narrow(&mut arm, &prior_false, false);
+                    if let Some(cond) = cond {
+                        let facts = self.narrowing_facts(cond, &arm);
+                        apply_narrow(&mut arm, &facts, true);
+                        prior_false.extend(facts);
+                    }
                     if let Some(body) = body {
                         self.check_block_no_terminate_reset(body, &mut arm);
                     }
@@ -2324,6 +2454,7 @@ impl<'a> Checker<'a> {
                 }
                 NodeKind::Else => {
                     let mut arm = base.fork();
+                    apply_narrow(&mut arm, &prior_false, false);
                     for body in &child.children {
                         self.check_block_no_terminate_reset(body, &mut arm);
                     }
@@ -2351,6 +2482,10 @@ impl<'a> Checker<'a> {
         }
         let base = env.clone();
         let mut arm = base.fork();
+        if let Some(cond) = cond {
+            let facts = self.narrowing_facts(cond, &base);
+            apply_narrow(&mut arm, &facts, true);
+        }
         arm.loop_depth += 1;
         if let Some(body) = node.children.get(1) {
             self.check_block_no_terminate_reset(body, &mut arm);
@@ -2524,12 +2659,15 @@ impl<'a> Checker<'a> {
                 continue;
             }
             any_arm = true;
-            let Some(pattern) = child.children.first() else {
-                continue;
-            };
+            let (pattern, guard) = self.case_pattern_and_guard(child);
             let body = child.children.get(1);
             let mut arm = base.fork();
             self.check_pattern(pattern, &scrut_ty, &mut arm);
+            if let Some(guard) = guard {
+                self.check_condition(guard, &mut arm);
+                let facts = self.narrowing_facts(guard, &arm);
+                apply_narrow(&mut arm, &facts, true);
+            }
             if let Some(body) = body {
                 if body.kind == NodeKind::Block {
                     self.check_block_no_terminate_reset(body, &mut arm);
@@ -2546,36 +2684,81 @@ impl<'a> Checker<'a> {
         *env = merged;
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn collect_pattern_coverage(
+        &mut self,
+        pattern: &'a Node,
+        has_wildcard: &mut bool,
+        has_bool_true: &mut bool,
+        has_bool_false: &mut bool,
+        has_none: &mut bool,
+        typed: &mut Vec<Ty>,
+    ) {
+        if kind_is(pattern, "OrPattern") {
+            for alt in &pattern.children {
+                self.collect_pattern_coverage(
+                    alt,
+                    has_wildcard,
+                    has_bool_true,
+                    has_bool_false,
+                    has_none,
+                    typed,
+                );
+            }
+            return;
+        }
+        match pattern.kind {
+            NodeKind::Wildcard | NodeKind::Identifier => *has_wildcard = true,
+            NodeKind::Boolean => match pattern.value.as_ref() {
+                Some(Const::Bool(true)) => *has_bool_true = true,
+                Some(Const::Bool(false)) => *has_bool_false = true,
+                _ => {}
+            },
+            NodeKind::None => *has_none = true,
+            NodeKind::Typed if pattern.children.len() == 2 => {
+                typed.push(self.parse_annotation_node(&pattern.children[1]));
+            }
+            _ => {}
+        }
+    }
+
     fn check_match_exhaustive(&mut self, node: &'a Node, scrut_ty: &Ty) {
         let mut has_wildcard = false;
         let mut has_bool_true = false;
         let mut has_bool_false = false;
         let mut has_none = false;
+        // A binding pattern (`x` / `x: T`) matches every value of its type, so
+        // it can discharge a type-level coverage obligation just like `_`.
+        let mut typed: Vec<Ty> = Vec::new();
         for child in &node.children {
             if child.kind != NodeKind::Case {
                 continue;
             }
-            let Some(pattern) = child.children.first() else {
+            let (pattern, guard) = self.case_pattern_and_guard(child);
+            // A guarded arm may fall through at runtime, so it cannot
+            // discharge a static exhaustiveness obligation.
+            if guard.is_some() {
                 continue;
-            };
-            match pattern.kind {
-                NodeKind::Wildcard => has_wildcard = true,
-                NodeKind::Boolean => match pattern.value.as_ref() {
-                    Some(Const::Bool(true)) => has_bool_true = true,
-                    Some(Const::Bool(false)) => has_bool_false = true,
-                    _ => {}
-                },
-                NodeKind::None => has_none = true,
-                _ => {}
             }
+            self.collect_pattern_coverage(
+                pattern,
+                &mut has_wildcard,
+                &mut has_bool_true,
+                &mut has_bool_false,
+                &mut has_none,
+                &mut typed,
+            );
         }
         if has_wildcard {
             return;
         }
+        let bool_covered = (has_bool_true && has_bool_false)
+            || typed.iter().any(|t| ty_covers(t, &Ty::Bool));
+        let none_covered = has_none || typed.iter().any(|t| ty_covers(t, &Ty::None_));
         let scrutinee = node.children.first();
         match scrut_ty {
             Ty::None_ => {
-                if !has_none {
+                if !none_covered {
                     self.error_match_exhaustive(
                         node,
                         scrutinee,
@@ -2584,7 +2767,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Ty::Bool => {
-                if !(has_bool_true && has_bool_false) {
+                if !bool_covered {
                     self.error_match_exhaustive(
                         node,
                         scrutinee,
@@ -2592,14 +2775,41 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
-            Ty::Int | Ty::Float | Ty::Str | Ty::Unknown | Ty::Any | Ty::Union(_) | Ty::Tuple(_)
-            | Ty::Generic { .. }
-                if !matches!(scrut_ty, Ty::Bool) => {
-                self.error_match_exhaustive(
-                    node,
-                    scrutinee,
-                    "expected a wildcard '_' arm; the match arms do not cover every case",
-                );
+            Ty::Union(members) => {
+                let uncovered: Vec<Ty> = members
+                    .iter()
+                    .filter(|member| {
+                        let covered = match member {
+                            Ty::Bool => bool_covered,
+                            Ty::None_ => none_covered,
+                            other => typed.iter().any(|t| ty_covers(t, other)),
+                        };
+                        !covered
+                    })
+                    .cloned()
+                    .collect();
+                if !uncovered.is_empty() {
+                    let names = uncovered
+                        .iter()
+                        .map(|t| t.display())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.error_match_exhaustive(
+                        node,
+                        scrutinee,
+                        &format!("union arms do not cover: {names}"),
+                    );
+                }
+            }
+            Ty::Int | Ty::Float | Ty::Str | Ty::Unknown | Ty::Any | Ty::Tuple(_)
+            | Ty::Generic { .. } => {
+                if !typed.iter().any(|t| ty_covers(t, scrut_ty)) {
+                    self.error_match_exhaustive(
+                        node,
+                        scrutinee,
+                        "expected a wildcard '_' arm; the match arms do not cover every case",
+                    );
+                }
             }
             _ => {}
         }
@@ -2612,7 +2822,94 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// `Call` patterns come in two shapes (FE-01 contract): a class pattern
+    /// `Name(a, b)` and an enum pattern `Enum.variant(a, b)`. Both carry a
+    /// `Tuple` of nested sub-patterns; named fields use `Pair[name, pattern]`.
+    fn check_call_pattern(&mut self, pattern: &'a Node, scrut: &Ty, env: &mut Env) {
+        let Some(callee) = pattern.children.first() else {
+            self.error(pattern, "invalid structural pattern (expected Name(..) or Enum.variant(..))");
+            return;
+        };
+        let Some(args) = pattern.children.get(1) else {
+            self.error(pattern, "structural pattern expects a Tuple of fields");
+            return;
+        };
+        let items: Vec<&'a Node> = if args.kind == NodeKind::Tuple {
+            args.children.iter().collect()
+        } else {
+            vec![args]
+        };
+
+        if callee.kind == NodeKind::Identifier {
+            let name = self.text_of(callee);
+            let Some(info) = self.classes.get(&name).cloned() else {
+                self.error(callee, format!("unknown class pattern '{name}'"));
+                return;
+            };
+            if let Ty::Class(actual) = scrut {
+                if actual.as_ref() != &name && !is_subclass_with(&self.classes, actual, &name) {
+                    self.error(
+                        pattern,
+                        format!("class pattern '{name}' does not match scrutinee of type '{scrut}'"),
+                    );
+                }
+            }
+            let order = info.field_order.clone();
+            for (index, item) in items.iter().enumerate() {
+                let (field, sub) = if item.kind == NodeKind::Pair && item.children.len() == 2 {
+                    (self.text_of(&item.children[0]), &item.children[1])
+                } else {
+                    (order.get(index).cloned().unwrap_or_default(), *item)
+                };
+                let field_ty = info.fields.get(&field).cloned().unwrap_or(Ty::Any);
+                self.check_pattern(sub, &field_ty, env);
+            }
+            return;
+        }
+
+        let Some((enum_name, variant, field, generics)) = self.enum_call_info(callee) else {
+            self.error(pattern, "invalid enum variant pattern (expected Enum.variant(pattern))");
+            return;
+        };
+        let Some(field) = field else {
+            self.error(callee, format!("'{enum_name}' object has no attribute '{variant}'"));
+            return;
+        };
+        let subst: HashMap<u32, Ty> = generics.iter().map(|(_, id)| (*id, Ty::Any)).collect();
+        let binding_ty = substitute_generic(&field, &subst);
+        if items.len() == 1 {
+            self.check_pattern(items[0], &binding_ty, env);
+            return;
+        }
+        let field_types: Vec<Ty> = match &binding_ty {
+            Ty::Tuple(inner) => inner.iter().cloned().collect(),
+            _ => vec![Ty::Any; items.len()],
+        };
+        for (item, ty) in items.iter().zip(field_types) {
+            self.check_pattern(item, &ty, env);
+        }
+    }
+
     fn check_pattern(&mut self, pattern: &'a Node, scrut: &Ty, env: &mut Env) {
+        // FE-01 or-pattern: check every alternative against the same scrutinee
+        // and keep only bindings declared by all alternatives (a binding that
+        // exists in just one arm cannot be referenced after the match).
+        if kind_is(pattern, "OrPattern") {
+            if pattern.children.is_empty() {
+                self.error(pattern, "or-pattern needs at least one alternative");
+                return;
+            }
+            let base = env.clone();
+            let mut arm_envs: Vec<Env> = Vec::new();
+            for alt in &pattern.children {
+                let mut arm = base.fork();
+                self.check_pattern(alt, scrut, &mut arm);
+                arm_envs.push(arm);
+            }
+            let merged = merge_arms(&base, &arm_envs);
+            *env = merged;
+            return;
+        }
         match pattern.kind {
             NodeKind::Wildcard => {
             }
@@ -2633,30 +2930,46 @@ impl<'a> Checker<'a> {
                     self.check_pattern(item, &elem, env);
                 }
             }
-            NodeKind::Call => {
-                let Some(callee) = pattern.children.first() else {
-                    self.error(pattern, "invalid enum variant pattern (expected Enum.variant(pattern))");
-                    return;
+            NodeKind::List => {
+                // A list pattern decomposes a `list[T]`; nested patterns in the
+                // elements are checked against `T` recursively.
+                let elem = match scrut {
+                    Ty::List(inner) => (**inner).clone(),
+                    Ty::Any => Ty::Any,
+                    _ => {
+                        self.error(pattern, format!("list pattern does not match type '{}'", scrut));
+                        Ty::Unknown
+                    }
                 };
-                let Some((enum_name, variant, field, generics)) = self.enum_call_info(callee) else {
-                    self.error(pattern, "invalid enum variant pattern (expected Enum.variant(pattern))");
-                    return;
-                };
-                let Some(field) = field else {
-                    self.error(callee, format!("'{enum_name}' object has no attribute '{variant}'"));
-                    return;
-                };
-                let Some(args) = pattern.children.get(1) else {
-                    self.error(pattern, "enum variant pattern expects exactly one value");
-                    return;
-                };
-                if args.children.len() != 1 {
-                    self.error(pattern, "enum variant pattern expects exactly one value");
-                    return;
+                for item in &pattern.children {
+                    self.check_pattern(item, &elem, env);
                 }
-                let subst: HashMap<u32, Ty> = generics.iter().map(|(_, id)| (*id, Ty::Any)).collect();
-                let binding_ty = substitute_generic(&field, &subst);
-                self.check_pattern(&args.children[0], &binding_ty, env);
+            }
+            NodeKind::Typed if pattern.children.len() == 2 => {
+                // `case x: int -> ...` binds `x` at the annotated type. The
+                // runtime treats it as `Bind`, so the annotation is a static
+                // assertion rather than a runtime type test.
+                let annotated = self.parse_annotation_node(&pattern.children[1]);
+                if !matches!(scrut, Ty::Any | Ty::Unknown)
+                    && !matches_pattern_ty(&annotated, scrut)
+                {
+                    self.error(
+                        pattern,
+                        format!(
+                            "type pattern '{}' does not match scrutinee of type '{}'",
+                            annotated, scrut
+                        ),
+                    );
+                }
+                self.check_pattern(&pattern.children[0], &annotated, env);
+            }
+            NodeKind::Call => self.check_call_pattern(pattern, scrut, env),
+
+            NodeKind::Pair if pattern.children.len() == 2 => {
+                // Named field inside a structural pattern. The enclosing class
+                // or enum pattern supplies the precise field type; without a
+                // known field this is conservatively `any`.
+                self.check_pattern(&pattern.children[1], &Ty::Any, env);
             }
             _ => {
                 let lit = literal_ty(pattern).unwrap_or(Ty::Any);
@@ -2738,6 +3051,9 @@ fn iter_range_call<'a>(node: &'a Node, source: &Source) -> Option<&'a Node> {
 }
 
 fn literal_ty(node: &Node) -> Option<Ty> {
+    if kind_is(node, "Bytes") {
+        return Some(Ty::Bytes);
+    }
     match node.kind {
         NodeKind::Integer => Some(Ty::Int),
         NodeKind::Float => Some(Ty::Float),
@@ -2751,7 +3067,7 @@ fn literal_ty(node: &Node) -> Option<Ty> {
 fn matches_pattern_ty(lit: &Ty, scrut: &Ty) -> bool {
     match (lit, scrut) {
         (_, Ty::Any) | (Ty::Any, _) => true,
-        (Ty::Int, Ty::Int) | (Ty::Float, Ty::Float) | (Ty::Bool, Ty::Bool) | (Ty::Str, Ty::Str) | (Ty::None_, Ty::None_) => true,
+        (Ty::Int, Ty::Int) | (Ty::Float, Ty::Float) | (Ty::Bool, Ty::Bool) | (Ty::Str, Ty::Str) | (Ty::Bytes, Ty::Bytes) | (Ty::None_, Ty::None_) => true,
         (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => true,
         (Ty::Union(members), _) => members.iter().any(|m| matches_pattern_ty(m, scrut)),
         (_, Ty::Union(members)) => members.iter().any(|m| matches_pattern_ty(lit, m)),
@@ -2759,10 +3075,140 @@ fn matches_pattern_ty(lit: &Ty, scrut: &Ty) -> bool {
     }
 }
 
+/// Best-effort static type denoted by the right-hand side of `x is T`.
+/// A dynamic type value (a variable holding `type(x)`) is not resolvable.
+fn is_type_rhs(checker: &Checker<'_>, rhs: &Node) -> Option<Ty> {
+    if rhs.kind != NodeKind::Identifier {
+        return None;
+    }
+    let name = checker.text_of(rhs);
+    Some(match name.as_str() {
+        "int" => Ty::Int,
+        "float" => Ty::Float,
+        "bool" => Ty::Bool,
+        "str" => Ty::Str,
+        "bytes" => Ty::Bytes,
+        "none" => Ty::None_,
+        "any" => Ty::Any,
+        "list" => Ty::list(Ty::Any),
+        "set" => Ty::Set(Rc::new(Ty::Any)),
+        "dict" => Ty::dict(Ty::Any, Ty::Any),
+        other => {
+            if let Some(ty) = checker.aliases.get(other) {
+                ty.clone()
+            } else if checker.classes.contains_key(other) {
+                Ty::Class(Rc::from(other))
+            } else {
+                return None;
+            }
+        }
+    })
+}
+
+/// Intersect two types for narrowing purposes. `None` means the combination
+/// is empty (an unreachable branch).
+fn intersect_ty(a: &Ty, b: &Ty) -> Option<Ty> {
+    if matches!(a, Ty::Any) {
+        return Some(b.clone());
+    }
+    if matches!(b, Ty::Any) {
+        return Some(a.clone());
+    }
+    if let Ty::Union(members) = a {
+        let parts: Vec<Ty> = members.iter().filter_map(|m| intersect_ty(m, b)).collect();
+        return if parts.is_empty() { None } else { Some(Ty::union(parts)) };
+    }
+    if let Ty::Union(members) = b {
+        let parts: Vec<Ty> = members.iter().filter_map(|m| intersect_ty(a, m)).collect();
+        return if parts.is_empty() { None } else { Some(Ty::union(parts)) };
+    }
+    if a == b {
+        return Some(a.clone());
+    }
+    // `int` and `float` are disjoint runtime tags under `is` semantics.
+    if matches!((a, b), (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int)) {
+        return None;
+    }
+    None
+}
+
+/// Remove `b` from `a`. `None` means nothing remains. `Any` is treated as an
+/// open domain and never narrowed by subtraction.
+fn subtract_ty(a: &Ty, b: &Ty) -> Option<Ty> {
+    if matches!(a, Ty::Any) {
+        return Some(Ty::Any);
+    }
+    if matches!(b, Ty::Any) {
+        return None;
+    }
+    if let Ty::Union(members) = a {
+        let parts: Vec<Ty> = members.iter().filter_map(|m| subtract_ty(m, b)).collect();
+        return if parts.is_empty() { None } else { Some(Ty::union(parts)) };
+    }
+    if let Ty::Union(members) = b {
+        let mut current = a.clone();
+        for member in members.iter() {
+            match subtract_ty(&current, member) {
+                Some(next) => current = next,
+                None => return None,
+            }
+        }
+        return Some(current);
+    }
+    if a == b {
+        return None;
+    }
+    // Class inheritance is left intact: the declared static type stays valid
+    // when a superclass test fails only for unrelated classes.
+    Some(a.clone())
+}
+
+/// True when a pattern's static type covers the whole scrutinee type. `Any`
+/// is open and is never covered by a concrete annotation.
+fn ty_covers(covered: &Ty, scrut: &Ty) -> bool {
+    if matches!(covered, Ty::Any) {
+        return true;
+    }
+    if let Ty::Union(members) = scrut {
+        return members.iter().all(|m| ty_covers(covered, m));
+    }
+    covered == scrut
+}
+
+/// One fact recovered from a condition: `name` is `when_true` when the
+/// condition holds and `when_false` when it does not.
+#[derive(Clone)]
+struct NarrowFact {
+    name: String,
+    when_true: Ty,
+    when_false: Ty,
+}
+
+fn apply_narrow(env: &mut Env, facts: &[NarrowFact], positive: bool) {
+    for fact in facts {
+        let ty = if positive { &fact.when_true } else { &fact.when_false };
+        env.set_existing(&fact.name, ty.clone());
+    }
+}
+
 
 
 impl<'a> Checker<'a> {
     fn check_expr(&mut self, node: &'a Node, env: &mut Env) -> Ty {
+        // FE-01 syntax nodes (forward-compatible kind checks; see `kind_is`).
+        if kind_is(node, "TypeAlias") {
+            return Ty::None_;
+        }
+        if kind_is(node, "Bytes") {
+            for child in &node.children {
+                if let Some(Const::Int(v)) = child.value.as_ref() {
+                    if !(0..=255).contains(v) {
+                        self.error(child, "byte literal must be in 0..=255");
+                    }
+                }
+            }
+            return Ty::Bytes;
+        }
         match node.kind {
             NodeKind::Integer => Ty::Int,
             NodeKind::Float => Ty::Float,
@@ -2799,8 +3245,12 @@ impl<'a> Checker<'a> {
                 for child in &node.children {
                     if child.kind == NodeKind::Case {
                         let mut arm = base.fork();
-                        if let Some(pattern) = child.children.first() {
-                            self.check_pattern(pattern, &scrut_ty, &mut arm);
+                        let (pattern, guard) = self.case_pattern_and_guard(child);
+                        self.check_pattern(pattern, &scrut_ty, &mut arm);
+                        if let Some(guard) = guard {
+                            self.check_condition(guard, &mut arm);
+                            let facts = self.narrowing_facts(guard, &arm);
+                            apply_narrow(&mut arm, &facts, true);
                         }
                         if let Some(body) = child.children.get(1) {
                             arm_types.push(self.check_expr(body, &mut arm));
@@ -3022,7 +3472,17 @@ impl<'a> Checker<'a> {
             return Ty::Any;
         };
         let lty = self.check_expr(lhs, env);
-        let rty = self.check_expr(rhs, env);
+        // `a and b` checks `b` under the facts established by `a`;
+        // `a or b` checks `b` under the negation of those facts. This makes
+        // `x is int and x > 0` well-typed without leaking the narrowing.
+        let rty = if matches!(node.op, Some(TokenType::And) | Some(TokenType::Or)) {
+            let facts = self.narrowing_facts(lhs, env);
+            let mut rhs_env = env.fork();
+            apply_narrow(&mut rhs_env, &facts, node.op == Some(TokenType::And));
+            self.check_expr(rhs, &mut rhs_env)
+        } else {
+            self.check_expr(rhs, env)
+        };
         let span = self.span(node);
         check_binop(node.op, &lty, &rty, self, span)
     }
@@ -3912,6 +4372,7 @@ fn eq_comparable(lty: &Ty, rty: &Ty) -> bool {
         (Ty::Int, Ty::Int) | (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) | (Ty::Float, Ty::Float) => true,
         (Ty::Bool, Ty::Bool) => true,
         (Ty::Str, Ty::Str) => true,
+        (Ty::Bytes, Ty::Bytes) => true,
         (Ty::Class(a), Ty::Class(b)) => a == b,
         (Ty::Tuple(a), Ty::Tuple(b)) => a.len() == b.len()
             && a.iter().zip(b.iter()).all(|(x, y)| eq_comparable(x, y)),
@@ -4181,7 +4642,7 @@ pub fn assignable(target: &Ty, value: &Ty, classes: &HashMap<String, ClassInfo>)
                 && assignable(a_ret, b_ret, classes)
         }
         (Ty::Int, Ty::Int) | (Ty::Float, Ty::Float) | (Ty::Bool, Ty::Bool) | (Ty::Str, Ty::Str)
-        | (Ty::None_, Ty::None_) => true,
+        | (Ty::Bytes, Ty::Bytes) | (Ty::None_, Ty::None_) => true,
         (Ty::Float, Ty::Int) => true,
         _ => false,
     }
@@ -4220,6 +4681,17 @@ pub(crate) fn native_module_ret_type(module: &str, member: &str) -> Option<Ty> {
         ("random", "uuid") => Some(string.clone()),
         ("re", "test") => Some(boolean.clone()),
         ("re", "escape") => Some(string.clone()),
+        // NAT-07 binary I/O results (fs.read_bytes / bytes.* constructors and
+        // transformations). `bytes.len`/`bytes.get` stay int and the writers
+        // stay none, matching the runtime signatures.
+        ("fs", "read_bytes") => Some(Ty::Bytes),
+        ("fs", "write_bytes") => Some(Ty::None_),
+        ("bytes", "from_str") | ("bytes", "from_list") | ("bytes", "from_hex")
+        | ("bytes", "slice") | ("bytes", "concat") => Some(Ty::Bytes),
+        ("bytes", "to_str") | ("bytes", "to_hex") => Some(string.clone()),
+        ("bytes", "to_list") => Some(Ty::list(int.clone())),
+        ("bytes", "len") | ("bytes", "get") => Some(int.clone()),
+        ("bytes", "eq") | ("bytes", "is_bytes") => Some(boolean.clone()),
         _ => None,
     }
 }

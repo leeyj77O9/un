@@ -1,11 +1,36 @@
 use std::rc::Rc;
+use crate::ast::{Const, Node, NodeKind};
 use crate::bytecode::instr::*;
-use crate::bytecode::{stack_effect, ExcKind, Program};
+use crate::bytecode::{stack_effect, ExcKind, Pattern, Program};
 use crate::lexer::lex;
 use crate::optimize::optimize;
 use crate::parser::parse;
 use crate::source::Source;
+use crate::token::TokenType;
 use super::compile;
+
+fn int_node(value: i64) -> Node {
+    Node {
+        start: 0,
+        length: 1,
+        kind: NodeKind::Integer,
+        op: None,
+        children: Vec::new(),
+        value: Some(Const::Int(value)),
+        annotations: None,
+    }
+}
+fn ident_node(name: &str) -> Node {
+    Node {
+        start: 0,
+        length: name.len(),
+        kind: NodeKind::Identifier,
+        op: None,
+        children: Vec::new(),
+        value: Some(Const::Str(name.to_string())),
+        annotations: None,
+    }
+}
 pub(crate) fn compile_text(text: &str) -> (Rc<Program>, Rc<Source>) {
     let mut source = Source::new("test.un", text);
     let tokens = lex(&mut source).expect("lex");
@@ -48,6 +73,121 @@ pub(crate) fn constant(program: &Program, slot: usize) -> String {
 }
 pub(crate) fn count(ops: &[(Op, u16, i32)], op: Op) -> usize {
     ops.iter().filter(|(o, _, _)| *o == op).count()
+}
+#[test]
+fn a_match_guard_lowers_to_an_extra_conditional_jump() {
+    // FE-01 guard contract: Case = [Guard[pattern, cond], body].
+    let source = Rc::new(Source::new("test.un", ""));
+    let cond = Node::with_children(
+        0,
+        1,
+        NodeKind::Binary,
+        Some(TokenType::GreaterThan),
+        vec![int_node(1), int_node(0)],
+    );
+    let guard = Node::with_children(0, 1, NodeKind::Guard, None, vec![int_node(1), cond]);
+    let case = Node::with_children(
+        0,
+        1,
+        NodeKind::Case,
+        None,
+        vec![guard, int_node(10)],
+    );
+    let match_node = Node::with_children(
+        0,
+        1,
+        NodeKind::Match,
+        None,
+        vec![int_node(1), case],
+    );
+    let root = Node::with_children(0, 1, NodeKind::Block, None, vec![match_node]);
+    let program = compile(&source, &root).expect("compile");
+    program.validate().expect("validate");
+
+    let ops = code(&program);
+    assert_eq!(count(&ops, Op::MatchPattern), 1);
+    // One POP-carrying jump for the pattern miss and one for a false guard.
+    assert_eq!(count(&ops, Op::JmpIf), 2);
+    let depths = depth(&program);
+    assert!(depths.iter().all(|d| *d >= 0), "stack underflow: {depths:?}");
+    assert_eq!(*depths.last().unwrap(), 1);
+}
+#[test]
+fn an_or_pattern_compiles_to_a_single_or_pattern_record() {
+    let source = Rc::new(Source::new("test.un", ""));
+    let alternatives = Node::with_children(
+        0,
+        1,
+        NodeKind::OrPattern,
+        None,
+        vec![int_node(1), int_node(2)],
+    );
+    let case = Node::with_children(
+        0,
+        1,
+        NodeKind::Case,
+        None,
+        vec![alternatives, int_node(10)],
+    );
+    let match_node = Node::with_children(
+        0,
+        1,
+        NodeKind::Match,
+        None,
+        vec![int_node(1), case],
+    );
+    let root = Node::with_children(0, 1, NodeKind::Block, None, vec![match_node]);
+    let program = compile(&source, &root).expect("compile");
+    program.validate().expect("validate");
+
+    let patterns = &program.protos[program.root].patterns;
+    assert_eq!(patterns.len(), 1);
+    assert!(matches!(&patterns[0], crate::bytecode::Pattern::Or(alts) if alts.len() == 2));
+    assert_eq!(count(&code(&program), Op::MatchPattern), 1);
+}
+#[test]
+fn a_class_pattern_with_named_and_positional_fields_compiles() {
+    let source = Rc::new(Source::new("test.un", ""));
+    let named = Node::with_children(
+        0,
+        1,
+        NodeKind::Pair,
+        Some(TokenType::Colon),
+        vec![ident_node("x"), ident_node("px")],
+    );
+    let args = Node::with_children(0, 1, NodeKind::Tuple, None, vec![named, ident_node("py")]);
+    let call = Node::with_children(
+        0,
+        1,
+        NodeKind::Call,
+        None,
+        vec![ident_node("Point"), args],
+    );
+    let case = Node::with_children(0, 1, NodeKind::Case, None, vec![call, int_node(1)]);
+    let match_node = Node::with_children(
+        0,
+        1,
+        NodeKind::Match,
+        None,
+        vec![int_node(0), case],
+    );
+    let root = Node::with_children(0, 1, NodeKind::Block, None, vec![match_node]);
+    let program = compile(&source, &root).expect("compile");
+    program.validate().expect("validate");
+
+    let patterns = &program.protos[program.root].patterns;
+    assert_eq!(patterns.len(), 1);
+    match &patterns[0] {
+        Pattern::Class(_, inner) => match &**inner {
+            Pattern::Fields(fields) => {
+                assert_eq!(fields.len(), 2);
+                assert!(fields[0].0.is_some());
+                assert!(fields[1].0.is_none());
+            }
+            other => panic!("expected Fields, got {other:?}"),
+        },
+        other => panic!("expected Class, got {other:?}"),
+    }
 }
 #[test]
 fn phase_8_encodings_validate_and_keep_the_stack_balanced() {

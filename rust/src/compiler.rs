@@ -496,6 +496,29 @@ impl<'a> Compiler<'a> {
             NodeKind::Tagged => self.code_tagged(node)?,
             NodeKind::Tuple => self.code_tuple(node)?,
             NodeKind::List => self.code_container(node, Op::BuildList)?,
+            // Byte strings have no Const variant: children are Integer nodes
+            // holding one byte each, materialised as a list[int] value.
+            NodeKind::Bytes => {
+                let count = node.children.len();
+                self.emit(Op::ArgBegin, 0, count as i32, span);
+                for child in &node.children {
+                    let byte = match child.value.as_ref() {
+                        Some(Const::Int(v)) if (0..=255).contains(v) => *v,
+                        _ => {
+                            return Err(Panic::named(
+                                "error",
+                                "byte literal element must be in 0..=255",
+                            ))
+                        }
+                    };
+                    let ci = self.const_index(Constant::Int(byte));
+                    self.emit(Op::LoadConst, 0, ci as i32, span_of(child));
+                    self.emit(Op::ArgPos, 0, 0, span_of(child));
+                }
+                self.emit(Op::BuildList, 0, count as i32, span);
+            }
+            // Type aliases are declarations with no runtime representation.
+            NodeKind::TypeAlias => self.emit(Op::LoadNone, 0, 0, span),
 
             NodeKind::Set => self.code_container(node, Op::BuildSet)?,
             NodeKind::Spread | NodeKind::KwSpread => self.unsupported(node),
@@ -947,8 +970,15 @@ impl<'a> Compiler<'a> {
             if case.kind != NodeKind::Case {
                 continue;
             }
-            let pattern = &case.children[0];
+            // FE-01 contract: `Case.children[1]` is always the arm body. A
+            // guarded arm stores a `Guard[pattern, condition]` at children[0].
             let case_body = &case.children[1];
+            let head = &case.children[0];
+            let (pattern, guard) = if head.kind == NodeKind::Guard {
+                (&head.children[0], Some(&head.children[1]))
+            } else {
+                (head, None)
+            };
 
             self.emit(Op::NewScope, 0, 0, span);
             self.push_slot_scope(false);
@@ -958,12 +988,27 @@ impl<'a> Compiler<'a> {
 
             let fail = self.emit_jump(Op::JmpIf, FLAG_JUMP_POP, span);
 
+            // A guard runs in the same slot scope as the pattern bindings and
+            // shares the arm's failure landing pad; no new opcode is required.
+            let guard_fail = if let Some(guard) = guard {
+                self.code(guard)?;
+                self.emit(Op::ToBool, 0, 0, (guard.start, guard.length));
+                Some(self.emit_jump(Op::JmpIf, FLAG_JUMP_POP, span))
+            } else {
+                None
+            };
+
             self.emit(Op::Pop, 0, 0, span);
             self.code(case_body)?;
             self.slot_stack.pop();
             self.emit(Op::PopScope, 0, 0, span);
             ends.push(self.emit_jump(Op::Jmp, 0, span));
 
+            // Both a pattern miss and a false guard land here: exactly one
+            // PopScope, preserving the unguarded control-flow shape.
+            if let Some(guard_fail) = guard_fail {
+                self.patch(guard_fail, self.ip());
+            }
             self.patch(fail, self.ip());
             self.emit(Op::PopScope, 0, 0, span);
         }
@@ -986,47 +1031,98 @@ impl<'a> Compiler<'a> {
                 Pattern::Bind(push_name(&mut self.program, &name))
             }
 
+            // `x: T` and `x is T` both narrow the binding; runtime ignores T.
             NodeKind::Typed => {
                 let name = self.text(&pattern.children[0]);
                 Pattern::Bind(push_name(&mut self.program, &name))
             }
-            NodeKind::Tuple => {
-                let mut items = Vec::new();
-                for item in &pattern.children {
-                    items.push(self.compile_pattern(item)?);
+
+            NodeKind::OrPattern => {
+                let mut alternatives = Vec::new();
+                for child in &pattern.children {
+                    alternatives.push(self.compile_pattern(child)?);
                 }
-                Pattern::Tuple(items)
+                if alternatives.is_empty() {
+                    return Err(Panic::named("error", "or-pattern has no alternatives"));
+                }
+                Pattern::Or(alternatives)
+            }
+
+            NodeKind::Pair => {
+                let (name, inner) = self.compile_field(pattern)?;
+                Pattern::Fields(vec![(name, inner)])
+            }
+
+            NodeKind::Tuple | NodeKind::List => {
+                let has_named = pattern.children.iter().any(|c| c.kind == NodeKind::Pair);
+                if has_named {
+                    Pattern::Fields(self.compile_fields(&pattern.children)?)
+                } else {
+                    let mut items = Vec::new();
+                    for item in &pattern.children {
+                        if item.kind == NodeKind::Spread {
+                            return Err(Panic::named(
+                                "error",
+                                "rest/spread elements are not supported in patterns",
+                            ));
+                        }
+                        items.push(self.compile_pattern(item)?);
+                    }
+                    Pattern::Tuple(items)
+                }
             }
             NodeKind::Call => {
                 let invalid = || {
                     Panic::named(
                         "error",
-                        "invalid enum variant pattern (expected Enum.variant(pattern))",
+                        "invalid pattern constructor (expected Class(..) or Enum.variant(..))",
                     )
                 };
                 let callee = pattern.children.first().ok_or_else(invalid)?;
-                if callee.kind != NodeKind::Property
-                    || callee.children.first().map(|c| c.kind) != Some(NodeKind::Identifier)
-                {
-                    return Err(invalid());
-                }
-                let enum_name = self.text(&callee.children[0]);
-                let variant_name = callee
-                    .children
-                    .get(1)
-                    .map(|c| self.text(c))
-                    .ok_or_else(invalid)?;
                 let args = pattern.children.get(1).ok_or_else(invalid)?;
-                if args.children.len() != 1 {
-                    return Err(Panic::named(
-                        "error",
-                        "enum variant pattern expects exactly one value",
-                    ));
+                match callee.kind {
+                    // `Class(a, b)` — positional/named attributes of an instance.
+                    NodeKind::Identifier => {
+                        let class_name = self.text(callee);
+                        let class_slot = push_name(&mut self.program, &class_name);
+                        let inner = Pattern::Fields(self.compile_fields(&args.children)?);
+                        Pattern::Class(class_slot, Box::new(inner))
+                    }
+                    // `Enum.variant(..)` — the historical single-payload shape is
+                    // preserved; multiple/named arguments are nested sugar.
+                    NodeKind::Property
+                        if callee.children.first().map(|c| c.kind) == Some(NodeKind::Identifier) =>
+                    {
+                        let enum_name = self.text(&callee.children[0]);
+                        let variant_name = callee
+                            .children
+                            .get(1)
+                            .map(|c| self.text(c))
+                            .ok_or_else(invalid)?;
+                        if args.children.is_empty() {
+                            return Err(Panic::named(
+                                "error",
+                                "enum variant pattern expects at least one value",
+                            ));
+                        }
+                        let enum_slot = push_name(&mut self.program, &enum_name);
+                        let variant_slot = push_name(&mut self.program, &variant_name);
+                        let has_named = args.children.iter().any(|c| c.kind == NodeKind::Pair);
+                        let inner = if args.children.len() == 1 && !has_named {
+                            self.compile_pattern(&args.children[0])?
+                        } else if has_named {
+                            Pattern::Fields(self.compile_fields(&args.children)?)
+                        } else {
+                            let mut items = Vec::new();
+                            for arg in &args.children {
+                                items.push(self.compile_pattern(arg)?);
+                            }
+                            Pattern::Tuple(items)
+                        };
+                        Pattern::Variant(enum_slot, variant_slot, Box::new(inner))
+                    }
+                    _ => return Err(invalid()),
                 }
-                let enum_slot = push_name(&mut self.program, &enum_name);
-                let variant_slot = push_name(&mut self.program, &variant_name);
-                let inner = self.compile_pattern(&args.children[0])?;
-                Pattern::Variant(enum_slot, variant_slot, Box::new(inner))
             }
             NodeKind::Integer
             | NodeKind::Float
@@ -1045,6 +1141,33 @@ impl<'a> Compiler<'a> {
             _ => return Err(Panic::named("internal", "invalid pattern")),
         };
         Ok(compiled)
+    }
+
+    /// Compiles one attribute slot: `Pair[name, pattern]` for named fields,
+    /// any other node for positional fields.
+    fn compile_field(&mut self, node: &Node) -> Result<(Option<usize>, Pattern), Panic> {
+        if node.kind == NodeKind::Pair {
+            let name = self.text(&node.children[0]);
+            let index = push_name(&mut self.program, &name);
+            let inner = self.compile_pattern(&node.children[1])?;
+            Ok((Some(index), inner))
+        } else {
+            if node.kind == NodeKind::Spread {
+                return Err(Panic::named(
+                    "error",
+                    "rest/spread elements are not supported in patterns",
+                ));
+            }
+            Ok((None, self.compile_pattern(node)?))
+        }
+    }
+
+    fn compile_fields(&mut self, nodes: &[Node]) -> Result<Vec<(Option<usize>, Pattern)>, Panic> {
+        let mut fields = Vec::new();
+        for node in nodes {
+            fields.push(self.compile_field(node)?);
+        }
+        Ok(fields)
     }
 
     fn add_pattern(&mut self, pattern: Pattern) -> usize {

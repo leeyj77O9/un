@@ -151,6 +151,12 @@ impl<'a> Lexer<'a> {
             let token = match self.peek() {
                 '"' | '\'' => self.get_string_token()?,
                 '`' => self.get_fstring_token()?,
+                // `b"..."` / `b'...'` is a byte-string literal. Check this
+                // before the identifier branch so the `b` prefix is kept in
+                // the token span and decoded by the parser.
+                c if (c == 'b' || c == 'B') && matches!(self.peek_at(1), '"' | '\'') => {
+                    self.get_bytes_token()?
+                }
                 c if c.is_ascii_digit() => self.get_number_token()?,
                 c if c.is_ascii_alphabetic() || c == '_' => self.get_identifier_token()?,
                 _ => self.get_operator_token()?,
@@ -207,6 +213,61 @@ impl<'a> Lexer<'a> {
             format!("expected closing {}", quote)
         };
         Err(self.error(start, &message))
+    }
+    /// Scans a `b"..."`, `b'...'`, `b"""..."""` or `b'''...'''` literal.
+    /// The token keeps the prefix and quotes; escape decoding happens in the
+    /// parser so the lexer stays a single, allocation-free scan.
+    fn get_bytes_token(&mut self) -> Result<Token, LangError> {
+        let start = self.index;
+        if !self.consume('b') && !self.consume('B') {
+            return Err(self.error(start, "expected 'b' to start a bytes literal"));
+        }
+        let quote = if self.consume('"') {
+            '"'
+        } else if self.consume('\'') {
+            '\''
+        } else {
+            return Err(self.error(start, "expected opening quote for bytes literal"));
+        };
+        let mut triple = false;
+        if self.consume(quote) {
+            if self.consume(quote) {
+                triple = true;
+            } else {
+                return Ok(Token::new(start, self.index - start, TokenType::Bytes));
+            }
+        }
+        while self.index < self.source.code.len() {
+            if self.peek_is('\\') {
+                if self.out_of_range(self.index + 1) {
+                    return Err(self.error(start, "unterminated escape sequence"));
+                }
+                self.index += 2;
+                continue;
+            }
+            if !triple {
+                if self.peek_is(quote) {
+                    self.index += 1;
+                    return Ok(Token::new(start, self.index - start, TokenType::Bytes));
+                }
+            } else if !self.out_of_range(self.index + 2)
+                && self.peek_is(quote)
+                && self.source.code[self.index + 1] == quote
+                && self.source.code[self.index + 2] == quote
+            {
+                self.index += 3;
+                return Ok(Token::new(start, self.index - start, TokenType::Bytes));
+            }
+            self.index += 1;
+        }
+        Err(self.error(
+            start,
+            if triple {
+                "expected closing triple quote for bytes literal"
+            } else {
+                "expected closing quote for bytes literal"
+            },
+        ))
     }
     fn get_fstring_token(&mut self) -> Result<Token, LangError> {
         let start = self.index;

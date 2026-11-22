@@ -59,6 +59,19 @@ pub enum NodeKind {
     /// Type parameter list `[T, U]` on a function declaration. Always appended
     /// as the last child so positional readers (`children[0..2]`) stay valid.
     TypeParams,
+    /// `type Name = int | str`. Children: `[name, type-expression]`; the type
+    /// expression keeps the same `Const::Str` text representation used by
+    /// ordinary annotations so existing type readers can consume it as-is.
+    TypeAlias,
+    /// A guarded match arm: `case <pattern> if <condition>`. Children:
+    /// `[pattern, condition]`. `Case.children[0]` is a `Guard` when guarded,
+    /// so `Case.children[1]` stays the arm body.
+    Guard,
+    /// An or-pattern: `A | B`. Children are the alternatives, left to right.
+    OrPattern,
+    /// A `b"..."` byte-string literal. Children are `Integer` nodes holding
+    /// one byte (0..=255) each, preserving raw/non-ASCII bytes losslessly.
+    Bytes,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Const {

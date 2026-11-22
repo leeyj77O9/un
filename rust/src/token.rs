@@ -113,6 +113,9 @@ pub enum TokenType {
     Finally,
     Wildcard,
     Underscore,
+    /// A `b"..."` / `b'...'` byte-string literal. The lexer keeps the whole
+    /// token (prefix + quotes) so the parser can decode escapes into bytes.
+    Bytes,
 }
 impl TokenType {
     pub fn name(&self) -> &'static str {
@@ -229,6 +232,7 @@ impl TokenType {
             TokenType::Finally => "Finally",
             TokenType::Wildcard => "Wildcard",
             TokenType::Underscore => "Underscore",
+            TokenType::Bytes => "Bytes",
         }
     }
 }

@@ -1538,6 +1538,58 @@ impl VM {
                 }
                 true
             }
+            Pattern::Or(alternatives) => {
+                // Each alternative is tried against an isolated scope (no
+                // parent). A failed alternative cannot mutate an enclosing
+                // variable through `scope::set`; only the winning alternative's
+                // bindings are copied back into the real scope.
+                for alt in alternatives {
+                    let trial = scope::new(None, false);
+                    if !self.match_pattern(alt, value, &trial) {
+                        continue;
+                    }
+                    let names: Vec<String> = trial.borrow().order.clone();
+                    for name in names {
+                        if let Some(bound) = scope::get_opt(&trial, &name) {
+                            scope::set(scope, &name, bound);
+                        }
+                    }
+                    return true;
+                }
+                false
+            }
+            Pattern::Class(name, inner) => {
+                let expected = self.program.names[*name].as_str();
+                if &*obj::type_name(value) != expected {
+                    return false;
+                }
+                if !matches!(obj::payload(value), Payload::Stru(_) | Payload::TObj(_)) {
+                    return false;
+                }
+                self.match_pattern(inner, value, scope)
+            }
+            Pattern::Fields(fields) => {
+                let declared = collections::all_names(value);
+                for (index, (name, pat)) in fields.iter().enumerate() {
+                    let member_name: String = match name {
+                        Some(name) => self.program.names[*name].clone(),
+                        None => {
+                            let Some(member_name) = declared.get(index) else {
+                                return false;
+                            };
+                            member_name.clone()
+                        }
+                    };
+                    let member = obj::get_attr(value, &member_name);
+                    if obj::is_err(&member) {
+                        return false;
+                    }
+                    if !self.match_pattern(pat, &member, scope) {
+                        return false;
+                    }
+                }
+                true
+            }
         }
     }
 

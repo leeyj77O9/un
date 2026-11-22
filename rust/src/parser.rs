@@ -76,6 +76,9 @@ impl Parser {
         self.position += 1;
         true
     }
+    fn peek_type(&self, offset: usize) -> Option<TokenType> {
+        self.tokens.get(self.position + offset).map(|t| t.typ)
+    }
     fn expect(&mut self, typ: TokenType, msg: &str) -> Result<Token, LangError> {
         if self.current().typ != typ {
             let token = self.current();
@@ -112,7 +115,10 @@ impl Parser {
     }
     fn parse_statement(&mut self) -> Result<Node, LangError> {
         let annotations = self.parse_annotations()?;
-        let statement = if self.is_accessor_start() {
+        let statement = if self.is_type_alias_start() {
+            check_no_annotations(&annotations)?;
+            self.parse_type_alias()?
+        } else if self.is_accessor_start() {
             check_no_annotations(&annotations)?;
             self.parse_accessor()?
         } else if self.is_assignment_start() {
@@ -219,6 +225,28 @@ impl Parser {
             | TokenType::Return => true,
             _ => false,
         }
+    }
+    /// `type` stays a contextual keyword: `type(x)` (the builtin) and a
+    /// variable named `type` keep parsing exactly as before. Only the
+    /// `type <identifier> = ...` shape starts a type-alias declaration.
+    fn is_type_alias_start(&self) -> bool {
+        self.current().typ == TokenType::Identifier
+            && self.get_text(self.current().start, self.current().length) == "type"
+            && self.peek_type(1) == Some(TokenType::Identifier)
+            && self.peek_type(2) == Some(TokenType::Assign)
+    }
+    fn parse_type_alias(&mut self) -> Result<Node, LangError> {
+        let keyword = self.next();
+        let name = self.parse_identifier()?;
+        self.expect(TokenType::Assign, "expected '=' after type alias name")?;
+        let typ = self.parse_type()?;
+        Ok(Node::with_children(
+            keyword.start,
+            len(t(&keyword), n(&typ)),
+            NodeKind::TypeAlias,
+            None,
+            vec![name, typ],
+        ))
     }
     fn parse_annotation(&mut self) -> Result<Node, LangError> {
         let at = self.expect(TokenType::At, "expected '@' to start an annotation")?;
@@ -534,7 +562,32 @@ impl Parser {
         let mut cases: Vec<Node> = Vec::new();
         self.skip_new_lines();
         while !self.match_(TokenType::RBrace) {
+            // `case` is an optional, contextual arm prefix. A binding named
+            // `case` (`case -> ...`) still parses as an ordinary pattern.
+            if self.current().typ == TokenType::Identifier
+                && self.get_text(self.current().start, self.current().length) == "case"
+                && self
+                    .peek_type(1)
+                    .map(|t| self.is_expression_start(t) || t == TokenType::Underscore)
+                    .unwrap_or(false)
+            {
+                self.next();
+            }
             let pattern = self.parse_pattern()?;
+            // `case <pattern> if <cond> -> <body>`: wrap the pattern in a Guard
+            // node so `Case.children[1]` remains the arm body.
+            let pattern = if self.match_(TokenType::If) {
+                let condition = self.parse_expression()?;
+                Node::with_children(
+                    pattern.start,
+                    len(n(&pattern), n(&condition)),
+                    NodeKind::Guard,
+                    None,
+                    vec![pattern, condition],
+                )
+            } else {
+                pattern
+            };
             self.expect(TokenType::Return, "expected '->' after match pattern")?;
             let body = self.parse_ternary()?;
             cases.push(Node::with_children(
@@ -850,7 +903,7 @@ impl Parser {
         )
     }
     fn parse_assignment(&mut self) -> Result<Node, LangError> {
-        let left = self.parse_pattern()?;
+        let left = self.parse_assignment_target()?;
         if !self.is_assignment_operator(self.current().typ) {
             return Ok(left);
         }
@@ -1156,6 +1209,7 @@ impl Parser {
             TokenType::Integer => self.parse_literal(NodeKind::Integer),
             TokenType::Float => self.parse_literal(NodeKind::Float),
             TokenType::String => self.parse_literal(NodeKind::String),
+            TokenType::Bytes => self.parse_bytes_literal(),
             TokenType::FString => self.parse_fstring(),
             TokenType::True | TokenType::False => self.parse_literal(NodeKind::Boolean),
             TokenType::NoneKw => self.parse_literal(NodeKind::None),
@@ -1256,6 +1310,26 @@ impl Parser {
         }
         let mut parser = Parser::new(tokens, self.source.clone());
         parser.parse_expression()
+    }
+    /// A byte literal is kept as a `Bytes` node whose children are `Integer`
+    /// nodes (one byte each). `Const` has no byte variant and adding one would
+    /// break non-owned exhaustive matches, so bytes are carried as children —
+    /// a lossless representation for raw and non-UTF-8 data.
+    fn parse_bytes_literal(&mut self) -> Result<Node, LangError> {
+        let token = self.next();
+        let text = self.get_text(token.start, token.length);
+        let bytes = decode_bytes_literal(&text, &token)?;
+        let children = bytes
+            .into_iter()
+            .map(|b| Node::new(token.start, 1, NodeKind::Integer).with_value(Const::Int(b as i64)))
+            .collect();
+        Ok(Node::with_children(
+            token.start,
+            token.length,
+            NodeKind::Bytes,
+            None,
+            children,
+        ))
     }
     fn parse_literal(&mut self, kind: NodeKind) -> Result<Node, LangError> {
         let token = self.next();
@@ -1571,14 +1645,20 @@ impl Parser {
             statements,
         ))
     }
-    fn parse_pattern(&mut self) -> Result<Node, LangError> {
-        let first = self.parse_primary_pattern()?;
+    // ---------------------------------------------------------------------
+    // Assignment targets keep the original grammar. `parse_assignment` used
+    // to call `parse_pattern`; routing it through the extended pattern parser
+    // would change how ordinary call statements (`foo(a + b)`) are read, so
+    // the old behaviour is preserved verbatim here.
+    // ---------------------------------------------------------------------
+    fn parse_assignment_target(&mut self) -> Result<Node, LangError> {
+        let first = self.parse_primary_assignment_target()?;
         if !self.match_(TokenType::Comma) {
             return Ok(first);
         }
         let mut items = vec![first];
         loop {
-            items.push(self.parse_primary_pattern()?);
+            items.push(self.parse_primary_assignment_target()?);
             if !self.match_(TokenType::Comma) {
                 break;
             }
@@ -1586,7 +1666,7 @@ impl Parser {
         let length = len(n(&items[0]), n(&items[items.len() - 1]));
         Ok(Node::with_children(items[0].start, length, NodeKind::Tuple, None, items))
     }
-    fn parse_primary_pattern(&mut self) -> Result<Node, LangError> {
+    fn parse_primary_assignment_target(&mut self) -> Result<Node, LangError> {
         if self.match_(TokenType::Underscore) {
             let token = self.previous();
             return Ok(Node::new(token.start, token.length, NodeKind::Wildcard));
@@ -1604,6 +1684,193 @@ impl Parser {
         }
         Ok(expr)
     }
+
+    // ---------------------------------------------------------------------
+    // Full pattern grammar (match arms / for targets):
+    //   pattern     := or_pattern (',' or_pattern)*
+    //   or_pattern  := primary ('|' primary)*
+    //   primary     := '_' | tuple | list | constructor | atom
+    //   constructor := path ('(' field (',' field)* ')')?  (':'|'is' type)?
+    // ---------------------------------------------------------------------
+    fn parse_pattern(&mut self) -> Result<Node, LangError> {
+        let first = self.parse_or_pattern()?;
+        if !self.match_(TokenType::Comma) {
+            return Ok(first);
+        }
+        let mut items = vec![first];
+        loop {
+            items.push(self.parse_or_pattern()?);
+            if !self.match_(TokenType::Comma) {
+                break;
+            }
+        }
+        let length = len(n(&items[0]), n(&items[items.len() - 1]));
+        Ok(Node::with_children(items[0].start, length, NodeKind::Tuple, None, items))
+    }
+    fn parse_or_pattern(&mut self) -> Result<Node, LangError> {
+        let first = self.parse_primary_pattern()?;
+        if !self.match_(TokenType::BOr) {
+            return Ok(first);
+        }
+        let mut items = vec![first];
+        loop {
+            items.push(self.parse_primary_pattern()?);
+            if !self.match_(TokenType::BOr) {
+                break;
+            }
+        }
+        let length = len(n(&items[0]), n(&items[items.len() - 1]));
+        Ok(Node::with_children(items[0].start, length, NodeKind::OrPattern, None, items))
+    }
+    fn parse_primary_pattern(&mut self) -> Result<Node, LangError> {
+        if self.match_(TokenType::Underscore) {
+            let token = self.previous();
+            return Ok(Node::new(token.start, token.length, NodeKind::Wildcard));
+        }
+        let node = match self.current().typ {
+            TokenType::LParen => self.parse_tuple_pattern()?,
+            TokenType::LBrack => self.parse_list_pattern()?,
+            TokenType::Identifier => self.parse_constructor_pattern()?,
+            _ => self.parse_postfix()?,
+        };
+        self.finish_typed_pattern(node)
+    }
+    /// Both `x: T` and `x is T` narrow the binding to `T`. Keep the existing
+    /// `Typed` node shape so downstream type/narrowing readers are unchanged.
+    fn finish_typed_pattern(&mut self, node: Node) -> Result<Node, LangError> {
+        let type_node = if self.match_(TokenType::Colon) {
+            Some(self.parse_type()?)
+        } else if self.match_(TokenType::Is) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        match type_node {
+            Some(type_node) => Ok(Node::with_children(
+                node.start,
+                len(n(&node), n(&type_node)),
+                NodeKind::Typed,
+                None,
+                vec![node, type_node],
+            )),
+            None => Ok(node),
+        }
+    }
+    fn parse_tuple_pattern(&mut self) -> Result<Node, LangError> {
+        let opener = self.expect(TokenType::LParen, "expected '(' to start tuple pattern")?;
+        let mut items = Vec::new();
+        let mut trailing_comma = false;
+        while self.current().typ != TokenType::RParen && self.current().typ != TokenType::Eof {
+            items.push(self.parse_pattern_arg()?);
+            if self.match_(TokenType::Comma) {
+                trailing_comma = true;
+                continue;
+            }
+            trailing_comma = false;
+            break;
+        }
+        let closer = self.expect(TokenType::RParen, "expected ')' after tuple pattern")?;
+        let length = len(t(&opener), t(&closer));
+        if items.len() == 1 && !trailing_comma {
+            return Ok(items.remove(0));
+        }
+        Ok(Node::with_children(opener.start, length, NodeKind::Tuple, None, items))
+    }
+    fn parse_list_pattern(&mut self) -> Result<Node, LangError> {
+        let opener = self.expect(TokenType::LBrack, "expected '[' to start list pattern")?;
+        let mut items = Vec::new();
+        while self.current().typ != TokenType::RBrack && self.current().typ != TokenType::Eof {
+            items.push(self.parse_pattern_arg()?);
+            if !self.match_(TokenType::Comma) {
+                break;
+            }
+        }
+        let closer = self.expect(TokenType::RBrack, "expected ']' after list pattern")?;
+        Ok(Node::with_children(
+            opener.start,
+            len(t(&opener), t(&closer)),
+            NodeKind::List,
+            None,
+            items,
+        ))
+    }
+    /// Parses one pattern slot, falling back to a full expression when the
+    /// slot is an ordinary expression (e.g. `case foo(a + b)`), so the new
+    /// pattern grammar never rejects previously-parseable argument lists.
+    fn parse_pattern_arg(&mut self) -> Result<Node, LangError> {
+        let saved = self.position;
+        match self.parse_or_pattern() {
+            Ok(node) if matches!(self.current().typ, TokenType::Comma | TokenType::RParen | TokenType::RBrack) => {
+                return Ok(node)
+            }
+            _ => self.position = saved,
+        }
+        self.parse_expression()
+    }
+    /// `Name(...)`, `Enum.Variant(...)` and plain paths. The produced AST is
+    /// identical to the old shape for `Enum.Variant(x)` so existing consumers
+    /// keep working; extra arguments and nested patterns are simply carried
+    /// in the trailing `Tuple` child.
+    fn parse_constructor_pattern(&mut self) -> Result<Node, LangError> {
+        let mut callee = self.parse_identifier()?;
+        while self.match_(TokenType::Dot) {
+            let member = self.parse_identifier()?;
+            let start = callee.start;
+            callee = Node::with_children(
+                start,
+                len(n(&callee), n(&member)),
+                NodeKind::Property,
+                None,
+                vec![callee, member],
+            );
+        }
+        if self.current().typ != TokenType::LParen {
+            return Ok(callee);
+        }
+        let opener = self.expect(TokenType::LParen, "expected '(' after pattern constructor")?;
+        let mut args = Vec::new();
+        if self.current().typ != TokenType::RParen {
+            loop {
+                if self.current().typ == TokenType::Identifier
+                    && matches!(self.peek_type(1), Some(TokenType::Colon) | Some(TokenType::Assign))
+                {
+                    let name = self.parse_identifier()?;
+                    let op = self.next().typ;
+                    let value = self.parse_pattern_arg()?;
+                    args.push(Node::with_children(
+                        name.start,
+                        len(n(&name), n(&value)),
+                        NodeKind::Pair,
+                        Some(op),
+                        vec![name, value],
+                    ));
+                } else {
+                    args.push(self.parse_pattern_arg()?);
+                }
+                if !self.match_(TokenType::Comma) {
+                    break;
+                }
+                if self.current().typ == TokenType::RParen {
+                    break;
+                }
+            }
+        }
+        let closer = self.expect(TokenType::RParen, "expected ')' after pattern arguments")?;
+        let tuple = Node::with_children(
+            opener.start,
+            len(t(&opener), t(&closer)),
+            NodeKind::Tuple,
+            None,
+            args,
+        );
+        Ok(Node::with_children(
+            callee.start,
+            len(n(&callee), t(&closer)),
+            NodeKind::Call,
+            None,
+            vec![callee, tuple],
+        ))
+    }
     fn is_expression_start(&self, typ: TokenType) -> bool {
         matches!(
             typ,
@@ -1611,6 +1878,7 @@ impl Parser {
                 | TokenType::Integer
                 | TokenType::Float
                 | TokenType::String
+                | TokenType::Bytes
                 | TokenType::FString
                 | TokenType::True
                 | TokenType::False
@@ -1754,4 +2022,75 @@ fn parse_float(text: &str, token: &Token) -> Result<f64, LangError> {
     text.replace('_', "")
         .parse::<f64>()
         .map_err(|_| LangError::new(token.start, token.length, "invalid floating-point literal"))
+}
+fn hex_digit(c: char) -> Option<u8> {
+    match c {
+        '0'..='9' => Some(c as u8 - b'0'),
+        'a'..='f' => Some(c as u8 - b'a' + 10),
+        'A'..='F' => Some(c as u8 - b'A' + 10),
+        _ => None,
+    }
+}
+/// Decodes the `b` prefix, quotes and escapes of a byte-string literal.
+/// Raw non-ASCII characters are encoded as UTF-8; `\xHH` writes a raw byte.
+fn decode_bytes_literal(text: &str, token: &Token) -> Result<Vec<u8>, LangError> {
+    let error = || LangError::new(token.start, token.length, "invalid bytes literal");
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() < 3 {
+        return Err(error());
+    }
+    let quote = chars[1];
+    if quote != '"' && quote != '\'' {
+        return Err(error());
+    }
+    let quote_len = if chars.len() >= 4 && chars[2] == quote && chars[3] == quote {
+        3
+    } else {
+        1
+    };
+    let body_start = 1 + quote_len;
+    let body_end = chars.len().checked_sub(quote_len).ok_or_else(error)?;
+    if body_start > body_end {
+        return Err(error());
+    }
+    let mut out = Vec::with_capacity(body_end - body_start);
+    let mut i = body_start;
+    while i < body_end {
+        let c = chars[i];
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= body_end {
+            return Err(error());
+        }
+        match chars[i] {
+            'n' => out.push(b'\n'),
+            'r' => out.push(b'\r'),
+            't' => out.push(b'\t'),
+            '0' => out.push(0),
+            '\\' => out.push(b'\\'),
+            '"' => out.push(b'"'),
+            '\'' => out.push(b'\''),
+            'x' => {
+                if i + 2 >= body_end {
+                    return Err(error());
+                }
+                let hi = hex_digit(chars[i + 1]).ok_or_else(error)?;
+                let lo = hex_digit(chars[i + 2]).ok_or_else(error)?;
+                out.push((hi << 4) | lo);
+                i += 2;
+            }
+            other => {
+                out.push(b'\\');
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+        i += 1;
+    }
+    Ok(out)
 }

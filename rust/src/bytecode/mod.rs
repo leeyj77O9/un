@@ -60,6 +60,18 @@ pub enum Pattern {
 
     /// `Enum.variant(inner)` — name indexes refer to the proto's name table.
     Variant(usize, usize, Box<Pattern>),
+
+    /// `A | B` pattern: matches when any alternative matches.
+    /// Alternatives are ranked in source order; the first match wins.
+    Or(Vec<Pattern>),
+
+    /// `Name(...)` class pattern. The name indexes `program.names`; the inner
+    /// pattern is normally `Fields` and is matched against the instance itself.
+    Class(usize, Box<Pattern>),
+
+    /// Named/positional attribute destructuring. `None` means positional (use
+    /// the instance's declaration order); `Some(idx)` indexes `program.names`.
+    Fields(Vec<(Option<usize>, Pattern)>),
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proto {
@@ -415,6 +427,28 @@ fn validate_pattern(label: &str, pattern: &Pattern, program: &Program, depth: us
             index_range(label, "pattern enum", *enum_name, program.names.len())?;
             index_range(label, "pattern variant", *variant_name, program.names.len())?;
             validate_pattern(label, inner, program, depth + 1)
+        }
+        Pattern::Or(alternatives) => {
+            if alternatives.is_empty() {
+                return Err(format!("{label}: or-pattern has no alternatives"));
+            }
+            for alt in alternatives {
+                validate_pattern(label, alt, program, depth + 1)?;
+            }
+            Ok(())
+        }
+        Pattern::Class(name, inner) => {
+            index_range(label, "pattern class", *name, program.names.len())?;
+            validate_pattern(label, inner, program, depth + 1)
+        }
+        Pattern::Fields(fields) => {
+            for (name, pat) in fields {
+                if let Some(name) = name {
+                    index_range(label, "pattern field", *name, program.names.len())?;
+                }
+                validate_pattern(label, pat, program, depth + 1)?;
+            }
+            Ok(())
         }
     }
 }

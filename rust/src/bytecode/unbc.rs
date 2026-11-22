@@ -12,6 +12,11 @@ const PATTERN_BIND: u8 = 1;
 const PATTERN_LITERAL: u8 = 2;
 const PATTERN_TUPLE: u8 = 3;
 const PATTERN_VARIANT: u8 = 4;
+// Additive extension: 0..=4 keep their historical values so existing .unbc files
+// remain readable. New tags are appended after the reserved opcode-independent range.
+const PATTERN_OR: u8 = 5;
+const PATTERN_CLASS: u8 = 6;
+const PATTERN_FIELDS: u8 = 7;
 const EXC_CATCH: u8 = 0;
 const EXC_FINALLY: u8 = 1;
 const EXC_PROPAGATE: u8 = 2;
@@ -172,6 +177,32 @@ fn write_pattern(out: &mut Vec<u8>, pattern: &Pattern) {
             out.extend_from_slice(&(*enum_name as u32).to_le_bytes());
             out.extend_from_slice(&(*variant_name as u32).to_le_bytes());
             write_pattern(out, inner);
+        }
+        Pattern::Or(alternatives) => {
+            out.push(PATTERN_OR);
+            out.extend_from_slice(&(alternatives.len() as u32).to_le_bytes());
+            for alt in alternatives {
+                write_pattern(out, alt);
+            }
+        }
+        Pattern::Class(name, inner) => {
+            out.push(PATTERN_CLASS);
+            out.extend_from_slice(&(*name as u32).to_le_bytes());
+            write_pattern(out, inner);
+        }
+        Pattern::Fields(fields) => {
+            out.push(PATTERN_FIELDS);
+            out.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+            for (name, pat) in fields {
+                match name {
+                    Some(name) => {
+                        out.push(1);
+                        out.extend_from_slice(&(*name as u32).to_le_bytes());
+                    }
+                    None => out.push(0),
+                }
+                write_pattern(out, pat);
+            }
         }
     }
 }
@@ -374,6 +405,35 @@ fn read_pattern_depth(reader: &mut Reader, depth: usize) -> Result<Pattern, Stri
             let inner = read_pattern_depth(reader, depth + 1)?;
             Pattern::Variant(enum_name, variant_name, Box::new(inner))
         }
+        PATTERN_OR => {
+            let count = reader.u32()? as usize;
+            reader.guard(count)?;
+            let mut alternatives = Vec::with_capacity(count);
+            for _ in 0..count {
+                alternatives.push(read_pattern_depth(reader, depth + 1)?);
+            }
+            Pattern::Or(alternatives)
+        }
+        PATTERN_CLASS => {
+            let name = reader.u32()? as usize;
+            let inner = read_pattern_depth(reader, depth + 1)?;
+            Pattern::Class(name, Box::new(inner))
+        }
+        PATTERN_FIELDS => {
+            let count = reader.u32()? as usize;
+            reader.guard(count)?;
+            let mut fields = Vec::with_capacity(count);
+            for _ in 0..count {
+                let named = reader.u8()?;
+                let name = match named {
+                    0 => None,
+                    1 => Some(reader.u32()? as usize),
+                    other => return Err(format!("unknown pattern field tag {other}")),
+                };
+                fields.push((name, read_pattern_depth(reader, depth + 1)?));
+            }
+            Pattern::Fields(fields)
+        }
         other => return Err(format!("unknown pattern tag {other}")),
     })
 }
@@ -504,6 +564,17 @@ mod tests {
             Pattern::Bind(2),
             Pattern::Literal(0),
             Pattern::Tuple(vec![Pattern::Wildcard, Pattern::Bind(1)]),
+            Pattern::Or(vec![
+                Pattern::Literal(1),
+                Pattern::Variant(0, 1, Box::new(Pattern::Bind(2))),
+            ]),
+            Pattern::Class(
+                0,
+                Box::new(Pattern::Fields(vec![
+                    (Some(1), Pattern::Wildcard),
+                    (None, Pattern::Bind(2)),
+                ])),
+            ),
         ];
         proto.ext_type = Some(1);
         program.protos.push(proto);

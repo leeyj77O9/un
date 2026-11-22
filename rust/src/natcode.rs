@@ -239,7 +239,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
                 TirTy::Int => ArgKind::Int,
                 TirTy::Float => ArgKind::Float,
                 TirTy::Bool => ArgKind::Bool,
-                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => ArgKind::Int,
+                TirTy::Bytes | TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => ArgKind::Int,
             })
             .collect();
         jit_cache::register_tir_entry(
@@ -303,7 +303,7 @@ fn emit_internal_bail<M: Module>(
         Some(TirTy::Bool) => {
             b.ins().return_(&[zero_i8, one_i8]);
         }
-        Some(TirTy::Str) | Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)) => {
+        Some(TirTy::Bytes) | Some(TirTy::Str) | Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)) => {
             b.ins().return_(&[zero_i64, one_i8]);
         }
         None => {
@@ -454,14 +454,14 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
             TirTy::Int => types::I64,
             TirTy::Float => types::F64,
             TirTy::Bool => types::I8,
-            TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => types::I64,
+            TirTy::Bytes | TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => types::I64,
         }));
     }
     match &f.ret {
         Some(TirTy::Int) => sig.returns.push(AbiParam::new(types::I64)),
         Some(TirTy::Float) => sig.returns.push(AbiParam::new(types::F64)),
         Some(TirTy::Bool) => sig.returns.push(AbiParam::new(types::I8)),
-        Some(TirTy::Str) => sig.returns.push(AbiParam::new(types::I64)),
+        Some(TirTy::Bytes) | Some(TirTy::Str) => sig.returns.push(AbiParam::new(types::I64)),
         Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)) => sig.returns.push(AbiParam::new(types::I64)),
         None => {
             if mode == NativeMode::Obj {
@@ -975,7 +975,7 @@ fn emit_internal<M: Module>(
                 TirTy::Int => types::I64,
                 TirTy::Float => types::F64,
                 TirTy::Bool => types::I8,
-                TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => types::I64,
+                TirTy::Bytes | TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => types::I64,
             })
         })
         .collect();
@@ -1003,7 +1003,7 @@ fn emit_internal<M: Module>(
                 let zero = builder.ins().iconst(types::I8, 0);
                 builder.def_var(*var, zero);
             }
-            TirTy::Str => {
+            TirTy::Bytes | TirTy::Str => {
                 let v = match unrt_none {
                     Some(id) => {
                         let none_ref = module.declare_func_in_func(id, builder.func);
@@ -1211,7 +1211,7 @@ fn emit_internal_return<M: Module>(
         (Some(TirTy::Int), Some(v)) => returns.push(v),
         (Some(TirTy::Float), Some(v)) => returns.push(v),
         (Some(TirTy::Bool), Some(v)) => returns.push(v),
-        (Some(TirTy::Str), Some(v)) => returns.push(v),
+        (Some(TirTy::Bytes), Some(v)) | (Some(TirTy::Str), Some(v)) => returns.push(v),
         (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)), Some(v)) => returns.push(v),
         (Some(TirTy::Int), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
@@ -1219,7 +1219,7 @@ fn emit_internal_return<M: Module>(
         (Some(TirTy::Float), None) => {
             returns.push(builder.ins().f64const(0.0));
         }
-        (Some(TirTy::Str), None) => {
+        (Some(TirTy::Bytes), None) | (Some(TirTy::Str), None) => {
             returns.push(builder.ins().iconst(types::I64, 0));
         }
         (Some(TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)), None) => {
@@ -1522,7 +1522,7 @@ fn emit_stmt<M: Module>(
             for (i, arg) in args.iter().enumerate() {
                 let (v, vty) = emit_expr(arg, emitter, builder, module, f);
                 let wrapped = match vty {
-                    TirTy::Str => v,
+                    TirTy::Bytes | TirTy::Str => v,
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => v,
                     TirTy::Int => {
                         let id = emitter.unrt_obj_int.expect("unrt import required for native calls");
@@ -2113,7 +2113,7 @@ fn wrap_as_obj<M: Module>(
             let res = builder.ins().call(bool_ref, &[v]);
             builder.inst_results(res)[0]
         }
-        TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
+        TirTy::Bytes | TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
         | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => v,
     }
 }
@@ -2712,6 +2712,7 @@ fn emit_expr<M: Module>(
                     TirTy::Int => (builder.ins().ineg(value), TirTy::Int),
                     TirTy::Float => (builder.ins().fneg(value), TirTy::Float),
                     TirTy::Str => unreachable!("validator forbids neg of str"),
+                    TirTy::Bytes => unreachable!("validator forbids neg of bytes"),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
                         unreachable!("validator forbids neg of collection")
                     }
@@ -2727,6 +2728,7 @@ fn emit_expr<M: Module>(
                     }
                     TirTy::Float => unreachable!("validator forbids not of float"),
                     TirTy::Str => unreachable!("validator forbids not of str"),
+                    TirTy::Bytes => unreachable!("validator forbids not of bytes"),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
                         unreachable!("validator forbids not of collection")
                     }
@@ -2928,6 +2930,7 @@ fn ensure_float(
         TirTy::Float => v,
         TirTy::Int => builder.ins().fcvt_from_sint(types::F64, v),
         TirTy::Str => unreachable!("validator forbids str arithmetic"),
+        TirTy::Bytes => unreachable!("validator forbids bytes arithmetic"),
         TirTy::Bool => unreachable!("validator forbids bool arithmetic"),
         TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => unreachable!("validator forbids collection-class arithmetic"),
     }
@@ -3037,7 +3040,7 @@ fn emit_ffi(
                 TirTy::Int => v,
                 TirTy::Float => builder.ins().bitcast(types::F64, MemFlagsData::new(), v),
                 TirTy::Bool => builder.ins().ireduce(types::I8, v),
-                TirTy::Str => v,
+                TirTy::Bytes | TirTy::Str => v,
                 TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => v,
             }
         })
@@ -3068,7 +3071,7 @@ fn emit_ffi(
             let tag_v = builder.ins().iconst(types::I64, TAG_INT);
             builder.ins().store(MemFlagsData::new(), tag_v, hp, 8);
         }
-        Some(TirTy::Str) => {
+        Some(TirTy::Bytes) | Some(TirTy::Str) => {
             let zero = builder.ins().iconst(types::I64, 0);
             let two = builder.ins().iconst(types::I64, TAG_BAIL);
             builder.ins().store(MemFlagsData::new(), zero, hp, 0);

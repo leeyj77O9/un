@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use crate::bytecode::{Constant, Pattern};
 use crate::compiler::tests::compile_text;
 use crate::error::nl;
 use crate::native;
@@ -54,6 +55,119 @@ pub(crate) fn assert_abort_deep(text: &'static str, expected: &'static str) {
 #[test]
 fn io_write_writes_the_reference_line() {
     assert_out("use io\nio.write(\"v\", 1)", "v 1\n");
+}
+#[test]
+fn or_pattern_binds_the_winning_alternative_only() {
+    let (shared, source) = compile_text("x = 1");
+    let mut program = (*shared).clone();
+    let name_a = program.names.len();
+    program.names.push("pa".to_string());
+    let name_b = program.names.len();
+    program.names.push("pb".to_string());
+    let lit0 = program.consts.len();
+    program.consts.push(Constant::Int(0));
+    let lit1 = program.consts.len();
+    program.consts.push(Constant::Int(1));
+    let vm = VM::new(std::rc::Rc::new(program), source).expect("vm");
+    let scope = scope::empty();
+
+    // `(pa, 0) | (pb, 1)` against `(5, 1)` — the first alternative binds
+    // `pa` then fails on its literal, so only `pb` may survive.
+    let pattern = Pattern::Or(vec![
+        Pattern::Tuple(vec![Pattern::Bind(name_a), Pattern::Literal(lit0)]),
+        Pattern::Tuple(vec![Pattern::Bind(name_b), Pattern::Literal(lit1)]),
+    ]);
+    let value = crate::runtime::collections::tup(vec![obj::int(5), obj::int(1)], vec![]);
+    assert!(vm.match_pattern(&pattern, &value, &scope));
+    assert_eq!(obj::display(&scope::get(&scope, "pb")), "5");
+    assert!(scope::get_opt(&scope, "pa").is_none());
+
+    // Matching against `(5, 0)` must stop at the first alternative.
+    let scope2 = scope::empty();
+    let value2 = crate::runtime::collections::tup(vec![obj::int(5), obj::int(0)], vec![]);
+    assert!(vm.match_pattern(&pattern, &value2, &scope2));
+    assert_eq!(obj::display(&scope::get(&scope2, "pa")), "5");
+    assert!(scope::get_opt(&scope2, "pb").is_none());
+}
+#[test]
+fn a_failed_or_alternative_does_not_mutate_enclosing_bindings() {
+    let (shared, source) = compile_text("x = 1");
+    let mut program = (*shared).clone();
+    let z_idx = program.names.len();
+    program.names.push("z".to_string());
+    let w_idx = program.names.len();
+    program.names.push("w".to_string());
+    let lit0 = program.consts.len();
+    program.consts.push(Constant::Int(0));
+    let lit8 = program.consts.len();
+    program.consts.push(Constant::Int(8));
+    let vm = VM::new(std::rc::Rc::new(program), source).expect("vm");
+
+    let scope = scope::empty();
+    scope::set(&scope, "z", obj::int(99));
+    let pattern = Pattern::Or(vec![
+        Pattern::Tuple(vec![Pattern::Bind(z_idx), Pattern::Literal(lit0)]),
+        Pattern::Tuple(vec![Pattern::Bind(w_idx), Pattern::Literal(lit8)]),
+    ]);
+    let value = crate::runtime::collections::tup(vec![obj::int(7), obj::int(8)], vec![]);
+    assert!(vm.match_pattern(&pattern, &value, &scope));
+    // The first alternative bound `z` to 7 before failing on its literal; that
+    // must not overwrite the enclosing `z`.
+    assert_eq!(obj::display(&scope::get(&scope, "z")), "99");
+    assert_eq!(obj::display(&scope::get(&scope, "w")), "7");
+}
+#[test]
+fn class_pattern_matches_named_and_positional_fields() {
+    let (shared, source) = compile_text("x = 1");
+    let mut program = (*shared).clone();
+    let class_idx = program.names.len();
+    program.names.push("Point".to_string());
+    let x_idx = program.names.len();
+    program.names.push("x".to_string());
+    let y_idx = program.names.len();
+    program.names.push("y".to_string());
+    let vm = VM::new(std::rc::Rc::new(program), source).expect("vm");
+
+    let instance = crate::runtime::collections::stru("Point", vec!["x".into(), "y".into()]);
+    obj::set_attr(&instance, "x", &obj::int(3));
+    obj::set_attr(&instance, "y", &obj::int(4));
+
+    // First field is named, second is positional (declared order -> "y").
+    let pattern = Pattern::Class(
+        class_idx,
+        Box::new(Pattern::Fields(vec![
+            (Some(x_idx), Pattern::Bind(x_idx)),
+            (None, Pattern::Bind(y_idx)),
+        ])),
+    );
+    let scope = scope::empty();
+    assert!(vm.match_pattern(&pattern, &instance, &scope));
+    assert_eq!(obj::display(&scope::get(&scope, "x")), "3");
+    assert_eq!(obj::display(&scope::get(&scope, "y")), "4");
+
+    // A different class name must not match.
+    let other = crate::runtime::collections::stru("Other", vec!["x".into(), "y".into()]);
+    assert!(!vm.match_pattern(&pattern, &other, &scope::empty()));
+}
+#[test]
+fn nested_or_pattern_matches_inner_alternative() {
+    let (shared, source) = compile_text("x = 1");
+    let mut program = (*shared).clone();
+    let lit0 = program.consts.len();
+    program.consts.push(Constant::Int(0));
+    let lit1 = program.consts.len();
+    program.consts.push(Constant::Int(1));
+    let vm = VM::new(std::rc::Rc::new(program), source).expect("vm");
+
+    let pattern = Pattern::Tuple(vec![
+        Pattern::Wildcard,
+        Pattern::Or(vec![Pattern::Literal(lit0), Pattern::Literal(lit1)]),
+    ]);
+    let scope = scope::empty();
+    let yes = crate::runtime::collections::tup(vec![obj::int(9), obj::int(1)], vec![]);
+    let no = crate::runtime::collections::tup(vec![obj::int(9), obj::int(2)], vec![]);
+    assert!(vm.match_pattern(&pattern, &yes, &scope));
+    assert!(!vm.match_pattern(&pattern, &no, &scope));
 }
 #[test]
 fn the_block_value_is_the_last_child() {

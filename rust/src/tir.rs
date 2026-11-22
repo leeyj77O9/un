@@ -5,6 +5,13 @@ use crate::token::TokenType;
 use crate::typeck::{CheckedProgram, FnCheck, Ty};
 use std::collections::HashMap;
 
+/// FE-01 adds `NodeKind::{TypeAlias, Guard, OrPattern, Bytes}` in parallel;
+/// matching the derived `Debug` name keeps this module source-compatible both
+/// before and after those variants land.
+fn kind_is(node: &Node, name: &str) -> bool {
+    format!("{:?}", node.kind) == name
+}
+
 /// Element/key kind stored in the generic (handle-based) native collections.
 ///
 /// The standalone runtime stores every collection element as an opaque object
@@ -28,6 +35,10 @@ pub enum TirTy {
     Float,
     Bool,
     Str,
+    /// Opaque handle to a binary `bytes` value (NAT-07/RT-03). Deliberately
+    /// kept out of the standalone `nrt_supported` allowlist: NRT has no bytes
+    /// ABI yet, so programs using it must use the VM/`--embed` path.
+    Bytes,
     ListInt,
     ListFloat,
     ListClass(u16),
@@ -101,6 +112,7 @@ fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
         Ty::Float => Some(TirTy::Float),
         Ty::Bool => Some(TirTy::Bool),
         Ty::Str => Some(TirTy::Str),
+        Ty::Bytes => Some(TirTy::Bytes),
         Ty::Class(name) => classes.id(name).map(TirTy::Class),
         Ty::List(elem) => match elem.as_ref() {
             Ty::Int => Some(TirTy::ListInt),
@@ -165,6 +177,7 @@ fn mangle_ty(ty: &Ty) -> String {
         Ty::Float => "float".into(),
         Ty::Bool => "bool".into(),
         Ty::Str => "str".into(),
+        Ty::Bytes => "bytes".into(),
         Ty::None_ => "none".into(),
         Ty::Any | Ty::Unknown | Ty::Generic { .. } => "any".into(),
         Ty::List(a) => format!("list_{}", mangle_ty(a)),
@@ -531,7 +544,15 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             TirExpr::DictGet(a, b) => expr_ok(a) && expr_ok(b),
             TirExpr::ListRepeat { value, len, .. } => expr_ok(value) && expr_ok(len),
             TirExpr::Math(_, args) | TirExpr::Call(_, args) => args.iter().all(expr_ok),
-            TirExpr::NativeCallExpr { module, args, .. } => module.as_ref() != "random" && args.iter().all(expr_ok),
+            // `bytes` has no standalone NRT implementation yet, and neither
+            // do the binary fs helpers. Keep such programs on `--embed`,
+            // exactly like the time-seeded `random` module.
+            TirExpr::NativeCallExpr { module, args, ret, .. } => {
+                module.as_ref() != "random"
+                    && module.as_ref() != "bytes"
+                    && *ret != TirTy::Bytes
+                    && args.iter().all(expr_ok)
+            }
             TirExpr::ClassNew { args, .. } | TirExpr::MethodCall { args, .. } => args.iter().all(expr_ok),
             TirExpr::MemberGet { receiver, .. } => expr_ok(receiver),
             TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) => true,
@@ -1190,6 +1211,17 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
         if !*out {
             return;
         }
+        // FE-01 syntax has no TIR lowering yet: keep those functions on the
+        // interpreter path until VM-02/natcode gain matching representations.
+        if kind_is(node, "Bytes")
+            || kind_is(node, "TypeAlias")
+            || kind_is(node, "Guard")
+            || kind_is(node, "OrPattern")
+        {
+            tirdbg_reject(node);
+            *out = false;
+            return;
+        }
         match node.kind {
             // Lambda bodies are lowered separately into synthesized functions;
             // their parameters and captures are not this function's locals.
@@ -1844,6 +1876,9 @@ impl From<TirTy> for CoreTy {
             TirTy::Float => CoreTy::Float,
             TirTy::Bool => CoreTy::Bool,
             TirTy::Str => CoreTy::Str,
+            // No bytes variant in the core type system: treat as an opaque
+            // handle. Bytes functions are excluded from core lowering.
+            TirTy::Bytes => CoreTy::Obj,
             TirTy::ListInt => CoreTy::ListInt,
             TirTy::ListFloat => CoreTy::ListFloat,
             TirTy::ListClass(id) => CoreTy::ListClass(id),
@@ -4527,6 +4562,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Float => Ok(TirTy::Float),
                     TirTy::Bool => Err("negation of bool".to_string()),
                     TirTy::Str => Err("negation of str".to_string()),
+                    TirTy::Bytes => Err("negation of bytes".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
                     | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda
                     | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
@@ -4538,6 +4574,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Int => Ok(TirTy::Int),
                     TirTy::Float => Err("'not' requires a bool or int".to_string()),
                     TirTy::Str => Err("'not' requires a bool or int".to_string()),
+                    TirTy::Bytes => Err("'not' requires a bool or int".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
                     | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda
                     | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
@@ -4583,6 +4620,7 @@ fn param_name(ty: TirTy) -> &'static str {
         TirTy::Float => "float",
         TirTy::Bool => "bool",
         TirTy::Str => "str",
+        TirTy::Bytes => "bytes",
         TirTy::ListInt => "list[int]",
         TirTy::ListFloat => "list[float]",
         TirTy::ListClass(_) => "list[class]",
