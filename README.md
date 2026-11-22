@@ -319,6 +319,10 @@ Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일�
   기본값 인자, 람다(캡처·closure·리스트 저장), 단순 사용자 모듈 import/전역,
   VM과 byte-identical한 traceback을 지원한다. 동적 타입(`Any`/Union), 시간 기반
   `random`, 모듈 최상위 부수 효과가 있는 프로그램은 `un build --embed`를 써야 한다.
+  제네릭 컬렉션 타입(`list[str]`, `list[bool]`, `dict[int, str]`,
+  `dict[str, ClassName]` 등)은 elem kind를 TIR에 명시해 plain build에서도 네이티브로
+  컴파일된다. 중첩 리스트의 element는 불투명 핸들로 취급되어 내부 인덱싱·연산은
+  lowering하지 않는다.
 - `un lsp`는 stdin/stdout으로 LSP 언어 서버를 실행한다. 기본은 lexer/parser
   오류만 보고하며, Compile Mode 타입 진단은 `initializationOptions.compileMode`
   또는 `un/compileMode` 알림으로 opt-in한다. Rust를 쓰지 않는 클라이언트도

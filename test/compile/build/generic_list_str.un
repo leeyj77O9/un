@@ -1,0 +1,20 @@
+use io
+
+# Plain no-VM build: list[str] is lowered through the generic, handle-based
+# native collection path (element kind Str, no unbox needed).
+
+fn main() -> int
+    xs: list[str] = ["aa", "bb", "cc"]
+    io.write(len(xs))
+    io.write(xs[0])
+    io.write(xs[2])
+    xs[1] = "zz"
+    io.write(xs)
+    io.write(xs.contains("bb"))
+    io.write(xs.index_of("cc"))
+    io.write(xs.pop())
+    for x in xs
+        io.write(x)
+    -> 0
+
+main()

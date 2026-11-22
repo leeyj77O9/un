@@ -1,0 +1,14 @@
+use io
+
+# Elements whose static type is not tracked by the code generator are stored
+# as opaque handles (ObjElem::Obj). They can be read, printed and measured,
+# but further static indexing is intentionally not lowered.
+
+fn main() -> int
+    xs: list[list[int]] = [[1, 2], [3, 4]]
+    io.write(len(xs))
+    io.write(xs[0])
+    io.write(xs[1])
+    -> 0
+
+main()

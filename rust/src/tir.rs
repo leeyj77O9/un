@@ -52,7 +52,7 @@ pub enum TirTy {
 }
 
 /// Collapse a TIR type into the element kind used by native collections.
-fn elem_of_tir(ty: TirTy) -> ObjElem {
+pub(crate) fn elem_of_tir(ty: TirTy) -> ObjElem {
     match ty {
         TirTy::Int => ObjElem::Int,
         TirTy::Float => ObjElem::Float,
@@ -64,8 +64,21 @@ fn elem_of_tir(ty: TirTy) -> ObjElem {
     }
 }
 
+/// Element kind for a `Ty` used where no `ClassTable` is available.
+fn elem_of_tir_field(ty: &Ty) -> ObjElem {
+    match ty {
+        Ty::Int => ObjElem::Int,
+        Ty::Float => ObjElem::Float,
+        Ty::Bool => ObjElem::Bool,
+        Ty::Str => ObjElem::Str,
+        Ty::Class(_) => ObjElem::Class(u16::MAX),
+        Ty::Func { .. } => ObjElem::Lambda,
+        _ => ObjElem::Obj,
+    }
+}
+
 /// The TIR type of a value read out of a generic collection element.
-fn tir_of_elem(elem: ObjElem) -> TirTy {
+pub(crate) fn tir_of_elem(elem: ObjElem) -> TirTy {
     match elem {
         ObjElem::Obj => TirTy::Obj,
         ObjElem::Int => TirTy::Int,
@@ -78,7 +91,7 @@ fn tir_of_elem(elem: ObjElem) -> TirTy {
 }
 
 /// True for every type whose native ABI value is an object handle (I64).
-fn tir_is_ref(ty: TirTy) -> bool {
+pub(crate) fn tir_is_ref(ty: TirTy) -> bool {
     !matches!(ty, TirTy::Int | TirTy::Float | TirTy::Bool)
 }
 
@@ -920,7 +933,7 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
 pub fn fn_uses_heap(f: &TirFn) -> bool {
     if f.locals
         .iter()
-        .any(|t| matches!(t, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_)))
+        .any(|t| matches!(t, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)))
     {
         return true;
     }
@@ -2588,14 +2601,35 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
                     out.push(TirStmt::DictSet { dict: c_expr, key: k_expr, value: v_expr });
                     Ok(())
                 }
+                (CoreTy::ListGen(elem), CoreTy::Int) => {
+                    let expected = CoreTy::from(tir_of_elem(elem));
+                    if v_ty != expected {
+                        return Err("list elements must all have the same type".to_string());
+                    }
+                    out.push(TirStmt::ListSet { list: c_expr, index: k_expr, value: v_expr });
+                    Ok(())
+                }
+                (CoreTy::DictGen(k, v), key) if elem_of_core(key) == k => {
+                    let expected = CoreTy::from(tir_of_elem(v));
+                    if v_ty != expected {
+                        return Err("dict values must all have the same type".to_string());
+                    }
+                    out.push(TirStmt::DictSet { dict: c_expr, key: k_expr, value: v_expr });
+                    Ok(())
+                }
                 (
-                    CoreTy::DictStrInt | CoreTy::DictStrFloat | CoreTy::DictIntInt,
+                    CoreTy::DictStrInt | CoreTy::DictStrFloat | CoreTy::DictIntInt
+                    | CoreTy::DictGen(_, _),
                     other,
                 ) => {
                     let _ = other;
                     Err("dict keys must be strings or ints".to_string())
                 }
-                (CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_), _) => {
+                (
+                    CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_)
+                    | CoreTy::ListGen(_),
+                    _,
+                ) => {
                     Err("list index must be an int".to_string())
                 }
                 _ => Err("only list/dict indexing is assignable in the core".to_string()),
@@ -2664,6 +2698,10 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
     }
 }
 
+fn elem_of_core(ty: CoreTy) -> ObjElem {
+    tir_ty_of(ty).map_or(ObjElem::Obj, elem_of_tir)
+}
+
 fn tir_ty_of(ty: CoreTy) -> Result<TirTy, String> {
     match ty {
         CoreTy::Int => Ok(TirTy::Int),
@@ -2677,6 +2715,10 @@ fn tir_ty_of(ty: CoreTy) -> Result<TirTy, String> {
         CoreTy::DictStrInt => Ok(TirTy::DictStrInt),
         CoreTy::DictStrFloat => Ok(TirTy::DictStrFloat),
         CoreTy::DictIntInt => Ok(TirTy::DictIntInt),
+        CoreTy::Obj => Ok(TirTy::Obj),
+        CoreTy::ListGen(e) => Ok(TirTy::ListGen(e)),
+        CoreTy::DictGen(k, v) => Ok(TirTy::DictGen(k, v)),
+        CoreTy::SetGen(e) => Ok(TirTy::SetGen(e)),
         CoreTy::None_ => {
             Err("cannot infer a concrete local type in the core".to_string())
         }
@@ -2774,11 +2816,12 @@ fn lower_for(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
     };
     if let Some(slot) = slot_of(ctx, &ctx.source.span(iter.start, iter.length).to_string()) {
         let list_ty = ctx.locals[slot as usize];
-        if matches!(list_ty, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)) {
+        if matches!(list_ty, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::ListGen(_)) {
             let elem_ty = match list_ty {
                 TirTy::ListInt => TirTy::Int,
                 TirTy::ListFloat => TirTy::Float,
                 TirTy::ListClass(id) => TirTy::Class(id),
+                TirTy::ListGen(e) => tir_of_elem(e),
                 _ => unreachable!(),
             };
             let var = declare(ctx, &name, elem_ty);
@@ -3016,7 +3059,10 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 (CoreTy::Str, CoreTy::Int) => CoreTy::DictStrInt,
                 (CoreTy::Str, CoreTy::Float) => CoreTy::DictStrFloat,
                 (CoreTy::Int, CoreTy::Int) => CoreTy::DictIntInt,
-                _ => return Err("dict must be dict[str, int], dict[str, float] or dict[int, int] in the core".to_string()),
+                (k @ (CoreTy::Str | CoreTy::Int), v) => {
+                    CoreTy::DictGen(elem_of_core(k), elem_of_core(v))
+                }
+                _ => return Err("dict keys must be strings or ints in the core".to_string()),
             };
             Ok((TirExpr::Dict(entries), ret))
         }
@@ -3049,7 +3095,22 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                         elem_cty,
                     ))
                 }
-                CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_) | CoreTy::ListLambda => {
+                CoreTy::DictGen(k, v) => {
+                    let (key, kty) = lower_expr(key_node, ctx)?;
+                    let expected_key = CoreTy::from(tir_of_elem(k));
+                    if kty != expected_key {
+                        return Err("dict key type does not match the dict".to_string());
+                    }
+                    Ok((
+                        TirExpr::Located {
+                            span: (node.start, node.length),
+                            inner: Box::new(TirExpr::DictGet(Box::new(target), Box::new(key))),
+                        },
+                        CoreTy::from(tir_of_elem(v)),
+                    ))
+                }
+                CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_) | CoreTy::ListLambda
+                | CoreTy::ListGen(_) => {
                     let (key, kty) = lower_expr(key_node, ctx)?;
                     if kty != CoreTy::Int {
                         return Err("list index must be an int".to_string());
@@ -3059,7 +3120,8 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                         CoreTy::ListFloat => CoreTy::Float,
                         CoreTy::ListClass(id) => CoreTy::Class(id),
                         CoreTy::ListLambda => CoreTy::Lambda(u32::MAX),
-                        _ => return Err("indexing requires a list[int], list[float] or list[class]".to_string()),
+                        CoreTy::ListGen(elem) => CoreTy::from(tir_of_elem(elem)),
+                        _ => return Err("indexing requires a list".to_string()),
                     };
                     Ok((
                         TirExpr::Located {
@@ -3099,7 +3161,7 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 CoreTy::Float => CoreTy::ListFloat,
                 CoreTy::Class(id) => CoreTy::ListClass(id),
                 CoreTy::Lambda(_) => CoreTy::ListLambda,
-                _ => return Err("core lists require int, float, or class elements".to_string()),
+                other => CoreTy::ListGen(elem_of_core(other)),
             };
             Ok((TirExpr::List(elements), ret))
         }
@@ -3428,7 +3490,8 @@ fn lower_list_method_expr(
         CoreTy::ListInt => CoreTy::Int,
         CoreTy::ListFloat => CoreTy::Float,
         CoreTy::ListClass(id) => CoreTy::Class(id),
-        _ => return Err("list method requires a list[int], list[float] or list[class]".to_string()),
+        CoreTy::ListGen(elem) => CoreTy::from(tir_of_elem(elem)),
+        _ => return Err("list method requires a list".to_string()),
     };
     match member {
         "pop" => match args.len() {
@@ -3468,7 +3531,7 @@ fn lower_list_method_stmt(node: &Node, ctx: &mut LowerCtx) -> Result<Option<TirS
     }
     let head = callee.children.first().ok_or_else(|| "call without a receiver".to_string())?;
     let (receiver, rty) = lower_expr(head, ctx)?;
-    if !matches!(rty, CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_)) {
+    if !matches!(rty, CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_) | CoreTy::ListGen(_)) {
         return Err(format!("method '{}' requires a list receiver in the core", member));
     }
     let args_node = node.children.get(1).ok_or_else(|| "call without arguments".to_string())?;
@@ -3708,7 +3771,7 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             }
         }
         let (recv, rty) = lower_expr(head, ctx)?;
-        if matches!(rty, CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_)) {
+        if matches!(rty, CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_) | CoreTy::ListGen(_)) {
             if let Some(list_method) = lower_list_method_expr(&member, recv, rty, args_tuple, ctx)? {
                 return Ok(list_method);
             }
@@ -3840,7 +3903,8 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         let (arg, arg_ty) = lower_expr(&args_node.children[0], ctx)?;
         match arg_ty {
             CoreTy::Str | CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_)
-            | CoreTy::DictStrInt | CoreTy::DictStrFloat | CoreTy::DictIntInt => {}
+            | CoreTy::DictStrInt | CoreTy::DictStrFloat | CoreTy::DictIntInt
+            | CoreTy::ListGen(_) | CoreTy::DictGen(_, _) | CoreTy::SetGen(_) => {}
             _ => return Err("len() requires a string or collection in the core".to_string()),
         }
         return Ok((TirExpr::Len(Box::new(arg)), CoreTy::Int));
@@ -4109,15 +4173,18 @@ fn ty_to_tir_simple(ty: &Ty) -> Result<TirTy, String> {
             Ty::Int => TirTy::ListInt,
             Ty::Float => TirTy::ListFloat,
             Ty::Class(_) => TirTy::ListClass(u16::MAX),
-            other => return Err(format!("list[{}] field is not supported", other.display())),
+            Ty::Func { .. } => TirTy::ListLambda,
+            other => TirTy::ListGen(elem_of_tir_field(other)),
         },
         Ty::Dict(key, value) => match (key.as_ref(), value.as_ref()) {
             (Ty::Str, Ty::Int) => TirTy::DictStrInt,
             (Ty::Str, Ty::Float) => TirTy::DictStrFloat,
             (Ty::Int, Ty::Int) => TirTy::DictIntInt,
-            (Ty::Str, other) => return Err(format!("dict[str, {}] field is not supported", other.display())),
+            (Ty::Str, other) => TirTy::DictGen(ObjElem::Str, elem_of_tir_field(other)),
+            (Ty::Int, other) => TirTy::DictGen(ObjElem::Int, elem_of_tir_field(other)),
             (other, _) => return Err(format!("dict[{}, ...] field is not supported", other.display())),
         },
+        Ty::Set(elem) => TirTy::SetGen(elem_of_tir_field(elem)),
         Ty::Class(_) => TirTy::Class(u16::MAX),
         other => return Err(format!("field of type '{}' is not supported in the core", other.display())),
     })
@@ -4177,25 +4244,27 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                 TirTy::ListInt => Ok(TirTy::Int),
                 TirTy::ListFloat => Ok(TirTy::Float),
                 TirTy::ListClass(id) => Ok(TirTy::Class(id)),
+                TirTy::ListGen(e) => Ok(tir_of_elem(e)),
                 _ => Err("list.pop requires a list[int], list[float] or list[class]".to_string()),
             }
         }
         TirExpr::ListContains(receiver, _) => {
             match expr_ty(receiver, f, program, locals)? {
-                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) => Ok(TirTy::Bool),
+                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::ListGen(_) => Ok(TirTy::Bool),
                 _ => Err("list.contains requires a list[int], list[float] or list[class]".to_string()),
             }
         }
         TirExpr::ListIndexOf(receiver, _) => {
             match expr_ty(receiver, f, program, locals)? {
-                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) => Ok(TirTy::Int),
+                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::ListGen(_) => Ok(TirTy::Int),
                 _ => Err("list.index_of requires a list[int], list[float] or list[class]".to_string()),
             }
         }
         TirExpr::Len(arg) => {
             match expr_ty(arg, f, program, locals)? {
                 TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)
-                | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt => {
+                | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt
+                | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
                     Ok(TirTy::Int)
                 }
                 _ => Err("len() requires a string or collection in the core".to_string()),
@@ -4209,6 +4278,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                 TirTy::ListInt => Ok(TirTy::Int),
                 TirTy::ListFloat => Ok(TirTy::Float),
                 TirTy::ListClass(id) => Ok(TirTy::Class(id)),
+                TirTy::ListGen(e) => Ok(tir_of_elem(e)),
                 _ => Err("indexing requires a list[int], list[float] or list[class]".to_string()),
             }
         }
@@ -4243,7 +4313,10 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                 (Some(TirTy::Str), Some(TirTy::Int)) => Ok(TirTy::DictStrInt),
                 (Some(TirTy::Str), Some(TirTy::Float)) => Ok(TirTy::DictStrFloat),
                 (Some(TirTy::Int), Some(TirTy::Int)) => Ok(TirTy::DictIntInt),
-                _ => Err("dict must be dict[str, int], dict[str, float] or dict[int, int] in the core".to_string()),
+                (Some(k @ (TirTy::Str | TirTy::Int)), Some(v)) => {
+                    Ok(TirTy::DictGen(elem_of_tir(k), elem_of_tir(v)))
+                }
+                _ => Err("dict keys must be strings or ints in the core".to_string()),
             }
         }
         TirExpr::DictGet(target, key) => {
@@ -4252,6 +4325,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                 TirTy::DictStrInt if key_ty == TirTy::Str => Ok(TirTy::Int),
                 TirTy::DictStrFloat if key_ty == TirTy::Str => Ok(TirTy::Float),
                 TirTy::DictIntInt if key_ty == TirTy::Int => Ok(TirTy::Int),
+                TirTy::DictGen(k, v) if elem_of_tir(key_ty) == k => Ok(tir_of_elem(v)),
                 _ => Err(
                     "indexing requires a dict[str, int], dict[str, float] or dict[int, int]".to_string(),
                 ),
@@ -4361,7 +4435,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             } else if let TirTy::Lambda(_) = ty {
                 Ok(TirTy::ListLambda)
             } else {
-                Err("list elements must be int, float or class instances".to_string())
+                Ok(TirTy::ListGen(elem_of_tir(ty)))
             }
         }
         TirExpr::Local(slot) => {
@@ -4439,7 +4513,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             let b = expr_ty(rhs, f, program, locals)?;
             let numeric_pair = matches!((a, b), (TirTy::Int, TirTy::Int) | (TirTy::Int, TirTy::Float) | (TirTy::Float, TirTy::Int) | (TirTy::Float, TirTy::Float));
             if numeric_pair
-                || (same_ty(a, b) && !matches!(a, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_)))
+                || (same_ty(a, b) && !matches!(a, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)))
             {
                 return Ok(TirTy::Bool);
             }
@@ -4454,7 +4528,8 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Bool => Err("negation of bool".to_string()),
                     TirTy::Str => Err("negation of str".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
-                    | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
+                    | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda
+                    | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
                         Err("negation of collection or class instance".to_string())
                     }
                 },
@@ -4464,7 +4539,8 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Float => Err("'not' requires a bool or int".to_string()),
                     TirTy::Str => Err("'not' requires a bool or int".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
-                    | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda => {
+                    | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda
+                    | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
                         Err("'not' requires a bool or int".to_string())
                     }
                 },
@@ -4517,6 +4593,10 @@ fn param_name(ty: TirTy) -> &'static str {
         TirTy::ErrorObj => "error-obj",
         TirTy::Lambda(_) => "lambda",
         TirTy::ListLambda => "list[lambda]",
+        TirTy::Obj => "obj",
+        TirTy::ListGen(_) => "list",
+        TirTy::DictGen(_, _) => "dict",
+        TirTy::SetGen(_) => "set",
     }
 }
 
@@ -4603,6 +4683,7 @@ fn validate_stmt(
                     TirTy::ListInt => TirTy::Int,
                     TirTy::ListFloat => TirTy::Float,
                     TirTy::ListClass(id) => TirTy::Class(id),
+                    TirTy::ListGen(elem) => tir_of_elem(elem),
                     _ => return Err("for ... in requires a core list".to_string()),
                 };
                 if (*var as usize) != *slot {
@@ -4629,7 +4710,8 @@ fn validate_stmt(
                     TirTy::ListInt => TirTy::Int,
                     TirTy::ListFloat => TirTy::Float,
                     TirTy::ListClass(id) => TirTy::Class(id),
-                    _ => return Err("index assignment requires a list[int], list[float] or list[class]".to_string()),
+                    TirTy::ListGen(elem) => tir_of_elem(elem),
+                    _ => return Err("index assignment requires a list".to_string()),
                 };
                 if expr_ty(value, f, program, locals)? != elem_ty {
                     return Err("list elements must all have the same type".to_string());
@@ -4642,6 +4724,7 @@ fn validate_stmt(
                     (TirTy::DictStrInt, TirTy::Str) => TirTy::Int,
                     (TirTy::DictStrFloat, TirTy::Str) => TirTy::Float,
                     (TirTy::DictIntInt, TirTy::Int) => TirTy::Int,
+                    (TirTy::DictGen(k, v), key) if elem_of_tir(key) == k => tir_of_elem(v),
                     _ => return Err(
                         "index assignment requires a dict[str, int], dict[str, float] or dict[int, int]"
                             .to_string(),

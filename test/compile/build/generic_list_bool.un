@@ -1,0 +1,15 @@
+use io
+
+# Bool elements box through unrt_obj_bool and unbox through
+# unrt_bool_from_obj (narrowed to i8 before being passed back to the ABI).
+
+fn main() -> int
+    bs: list[bool] = [true, false]
+    io.write(bs)
+    io.write(bs[0])
+    io.write(len(bs))
+    bs[1] = true
+    io.write(bs)
+    -> 0
+
+main()

@@ -349,17 +349,18 @@ enum DefKind {
     Parameter,
     Property,
     Namespace,
+    TypeParameter,
 }
 
 impl DefKind {
     fn symbol_kind(self) -> f64 {
         match self {
-            DefKind::Function => 12.0,            DefKind::Extension => 6.0,            DefKind::Class => 5.0,            DefKind::Enum => 10.0,            DefKind::EnumMember => 22.0,            DefKind::Variable => 13.0,            DefKind::Parameter => 13.0,            DefKind::Property => 8.0,            DefKind::Namespace => 2.0,        }
+            DefKind::Function => 12.0,            DefKind::Extension => 6.0,            DefKind::Class => 5.0,            DefKind::Enum => 10.0,            DefKind::EnumMember => 22.0,            DefKind::Variable => 13.0,            DefKind::Parameter => 13.0,            DefKind::Property => 8.0,            DefKind::Namespace => 2.0,            DefKind::TypeParameter => 26.0,        }
     }
 
     fn completion_kind(self) -> f64 {
         match self {
-            DefKind::Function | DefKind::Extension => 3.0,            DefKind::Class | DefKind::Enum => 7.0,            DefKind::EnumMember => 20.0,            DefKind::Variable | DefKind::Parameter => 6.0,            DefKind::Property => 10.0,            DefKind::Namespace => 9.0,        }
+            DefKind::Function | DefKind::Extension => 3.0,            DefKind::Class | DefKind::Enum => 7.0,            DefKind::EnumMember => 20.0,            DefKind::Variable | DefKind::Parameter => 6.0,            DefKind::Property => 10.0,            DefKind::Namespace => 9.0,            DefKind::TypeParameter => 25.0,        }
     }
 
     fn semantic_token(self) -> u32 {
@@ -372,6 +373,7 @@ impl DefKind {
             DefKind::Variable => 5,
             DefKind::Property => 6,
             DefKind::Function | DefKind::Extension => 7,
+            DefKind::TypeParameter => 8,
         }
     }
 
@@ -537,6 +539,50 @@ impl<'a> Walker<'a> {
         self.skip.insert((name_start, name_end));
     }
 
+    /// Registers the `[T, U: bound]` list attached to a function, class or enum
+    /// declaration. Type parameters are definitions, so they receive the `type`
+    /// semantic token (and go-to-definition) instead of being mistaken for
+    /// ordinary variable uses. Returns true when a list was present.
+    fn walk_type_params(&mut self, node: &Node, scope: usize) -> bool {
+        let Some(params) = node
+            .children
+            .iter()
+            .find(|child| child.kind == NodeKind::TypeParams)
+        else {
+            return false;
+        };
+        for param in &params.children {
+            let (start, end) = self.span_of(param);
+            self.push_def(param, DefKind::TypeParameter, scope, start, end);
+            // A bound (`T: num`) is stored as a `Const::Str` value rather than a
+            // child node, so find its text in the source to colour it as a type.
+            if param.value.is_some() {
+                let code = &self.source.code;
+                let mut cursor = end;
+                while cursor < code.len() && code[cursor].is_whitespace() {
+                    cursor += 1;
+                }
+                if cursor < code.len() && code[cursor] == ':' {
+                    cursor += 1;
+                    while cursor < code.len() && code[cursor].is_whitespace() {
+                        cursor += 1;
+                    }
+                    let bound_start = cursor;
+                    while cursor < code.len()
+                        && (code[cursor].is_alphanumeric() || code[cursor] == '_')
+                    {
+                        cursor += 1;
+                    }
+                    if cursor > bound_start {
+                        self.type_spans.push((bound_start, cursor));
+                        self.skip.insert((bound_start, cursor));
+                    }
+                }
+            }
+        }
+        true
+    }
+
     fn walk_type(&mut self, node: &Node, scope: usize) {
         let _ = scope;
         match node.kind {
@@ -670,6 +716,7 @@ impl<'a> Walker<'a> {
             NodeKind::Function | NodeKind::Extension | NodeKind::Lambda => {
                 let is_lambda = node.kind == NodeKind::Lambda;
                 let new_scope = self.new_scope();
+                let has_type_params = self.walk_type_params(node, new_scope);
                 let mut name_index: Option<usize> = None;
                 if !is_lambda {
                     let index = if node.kind == NodeKind::Extension { 1 } else { 0 };
@@ -714,6 +761,9 @@ impl<'a> Walker<'a> {
                         self.walk_type(child, new_scope);
                         continue;
                     }
+                    if has_type_params && child.kind == NodeKind::TypeParams {
+                        continue;
+                    }
                     self.walk(child, new_scope);
                 }
             }
@@ -724,7 +774,11 @@ impl<'a> Walker<'a> {
                         self.push_def(name, DefKind::Class, scope, start, end);
                     }
                 }
+                let has_type_params = self.walk_type_params(node, scope);
                 for child in node.children.iter().skip(1) {
+                    if has_type_params && child.kind == NodeKind::TypeParams {
+                        continue;
+                    }
                     match child.kind {
                         NodeKind::Tuple => {
                             for param in &child.children {
@@ -768,7 +822,11 @@ impl<'a> Walker<'a> {
                         self.push_def(name, DefKind::Enum, scope, start, end);
                     }
                 }
+                let has_type_params = self.walk_type_params(node, scope);
                 for member in node.children.iter().skip(1) {
+                    if has_type_params && member.kind == NodeKind::TypeParams {
+                        continue;
+                    }
                     match member.kind {
                         NodeKind::Identifier => {
                             let (start, end) = self.span_of(member);
@@ -792,9 +850,29 @@ impl<'a> Walker<'a> {
                                     self.push_def(target, DefKind::EnumMember, scope, start, end);
                                 }
                             }
+                            if let Some(type_node) = member.children.get(1) {
+                                self.walk_type(type_node, scope);
+                            }
                         }
                         _ => self.walk(member, scope),
                     }
+                }
+            }
+            NodeKind::Call => {
+                // Explicit type arguments (`id[int](x)`) are stored as a
+                // trailing TypeParams child. Mark them as type tokens instead
+                // of letting them fall through as ordinary variable uses.
+                if let Some(params) = node.children.last() {
+                    if params.kind == NodeKind::TypeParams {
+                        for arg in &params.children {
+                            let (start, end) = self.span_of(arg);
+                            self.type_spans.push((start, end));
+                            self.skip.insert((start, end));
+                        }
+                    }
+                }
+                for child in &node.children {
+                    self.walk(child, scope);
                 }
             }
             NodeKind::Assign => {
@@ -990,6 +1068,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
     }
 
     let mut defs: Vec<Def> = Vec::new();
+    let mut type_spans: Vec<(usize, usize)> = Vec::new();
     let mut namespace_spans: Vec<(usize, usize)> = Vec::new();
     let mut use_aliases: Vec<(String, String)> = Vec::new();
     let mut var_class_hints: HashMap<String, String> = HashMap::new();
@@ -1046,11 +1125,61 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
         fn word(text: &str) -> &str {
             let end = text
                 .char_indices()
-                .find(|(_, ch)| ch.is_whitespace() || *ch == '(')
+                .find(|(_, ch)| ch.is_whitespace() || *ch == '(' || *ch == '[')
                 .map(|(i, _)| i)
                 .unwrap_or(text.len());
             &text[..end]
         }
+
+        // Colour `[T, U: bound]` in a declaration line even when the document
+        // is too incomplete to parse, so generic highlighting survives typing.
+        let mut push_decl_type_params = |rest: &str,
+                                         line_start: usize,
+                                         indent_chars: usize,
+                                         prefix_len: usize,
+                                         name_len: usize| {
+            let rest = rest.trim();
+            let Some(open_rel) = rest.get(name_len..).and_then(|tail| tail.find('[')) else {
+                return;
+            };
+            let open = line_start + indent_chars + prefix_len + name_len + open_rel;
+            let close = rest[open_rel..]
+                .find(']')
+                .map(|rel| open + rel)
+                .unwrap_or(code.len());
+            let mut cursor = (open + 1).min(code.len());
+            while cursor < close && cursor < code.len() {
+                while cursor < close && (code[cursor].is_whitespace() || code[cursor] == ',') {
+                    cursor += 1;
+                }
+                if cursor >= close || !code[cursor].is_alphabetic() {
+                    break;
+                }
+                let start = cursor;
+                while cursor < close && (code[cursor].is_alphanumeric() || code[cursor] == '_') {
+                    cursor += 1;
+                }
+                type_spans.push((start, cursor));
+                let mut bound = cursor;
+                while bound < close && code[bound].is_whitespace() {
+                    bound += 1;
+                }
+                if bound < close && code[bound] == ':' {
+                    bound += 1;
+                    while bound < close && code[bound].is_whitespace() {
+                        bound += 1;
+                    }
+                    let bound_start = bound;
+                    while bound < close && (code[bound].is_alphanumeric() || code[bound] == '_') {
+                        bound += 1;
+                    }
+                    if bound > bound_start {
+                        type_spans.push((bound_start, bound));
+                    }
+                    cursor = bound;
+                }
+            }
+        };
         let is_ident = |text: &str| -> bool {
             !text.is_empty()
                 && text
@@ -1083,6 +1212,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
             if is_ident(name) {
                 let start = line_start + indent_chars + "class ".len();
                 let def_index = push_def(&mut defs, DefKind::Class, name, start, scope);
+                push_decl_type_params(rest, line_start, indent_chars, "class ".len(), name.len());
                 scope += 1;
                 stack.push(Frame {
                     indent,
@@ -1097,6 +1227,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
             if is_ident(name) {
                 let start = line_start + indent_chars + "enum ".len();
                 let def_index = push_def(&mut defs, DefKind::Enum, name, start, scope);
+                push_decl_type_params(rest, line_start, indent_chars, "enum ".len(), name.len());
                 scope += 1;
                 stack.push(Frame {
                     indent,
@@ -1111,6 +1242,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
             if is_ident(name) {
                 let start = line_start + indent_chars + "fn ".len();
                 let _def_index = push_def(&mut defs, DefKind::Function, name, start, scope);
+                push_decl_type_params(rest, line_start, indent_chars, "fn ".len(), name.len());
             }
             i += 1;
             continue;
@@ -1204,7 +1336,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
         tokens: None,
         defs,
         uses: Vec::new(),
-        type_spans: Vec::new(),
+        type_spans,
         namespace_spans,
         use_aliases,
         var_class_hints,
@@ -3101,5 +3233,60 @@ pub fn run() -> i32 {
             }
             Err(_) => return 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span_texts(analysis: &Analysis) -> Vec<String> {
+        analysis
+            .type_spans
+            .iter()
+            .map(|&(start, end)| analysis.source.code[start..end].iter().collect())
+            .collect()
+    }
+
+    #[test]
+    fn generic_params_and_bounds_are_type_tokens() {
+        let analysis = analyze("fn add[T: numeric](a: T, b: T) -> T\n    -> a + b\n", "g.un");
+        assert!(analysis.error.is_none(), "parse failed: {:?}", analysis.error);
+        let params: Vec<&str> = analysis
+            .defs
+            .iter()
+            .filter(|def| def.kind == DefKind::TypeParameter)
+            .map(|def| def.name.as_str())
+            .collect();
+        assert_eq!(params, vec!["T"], "type parameter declaration missing");
+        let spans = span_texts(&analysis);
+        assert!(spans.iter().any(|text| text == "numeric"), "bound not coloured: {spans:?}");
+        // Parameter annotations may be walked more than once; semantic tokens
+        // are de-duplicated by source offset, so only presence matters here.
+        assert!(spans.iter().filter(|text| *text == "T").count() >= 3, "annotation types missing: {spans:?}");
+    }
+
+    #[test]
+    fn explicit_type_arguments_are_type_tokens() {
+        let analysis = analyze("fn id[T](x: T) -> T\n    -> x\ny = id[int](3)\n", "g.un");
+        assert!(analysis.error.is_none(), "parse failed: {:?}", analysis.error);
+        let spans = span_texts(&analysis);
+        assert!(spans.iter().any(|text| text == "int"), "explicit type argument missing: {spans:?}");
+    }
+
+    #[test]
+    fn generic_enum_variant_types_are_coloured() {
+        let analysis = analyze("enum Test[T]\n    a: int\n    b: T\n", "g.un");
+        assert!(analysis.error.is_none(), "parse failed: {:?}", analysis.error);
+        let spans = span_texts(&analysis);
+        assert!(spans.iter().any(|text| text == "int"), "variant type missing: {spans:?}");
+        assert!(spans.iter().any(|text| text == "T"), "generic variant type missing: {spans:?}");
+    }
+
+    #[test]
+    fn fallback_keeps_generic_type_tokens() {
+        let analysis = fallback_analysis("fn id[T](x: T) -> T\n    -> x\nfn broken(\n", "g.un", None);
+        let spans = span_texts(&analysis);
+        assert!(spans.iter().any(|text| text == "T"), "fallback type parameter missing: {spans:?}");
     }
 }

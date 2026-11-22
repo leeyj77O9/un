@@ -329,6 +329,10 @@ runs in the interpreter with identical semantics.
   user-module imports/globals, and byte-identical tracebacks all work natively.
   Programs needing dynamic `Any`/union types, time-seeded `random`, or
   module-level side effects beyond simple assignments need `un build --embed`.
+  Generic collection types (`list[str]`, `list[bool]`, `dict[int, str]`,
+  `dict[str, ClassName]`, ...) also compile natively in a plain build by
+  recording the element kind in TIR; elements of nested lists are opaque
+  handles, so indexing/operations on them are not lowered.
 - `un lsp` runs a Language Server Protocol server over stdin/stdout. It reports
   lexer/parser diagnostics by default; Compile Mode type diagnostics are opt-in
   via `initializationOptions.compileMode` or the `un/compileMode` notification.

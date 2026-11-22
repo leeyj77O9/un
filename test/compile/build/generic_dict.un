@@ -1,0 +1,25 @@
+use io
+
+class Node
+    key: str
+    val: int
+
+    fn __init__(k: str, v: int)
+        self.key = k
+        self.val = v
+
+# Generic dict value kinds: str values and class instances. The class id is
+# preserved in the element kind so `d[k].field` still lowers natively.
+
+fn main() -> int
+    d: dict[str, str] = {"x": "one", "y": "two"}
+    io.write(d["x"])
+    d["z"] = "three"
+    io.write(d)
+
+    nodes: dict[str, Node] = {"a": Node("n1", 10)}
+    io.write(nodes["a"].key)
+    io.write(nodes["a"].val)
+    -> 0
+
+main()
