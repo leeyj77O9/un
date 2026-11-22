@@ -1,0 +1,9 @@
+class Test[T]
+    value: T
+
+    fn __init__(value: T)
+        self.value = value
+
+# T is fixed to str at construction, so writing an int must be rejected.
+test = Test("aa")
+test.value = 123

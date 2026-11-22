@@ -15,6 +15,13 @@ fn main() -> int
     b = Box(42)
     assert.assert_eq(b.value, 42, "generic class field")
     assert.assert_eq(b.get(), 42, "generic class method")
+    # A second instantiation fixes T to str at construction; fields and
+    # methods must use that type instead of re-inferring from arguments.
+    s = Box("hi")
+    x: str = s.value
+    y: str = s.get()
+    assert.assert_eq(x, "hi", "generic class str field")
+    assert.assert_eq(y, "hi", "generic class str method")
     io.write("generic class OK")
 
 main()

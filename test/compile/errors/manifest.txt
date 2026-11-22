@@ -15,5 +15,7 @@ test/compile/errors/fixed_width_builtin.un|fixed-width aliases require 'use type
 test/compile/errors/fixed_width_range.un|out of range for
 test/compile/errors/generic_arg_type.un|unsupported operand types for '+': 'str' and 'int'
 test/compile/errors/generic_bound.un|does not satisfy bound 'numeric'
+test/compile/errors/generic_class_arg_type.un|expects 'str', got 'int'
+test/compile/errors/generic_class_field_type.un|cannot assign value of type 'int' to field 'value' of type 'str'
 test/compile/errors/enum_arg_type.un|expects 'int', got 'str'
 test/compile/errors/enum_unknown_variant.un|'E' object has no attribute 'nope'

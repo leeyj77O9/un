@@ -1,0 +1,12 @@
+class Test[T]
+    value: T
+
+    fn __init__(value: T)
+        self.value = value
+
+    fn add(value: T) -> T
+        -> self.value + value
+
+# T is fixed to str at construction, so add(int) must be rejected.
+test = Test("aa")
+-> test.add(123)

@@ -231,6 +231,13 @@ pub struct Checker<'a> {
     active_generics: HashMap<String, u32>,
     next_generic_id: u32,
     call_instances: HashMap<usize, CallInstance>,
+    /// Concrete type arguments of a generic class instance, keyed by the AST
+    /// node that produced it (currently constructor calls). The tuple carries
+    /// the class name so a same-named variable from another class cannot be
+    /// mistaken for an instance of this one.
+    class_expr_args: HashMap<usize, (String, Vec<Ty>)>,
+    /// Concrete type arguments of variables bound to a generic class instance.
+    class_var_args: HashMap<String, (String, Vec<Ty>)>,
     silence: u32,
     checked_functions: Vec<FnCheck>,
     checked_by_span: HashMap<usize, usize>,
@@ -258,6 +265,8 @@ impl<'a> Checker<'a> {
             active_generics: HashMap::new(),
             next_generic_id: 0,
             call_instances: HashMap::new(),
+            class_expr_args: HashMap::new(),
+            class_var_args: HashMap::new(),
             silence: 0,
             checked_functions: Vec::new(),
             checked_by_span: HashMap::new(),
@@ -1924,6 +1933,7 @@ impl<'a> Checker<'a> {
                 match inner.kind {
                     NodeKind::Identifier => {
                         let vty = self.check_expr(value, env);
+                        self.note_bound_class_args(inner, value);
                         self.bind_annotated(inner, ty, vty, env);
                         let name = self.text_of(inner);
                         if let Some((fw_name, range)) = fixed_width {
@@ -1945,6 +1955,7 @@ impl<'a> Checker<'a> {
             NodeKind::Identifier => {
                 let vty = self.check_expr(value, env);
                 let name = self.text_of(target);
+                self.note_bound_class_args(target, value);
                 if let Some((fw_name, (lo, hi))) = env.fixed_width.get(&name).cloned() {
                     if let Some(constant) = const_int_value(value, self.source) {
                         if constant < lo || constant > hi {
@@ -2026,7 +2037,8 @@ impl<'a> Checker<'a> {
                     ),
                 );
             }
-            env.set_existing(name, current);
+            let bound = if matches!(current, Ty::Unknown) { vty } else { current };
+            env.set_existing(name, bound);
             return;
         }
         if let Some(current) = self.globals.get(name).cloned() {
@@ -2039,7 +2051,11 @@ impl<'a> Checker<'a> {
                     ),
                 );
             }
-            env.declare(name, current);
+            // `collect_module_var` pre-registers top-level names as Unknown;
+            // replace the placeholder with the inferred type so a global class
+            // instance keeps its class type in the second checking pass.
+            let bound = if matches!(current, Ty::Unknown) { vty } else { current };
+            env.declare(name, bound);
             return;
         }
         env.declare(name, vty);
@@ -2110,8 +2126,9 @@ impl<'a> Checker<'a> {
         match &rty {
             Ty::Class(class) => {
                 let class = class.to_string();
+                let subst = self.receiver_subst(&class, receiver);
                 if self.class_field(&class, member).is_some() {
-                    let known = self.class_field(&class, member).unwrap();
+                    let known = substitute_generic(&self.class_field(&class, member).unwrap(), &subst);
                     let refined = refine_unknown(known.clone());
                     if !assignable(&refined, &vty, &self.classes) {
                         self.error(
@@ -3044,6 +3061,71 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Remember the concrete type arguments inferred for a constructor call.
+    /// `Ty::Class` (and therefore TIR) stays unchanged: the instantiation only
+    /// lives in this checker's side table and is applied at member access.
+    fn note_class_ctor_args(
+        &mut self,
+        node: &Node,
+        sig_name: &str,
+        generics: &[(String, u32)],
+        subst: &HashMap<u32, Ty>,
+    ) {
+        if generics.is_empty() || !self.classes.contains_key(sig_name) {
+            return;
+        }
+        let args: Vec<Ty> = generics
+            .iter()
+            .map(|(_, id)| subst.get(id).cloned().unwrap_or(Ty::Any))
+            .collect();
+        self.class_expr_args
+            .insert(node.start, (sig_name.to_string(), args));
+    }
+
+    /// Build a generic-id substitution from a class instance's concrete args.
+    fn class_subst(&self, class_name: &str, args: &[Ty]) -> HashMap<u32, Ty> {
+        let Some(info) = self.classes.get(class_name) else {
+            return HashMap::new();
+        };
+        info.generics
+            .iter()
+            .zip(args.iter())
+            .map(|((_, id), ty)| (*id, ty.clone()))
+            .collect()
+    }
+
+    fn class_args_of(&self, node: &Node) -> Option<(String, Vec<Ty>)> {
+        match node.kind {
+            NodeKind::Identifier => self
+                .class_var_args
+                .get(&self.text_of(node))
+                .cloned()
+                .or_else(|| self.class_expr_args.get(&node.start).cloned()),
+            _ => self.class_expr_args.get(&node.start).cloned(),
+        }
+    }
+
+    /// Substitution for fields/methods of `class_name` on a receiver expression.
+    fn receiver_subst(&self, class_name: &str, receiver: &Node) -> HashMap<u32, Ty> {
+        self.class_args_of(receiver)
+            .filter(|(name, _)| name == class_name)
+            .map(|(_, args)| self.class_subst(class_name, &args))
+            .unwrap_or_default()
+    }
+
+    /// Associate a bound variable with the class instantiation of its value.
+    fn note_bound_class_args(&mut self, target: &Node, value: &Node) {
+        if target.kind != NodeKind::Identifier {
+            return;
+        }
+        let name = self.text_of(target);
+        if let Some(entry) = self.class_args_of(value) {
+            self.class_var_args.insert(name, entry);
+        } else {
+            self.class_var_args.remove(&name);
+        }
+    }
+
     fn check_property(&mut self, node: &'a Node, env: &mut Env) -> Ty {
         let Some(receiver) = node.children.first() else {
             return Ty::Any;
@@ -3058,10 +3140,11 @@ impl<'a> Checker<'a> {
         let ty = match &rty {
             Ty::Class(class) => {
                 let class_name = class.to_string();
+                let subst = self.receiver_subst(&class_name, receiver);
                 if let Some(field) = self.class_field(&class_name, &member) {
-                    refine_unknown(field)
+                    refine_unknown(substitute_generic(&field, &subst))
                 } else if let Some(method) = self.class_method(&class_name, &member) {
-                    method
+                    substitute_generic(&method, &subst)
                 } else if self.class_has_getattr(&class_name) {
                     Ty::Any
                 } else {
@@ -3229,6 +3312,27 @@ impl<'a> Checker<'a> {
                 if let Some(info) = self.classes.get(&name).cloned() {
                     let _ = info.ctor_required;
                     if info.ctor_params.is_empty() {
+                        // A generic class may declare its constructor as an
+                        // `__init__` method instead of header parameters. Use
+                        // that signature so the class type arguments are
+                        // inferred from the actual construction arguments.
+                        if !info.generics.is_empty() {
+                            if let Some(Ty::Func { params, names, required, .. }) =
+                                self.class_method(&name, "__init__")
+                            {
+                                let init_sig = FnSig {
+                                    name: name.clone(),
+                                    params: params.to_vec(),
+                                    param_names: names.to_vec(),
+                                    ret: Ty::Class(Rc::from(name.as_str())),
+                                    required,
+                                    is_method: false,
+                                    receiver: 0,
+                                    variadic: false,
+                                };
+                                return self.apply_sig(&init_sig, node, 0, env);
+                            }
+                        }
                         self.check_call_args_any(node.children.get(1), env);
                         return Ty::Class(Rc::from(name.as_str()));
                     }
@@ -3318,8 +3422,10 @@ impl<'a> Checker<'a> {
                 match recv_ty {
                     Ty::Class(class) => {
                         let class_name = class.to_string();
+                        let subst = self.receiver_subst(&class_name, &callee.children[0]);
                         if let Some(field_ty) = self.class_field(&class_name, &member) {
-                            if let Ty::Func { params, names, ret, required } = field_ty.clone() {
+                            let field_ty = substitute_generic(&field_ty, &subst);
+                            if let Ty::Func { params, names, ret, required } = field_ty {
                                 return self.apply_sig(
                                     &FnSig {
                                         name: member,
@@ -3343,6 +3449,7 @@ impl<'a> Checker<'a> {
                             return Ty::Unknown;
                         }
                         if let Some(method_ty) = self.class_method(&class_name, &member) {
+                            let method_ty = substitute_generic(&method_ty, &subst);
                             if let Ty::Func { params, names, ret, required } = method_ty {
                                 return self.apply_sig(
                                     &FnSig {
@@ -3519,11 +3626,13 @@ impl<'a> Checker<'a> {
             }
         }
         let Some(args) = args else {
+            self.note_class_ctor_args(node, &sig.name, &generics, &subst);
             self.record_call_instance(node, sig, &generics, &subst);
             return inferred_ret(sig, &subst, &generics);
         };
         if args.kind != NodeKind::Tuple {
             self.check_expr(args, env);
+            self.note_class_ctor_args(node, &sig.name, &generics, &subst);
             self.record_call_instance(node, sig, &generics, &subst);
             return inferred_ret(sig, &subst, &generics);
         }
@@ -3649,6 +3758,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        self.note_class_ctor_args(node, &sig.name, &generics, &subst);
         self.record_call_instance(node, sig, &generics, &subst);
         inferred_ret(sig, &subst, &generics)
     }
