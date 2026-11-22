@@ -690,6 +690,8 @@ $Json = @{
         @{
             label = $_.label
             unvm  = $_.unvm; unjit = $_.unjit; compile = $_.compile; build = $_.build; python = $_.python; node = $_.node
+            # CSV에도 있는 heap 필드를 JSON에도 넣어 둔다. 없으면 §10 메모리 표를 결과 파일만으로 재생성할 수 없다.
+            memNode = $_.memNode; memPython = $_.memPython
             unvmValidation = $_.unvmValid; unjitValidation = $_.unjitValid
             compileValidation = $_.compileValid; buildValidation = $_.buildValid
             pythonValidation = $_.pyValid; nodeValidation = $_.nodeValid
@@ -809,7 +811,7 @@ if ($Report) {
     $out += "| 노드 | 내용 |"
     $out += "|---|---|"
     $out += "| 측정 언어 | Un VM (UV_JIT=0), Un JIT(기본), Compile Mode(un native), standalone exe(un build), CPython, Node.js |"
-    $out += "| 측정 방식 | 워밍업 2회 → reps=7회 개별 측정, Median 비교 |"
+    $out += "| 측정 방식 | 언어 3레인: 워밍업 2회 → reps=7회 / Compile: 자체 타이밍 1회 / Exe: 워밍업 1회 + 7회, Median 비교 |"
     $out += "| 저장 위치 | bench/results/<timestamp>/results.csv, results.json, results.md |"
     $out += "| 보고서 | 이 문서(BENCHMARK.md)은 -Report로 자동 생성된다 |"
     $out += "| 비교 지표 | 중앙값, 종합은 기하평균(∏ rᵢ^(1/n)) |"
@@ -861,11 +863,12 @@ if ($Report) {
     foreach ($cat in $categoryMap) {
         $out += "## $($cat.name)"
         $out += ""
-        $out += "| Benchmark | iters | Un VM (ms) | Un JIT (ms) | Python (ms) | Node (ms) | JIT/Python | JIT/Node |"
-        $out += "|---|---:|---:|---:|---:|---:|---:|---:|"
+        # §4와 같은 10열 헤더를 쓴다. $BenchRow도 10셀을 내므로 헤더를 8열로 두면 표가 깨진다.
+        $out += "| Benchmark | iters | Un VM (ms) | Un JIT (ms) | Native (ms) | Exe (ms) | Python (ms) | Node (ms) | JIT/Python | JIT/Node |"
+        $out += "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
         foreach ($member in $cat.members) {
             $r = $Rows | Where-Object { $_.label -eq $member } | Select-Object -First 1
-            if ($null -eq $r) { $out += "| $member | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |"; continue }
+            if ($null -eq $r) { $out += "| $member | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |"; continue }
             $cells = & $BenchRow $r
             $out += ("| " + ($cells -join " | ") + " |")
         }
@@ -891,27 +894,24 @@ if ($Report) {
     $out += ""
     $out += "## 12. Overall Comparison"
     $out += ""
-    $out += "| Benchmark | iters | Un VM (ms) | Un JIT (ms) | Native (ms) | Exe (ms) | Python (ms) | Node (ms) | JIT/Python | JIT/Node |"
-    $out += "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
-    foreach ($row in $Rows) {
-        $cells = & $BenchRow $row
-        $out += ("| " + ($cells -join " | ") + " |")
-    }
+    $out += "6레인 전체 결과는 §4 Results (all)과 완전히 같다. 중복 표를 생략하고 §4를 기준으로 사용한다."
+    $out += "원시 통계는 bench/results/<timestamp>/results.json, 요약 차트와 CV/95% CI/이상치는"
+    $out += "bench/report.html에서 확인할 수 있다."
     $out += ""
     $out += "## 13. Performance Analysis"
     $out += ""
     if ($geoJitPy) {
         if ($geoJitPy -ge 1.0) {
-            $out += "- **전반적으로 Un JIT은 Python보다 기하평균 **$(Fmt $geoJitPy 'F3')x 빠르다**.**"
+            $out += "- 전반적으로 Un JIT은 Python보다 기하평균 **$(Fmt $geoJitPy 'F3')x 빠르다**."
         } else {
-            $out += "- **전반적으로 Un JIT은 Python보다 기하평균 **$(Fmt (1.0 / $geoJitPy) 'F3')배 느리다**.**"
+            $out += "- 전반적으로 Un JIT은 Python보다 기하평균 **$(Fmt (1.0 / $geoJitPy) 'F3')배 느리다**."
         }
     }
     if ($geoJitN) {
         if ($geoJitN -ge 1.0) {
-            $out += "- **전반적으로 Un JIT은 Node.js보다 기하평균 **$(Fmt $geoJitN 'F3')x 빠르다**.**"
+            $out += "- 전반적으로 Un JIT은 Node.js보다 기하평균 **$(Fmt $geoJitN 'F3')x 빠르다**."
         } else {
-            $out += "- **전반적으로 Un JIT은 Node.js보다 기하평균 **$(Fmt (1.0 / $geoJitN) 'F3')배 느리다**.**"
+            $out += "- 전반적으로 Un JIT은 Node.js보다 기하평균 **$(Fmt (1.0 / $geoJitN) 'F3')배 느리다**."
         }
     }
     $ratioJitPyOf = {
@@ -958,49 +958,27 @@ if ($Report) {
         $out += ""
         if ($null -ne $PreviousCsv) {
             $prevDir = Split-Path (Split-Path $PreviousCsv -Parent) -Leaf
-            $significant = @($Comparisons | Where-Object { [math]::Abs($_.pct) -gt 10 })
             $out += "## 15. Historical Comparison"
             $out += ""
-            $out += "이전 결과($prevDir) 대비 **10% 초과 변동 항목만** 요약한다. 전체 추적은 `bench/results/<timestamp>/results.csv`와 14절을 참고."
-            $out += ""
-            if ($significant.Count -gt 0) {
-                $out += "| Benchmark | 언어 | 변화 | 판정 |"
-                $out += "|---|---|---|---|"
-                foreach ($c in $significant) {
-                    $mark = if ($c.pct -gt 10) { "회귀" } else { "개선" }
-                    $out += ("| {0} | {1} | {2:+0.0;-0.0}% | {3} |" -f $c.label, $c.lang, $c.pct, $mark)
-                }
-            } else {
-                $out += "- 10% 초과 변동 없음 (측정 노이즈 범위 내)."
-            }
+            # 이전에는 §14의 ±10% 부분집합을 그대로 복사했다(백틱 `\b`가 U+0008로 새어 나가던 경로도 여기 있었다).
+            $out += "이전 결과($prevDir) 대비 10% 초과 변동 항목은 §14의 판정 열(회귀/개선)과 같으므로"
+            $out += "중복 표를 생략한다. 전체 추적은 bench/results/<timestamp>/results.csv, 판정 기준은 §14를 참고."
             $out += ""
         }
     }
     $out += "## 16. Benchmark Methodology"
     $out += ""
-    $out += "측정 명령:"
+    $out += "방법론(하네스 프로토콜 BENCH/RESULT/SAMPLE/MEM, warmup/reps, 통계 정의,"
+    $out += "회귀 게이트 기준, CSV/JSON 스키마)은 ``docs/guides/BENCHMARK_GUIDE.md``가 단일 기준이다."
+    $out += "Compile Mode 재현 노트와 단위 차이는 ``docs/compile/COMPILE_BENCHMARK.md``를 참고."
     $out += ""
-    $out += '```powershell'
-    $out += 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1                 # All lanes'
-    $out += 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group unvm -NoSave'
-    $out += 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group unjit -NoSave'
-    $out += 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group python -NoSave'
-    $out += 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group node -NoSave'
-    $out += 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Only qsort500,mergesort1000'
-    $out += 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Compare bench\results\<이전results.csv>'
-    $out += '```'
-    $out += ""
-    $out += "- 워밍업 2회, 이후 reps=7회 개별 측정해 Min/Median/Average/Max/StdDev(모집단)를 낸다."
-    $out += "- 비교 지표는 **중앙값**(중위수). 종합은 **기하평균** ∏ rᵢ^(1/n)."
-    $out += "- 비율은 ``baseline`` ÷ ``candidate`` 로 정의한다(1.00x=동일, 2.00x=candidate가 2배 빠름)."
-    $out += "- 각 스크립트는 측정 전에 자기검증을 수행한다. 실패하면 측정값이 나오지 않고 실행 실패로 집계한다."
-    $out += "- 시간 측정: Un ``time.stopwatch().tick()``(100ns 틱, ms환산), Node ``performance.now()``, Python ``time.perf_counter()``."
-    $out += "- Un은 UV_JIT=0으로 VM만, 기본값으로 JIT(런타임)을 측정한다."
+    $out += "- 재생성: ``powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all -Report``"
+    $out += "- 이 문서는 위 -Report 단일 생성기로만 갱신한다(수동 수정 금지)."
     $out += ""
     $out += "## 17. Known Limitations"
     $out += ""
     $out += "- Un에는 힙 메모리 측정 API가 없다(Node/Python은 tracemalloc/heapUsed 기준 참고치)."
-    $out += "- Un의 sys.version()/os.version은 실제 호스트와 무관한 고정 문자열을 반환한다(TD-44)."
+    $out += "- Un의 sys.version()은 ``Un <version>``, os.version()은 ``<OS family> (Un <version>)``를 반환한다(TD-44 해결, 2026-11-19)."
     $out += "- JIT은 Int 부분집합(IntVec/IntDict/class-method intrinsic)만 native 컴파일하고 나머지는 인터프리터로 정확히 실행한다."
     $out += "- Python의 시스템 PATH가 broken WindowsApps stub일 수 있다. 이 러너는 경로를 자동 탐지한다."
     $out += "- Python의 tracemalloc은 Python heap만 잰다. Node의 heapUsed는 V8 heap만 잰다. 둘 다 RSS 비교가 아니다."

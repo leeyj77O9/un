@@ -39,10 +39,12 @@ Un JIT 대비 Python geomean은 **4.092x**다.
 TIR core 경로가 실제로 native로 실행됨은 `UV_TIR_DEBUG=1`로 확인할 수 있다
 (예: `TIRDBG OK proto=1 fib`).
 plain exe는 Cranelift가 fib를 직접 네이티브 코드로 만든 결과로 **JIT 대비 약 10배,
-인터프리터 대비 약 1000배** 빠르다. 단, 이 배율은 `compile-bench.ps1`의 자체
-타이밍(700회 fib, `bench.harness` 없음) 기준이다. 루트 `BENCHMARK.md`의 Exe 열은
-프로세스 실행 7회 median(예: fib24 1.3813 ms)으로 **단위가 다르므로 직접 비교하지
-말 것**. 공식 수치는 `BENCHMARK.md`, 방법론은 `docs/guides/BENCHMARK_GUIDE.md`가 기준이다.
+인터프리터 대비 약 1000배** 빠르다. 이 수치는 `bench/native_fib_exe.un`의 700회
+fib 자체 타이밍을 프로세스 7회 실행 median으로 낸 값이며, 루트 `BENCHMARK.md`의
+Exe 열도 동일한 방식이다(`scripts/bench.ps1`, `scripts/compile-bench.ps1` 공통).
+단위가 다른 것이 아니라 **측정 시점**이 다르다(이 표는 2026-11-20 원측정,
+`BENCHMARK.md`는 2026-11-23 재생성). 공식 수치는 `BENCHMARK.md`, 방법론은
+`docs/guides/BENCHMARK_GUIDE.md`가 기준이다.
 
 ## 주의사항
 

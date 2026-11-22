@@ -8,8 +8,10 @@
       * 최신 실행의 상세 표 + 통계(CV, 95% CI, 이상치)
       * cross-lane 결과 불일치/실패 요약
 
-    -Gate 로 CI 모드 활성화: 최신 실행에서 10% 초과 회귀가 있거나
-    cross-lane 불일치/[BAD] 가 있으면 exit 1.
+    -Gate 로 CI 모드 활성화: 최신 실행(timestamp 기준 마지막)을 직전 실행과 비교해
+    unjit/compile/build/python/node 중 어느 레인이든 10%(-Threshold) 초과로 느려지면
+    exit 1. 실행된 레인의 자기검증 실패도 exit 1. baseline이 없으면 비교를 생략하고
+    경고만 출력한다. cross-lane 결과 불일치는 bench.ps1 실행 시 [XLANE]로 집계된다.
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench-report.ps1
@@ -97,6 +99,15 @@ Write-Host "report written to $reportPath"
 # ----- CI gate -----
 if ($Gate) {
     $problems = @()
+    if ($runs.Count -lt 2) {
+        Write-Host "GATE: only one run available; regression comparison skipped" -ForegroundColor Yellow
+    } else {
+        $prevModes = @($runs[-2].Data.modes)
+        $curModes = @($latest.Data.modes)
+        if (($prevModes -join ',') -ne ($curModes -join ',')) {
+            Write-Host "GATE: baseline modes ($($prevModes -join ',')) != latest modes ($($curModes -join ',')); ratios may not be comparable" -ForegroundColor Yellow
+        }
+    }
     foreach ($row in $latest.Data.rows) {
         foreach ($lang in @("unjit","compile","build","python","node")) {
             $cur = $row.$lang
@@ -111,7 +122,23 @@ if ($Gate) {
                 if ($pct -gt $Threshold) { $problems += "$($row.label)/$lang +$([math]::Round($pct,1))%" }
             }
         }
-        if ($row.unvmValidation -match "/ [1-9][0-9]* failed" -or $row.unjitValidation -match "/ [1-9][0-9]* failed") { $problems += "$($row.label) validation failed" }
+        # 실행된 레인의 자기검증 실패는 모두 게이트 실패다. "skipped" /
+        # "compile-rejected (skipped)" / "self-timed (no asserts)" / "n/a (exe)" 는 정상.
+        $validationFields = @(
+            @{ mode = "unvm";   field = "unvmValidation" },
+            @{ mode = "unjit";  field = "unjitValidation" },
+            @{ mode = "python"; field = "pythonValidation" },
+            @{ mode = "node";   field = "nodeValidation" }
+        )
+        foreach ($v in $validationFields) {
+            if ($latest.Data.modes -notcontains $v.mode) { continue }
+            $val = [string]$row.($v.field)
+            if ($val -match "/ [1-9][0-9]* failed" -or $val -eq "none") {
+                $problems += "$($row.label)/$($v.mode) validation failed ($val)"
+            }
+        }
+        if ($latest.Data.modes -contains "unnative" -and [string]$row.compileValidation -eq "failed") { $problems += "$($row.label)/compile failed" }
+        if ($latest.Data.modes -contains "unbuild" -and [string]$row.buildValidation -eq "failed") { $problems += "$($row.label)/build failed" }
     }
     if ($problems.Count -gt 0) {
         Write-Host "GATE FAILED: $($problems.Count) problem(s): $($problems -join ', ')" -ForegroundColor Red

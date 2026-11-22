@@ -23,6 +23,11 @@ Three workloads still have no compile variant: `rle1994` (character indexing),
 `dict5000` uses `codes.hex(...)` string keys because core dicts are `dict[str, int]`;
 its compile numbers include key-conversion overhead.
 
+The table below lists the 24 independent triplets. `bench.ps1` reports one extra
+row, `native_fib24`: it is the annotated `bench/native_fib.un` fixture (shared with
+`scripts/compile-bench.ps1`) and reuses the `fib24` Node/Python scripts, so it is
+not a 25th independent workload.
+
 ## Running benchmarks
 
 ```powershell
@@ -55,6 +60,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench-report.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench-report.ps1 -Gate -Threshold 10
 ```
 
+`BENCHMARK.md` has exactly one generator: `bench.ps1 -Report`. Do not hand-edit it;
+fix the generator and regenerate instead. `bench.ps1 -Compare` is advisory — it
+prints >10% changes but does not increment the failure count or change the exit
+code. The pass/fail regression gate is `bench-report.ps1 -Gate` (below).
+
 A single benchmark can be run directly:
 
 ```powershell
@@ -74,6 +84,7 @@ implements the same algorithm on the same input with the same expected values:
 |---|---|---|---|
 | `int_ops` | Basic int ops | LCG-ish int arithmetic + modulo + bitwise + xor per iter | 1_000_000 |
 | `fib24` | Function calls / recursion | naive recursive fib(24) | 1 call |
+| `native_fib24` | Compile fixture | annotated fib(24) (`bench/native_fib.un`), reuses `fib24` Node/Python | 1 call |
 | `nested_sum_200` | Control flow | i*j double loop, 200x200 | 40000 mul/add |
 | `qsort500` | Algorithms | quicksort on 500 LCG numbers | 500 elements |
 | `mergesort1000` | Algorithms | mergesort on 1000 LCG numbers | 1000 elements |
@@ -105,7 +116,10 @@ Input generation is identical across the three languages:
 All three harnesses follow the same rules, so numbers are comparable:
 
 1. **Warmup**: `warmup = 2` runs are executed before timing (JIT/interpreter
-   cache, allocation pools, string interning).
+   cache, allocation pools, string interning). This applies to the three language
+   harnesses; the extra lanes differ — `un native` self-timed fixtures contribute
+   one value per run (`reps=1` in the artifacts), and the standalone-exe lane uses
+   1 warmup run plus 7 process runs. Do not read every column as a 7-sample median.
 2. **Repeated runs**: `reps = 7` timed runs. Each run is timed individually,
    so the distribution is visible (min/median/avg/max/stddev).
 3. **No output inside the timed region**: the harness starts the timer,
@@ -131,6 +145,48 @@ All three harnesses follow the same rules, so numbers are comparable:
 The runner pairs results by label, prints a table, and saves `results.csv`,
 `results.json` and `results.md` under `bench/results/<timestamp>/`.
 
+### Saved artifacts (schema)
+
+- `results.csv`: one row per benchmark — `label,iters,reps,warmup`, then six fields
+  per lane (`<lane>_min_ms`, `_median_ms`, `_avg_ms`, `_max_ms`, `_stddev_ms`, `_ops`)
+  for `unvm,unjit,compile,build,python,node`, then `python_heap_delta_mb`,
+  `python_heap_mb`, `node_heap_delta_mb`, then six `*_validation` columns.
+  The regression reader expects the `*_median_ms` column names (older
+  `un_median_ms` is accepted as a fallback for `unjit_median_ms`).
+- `results.json`: `stamp`, `commit`, `args`, `modes`, `env[]` and `rows[]`. Each row
+  holds the per-lane objects, `results` (canonical `RESULT|` values), `stats`
+  (mean, sd, CV, p95, Grubbs outliers, 95% CI), the six validation strings and
+  `memNode` / `memPython` (the latter are written by new runs; older JSONs from
+  before this field was added lack them).
+- `results.md`: the compact median table; it is a record of that run, not a baseline.
+
+### Regression gate (`bench-report.ps1 -Gate`)
+
+- Baseline is the second-newest `bench/results/*/results.json` by `stamp`; the
+  candidate is the newest. Each benchmark/lane pair present in both is compared.
+- Checked lanes: `unjit`, `compile`, `build`, `python`, `node`. `unvm` is reported
+  in the tables but is not a gate lane.
+- Failure: a lane median more than `-Threshold` percent slower than the baseline
+  (default 10). Improvements never fail. Exit codes: 0 = OK, 1 = failure,
+  2 = no `results.json` at all.
+- Self-validation failures on lanes that actually ran also fail the gate
+  (Un/Node/Python validation strings, plus compile/build `failed` markers).
+  `skipped`, `compile-rejected (skipped)` and `self-timed (no asserts)` are normal.
+- With a single run the comparison is skipped with a warning. If the two runs
+  used different lane sets, a comparability warning is printed; compare results
+  from the same `-Group`/`-Only` set for meaningful numbers.
+- Cross-lane `RESULT|` mismatches are caught earlier by `bench.ps1` (`[XLANE]`)
+  and by `scripts/edge-fuzz.ps1`, not by this gate.
+
+### Edge cases
+
+The seven `bench/edge/*.un` cases (`big_input`, `div_zero`, `empty_collections`,
+`float_edge`, `int_boundary`, `nested_collections`, `unicode_edge`) are
+correctness-only cross-lane fuzz inputs for `scripts/edge-fuzz.ps1`; they are not
+part of the timing tables. `unicode_edge` RESULT comparison is intentionally
+skipped because `len(emoji)` differs (Un/Node count UTF-16 code units, Python
+counts code points).
+
 ## What is not measured
 
 - **Memory for Un**: Un has no API to read heap usage, so the memory columns are
@@ -151,8 +207,9 @@ The runner pairs results by label, prints a table, and saves `results.csv`,
 Rules:
 
 - Only tools actually installed and runnable on this machine are used: Un
-  (this repository, release `un.exe`), Node.js v26.13.0 (`v26.x` ships
-  V8 14), and Python 3.13.17 (CPython, verified working on this machine).
+  (this repository, release `un.exe`), Node.js and CPython. Exact versions are
+  recorded per run in the `ENV|node` / `ENV|python` lines; version strings in
+  older reports are historical observations, not baselines.
 - Same algorithm, same input, same expected values, validated in each script.
 - Same warmup, same number of repeats, same median definition.
 - Environment recorded with the results.
@@ -169,6 +226,18 @@ Rules:
 4. Add the pair (`label`, un, node, python paths) to `$Pairs` in `scripts/bench.ps1`.
 5. Run `scripts/bench.ps1` and confirm all validations pass.
 6. Keep the workload within measurable items; no sleeps, no stdin, no pools.
+
+## Compile-mode reproduction
+
+`scripts/compile-bench.ps1` is a focused, independent check of `bench/native_fib.un`
+across `un run` (VM+JIT), `un run` with `UV_JIT=0`, `un native`, and a plain
+`un build` executable. Both scripts currently use the same self-timed fixture
+(`bench/native_fib_exe.un`: 700 in-process `fib(24)` calls, ms per call) and a
+median of 7 process runs, so their fib rows share a unit. They are still separate
+runs on different dates/machine states — never merge their numbers into one
+table or treat an older figure as the current baseline. Historical compile-mode
+measurements and their caveats are in `docs/compile/COMPILE_BENCHMARK.md`; this
+guide owns the method, and `BENCHMARK.md` owns the current numbers.
 
 ## Notes on stability
 
