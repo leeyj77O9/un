@@ -1,0 +1,73 @@
+use io
+use test.assert as assert
+
+# enum 한눈에 확인: 기존 정수 enum + Rust 스타일 데이터 variant
+
+# ---------------------------------------------------------------- 1. 정수 enum
+enum Color
+    RED
+    GREEN = 5
+    BLUE
+
+assert.assert_eq(Color.RED, 0, "Color.RED == 0")
+assert.assert_eq(Color.GREEN, 5, "Color.GREEN == 5")
+assert.assert_eq(Color.BLUE, 6, "auto increment after explicit value")
+assert.assert_true(Color.GREEN == 5, "plain enum equals integer")
+
+color_keys = {}
+color_keys[Color.GREEN] = "green"
+assert.assert_eq(color_keys[5], "green", "plain enum as dict key")
+
+# ------------------------------------------------ 2. 데이터 variant + 제네릭
+enum Shape[T]
+    point: int
+    text: T
+    pair: tuple[int, T]
+
+p = Shape.point(7)
+t = Shape.text("hello")
+pair = Shape.pair((3, "z"))
+
+io.write(p, t, pair)  # Shape.point(7) Shape.text(hello) Shape.pair((3, z))
+
+assert.assert_eq(p.value, 7, "variant payload via .value")
+assert.assert_eq(t.value, "hello", "generic payload")
+assert.assert_eq(pair.value[1], "z", "tuple payload")
+assert.assert_true(type(p) == Shape, "variant keeps enum type")
+assert.assert_eq(str(p), "Shape.point(7)", "variant display")
+
+# ------------------------------------------------------- 3. 구조적 동등성
+assert.assert_true(p == Shape.point(7), "same variant + payload")
+assert.assert_true(p != Shape.point(8), "different payload")
+assert.assert_true(p != Shape.text(7), "different variant")
+assert.assert_true(p != Color.RED, "different enum")
+
+shape_keys = {}
+shape_keys[Shape.point(7)] = "seven"
+assert.assert_eq(shape_keys[Shape.point(7)], "seven", "variant as dict key")
+assert.assert_eq(len(shape_keys), 1, "equal variants share a key")
+
+# --------------------------------------------------------- 4. match 분해
+assert.assert_eq(
+    match p { Shape.point(v) -> v * 2, Shape.text(v) -> -1, _ -> -2 },
+    14,
+    "bind variant payload",
+)
+assert.assert_eq(
+    match t { Shape.text(v) -> v + "!", _ -> "none" },
+    "hello!",
+    "bind generic payload",
+)
+assert.assert_eq(
+    match pair { Shape.pair((x, y)) -> x + len(y), _ -> -1 },
+    4,
+    "destructure tuple payload",
+)
+assert.assert_eq(
+    match Color.RED { Shape.point(v) -> "shape", _ -> "other" },
+    "other",
+    "non-matching enum falls through",
+)
+
+io.write("=== enum verified ===")
+assert.summary()
