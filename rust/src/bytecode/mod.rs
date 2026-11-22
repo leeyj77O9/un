@@ -57,6 +57,9 @@ pub enum Pattern {
     Literal(usize),
 
     Tuple(Vec<Pattern>),
+
+    /// `Enum.variant(inner)` — name indexes refer to the proto's name table.
+    Variant(usize, usize, Box<Pattern>),
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proto {
@@ -407,6 +410,11 @@ fn validate_pattern(label: &str, pattern: &Pattern, program: &Program, depth: us
                 validate_pattern(label, item, program, depth + 1)?;
             }
             Ok(())
+        }
+        Pattern::Variant(enum_name, variant_name, inner) => {
+            index_range(label, "pattern enum", *enum_name, program.names.len())?;
+            index_range(label, "pattern variant", *variant_name, program.names.len())?;
+            validate_pattern(label, inner, program, depth + 1)
         }
     }
 }

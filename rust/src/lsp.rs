@@ -785,6 +785,14 @@ impl<'a> Walker<'a> {
                                 self.walk(rest, scope);
                             }
                         }
+                        NodeKind::Typed => {
+                            if let Some(target) = member.children.first() {
+                                if target.kind == NodeKind::Identifier {
+                                    let (start, end) = self.span_of(target);
+                                    self.push_def(target, DefKind::EnumMember, scope, start, end);
+                                }
+                            }
+                        }
                         _ => self.walk(member, scope),
                     }
                 }

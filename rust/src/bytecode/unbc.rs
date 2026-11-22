@@ -11,6 +11,7 @@ const PATTERN_WILDCARD: u8 = 0;
 const PATTERN_BIND: u8 = 1;
 const PATTERN_LITERAL: u8 = 2;
 const PATTERN_TUPLE: u8 = 3;
+const PATTERN_VARIANT: u8 = 4;
 const EXC_CATCH: u8 = 0;
 const EXC_FINALLY: u8 = 1;
 const EXC_PROPAGATE: u8 = 2;
@@ -140,24 +141,7 @@ fn write_proto(out: &mut Vec<u8>, proto: &Proto) {
 
     out.extend_from_slice(&(proto.patterns.len() as u32).to_le_bytes());
     for pattern in &proto.patterns {
-        match pattern {
-            Pattern::Wildcard => out.push(PATTERN_WILDCARD),
-            Pattern::Bind(name) => {
-                out.push(PATTERN_BIND);
-                out.extend_from_slice(&(*name as u32).to_le_bytes());
-            }
-            Pattern::Literal(index) => {
-                out.push(PATTERN_LITERAL);
-                out.extend_from_slice(&(*index as u32).to_le_bytes());
-            }
-            Pattern::Tuple(items) => {
-                out.push(PATTERN_TUPLE);
-                out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-                for item in items {
-                    write_pattern(out, item);
-                }
-            }
-        }
+        write_pattern(out, pattern);
     }
 
     match proto.ext_type {
@@ -182,6 +166,12 @@ fn write_pattern(out: &mut Vec<u8>, pattern: &Pattern) {
             for item in items {
                 write_pattern(out, item);
             }
+        }
+        Pattern::Variant(enum_name, variant_name, inner) => {
+            out.push(PATTERN_VARIANT);
+            out.extend_from_slice(&(*enum_name as u32).to_le_bytes());
+            out.extend_from_slice(&(*variant_name as u32).to_le_bytes());
+            write_pattern(out, inner);
         }
     }
 }
@@ -377,6 +367,12 @@ fn read_pattern_depth(reader: &mut Reader, depth: usize) -> Result<Pattern, Stri
                 items.push(read_pattern_depth(reader, depth + 1)?);
             }
             Pattern::Tuple(items)
+        }
+        PATTERN_VARIANT => {
+            let enum_name = reader.u32()? as usize;
+            let variant_name = reader.u32()? as usize;
+            let inner = read_pattern_depth(reader, depth + 1)?;
+            Pattern::Variant(enum_name, variant_name, Box::new(inner))
         }
         other => return Err(format!("unknown pattern tag {other}")),
     })

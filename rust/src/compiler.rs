@@ -997,6 +997,37 @@ impl<'a> Compiler<'a> {
                 }
                 Pattern::Tuple(items)
             }
+            NodeKind::Call => {
+                let invalid = || {
+                    Panic::named(
+                        "error",
+                        "invalid enum variant pattern (expected Enum.variant(pattern))",
+                    )
+                };
+                let callee = pattern.children.first().ok_or_else(invalid)?;
+                if callee.kind != NodeKind::Property
+                    || callee.children.first().map(|c| c.kind) != Some(NodeKind::Identifier)
+                {
+                    return Err(invalid());
+                }
+                let enum_name = self.text(&callee.children[0]);
+                let variant_name = callee
+                    .children
+                    .get(1)
+                    .map(|c| self.text(c))
+                    .ok_or_else(invalid)?;
+                let args = pattern.children.get(1).ok_or_else(invalid)?;
+                if args.children.len() != 1 {
+                    return Err(Panic::named(
+                        "error",
+                        "enum variant pattern expects exactly one value",
+                    ));
+                }
+                let enum_slot = push_name(&mut self.program, &enum_name);
+                let variant_slot = push_name(&mut self.program, &variant_name);
+                let inner = self.compile_pattern(&args.children[0])?;
+                Pattern::Variant(enum_slot, variant_slot, Box::new(inner))
+            }
             NodeKind::Integer
             | NodeKind::Float
             | NodeKind::String
@@ -1403,6 +1434,44 @@ impl<'a> Compiler<'a> {
             },
         }
     }
+    /// Emits a synthetic constructor function for `Enum.variant(value)`.
+    /// The constructor builds a regular enum object and attaches the variant
+    /// marker/value as members, reusing only existing opcodes.
+    fn code_enum_variant_ctor(
+        &mut self,
+        enum_name: &str,
+        variant_name: &str,
+        span: (usize, usize),
+    ) -> Result<(), Panic> {
+        // This slot belongs to the parent (enum declaration) proto.
+        let variant_slot = self.name_index(variant_name);
+        self.begin_proto(variant_name, Some(enum_name), Some(span));
+        let arg_slot = self.slot_alloc("value");
+        let param_name = push_name(&mut self.program, "value");
+        self.program.protos[self.current].params.push(Param {
+            name: param_name,
+            type_name: None,
+            flags: PARAM_ESSENTIAL,
+            default: None,
+        });
+        let enum_slot = self.push_name_raw(enum_name);
+        let marker_slot = self.push_name_raw("__un_variant");
+        let value_slot = self.push_name_raw("value");
+
+        self.emit(Op::MakeEnum, 0, enum_slot as i32, span);
+        let name_const = self.const_index(Constant::Str(variant_name.to_string()));
+        self.emit(Op::LoadConst, 0, name_const as i32, span);
+        self.emit(Op::AddMember, 0, marker_slot as i32, span);
+        self.emit(Op::LoadLocal, 0, arg_slot as i32, span);
+        self.emit(Op::AddMember, 0, value_slot as i32, span);
+        self.emit(Op::Return, 0, 0, span);
+
+        let proto_slot = self.end_proto();
+        self.emit(Op::MakeFunc, 0, proto_slot as i32, span);
+        self.emit(Op::AddMember, 0, variant_slot as i32, span);
+        Ok(())
+    }
+
     fn code_enum(&mut self, node: &Node) -> Result<(), Panic> {
         let span = (node.start, node.length);
         let enum_name = self.text(&node.children[0]);
@@ -1412,6 +1481,15 @@ impl<'a> Compiler<'a> {
         self.emit(Op::RegisterClass, 0, register_slot as i32, span);
         let mut index = 0i64;
         for member in node.children.iter().skip(1) {
+            if member.kind == NodeKind::TypeParams {
+                continue;
+            }
+            if member.kind == NodeKind::Typed {
+                let variant_name = self.text(&member.children[0]);
+                index += 1;
+                self.code_enum_variant_ctor(&enum_name, &variant_name, span)?;
+                continue;
+            }
             let (member_name, value) = match member.kind {
                 NodeKind::Assign => {
                     let name = self.text(&member.children[0]);

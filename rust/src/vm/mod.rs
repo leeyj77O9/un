@@ -1504,6 +1504,20 @@ impl VM {
                 let equal = obj::binop(&literal, obj::BinOp::Eq, value);
                 matches!(obj::payload(&equal), Payload::Bool(true))
             }
+            Pattern::Variant(enum_name, variant_name, inner) => {
+                let expected_enum = self.program.names[*enum_name].as_str();
+                let expected_variant = self.program.names[*variant_name].as_str();
+                let Some(name) = collections::variant_name(value) else {
+                    return false;
+                };
+                if &*obj::type_name(value) != expected_enum || &*name != expected_variant {
+                    return false;
+                }
+                let Some(field) = collections::variant_value(value) else {
+                    return false;
+                };
+                self.match_pattern(inner, &field, scope)
+            }
             Pattern::Tuple(items) => {
                 let values = obj::unpack_items(value);
                 if values.is_empty() {
