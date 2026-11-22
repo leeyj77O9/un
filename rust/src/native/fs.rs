@@ -25,12 +25,25 @@ pub fn members(closure: &Context) -> Vec<(String, Obj)> {
             native(closure, "read", path("path"), read_impl),
         ),
         (
+            "read_bytes".to_owned(),
+            native(closure, "read_bytes", path("path"), read_bytes_impl),
+        ),
+        (
             "write".to_owned(),
             native(
                 closure,
                 "write",
                 vec![arg("path", true, false, false), arg("text", true, false, false)],
                 write_impl,
+            ),
+        ),
+        (
+            "write_bytes".to_owned(),
+            native(
+                closure,
+                "write_bytes",
+                vec![arg("path", true, false, false), arg("bytes", true, false, false)],
+                write_bytes_impl,
             ),
         ),
         (
@@ -223,6 +236,34 @@ fn write_impl(scope: &Scope) -> Obj {
         Err(e) => return e,
     };
     match std::fs::write(&path, text) {
+        Ok(()) => obj::none(),
+        Err(e) => obj::err(&e.to_string()),
+    }
+}
+fn read_bytes_impl(scope: &Scope) -> Obj {
+    let path = match path_arg(scope, "path") {
+        Ok(path) => path,
+        Err(e) => return e,
+    };
+    if !Path::new(&path).is_file() {
+        return obj::err("file not found");
+    }
+    match std::fs::read(&path) {
+        Ok(data) => super::bytes::bytes_obj(data),
+        Err(e) => obj::err(&e.to_string()),
+    }
+}
+fn write_bytes_impl(scope: &Scope) -> Obj {
+    let path = match path_arg(scope, "path") {
+        Ok(path) => path,
+        Err(e) => return e,
+    };
+    let value = scope::get(scope, "bytes");
+    let data = match super::bytes::as_bytes(&value) {
+        Some(data) => data,
+        None => return obj::err("expected 'bytes' is bytes"),
+    };
+    match std::fs::write(&path, data) {
         Ok(()) => obj::none(),
         Err(e) => obj::err(&e.to_string()),
     }
