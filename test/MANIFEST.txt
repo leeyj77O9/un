@@ -33,6 +33,7 @@ unit|test/unit/runtime/date.un
 unit|test/unit/runtime/builtins.un
 unit|test/unit/runtime/dict_hash.un
 unit|test/unit/runtime/enum.un
+unit|test/unit/runtime/enum_data.un
 unit|test/unit/runtime/reentrant.un
 unit|test/unit/runtime/compound_assign.un
 unit|test/unit/runtime/union_calls.un

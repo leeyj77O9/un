@@ -1,0 +1,25 @@
+use io
+use test.assert as assert
+
+# Data-carrying enums with generics: static checks and pattern bindings.
+enum Test[T, U]
+    a: int
+    b: T
+    c: tuple[int, U]
+
+fn unwrap(v: any) -> int
+    -> match v {
+        Test.a(n) -> n,
+        Test.b(s) -> -1,
+        Test.c(p) -> p[0],
+        _ -> -2,
+    }
+
+fn main() -> int
+    assert.assert_eq(unwrap(Test.a(7)), 7, "int variant payload")
+    assert.assert_eq(unwrap(Test.b("x")), -1, "generic variant payload")
+    assert.assert_eq(unwrap(Test.c((9, "y"))), 9, "tuple variant payload")
+    io.write("enum compile OK")
+    -> 0
+
+main()

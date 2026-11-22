@@ -1,0 +1,4 @@
+enum E
+    num: int
+
+x = E.num("bad")

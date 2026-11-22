@@ -1,0 +1,53 @@
+use io
+use test.assert as assert
+
+# Data-carrying enum variants in the style of Rust enums. Type annotations are
+# static hints (erased at runtime), so generic parameters work in `un run` too.
+enum Test[T, U]
+    a: int
+    b: T
+    c: tuple[int, U]
+
+enum Legacy
+    RED
+    GREEN = 5
+    BLUE
+
+# Construction and payload access.
+x = Test.a(42)
+assert.assert_eq(x.value, 42, "variant payload")
+assert.assert_true(type(x) == Test, "variant keeps its enum type")
+assert.assert_eq(Test.b("hi").value, "hi", "generic field type erases cleanly")
+assert.assert_eq(Test.c((1, "x")).value[1], "x", "tuple field type")
+
+# Structural equality uses enum name, variant name and payload.
+assert.assert_true(x == Test.a(42), "same variant and value")
+assert.assert_true(x != Test.a(43), "different payload")
+assert.assert_true(x != Test.b(42), "different variant")
+assert.assert_true(x != Legacy.RED, "different enum")
+
+# Variants are usable as dict keys, with value-based hashing.
+d = {}
+d[Test.a(1)] = "one"
+assert.assert_eq(d[Test.a(1)], "one", "variant as dict key")
+assert.assert_eq(len(d), 1, "equal variants share a key")
+
+# Display is enum.variant(payload).
+assert.assert_eq(str(x), "Test.a(42)", "variant display")
+
+# Match decomposition (both expression and statement form).
+assert.assert_eq(
+    match x { Test.a(v) -> v + 1, Test.b(v) -> v, _ -> -1 },
+    43,
+    "variant pattern binds payload",
+)
+result = match Test.b("yes") { Test.a(v) -> "a", Test.b(v) -> "b:" + v, _ -> "?" }
+assert.assert_eq(result, "b:yes", "variant pattern binding")
+
+# Plain integer enum members keep their original semantics.
+assert.assert_eq(Legacy.GREEN, 5, "plain enum value")
+assert.assert_eq(Legacy.BLUE, 6, "plain enum auto-increment")
+assert.assert_true(Legacy.GREEN == 5, "plain enum equals integer")
+
+io.write("enum data OK")
+assert.summary()

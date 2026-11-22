@@ -148,7 +148,9 @@ Proto {
 ```
 
 `patterns`의 항목은 `Wildcard`, `Bind(NameId)`, `Literal(ConstId)`,
-`Tuple(Vec<Pattern>)` 4종이며 이름/상수 인덱스는 모듈 전역이다.
+`Tuple(Vec<Pattern>)`, `Variant(EnumNameId, VariantNameId, Box<Pattern>)` 5종이며
+이름/상수 인덱스는 모듈 전역이다. `Variant`는 `Enum.variant(inner)` 패턴을 뜻하고
+`.unbc` 태그 4로 직렬화된다(기존 0–3 태그는 그대로).
 `ext_type`이 있는 proto는 클래스 메서드이며, JIT에서 receiver를 local slot 0에 바인딩한다.
 
 ## 4. Constant pool / Name table
