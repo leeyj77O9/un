@@ -41,6 +41,21 @@ jobs:
         run: |
           rustup run stable-x86_64-pc-windows-gnu cargo test --release --manifest-path rust/Cargo.toml
 
+      - name: Test (Compile Mode)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-check.ps1
+
+      - name: Test (plain-build exe output equality)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\exe-diff.ps1
+
+      - name: Test (edge fuzz)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\edge-fuzz.ps1
+
       - name: Test (differential JIT on/off)
         shell: powershell
         run: |
