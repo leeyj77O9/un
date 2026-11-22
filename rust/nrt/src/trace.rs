@@ -2,6 +2,7 @@
 //! Mirrors `runtime/context.rs::trace_string` and `error.rs::LangError::display`.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::obj::display;
@@ -13,9 +14,20 @@ struct SourceInfo {
 }
 
 static SOURCE: Mutex<Option<SourceInfo>> = Mutex::new(None);
-// Call frames store raw pointers to static name bytes (embedded by codegen)
-// instead of owned `String`s, so pushing a frame costs no heap allocation.
-static FRAMES: Mutex<Vec<(usize, usize, usize, usize)>> = Mutex::new(Vec::new());
+// Lock-free call frames. Each slot holds (name pointer, name length, start,
+// source length). Plain no-VM executables are single-threaded; atomics are used
+// only so the statics are Sync. This removes a mutex lock/unlock per call.
+const MAX_FRAMES: usize = 512;
+static FRAME_DEPTH: AtomicUsize = AtomicUsize::new(0);
+static FRAME_SLOTS: std::sync::OnceLock<Vec<[AtomicU64; 4]>> = std::sync::OnceLock::new();
+
+fn frame_slots() -> &'static Vec<[AtomicU64; 4]> {
+    FRAME_SLOTS.get_or_init(|| {
+        (0..MAX_FRAMES)
+            .map(|_| std::array::from_fn(|_| AtomicU64::new(0)))
+            .collect()
+    })
+}
 static ERROR_SITE: Mutex<Option<(usize, usize)>> = Mutex::new(None);
 
 fn str_from(ptr: *const u8, len: usize) -> String {
@@ -90,17 +102,24 @@ pub extern "C" fn nrt_register_source(
 
 #[no_mangle]
 pub extern "C" fn nrt_push_frame(name_ptr: *const u8, name_len: usize, start: usize, len: usize) {
-    FRAMES.lock().unwrap().push((name_ptr as usize, name_len, start, len));
+    let d = FRAME_DEPTH.fetch_add(1, Ordering::Relaxed);
+    if d < MAX_FRAMES {
+        let slot = &frame_slots()[d];
+        slot[0].store(name_ptr as u64, Ordering::Relaxed);
+        slot[1].store(name_len as u64, Ordering::Relaxed);
+        slot[2].store(start as u64, Ordering::Relaxed);
+        slot[3].store(len as u64, Ordering::Relaxed);
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn nrt_pop_frame() {
-    FRAMES.lock().unwrap().pop();
+    FRAME_DEPTH.fetch_sub(1, Ordering::Relaxed);
 }
 
 #[no_mangle]
 pub extern "C" fn nrt_clear_trace() {
-    FRAMES.lock().unwrap().clear();
+    FRAME_DEPTH.store(0, Ordering::Relaxed);
 }
 
 #[no_mangle]
@@ -119,7 +138,19 @@ pub extern "C" fn nrt_take_error_site() -> u64 {
 
 pub(crate) fn traceback(message: &str) {
     let src = SOURCE.lock().unwrap();
-    let frames = FRAMES.lock().unwrap();
+    let depth = FRAME_DEPTH.load(Ordering::Relaxed).min(MAX_FRAMES);
+    let slots = frame_slots();
+    let frames: Vec<(usize, usize, usize, usize)> = (0..depth)
+        .map(|i| {
+            let s = &slots[i];
+            (
+                s[0].load(Ordering::Relaxed) as usize,
+                s[1].load(Ordering::Relaxed) as usize,
+                s[2].load(Ordering::Relaxed) as usize,
+                s[3].load(Ordering::Relaxed) as usize,
+            )
+        })
+        .collect();
     let site = *ERROR_SITE.lock().unwrap();
     let nl = if cfg!(windows) { "\r\n" } else { "\n" };
 

@@ -6,6 +6,26 @@ use std::sync::Mutex;
 use crate::obj::{alloc, err, obj, NObj};
 
 static CLASSES: Mutex<Vec<ClassData>> = Mutex::new(Vec::new());
+/// Frozen registry used on the hot path: no lock, populated by the generated
+/// driver after all `nrt_register_*` calls.
+static FROZEN: std::sync::OnceLock<Vec<ClassData>> = std::sync::OnceLock::new();
+
+fn classes() -> Option<&'static Vec<ClassData>> {
+    FROZEN.get().or_else(|| {
+        // Fallback for callers that did not freeze (e.g. a dynamically built
+        // class); registration is complete in plain `un build` executables.
+        None
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn nrt_freeze_classes() {
+    if FROZEN.get().is_none() {
+        let mut guard = CLASSES.lock().unwrap();
+        let data = std::mem::take(&mut *guard);
+        let _ = FROZEN.set(data);
+    }
+}
 
 /// 0 Int, 1 Float, 2 Bool, 3 object handle (also used for `self`).
 pub(crate) type Kind = u8;
@@ -142,7 +162,11 @@ pub extern "C" fn unrt_class_new(
     argc: usize,
 ) -> u64 {
     let name = bytes_of(name_ptr, name_len);
-    let id = CLASSES.lock().unwrap().iter().position(|c| c.name.as_bytes() == name);
+    let registry = match classes() {
+        Some(c) => c,
+        None => return err("class registry is not frozen"),
+    };
+    let id = registry.iter().position(|c| c.name.as_bytes() == name);
     let Some(id) = id else {
         return err(&format!("class '{}' not registered", String::from_utf8_lossy(name)));
     };
@@ -151,23 +175,17 @@ pub extern "C" fn unrt_class_new(
     static NONE_OBJ: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let none = *NONE_OBJ.get_or_init(|| crate::obj::unrt_obj_none());
     let mut fields: Vec<u64> = Vec::new();
-    {
-        let classes = CLASSES.lock().unwrap();
-        fields.resize(classes[id].fields.len(), none);
-    }
+    fields.resize(registry[id].fields.len(), none);
     let p = Box::into_raw(Box::new(fields));
     let instance = unsafe { alloc(NObj { tag: 9, a: id as i64, b: p as i64 }) };
 
     // Copy the descriptor out before calling: `__init__` writes fields via
     // `unrt_member_set`, which locks the same registry (Mutex is not reentrant).
-    let init = {
-        let classes = CLASSES.lock().unwrap();
-        classes[id]
-            .methods
-            .iter()
-            .find(|m| m.name == "__init__")
-            .map(|m| (m.ptr, m.param_kinds, m.kinds_len))
-    };
+    let init = registry[id]
+        .methods
+        .iter()
+        .find(|m| m.name == "__init__")
+        .map(|m| (m.ptr, m.param_kinds, m.kinds_len));
     if let Some((f, kinds, kinds_len)) = init {
         if std::env::var_os("NRT_CLASS_DEBUG").is_some() {
             eprintln!("NRT class_new id={id} argc={argc} kinds_len={kinds_len}");
@@ -229,19 +247,20 @@ pub extern "C" fn unrt_method_call(
     call_args[1..=n].copy_from_slice(&supplied[..n]);
     // Copy the descriptor out before invoking: the method body calls back into
     // `unrt_member_get/set`, which locks the same registry mutex.
-    let method = {
-        let classes = CLASSES.lock().unwrap();
-        classes.get(id).and_then(|c| {
-            c.methods
-                .iter()
-                .find(|m| m.name.as_bytes() == name)
-                .map(|m| (m.ptr, m.param_kinds, m.kinds_len, m.ret_kind))
-        })
+    let registry = match classes() {
+        Some(c) => c,
+        None => return err("class registry is not frozen"),
     };
+    let method = registry.get(id).and_then(|c| {
+        c.methods
+            .iter()
+            .find(|m| m.name.as_bytes() == name)
+            .map(|m| (m.ptr, m.param_kinds, m.kinds_len, m.ret_kind))
+    });
     let Some((f, kinds, kinds_len, ret_kind)) = method else {
         return err(&format!(
             "class '{}' has no method '{}'",
-            CLASSES.lock().unwrap()[id].name,
+            registry.get(id).map(|c| c.name.as_str()).unwrap_or("?"),
             String::from_utf8_lossy(name)
         ));
     };
@@ -258,10 +277,14 @@ pub extern "C" fn unrt_member_get(obj_handle: u64, name_ptr: *const u8, name_len
         }
     }
     let id = unsafe { obj(obj_handle).a as usize };
-    let idx = CLASSES.lock().unwrap().get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name));
+    let registry = match classes() {
+        Some(c) => c,
+        None => return err("class registry is not frozen"),
+    };
+    let idx = registry.get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name));
     match idx {
         Some(i) => instance_fields(obj_handle)[i],
-        None => err(&format!("class '{}' has no field '{}'", CLASSES.lock().unwrap()[id].name, String::from_utf8_lossy(name))),
+        None => err(&format!("class '{}' has no field '{}'", registry.get(id).map(|c| c.name.as_str()).unwrap_or("?"), String::from_utf8_lossy(name))),
     }
 }
 
@@ -279,16 +302,23 @@ pub extern "C" fn unrt_member_set(
         }
     }
     let id = unsafe { obj(obj_handle).a as usize };
-    let idx = CLASSES.lock().unwrap().get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name));
+    let registry = match classes() {
+        Some(c) => c,
+        None => return err("class registry is not frozen"),
+    };
+    let idx = registry.get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name));
     match idx {
         Some(i) => instance_fields(obj_handle)[i] = value,
-        None => return err(&format!("class '{}' has no field '{}'", CLASSES.lock().unwrap()[id].name, String::from_utf8_lossy(name))),
+        None => return err(&format!("class '{}' has no field '{}'", registry.get(id).map(|c| c.name.as_str()).unwrap_or("?"), String::from_utf8_lossy(name))),
     }
     obj_handle
 }
 
 pub(crate) fn display_instance(p: u64) -> String {
-    let classes = CLASSES.lock().unwrap();
+    let classes = match classes() {
+        Some(c) => c,
+        None => return String::new(),
+    };
     let id = unsafe { obj(p).a as usize };
     let Some(class) = classes.get(id) else { return String::new() };
     let fields = instance_fields(p);

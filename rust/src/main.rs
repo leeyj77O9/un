@@ -1087,6 +1087,7 @@ fn build_cmd(args: &[String]) {
         d.push_str("    fn nrt_register_class(name: *const u8, len: usize) -> i64;\n");
         d.push_str("    fn nrt_register_field(class: i64, name: *const u8, len: usize);\n");
         d.push_str("    fn nrt_register_method(class: i64, name: *const u8, len: usize, ptr: usize, kinds: *const u8, kinds_len: usize, ret_kind: u8);\n");
+        d.push_str("    fn nrt_freeze_classes();\n");
     }
     let mut declared: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for (_, _, tir_i, _, _) in &emit_outcome.class_methods {
@@ -1173,6 +1174,9 @@ fn build_cmd(args: &[String]) {
         d.push_str(&format!(
             "    unsafe {{ nrt_register_lambda({i} as i64, un_tir_{i} as *const () as usize, {kc}.as_ptr(), {kc}.len(), {ret_kind}) }};\n"
         ));
+    }
+    if !lowered.class_names.is_empty() {
+        d.push_str("    unsafe { nrt_freeze_classes() };\n");
     }
     d.push_str("    let code = unsafe { un_main() };\n");
     d.push_str("    std::process::ExitCode::from(code as u8)\n}\n");

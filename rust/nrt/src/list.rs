@@ -55,6 +55,23 @@ pub extern "C" fn unrt_list_get(list: u64, idx: i64) -> u64 {
         }
     }
 }
+/// Fused read for statically typed `list[int]`: returns the raw i64 and skips
+/// the box/unbox FFI round trip. Out-of-range writes a pending error, which the
+/// runtime reports at exit just like the boxed path.
+#[no_mangle]
+pub extern "C" fn unrt_list_get_int(list: u64, idx: i64) -> i64 {
+    unsafe {
+        let v = items(list);
+        match index(v, idx) {
+            Some(i) => crate::obj::int_of(v[i]),
+            None => {
+                crate::obj::unrt_write_error(err("list index out of range"));
+                0
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn unrt_list_set(list: u64, idx: i64, value: u64) -> u64 {
     unsafe {

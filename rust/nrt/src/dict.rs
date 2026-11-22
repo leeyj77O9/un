@@ -13,6 +13,10 @@ struct DictData {
     /// Number of keys per equivalence class (numeric, str, other). Used to
     /// skip the cross-type fallback scan when all keys share the lookup class.
     class_counts: [usize; 3],
+    /// Direct storage for statically typed `dict[int, int]`: key -> (value,
+    /// index in `pairs` so len()/display() stay correct). Empty otherwise.
+    int_map: HashMap<i64, (i64, usize)>,
+    int_only: bool,
 }
 
 /// Equivalence class used by `cmp_obj`: numeric (Int/Float/Bool), Str, other.
@@ -75,11 +79,18 @@ pub(crate) fn display_dict(p: u64) -> String {
 fn dict_new(pairs_vec: Vec<(u64, u64)>) -> u64 {
     let mut index: HashMap<u64, Vec<usize>> = HashMap::new();
     let mut class_counts = [0usize; 3];
-    for (i, (k, _)) in pairs_vec.iter().enumerate() {
+    let mut int_map = HashMap::new();
+    let mut int_only = true;
+    for (i, (k, v)) in pairs_vec.iter().enumerate() {
         index.entry(hash_obj(*k)).or_default().push(i);
         class_counts[key_class(*k)] += 1;
+        if unsafe { obj(*k).tag == 0 && obj(*v).tag == 0 } {
+            int_map.insert(unsafe { obj(*k).a }, (unsafe { obj(*v).a }, i));
+        } else {
+            int_only = false;
+        }
     }
-    let d = Box::new(DictData { pairs: pairs_vec, index, class_counts });
+    let d = Box::new(DictData { pairs: pairs_vec, index, class_counts, int_map, int_only });
     unsafe { alloc(NObj { tag: 7, a: 0, b: Box::into_raw(d) as i64 }) }
 }
 
@@ -133,6 +144,12 @@ pub extern "C" fn unrt_dict_get(dict: u64, key: u64) -> u64 {
         if key == 0 {
             return err("unrt: dict key is not an object");
         }
+        if data(dict).int_only && obj(key).tag == 0 {
+            return match data(dict).int_map.get(&obj(key).a).copied() {
+                Some((v, _)) => crate::obj::unrt_obj_int(v),
+                None => err(&format!("key '{}' not found in dictionary", crate::obj::display(key))),
+            };
+        }
         match find(dict, key) {
             Some((i, _)) => data(dict).pairs[i].1,
             None => err(&format!(
@@ -140,6 +157,32 @@ pub extern "C" fn unrt_dict_get(dict: u64, key: u64) -> u64 {
                 crate::obj::display(key)
             )),
         }
+    }
+}
+
+/// Fast path for statically typed `dict[int, int]`: raw i64 key/value, no
+/// boxing, no SipHash, no `eq_obj`. Returns the dict handle for the error gate.
+#[no_mangle]
+pub extern "C" fn unrt_dict_set_int(dict: u64, key: i64, value: i64) -> u64 {
+    unsafe {
+    if data(dict).int_only {
+        let d = data(dict);
+        if let Some(&(_, i)) = d.int_map.get(&key) {
+            d.pairs[i].1 = crate::obj::unrt_obj_int(value);
+            d.int_map.insert(key, (value, i));
+        } else {
+            let idx = d.pairs.len();
+            let key_h = crate::obj::unrt_obj_int(key);
+            let value_h = crate::obj::unrt_obj_int(value);
+            // `int_map` is authoritative for int-only dicts; `pairs` only
+            // backs len()/display(), so the hash bucket index is unnecessary.
+            d.pairs.push((key_h, value_h));
+            d.int_map.insert(key, (value, idx));
+        }
+    } else {
+        unrt_dict_set(dict, crate::obj::unrt_obj_int(key), crate::obj::unrt_obj_int(value));
+    }
+    dict
     }
 }
 
@@ -161,6 +204,10 @@ pub extern "C" fn unrt_dict_set(dict: u64, key: u64, value: u64) -> u64 {
             d.pairs.push((key, value));
             d.index.entry(h).or_default().push(idx);
             d.class_counts[key_class(key)] += 1;
+        }
+        if data(dict).int_only && obj(key).tag == 0 && obj(value).tag == 0 {
+            let idx = data(dict).pairs.len() - 1;
+            data(dict).int_map.insert(obj(key).a, (obj(value).a, idx));
         }
     }
     dict
