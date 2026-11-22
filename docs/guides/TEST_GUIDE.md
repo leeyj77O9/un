@@ -146,7 +146,7 @@ Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```
 
-`cargo test --release --workspace` covers the Rust side (227 tests, including
+`cargo test --release --workspace` covers the Rust side (230 tests: nrt 3 + lib 219 + playground 8, including
 the JIT entry-map isolation, repeated-native-call, and sandbox path-confinement
 regression guards). Two
 additional runners compare execution shapes: `scripts/differential.ps1` runs

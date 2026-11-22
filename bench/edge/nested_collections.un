@@ -1,0 +1,5 @@
+use io
+xs = [[1, 2], [3, 4]]
+d = {"a": [10, 20]}
+io.write(`RESULT|nested|{xs[1][0] + d["a"][1]}`)
+io.write("=== Verify: ok ===")

@@ -12,12 +12,18 @@ export function measure(label, work, iters, reps, warmup) {
 
     const times = [];
     const heapBefore = process.memoryUsage().heapUsed;
+    let result;
     for (let r = 0; r < reps; r++) {
         const t0 = performance.now();
-        work(iters);
+        result = work(iters);
         times.push(performance.now() - t0);
     }
 
+    // cross-lane 결과 대조용
+    console.log(`RESULT|${label}|${result}`);
+
+    // 원시 샘플: bench.ps1이 신뢰구간/이상치/변동계수를 계산한다.
+    for (const t of times) console.log(`SAMPLE|${t}`);
     times.sort((a, b) => a - b);
     const n = times.length;
     const mn = times[0];

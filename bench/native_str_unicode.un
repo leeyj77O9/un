@@ -1,0 +1,24 @@
+use io
+use time
+
+fn ascii_len(s: str) -> int
+    parts = s.split("-")
+    -> len(parts[2])
+
+fn unicode_work(n: int) -> int
+    parts: list[str] = []
+    for i in 0..n
+        s = `한글-🎉-abc-{i}`
+        parts.add(s.to_upper())
+    -> len(parts) * 3 + ascii_len(parts[n // 2])
+
+fn main() -> int
+    start = time.monotonic()
+    r = 0
+    while r < 7
+        unicode_work(2000)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 7.0)
+    -> 0
+
+main()

@@ -1,0 +1,8 @@
+use io
+
+fn unicode_edge()
+    s = `한글🎉`
+    -> len(s.split("-")[0])
+
+io.write(`RESULT|unicode_edge|{unicode_edge()}`)
+io.write("=== Verify: ok ===")

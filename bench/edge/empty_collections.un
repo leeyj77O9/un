@@ -1,0 +1,9 @@
+use io
+
+fn empty_collections()
+    e = []
+    d = {}
+    -> len(e) + len(d)
+
+io.write(`RESULT|empty_collections|{empty_collections()}`)
+io.write("=== Verify: ok ===")

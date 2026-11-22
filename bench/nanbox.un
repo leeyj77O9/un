@@ -1,0 +1,16 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+fn nanbox_work(n)
+    total = 0.0
+    for i in iter.range(1, n + 1)
+        x: float = i / 3.0
+        total += x * 2.0 - i // 3.0
+    -> total
+
+assert.assert_true(nanbox_work(3) > 2.99, "nan(3)")
+assert.assert_true(nanbox_work(100) > 1716.0, "nan(100)")
+bench.measure("nanbox20000", fn(n) -> nanbox_work(n), 20000, 7, 2)
+assert.summary()

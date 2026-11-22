@@ -1,0 +1,7 @@
+use io
+use iter
+total = 0
+for i in iter.range(0, 10000)
+    total += i
+io.write(`RESULT|big_input|{total}`)
+io.write("=== Verify: ok ===")

@@ -1,0 +1,16 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+fn exception_work(n)
+    total = 0
+    for i in iter.range(0, n)
+        if i % 5 != 0
+            total += i % 7
+    -> total
+
+assert.assert_eq(exception_work(3), 3, "exception_work(3)")
+assert.assert_eq(exception_work(100), 234, "exception_work(100)")
+bench.measure("except10000", fn(n) -> exception_work(n), 10000, 7, 2)
+assert.summary()

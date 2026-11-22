@@ -1,0 +1,28 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+enum Color
+    Red
+    Green
+    Blue
+
+fn enum_work(n)
+    colors = [Color.Red, Color.Green, Color.Blue]
+    total = 0
+    for i in iter.range(0, n)
+        c = colors[i % 3]
+        if c == Color.Red
+            total += 1
+        elif c == Color.Green
+            total += 2
+        else
+            total += 3
+    -> total
+
+assert.assert_eq(enum_work(3), 6, "enum_work(3)")
+assert.assert_eq(enum_work(99), 198, "enum_work(99)")
+assert.assert_eq(enum_work(100), 199, "enum_work(100)")
+bench.measure("enum10000", fn(n) -> enum_work(n), 10000, 7, 2)
+assert.summary()

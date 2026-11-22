@@ -123,6 +123,66 @@ function Parse-MemLine([string]$line) {
     return @{ label = $parts[1]; delta = [double]$parts[2]; heap = [double]$parts[3] }
 }
 
+# ---------- 통계 유틸 ----------
+function Get-Stats([double[]]$values) {
+    if ($values.Count -lt 2) { return $null }
+    $sorted = @($values | Sort-Object)
+    $n = $sorted.Count
+    $mean = ($values | Measure-Object -Average).Average
+    $sd = [math]::Sqrt((($values | ForEach-Object { ($_ - $mean) * ($_ - $mean) } | Measure-Object -Sum).Sum) / ($n - 1))
+    $cv = if ($mean -gt 0) { $sd / $mean } else { 0.0 }
+    $p95 = $sorted[[math]::Min($n - 1, [int][math]::Ceiling(0.95 * $n) - 1)]
+    # Grubbs 이상치 검정(양측 95%, n=7 임계 ≈ 2.02)
+    $grubbsCritical = @{ 3=1.15; 4=1.46; 5=1.67; 6=1.82; 7=1.94; 8=2.03; 9=2.11; 10=2.18 }
+    $crit = if ($grubbsCritical.ContainsKey($n)) { $grubbsCritical[$n] } else { 2.2 }
+    $outliers = @()
+    if ($sd -gt 0) {
+        for ($i = 0; $i -lt $n; $i++) { if ([math]::Abs($values[$i] - $mean) / $sd -gt $crit) { $outliers += $i } }
+    }
+    # 95% 신뢰구간 (t distribution 근사, n=7 → t≈2.447)
+    $tcrit = @{ 3=4.303; 4=3.182; 5=2.776; 6=2.571; 7=2.447; 8=2.365; 9=2.306; 10=2.262 }
+    $t = if ($tcrit.ContainsKey($n)) { $tcrit[$n] } else { 2.2 }
+    $margin = $t * $sd / [math]::Sqrt($n)
+    return @{ mean=$mean; sd=$sd; cv=$cv; p95=$p95; outliers=$outliers.Count; ci95Lo=$mean-$margin; ci95Hi=$mean+$margin }
+}
+
+function Get-Samples([string]$text) {
+    $samples = @()
+    foreach ($line in ($text -split "`n")) {
+        if ($line -match '^SAMPLE\|') {
+            $v = 0.0
+            if ([double]::TryParse($line.Split('|')[1], [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$v)) { $samples += $v }
+        }
+    }
+    return $samples
+}
+function Canonical-Result([string]$value) {
+    # 결과 정규화:
+    #  - 정수/실수: 수치 비교(부동소수점 마지막 자리 허용오차), 정수값 float은 int로 통합
+    #  - 리스트/맵: 공백 제거 후 문자열 비교
+    $v = $value.Trim()
+    $d = 0.0
+    if ([double]::TryParse($v, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$d)) {
+        if ([math]::Abs($d - [math]::Round($d)) -lt 1e-9 -and [math]::Abs($d) -lt 9e15) {
+            return "n:" + [int64][math]::Round($d)
+        }
+        return "n:" + [math]::Round($d, 9).ToString("F9", [Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($v.StartsWith('[') -or $v.StartsWith('{')) { return "c:" + (($v -replace '\s', '')) }
+    return "s:" + $v
+}
+function Get-Results([string]$text) {
+    # BENCH 결과 외에 각 스크립트가 출력하는 RESULT|label|value 줄을 모은다.
+    $map = @{}
+    foreach ($line in ($text -split "`n")) {
+        if ($line -match '^RESULT\|([^|]+)\|(.*)$') {
+            $canon = Canonical-Result $Matches[2]
+            # 수치 결과만 cross-lane 비교 (리스트/맵은 언어별 출력 형식이 다름)
+            if ($canon.StartsWith("n:")) { $map[$Matches[1]] = $canon }
+        }
+    }
+    return $map
+}
 function Get-Validation([string]$text) {
     foreach ($line in $text -split "`n") {
         if ($line -match "=== Result: (\d+) passed, (\d+) failed ===") {
@@ -218,6 +278,15 @@ $Pairs = @(
     [pscustomobject]@{ label = "sin20000";       un = "bench/floatmath.un"; native = "bench/native_floatmath.un"; exe = "bench/native_floatmath.un"; node = "bench/node/floatmath.mjs"; python = "bench/python/floatmath.py" }
     [pscustomobject]@{ label = "call200000";     un = "bench/funccall.un";  native = "bench/native_funccall.un"; exe = "bench/native_funccall.un"; node = "bench/node/funccall.mjs";  python = "bench/python/funccall.py" }
     [pscustomobject]@{ label = "regex6000";      un = "bench/regex.un";     node = "bench/node/regex.mjs";    python = "bench/python/regex.py" }
+    [pscustomobject]@{ label = "str_unicode";    un = "bench/str_unicode.un";    node = "bench/node/str_unicode.mjs";    python = "bench/python/str_unicode.py" }
+    [pscustomobject]@{ label = "except10000";   un = "bench/exceptions.un";     node = "bench/node/exceptions.mjs";    python = "bench/python/exceptions.py" }
+    [pscustomobject]@{ label = "match20000";    un = "bench/match.un";          node = "bench/node/match.mjs";         python = "bench/python/match.py" }
+    [pscustomobject]@{ label = "closure20000";  un = "bench/closure.un";        node = "bench/node/closure.mjs";       python = "bench/python/closure.py" }
+    [pscustomobject]@{ label = "inherit1000";   un = "bench/inheritance.un";   node = "bench/node/inheritance.mjs"; python = "bench/python/inheritance.py" }
+    [pscustomobject]@{ label = "set5000";       un = "bench/set.un";            node = "bench/node/set.mjs";           python = "bench/python/set.py" }
+    [pscustomobject]@{ label = "enum10000";     un = "bench/enum.un";           node = "bench/node/enum.mjs";          python = "bench/python/enum_bench.py" }
+    [pscustomobject]@{ label = "modimport2000"; un = "bench/modimport.un";      node = "bench/node/modimport.mjs";     python = "bench/python/modimport.py" }
+    [pscustomobject]@{ label = "nanbox20000";   un = "bench/nanbox.un";         node = "bench/node/nanbox.mjs";        python = "bench/python/nanbox.py" }
 )
 
 # ---------- 옵션: 벤치마크 필터 ----------
@@ -339,7 +408,7 @@ $compileOnly = -not @($eachMode | Where-Object { $_ -notin @("unnative", "unbuil
 
 foreach ($p in $Pairs) {
     $row = [pscustomobject]@{
-        label = $p.label; unvm = $null; unjit = $null; compile = $null; build = $null; python = $null; node = $null; memNode = $null; memPython = $null
+        label = $p.label; unvm = $null; unjit = $null; compile = $null; build = $null; python = $null; node = $null; memNode = $null; memPython = $null; unvmResult = $null; unjitResult = $null; compileResult = $null; buildResult = $null; pyResult = $null; nodeResult = $null; unvmSamples = @(); unjitSamples = @(); pySamples = @(); nodeSamples = @(); unvmStats = $null; unjitStats = $null; pyStats = $null; nodeStats = $null
         unvmCode = "n/a"; unjitCode = "n/a"; compileCode = "n/a"; buildCode = "n/a"; pyCode = "n/a"; nodeCode = "n/a"
         unvmValid = "skipped"; unjitValid = "skipped"; compileValid = "skipped"; buildValid = "skipped"; pyValid = "skipped"; nodeValid = "skipped"
     }
@@ -347,6 +416,8 @@ foreach ($p in $Pairs) {
         $r = Invoke-Un $p.un $true
         $row.unvmCode = $r.code; $row.unvmValid = Get-Validation $r.text
         if ($r.code -ne 0) { Write-Host "[BAD]  VM  $($p.un) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }
+        $row.unvmResult = Get-Results $r.text
+        $row.unvmSamples = Get-Samples $r.text
         foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.unvm = $b } }
     }
     if ($eachMode -contains "unnative") {
@@ -361,6 +432,7 @@ foreach ($p in $Pairs) {
                 Write-Host "[BAD]  native $($p.un) exit=$($r.code)" -ForegroundColor Red; $Failures += 1
             }
         }
+        $row.compileResult = Get-Results $r.text
         foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.compile = $b } }
         if (-not $row.compile -and $r.code -eq 0) {
             $row.compile = Parse-BareBench $r.text 1 7 2
@@ -381,12 +453,16 @@ foreach ($p in $Pairs) {
         $r = Invoke-Un $p.un $false
         $row.unjitCode = $r.code; $row.unjitValid = Get-Validation $r.text
         if ($r.code -ne 0) { Write-Host "[BAD]  JIT $($p.un) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }
+        $row.unjitResult = Get-Results $r.text
+        $row.unjitSamples = Get-Samples $r.text
         foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.unjit = $b } }
     }
     if ($eachMode -contains "python") {
         $r = Invoke-Python $p.python $PythonExe
         $row.pyCode = $r.code; $row.pyValid = Get-Validation $r.text
         if ($r.code -ne 0) { Write-Host "[BAD]  PY  $($p.python) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }
+        $row.pyResult = Get-Results $r.text
+        $row.pySamples = Get-Samples $r.text
         foreach ($line in ($r.text -split "`n")) {
             $b = Parse-BenchLine $line; if ($b) { $row.python = $b }
             $m = Parse-MemLine $line; if ($m) { $row.memPython = $m }
@@ -396,9 +472,40 @@ foreach ($p in $Pairs) {
         $r = Invoke-Node $p.node
         $row.nodeCode = $r.code; $row.nodeValid = Get-Validation $r.text
         if ($r.code -ne 0) { Write-Host "[BAD]  NODE $($p.node) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }
+        $row.nodeResult = Get-Results $r.text
+        $row.nodeSamples = Get-Samples $r.text
         foreach ($line in ($r.text -split "`n")) {
             $b = Parse-BenchLine $line; if ($b) { $row.node = $b }
             $m = Parse-MemLine $line; if ($m) { $row.memNode = $m }
+        }
+    }
+    # ---------- 통계 계산 & 노이즈 경고 ----------
+    foreach ($pair in @(@("unvm","unvmSamples","unvmStats"), @("unjit","unjitSamples","unjitStats"), @("python","pySamples","pyStats"), @("node","nodeSamples","nodeStats"))) {
+        $samples = $row.($pair[1])
+        if ($samples.Count -ge 2) {
+            $st = Get-Stats ([double[]]$samples)
+            $row.($pair[2]) = $st
+            if ($st.cv -gt 0.15 -or $st.outliers -gt 0) {
+                Write-Host ("[NOISE] {0}/{1} cv={2:F3} outliers={3} ci95=[{4:F3},{5:F3}]" -f $p.label, $pair[0], $st.cv, $st.outliers, $st.ci95Lo, $st.ci95Hi) -ForegroundColor Yellow
+            }
+        }
+    }
+    # ---------- cross-lane 결과 대조 ----------
+    # 모든 레인이 같은 RESULT|label|value 를 출력해야 한다. 한 레인이라도 다르면 실패.
+    $laneResults = @{}
+    foreach ($entry in @(@("vm",$row.unvmResult), @("jit",$row.unjitResult), @("compile",$row.compileResult), @("exe",$row.buildResult), @("python",$row.pyResult), @("node",$row.nodeResult))) {
+        if ($null -eq $entry[1]) { continue }
+        foreach ($key in $entry[1].Keys) {
+            if (-not $laneResults.ContainsKey($key)) { $laneResults[$key] = @{} }
+            $laneResults[$key][$entry[0]] = $entry[1][$key]
+        }
+    }
+    foreach ($key in $laneResults.Keys) {
+        $values = @($laneResults[$key].Values | Sort-Object -Unique)
+        if ($values.Count -gt 1) {
+            $detail = ($laneResults[$key].GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join " "
+            Write-Host "[XLANE]  $($p.label)/$key  $detail" -ForegroundColor Red
+            $Failures += 1
         }
     }
     if (-not $compileOnly -and -not $row.unvm -and -not $row.unjit -and -not $row.compile -and -not $row.build -and -not $row.python -and -not $row.node) {
@@ -536,6 +643,18 @@ if ($Comparisons.Count -gt 0) {
     }
 }
 
+# ---------- 통계 요약 출력 ----------
+Write-Host ""
+Write-Host "Statistical summary (median, CV, 95% CI, outliers):"
+foreach ($row in $Rows) {
+    foreach ($pair in @(@("unvm","unvmStats"), @("unjit","unjitStats"), @("python","pyStats"), @("node","nodeStats"))) {
+        $st = $row.($pair[1])
+        if ($null -eq $st) { continue }
+        $med = $row.($pair[0]).median
+        Write-Host ("  {0,-15} {1,-7} med={2,10:F3} cv={3,7:F3} p95={4,10:F3} ci95=[{5:F3},{6:F3}] out={7}" -f `
+            $row.label, $pair[0], $med, $st.cv, $st.p95, $st.ci95Lo, $st.ci95Hi, $st.outliers)
+    }
+}
 # ---------- 저장 ----------
 $Csv = @()
 $Header = "label,iters,reps,warmup,unvm_min_ms,unvm_median_ms,unvm_avg_ms,unvm_max_ms,unvm_stddev_ms,unvm_ops,unjit_min_ms,unjit_median_ms,unjit_avg_ms,unjit_max_ms,unjit_stddev_ms,unjit_ops,compile_min_ms,compile_median_ms,compile_avg_ms,compile_max_ms,compile_stddev_ms,compile_ops,build_min_ms,build_median_ms,build_avg_ms,build_max_ms,build_stddev_ms,build_ops,python_min_ms,python_median_ms,python_avg_ms,python_max_ms,python_stddev_ms,python_ops,node_min_ms,node_median_ms,node_avg_ms,node_max_ms,node_stddev_ms,node_ops,python_heap_delta_mb,python_heap_mb,node_heap_delta_mb,unvm_validation,unjit_validation,compile_validation,build_validation,python_validation,node_validation"
@@ -574,6 +693,8 @@ $Json = @{
             unvmValidation = $_.unvmValid; unjitValidation = $_.unjitValid
             compileValidation = $_.compileValid; buildValidation = $_.buildValid
             pythonValidation = $_.pyValid; nodeValidation = $_.nodeValid
+            results = @{ vm=$_.unvmResult; jit=$_.unjitResult; compile=$_.compileResult; exe=$_.buildResult; python=$_.pyResult; node=$_.nodeResult }
+            stats = @{ vm=$_.unvmStats; jit=$_.unjitStats; python=$_.pyStats; node=$_.nodeStats }
         }
     }
 }

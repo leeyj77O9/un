@@ -44,6 +44,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1 -Group all
 
 # Compare against a previous results.csv
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1 -Group all -Compare bench\results\20261116-235527\results.csv
+
+# Edge-case fuzz: same inputs across VM/JIT/Compile/Python/Node, byte-compare RESULT|case|value
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\edge-fuzz.ps1
+
+# HTML trend report + CI gate (fails on >10% regression or validation errors)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench-report.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench-report.ps1 -Gate -Threshold 10
 ```
 
 A single benchmark can be run directly:
@@ -78,6 +85,15 @@ implements the same algorithm on the same input with the same expected values:
 | `sin20000` | Misc | `math.sin(i)` sum for i = 1..20000 | 20000 evaluations |
 | `call200000` | Function calls | `mix()` LCG chain of 200000 calls (call overhead) | 200000 calls |
 | `regex6000` | Algorithms | `re.find_all("[0-9]+")` on a 53813-char text (6000 tokens) | 6000 matches |
+| `str_unicode` | Strings | Korean/emoji string build + upper + ASCII slice | 2000 iterations |
+| `except10000` | Control flow | conditional branch over 10000 values | 10000 iterations |
+| `match20000` | Pattern matching | `match x % 4` over 20000 values | 20000 iterations |
+| `closure20000` | Closures | 10 capturing closures called 20000 times | 20000 calls |
+| `inherit1000` | Classes | 1000 derived-class instances + method dispatch | 1000 instances |
+| `set5000` | Collections | set add + contains over 5000 values | 5000 operations |
+| `enum10000` | Enum | enum value dispatch over 10000 values | 10000 iterations |
+| `modimport2000` | Modules | cross-function call chain over 2000 values | 2000 iterations |
+| `nanbox20000` | Float | mixed float/int arithmetic over 20000 values | 20000 iterations |
 
 Input generation is identical across the three languages:
 `s = (s * 1103515245 + 12345) % 100000`.

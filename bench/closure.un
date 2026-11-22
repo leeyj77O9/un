@@ -1,0 +1,21 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+fn make_adder(k)
+    -> fn(x) -> x + k
+
+fn closure_work(n)
+    adders = []
+    for i in iter.range(0, 10)
+        adders.add(make_adder(i))
+    total = 0
+    for i in iter.range(0, n)
+        total += adders[i % 10](i)
+    -> total
+
+assert.assert_eq(closure_work(3), 6, "closure_work(3)")
+assert.assert_eq(closure_work(100), 5400, "closure_work(100)")
+bench.measure("closure20000", fn(n) -> closure_work(n), 20000, 7, 2)
+assert.summary()

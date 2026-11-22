@@ -1,0 +1,15 @@
+use io
+use test.assert as assert
+
+# 경계값: 0, 음수, 큰 정수, 나머지
+fn edge_int(n)
+    a = 0
+    b = -1
+    c = 999999999
+    d = n % 7
+    -> a + b + c + d
+
+assert.assert_eq(edge_int(0), 999999998, "edge zero")
+assert.assert_eq(edge_int(7), 999999998, "edge mod")
+io.write(`RESULT|int_boundary|{edge_int(9)}`)
+io.write("=== Verify: ok ===")

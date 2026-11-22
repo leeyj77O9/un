@@ -1,0 +1,24 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+fn classify(x)
+    res = match x % 4 {
+        0 -> 0,
+        1 -> 1,
+        2 -> 2,
+        _ -> -1,
+    }
+    -> res
+
+fn match_work(n)
+    total = 0
+    for i in iter.range(0, n)
+        total += classify(i)
+    -> total
+
+assert.assert_eq(match_work(4), 2, "match_work(4)")
+assert.assert_eq(match_work(100), 50, "match_work(100)")
+bench.measure("match20000", fn(n) -> match_work(n), 20000, 7, 2)
+assert.summary()

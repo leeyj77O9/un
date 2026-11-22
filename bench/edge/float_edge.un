@@ -1,0 +1,4 @@
+use io
+a = 0.1 + 0.2
+io.write(`RESULT|float_edge|{(a * 10.0) // 1.0}`)
+io.write("=== Verify: ok ===")

@@ -1,0 +1,31 @@
+use io
+use time
+
+class Animal
+    name: str
+    fn __init__(name: str)
+        self.name = name
+    fn speak() -> int
+        -> 1
+
+class Dog(Animal)
+    fn speak() -> int
+        -> 2
+
+fn inherit_work(n: int) -> int
+    total = 0
+    for i in 0..n
+        d = Dog(`d{i}`)
+        total += d.speak()
+    -> total
+
+fn main() -> int
+    start = time.monotonic()
+    r = 0
+    while r < 7
+        inherit_work(1000)
+        r += 1
+    io.write((time.monotonic() - start) * 1000.0 / 7.0)
+    -> 0
+
+main()

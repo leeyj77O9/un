@@ -1,0 +1,18 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+fn work_inside_module(n)
+    total = 0
+    for i in iter.range(0, n)
+        total += i % 13
+    -> total
+
+fn modimport_work(n)
+    -> work_inside_module(n)
+
+assert.assert_eq(modimport_work(3), 3, "modimport_work(3)")
+assert.assert_eq(modimport_work(100), 582, "modimport_work(100)")
+bench.measure("modimport2000", fn(n) -> modimport_work(n), 2000, 7, 2)
+assert.summary()

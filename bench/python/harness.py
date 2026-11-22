@@ -22,12 +22,18 @@ def measure(label, work, iters, reps, warmup):
     times = []
     for _ in range(reps):
         t0 = time.perf_counter()
-        work(iters)
+        result = work(iters)
         times.append((time.perf_counter() - t0) * 1000.0)  # ms
+
+    # cross-lane 결과 대조용
+    print(f"RESULT|{label}|{result}")
 
     heap_after = tracemalloc.get_traced_memory()[0]
     tracemalloc.stop()
 
+    # 원시 샘플: bench.ps1이 신뢰구간/이상치/변동계수를 계산한다.
+    for t in times:
+        print(f"SAMPLE|{t}")
     times.sort()
     n = len(times)
     mn = times[0]

@@ -1,0 +1,28 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+class Animal
+    fn __init__(name)
+        self.name = name
+    fn speak()
+        -> 1
+
+class Dog(Animal)
+    fn speak()
+        -> 2
+    fn __init__(name)
+        self.name = name
+
+fn inherit_work(n)
+    total = 0
+    for i in iter.range(0, n)
+        d = Dog(`d{i}`)
+        total += d.speak()
+    -> total
+
+assert.assert_eq(inherit_work(3), 6, "inherit_work(3)")
+assert.assert_eq(inherit_work(1000), 2000, "inherit_work(1000)")
+bench.measure("inherit1000", fn(n) -> inherit_work(n), 1000, 7, 2)
+assert.summary()

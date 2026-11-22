@@ -1,0 +1,24 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# 유니코드/다국어 문자열 처리 벤치마크 (Un/Node/Python 동일 알고리즘)
+# 주의: len()은 언어별로 emoji를 다르게 센다(UTF-16 vs 코드포인트).
+#       cross-lane 비교를 위해 최종값은 ASCII 조각의 길이만 사용한다.
+fn ascii_len(s)
+    parts = s.split("-")
+    -> len(parts[2])
+
+fn unicode_work(n)
+    parts = []
+    for i in iter.range(0, n)
+        s = `한글-🎉-abc-{i}`
+        parts.add(s.to_upper())
+    -> len(parts) * 3 + ascii_len(parts[n // 2])
+
+assert.assert_eq(unicode_work(3), 12, "unicode_work(3)")
+assert.assert_eq(unicode_work(100), 303, "unicode_work(100)")
+
+bench.measure("str_unicode", fn(n) -> unicode_work(n), 2000, 7, 2)
+assert.summary()

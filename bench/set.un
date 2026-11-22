@@ -1,0 +1,19 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+fn set_work(n)
+    s = set()
+    for i in iter.range(0, n)
+        s.add(i % 1000)
+    total = 0
+    for i in iter.range(0, 1000)
+        if s.contains(i)
+            total += i
+    -> total
+
+assert.assert_eq(set_work(10), 45, "set_work(10)")
+assert.assert_eq(set_work(1000), 499500, "set_work(1000)")
+bench.measure("set5000", fn(n) -> set_work(n), 5000, 7, 2)
+assert.summary()

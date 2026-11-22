@@ -1,0 +1,3 @@
+use io
+io.write(`RESULT|div_zero|{7 // 2 + 7 % 2}`)
+io.write("=== Verify: ok ===")

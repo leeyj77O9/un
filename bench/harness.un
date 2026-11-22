@@ -25,15 +25,23 @@ fn measure(label, work, iters, reps, warmup)
     sw = time.stopwatch()
     times = []
     r = 0
+    result = none
     while r < reps
         sw.reset()
         sw.start()
-        work(iters)
+        result = work(iters)
         sw.stop()
         # tick은 100ns 단위다(시간당 10^7 틱). 정수 ms만 반환하면
         # 짧은 작업의 측정 해상도가 너무 낮다.
         times.add(sw.tick() / 10000.0)
         r += 1
+
+    # cross-lane 결과 대조용 (VM/JIT/Compile/exe/Python/Node 모든 레인이 출력)
+    io.write(`RESULT|{label}|{result}`)
+
+    # 원시 샘플: bench.ps1이 신뢰구간/이상치/변동계수를 계산한다.
+    for t in times
+        io.write(`SAMPLE|{t}`)
 
     times.sort()
     n = len(times)
