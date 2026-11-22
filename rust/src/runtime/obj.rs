@@ -308,7 +308,13 @@ pub fn key_eq(a: &Obj, b: &Obj) -> bool {
         (Payload::Float(x), Payload::Float(y)) => x == y,
         (Payload::Str(x), Payload::Str(y)) => x == y,
         (Payload::Bool(x), Payload::Bool(y)) => x == y,
-        (Payload::Enu(x), Payload::Enu(y)) => x == y,
+        (Payload::Enu(_), Payload::Enu(_)) => {
+            if collections::variant_name(a).is_some() || collections::variant_name(b).is_some() {
+                matches!(payload(&binop(a, BinOp::Eq, b)), Payload::Bool(true))
+            } else {
+                pa == pb
+            }
+        }
         _ => matches!(payload(&binop(a, BinOp::Eq, b)), Payload::Bool(true)),
     }
 }
@@ -318,6 +324,18 @@ pub fn hash_code(o: &Obj) -> u64 {
 fn hash_code_depth(o: &Obj, depth: u32) -> u64 {
     if depth >= MAX_RECURSION_DEPTH {
         return 0;
+    }
+    // Data-carrying enum variants hash by enum name, variant name and value.
+    // Plain enum values keep hashing as their integer discriminant.
+    if matches!(&*payload_ref(o), Payload::Enu(_)) {
+        if let Some(name) = collections::variant_name(o) {
+            let mut h = prims::str_hash(&type_name(o)) as u64;
+            h = combine_hash(h, prims::str_hash(&name) as u64);
+            if let Some(value) = collections::variant_value(o) {
+                h = combine_hash(h, hash_code_depth(&value, depth + 1));
+            }
+            return h;
+        }
     }
     let o_own_ref = std::cell::Ref::map(o.borrow(), |d| &d.payload);
     match &*o_own_ref {

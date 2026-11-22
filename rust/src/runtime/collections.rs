@@ -1658,10 +1658,67 @@ pub fn stru_copy(o: &Obj) -> Obj {
 pub fn stru_clone(o: &Obj) -> Obj {
     stru_copy(o)
 }
+/// Marker member name on a data-carrying enum variant instance. Plain enum
+/// values (`Color.RED`) stay plain integers, so this can never collide with
+/// an existing enum value.
+pub const VARIANT_MARKER: &str = "__un_variant";
+pub const VALUE_MEMBER: &str = "value";
+
+pub fn variant_name(o: &Obj) -> Option<Rc<str>> {
+    let member = obj::member(o, VARIANT_MARKER)?;
+    match obj::payload(&member) {
+        Payload::Str(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+pub fn variant_value(o: &Obj) -> Option<Obj> {
+    obj::member(o, VALUE_MEMBER)
+}
+pub fn variant(enum_name: &str, variant_name: &str, discriminant: i64, value: Obj) -> Obj {
+    let created = enu(enum_name, discriminant);
+    obj::member_set(&created, VARIANT_MARKER, &obj::str(variant_name));
+    obj::member_set(&created, VALUE_MEMBER, &value);
+    created
+}
+fn variant_eq(a: &Obj, b: &Obj) -> Option<bool> {
+    let (Some(la), Some(lb)) = (variant_name(a), variant_name(b)) else {
+        return None;
+    };
+    let equal = obj::type_name_eq(a, b) && la == lb;
+    if !equal {
+        return Some(false);
+    }
+    let va = variant_value(a).unwrap_or_else(obj::none);
+    let vb = variant_value(b).unwrap_or_else(obj::none);
+    Some(matches!(
+        obj::payload(&obj::binop(&va, BinOp::Eq, &vb)),
+        Payload::Bool(true)
+    ))
+}
 pub fn enu_to_str(o: &Obj, n: i64) -> Obj {
+    if let Some(name) = variant_name(o) {
+        let value = variant_value(o).unwrap_or_else(obj::none);
+        let text = obj::to_str(&value);
+        let inner = match obj::payload(&text) {
+            Payload::Str(s) => s.to_string(),
+            _ => String::from("none"),
+        };
+        return obj::str(&format!("{}.{}({})", obj::type_name(o), name, inner));
+    }
     obj::str(&format!("{}:{}", obj::type_name(o), n))
 }
 pub fn enu_binop(o: &Obj, n: i64, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) -> Obj {
+    // Data-carrying variants compare by enum name, variant name and payload.
+    // Plain enum values keep their integer/discriminant semantics.
+    if variant_name(o).is_some() || variant_name(other).is_some() {
+        return match op {
+            BinOp::Eq | BinOp::NEq => {
+                let equal = variant_eq(o, other).unwrap_or(false);
+                obj::boolean(if op == BinOp::Eq { equal } else { !equal })
+            }
+            _ => obj::base_binop(o, op, other, t, ot),
+        };
+    }
     match op {
         BinOp::Eq => match obj::payload(other) {
             Payload::Int(i) => obj::boolean(n == i),
@@ -1683,7 +1740,11 @@ pub fn enu_unop(n: i64, op: UnOp, t: &Rc<str>) -> Obj {
     }
 }
 pub fn enu_clone(o: &Obj, n: i64) -> Obj {
-    enu(&obj::type_name(o), n)
+    let created = enu(&obj::type_name(o), n);
+    for (name, value) in o.borrow().members.iter() {
+        obj::member_set(&created, name, value);
+    }
+    created
 }
 pub fn enu_init(o: &Obj, _n: i64, args: &[Obj]) -> Obj {
     let t = obj::type_name(o);
