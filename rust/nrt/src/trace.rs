@@ -13,7 +13,9 @@ struct SourceInfo {
 }
 
 static SOURCE: Mutex<Option<SourceInfo>> = Mutex::new(None);
-static FRAMES: Mutex<Vec<(String, usize, usize)>> = Mutex::new(Vec::new());
+// Call frames store raw pointers to static name bytes (embedded by codegen)
+// instead of owned `String`s, so pushing a frame costs no heap allocation.
+static FRAMES: Mutex<Vec<(usize, usize, usize, usize)>> = Mutex::new(Vec::new());
 static ERROR_SITE: Mutex<Option<(usize, usize)>> = Mutex::new(None);
 
 fn str_from(ptr: *const u8, len: usize) -> String {
@@ -88,7 +90,7 @@ pub extern "C" fn nrt_register_source(
 
 #[no_mangle]
 pub extern "C" fn nrt_push_frame(name_ptr: *const u8, name_len: usize, start: usize, len: usize) {
-    FRAMES.lock().unwrap().push((str_from(name_ptr, name_len), start, len));
+    FRAMES.lock().unwrap().push((name_ptr as usize, name_len, start, len));
 }
 
 #[no_mangle]
@@ -123,12 +125,13 @@ pub(crate) fn traceback(message: &str) {
 
     if frames.len() > 1 {
         let mut rows: Vec<(String, usize, String)> = Vec::new();
-        for (name, start, _) in frames.iter() {
+        for (name_ptr, name_len, start, _) in frames.iter() {
+            let name = str_from(*name_ptr as *const u8, *name_len);
             let (line, text) = match src.as_ref() {
                 Some(s) => (line_of(s, *start), line_text(s, *start)),
                 None => (0, String::new()),
             };
-            rows.push((frame_name(name), line, text));
+            rows.push((frame_name(&name), line, text));
         }
         // Collapse consecutive identical rows.
         let mut collapsed: Vec<(String, usize, String, usize)> = Vec::new();

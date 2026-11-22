@@ -151,7 +151,9 @@ pub extern "C" fn unrt_list_from_floats(ptr: *const f64, len: i64) -> u64 {
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_repeat_int(value: i64, len: i64) -> u64 {
-    list_new((0..len.max(0)).map(|_| unrt_obj_int(value)).collect())
+    // Every element has the same value; share a single boxed object.
+    let item = unrt_obj_int(value);
+    list_new(vec![item; len.max(0) as usize])
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_repeat_float(value: f64, len: i64) -> u64 {

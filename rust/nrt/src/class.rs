@@ -12,8 +12,10 @@ pub(crate) type Kind = u8;
 struct Method {
     name: String,
     ptr: usize,
-    /// Parameter kinds excluding `self`.
-    param_kinds: Vec<Kind>,
+    /// Parameter kinds excluding `self`, stored inline to avoid a heap clone
+    /// on every method call. MAX_CORE_ARITY is 8, plus one `self` slot.
+    param_kinds: [Kind; 9],
+    kinds_len: usize,
     ret_kind: Kind,
 }
 
@@ -30,6 +32,16 @@ fn name_of(ptr: *const u8, len: usize) -> String {
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Borrow the static name bytes embedded by codegen. Runtime lookups compare
+/// raw bytes directly, avoiding a `String` allocation per member access.
+fn bytes_of(ptr: *const u8, len: usize) -> &'static [u8] {
+    if ptr.is_null() || len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
 }
 
 #[no_mangle]
@@ -64,16 +76,19 @@ pub extern "C" fn nrt_register_method(
     kinds_len: usize,
     ret_kind: u8,
 ) {
-    let param_kinds = if kinds_ptr.is_null() || kinds_len == 0 {
-        Vec::new()
+    let mut param_kinds = [0u8; 9];
+    let kinds = if kinds_ptr.is_null() {
+        &[][..]
     } else {
-        unsafe { std::slice::from_raw_parts(kinds_ptr, kinds_len) }.to_vec()
+        unsafe { std::slice::from_raw_parts(kinds_ptr, kinds_len.min(9)) }
     };
+    param_kinds[..kinds.len()].copy_from_slice(kinds);
     if let Some(class) = CLASSES.lock().unwrap().get_mut(class_id as usize) {
         class.methods.push(Method {
             name: name_of(name_ptr, name_len),
             ptr: fn_ptr,
             param_kinds,
+            kinds_len: kinds.len(),
             ret_kind,
         });
     }
@@ -126,31 +141,43 @@ pub extern "C" fn unrt_class_new(
     args: *const u64,
     argc: usize,
 ) -> u64 {
-    let name = name_of(name_ptr, name_len);
-    let id = CLASSES.lock().unwrap().iter().position(|c| c.name == name);
+    let name = bytes_of(name_ptr, name_len);
+    let id = CLASSES.lock().unwrap().iter().position(|c| c.name.as_bytes() == name);
     let Some(id) = id else {
-        return err(&format!("class '{name}' not registered"));
+        return err(&format!("class '{}' not registered", String::from_utf8_lossy(name)));
     };
+    // `none` is immutable; share one boxed object instead of allocating one
+    // per field per instance.
+    static NONE_OBJ: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let none = *NONE_OBJ.get_or_init(|| crate::obj::unrt_obj_none());
     let mut fields: Vec<u64> = Vec::new();
     {
         let classes = CLASSES.lock().unwrap();
-        fields.resize(classes[id].fields.len(), crate::obj::unrt_obj_none());
+        fields.resize(classes[id].fields.len(), none);
     }
     let p = Box::into_raw(Box::new(fields));
     let instance = unsafe { alloc(NObj { tag: 9, a: id as i64, b: p as i64 }) };
 
+    // Copy the descriptor out before calling: `__init__` writes fields via
+    // `unrt_member_set`, which locks the same registry (Mutex is not reentrant).
     let init = {
         let classes = CLASSES.lock().unwrap();
         classes[id]
             .methods
             .iter()
             .find(|m| m.name == "__init__")
-            .map(|m| (m.ptr, m.param_kinds.clone()))
+            .map(|m| (m.ptr, m.param_kinds, m.kinds_len))
     };
-    if let Some((f, kinds)) = init {
-        let mut call_args = vec![instance];
-        call_args.extend_from_slice(unsafe { std::slice::from_raw_parts(args, argc) });
-        let _ = call_native_at(f, &kinds, &call_args);
+    if let Some((f, kinds, kinds_len)) = init {
+        if std::env::var_os("NRT_CLASS_DEBUG").is_some() {
+            eprintln!("NRT class_new id={id} argc={argc} kinds_len={kinds_len}");
+        }
+        let supplied = unsafe { std::slice::from_raw_parts(args, argc) };
+        let n = supplied.len().min(8);
+        let mut call_args = [0u64; 9];
+        call_args[0] = instance;
+        call_args[1..=n].copy_from_slice(&supplied[..n]);
+        let _ = call_native_at(f, &kinds[..kinds_len], &call_args[..n + 1]);
     } else {
         let call_args = unsafe { std::slice::from_raw_parts(args, argc) };
         let f = instance_fields(instance);
@@ -165,18 +192,19 @@ fn call_native_at(ptr: usize, kinds: &[Kind], args: &[u64]) -> u64 {
     // `args` starts with `self` (an object handle). Remaining values arrive as
     // boxed handles from the bridge but the emitted function expects raw
     // scalars for Int/Float/Bool parameters, so unbox according to `kinds`.
-    let mut a = Vec::with_capacity(kinds.len() + 1);
-    a.push(args[0]);
+    // MAX_CORE_ARITY is 8, plus one `self` handle.
+    let mut a = [0u64; 9];
+    a[0] = args[0];
     for (i, kind) in kinds.iter().enumerate() {
         let p = args.get(i + 1).copied().unwrap_or_else(|| crate::obj::unrt_obj_int(0));
-        a.push(match kind {
+        a[i + 1] = match kind {
             0 => crate::obj::unrt_int_from_obj(p) as u64,
             1 => crate::obj::float_of(p).to_bits(),
             2 => crate::obj::unrt_bool_from_obj(p) as u64,
             _ => p,
-        });
+        };
     }
-    call_native(ptr, &a)
+    call_native(ptr, &a[..kinds.len() + 1])
 }
 
 #[no_mangle]
@@ -187,38 +215,53 @@ pub extern "C" fn unrt_method_call(
     args: *const u64,
     argc: usize,
 ) -> u64 {
-    let name = name_of(name_ptr, name_len);
+    let name = bytes_of(name_ptr, name_len);
     unsafe {
         if obj(obj_handle).tag != 9 {
             return err("unrt_method_call: receiver is not a class instance");
         }
     }
     let id = unsafe { obj(obj_handle).a as usize };
-    let method = CLASSES.lock().unwrap().get(id).and_then(|c| {
-        c.methods.iter().find(|m| m.name == name).map(|m| (m.ptr, m.param_kinds.clone(), m.ret_kind))
-    });
-    let Some((f, kinds, ret_kind)) = method else {
-        return err(&format!("class '{}' has no method '{name}'", CLASSES.lock().unwrap()[id].name));
+    let mut call_args = [0u64; 9];
+    call_args[0] = obj_handle;
+    let supplied = unsafe { std::slice::from_raw_parts(args, argc) };
+    let n = supplied.len().min(8);
+    call_args[1..=n].copy_from_slice(&supplied[..n]);
+    // Copy the descriptor out before invoking: the method body calls back into
+    // `unrt_member_get/set`, which locks the same registry mutex.
+    let method = {
+        let classes = CLASSES.lock().unwrap();
+        classes.get(id).and_then(|c| {
+            c.methods
+                .iter()
+                .find(|m| m.name.as_bytes() == name)
+                .map(|m| (m.ptr, m.param_kinds, m.kinds_len, m.ret_kind))
+        })
     };
-    let mut call_args = vec![obj_handle];
-    call_args.extend_from_slice(unsafe { std::slice::from_raw_parts(args, argc) });
-    let raw = call_native_at(f, &kinds, &call_args);
+    let Some((f, kinds, kinds_len, ret_kind)) = method else {
+        return err(&format!(
+            "class '{}' has no method '{}'",
+            CLASSES.lock().unwrap()[id].name,
+            String::from_utf8_lossy(name)
+        ));
+    };
+    let raw = call_native_at(f, &kinds[..kinds_len], &call_args[..n + 1]);
     box_return(raw, ret_kind)
 }
 
 #[no_mangle]
 pub extern "C" fn unrt_member_get(obj_handle: u64, name_ptr: *const u8, name_len: usize) -> u64 {
-    let name = name_of(name_ptr, name_len);
+    let name = bytes_of(name_ptr, name_len);
     unsafe {
         if obj(obj_handle).tag != 9 {
             return err("unrt: member access on a non-instance");
         }
     }
     let id = unsafe { obj(obj_handle).a as usize };
-    let idx = CLASSES.lock().unwrap().get(id).and_then(|c| c.fields.iter().position(|f| *f == name));
+    let idx = CLASSES.lock().unwrap().get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name));
     match idx {
         Some(i) => instance_fields(obj_handle)[i],
-        None => err(&format!("class '{}' has no field '{name}'", CLASSES.lock().unwrap()[id].name)),
+        None => err(&format!("class '{}' has no field '{}'", CLASSES.lock().unwrap()[id].name, String::from_utf8_lossy(name))),
     }
 }
 
@@ -229,17 +272,17 @@ pub extern "C" fn unrt_member_set(
     name_len: usize,
     value: u64,
 ) -> u64 {
-    let name = name_of(name_ptr, name_len);
+    let name = bytes_of(name_ptr, name_len);
     unsafe {
         if obj(obj_handle).tag != 9 {
             return err("unrt: member set on a non-instance");
         }
     }
     let id = unsafe { obj(obj_handle).a as usize };
-    let idx = CLASSES.lock().unwrap().get(id).and_then(|c| c.fields.iter().position(|f| *f == name));
+    let idx = CLASSES.lock().unwrap().get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name));
     match idx {
         Some(i) => instance_fields(obj_handle)[i] = value,
-        None => return err(&format!("class '{}' has no field '{name}'", CLASSES.lock().unwrap()[id].name)),
+        None => return err(&format!("class '{}' has no field '{}'", CLASSES.lock().unwrap()[id].name, String::from_utf8_lossy(name))),
     }
     obj_handle
 }

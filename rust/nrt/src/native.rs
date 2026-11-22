@@ -547,7 +547,7 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
             let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64).unwrap_or(0);
             match name {
-                "monotonic" => float(mono_ms as f64 / 1000.0),
+                "monotonic" => float(START.elapsed().as_micros() as f64 / 1_000_000.0),
                 "monotonic_ms" => int(mono_ms),
                 "epoch_ms" => int(ms),
                 _ => int(ms / 1000),

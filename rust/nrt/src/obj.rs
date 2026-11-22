@@ -10,6 +10,9 @@ pub(crate) struct NObj {
     pub(crate) b: i64,
 }
 
+// Cache window for boxed small integers (loop indices, zero fills).
+const SMALL_INTS: i64 = 16384;
+
 // Objects are intentionally leaked: the process is short-lived, so there is
 // no need to track allocations for deallocation.
 static PENDING: AtomicU64 = AtomicU64::new(0);
@@ -147,6 +150,21 @@ pub extern "C" fn unrt_obj_none() -> u64 {
 }
 #[no_mangle]
 pub extern "C" fn unrt_obj_int(v: i64) -> u64 {
+    // Small integers are immutable and extremely common (loop indices, zero
+    // fills); share one boxed object per value instead of allocating each time.
+    if v >= 0 && v < SMALL_INTS {
+        static SMALL: std::sync::OnceLock<[std::sync::atomic::AtomicU64; SMALL_INTS as usize]> =
+            std::sync::OnceLock::new();
+        let cache = SMALL.get_or_init(|| std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)));
+        let slot = &cache[v as usize];
+        let cached = slot.load(std::sync::atomic::Ordering::Relaxed);
+        if cached != 0 {
+            return cached;
+        }
+        let fresh = unsafe { alloc(NObj { tag: 0, a: v, b: 0 }) };
+        slot.store(fresh, std::sync::atomic::Ordering::Relaxed);
+        return fresh;
+    }
     unsafe { alloc(NObj { tag: 0, a: v, b: 0 }) }
 }
 #[no_mangle]
