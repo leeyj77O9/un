@@ -4,7 +4,7 @@
 
 ## 측정 환경
 
-- 2026-11-19 (exe 행 추가 2026-11-20), Windows x64 (GNU toolchain), `rustc stable-x86_64-pc-windows-gnu` `--release`
+- 2026-11-23 기준 (원측정 2026-11-19, exe 행 추가 2026-11-20), Windows x64 (GNU toolchain), `rustc stable-x86_64-pc-windows-gnu` `--release`
 - 벤치마크 스크립트: `bench/native_fib.un` (annotated fib(24), 7 reps, warmup 2, median)
 - plain exe 벤치: `bench/native_fib_exe.un` — Un 모듈 import 없이 `use io`/`use time`만 쓰는 core-compile 가능한 변형. 700회 fib(24)를 프로세스 안에서 돌려 회당 ms를 출력하고, `compile-bench.ps1`이 7회 실행 median을 낸다(다른 모드의 in-process median과 같은 단위).
 - 실행 파일: `rust\target\release\un.exe`
@@ -20,7 +20,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-bench.ps1
 %TEMP%\native_fib_exe.exe
 ```
 
-## 측정 결과 (median of 7, ms)
+## 측정 결과 (median of 7, ms — 2026-11-19/20 원측정, 역사적 수치)
+
+현재 전체 벤치마크는 저장소 루트 `BENCHMARK.md`를 참조한다. 2026-11-23 03:42 +09:00에
+`scripts/bench.ps1 -Group all -Report`로 재생성(commit e09a397)되었고, 6개 레인
+(Un VM / Un JIT / Compile Mode / standalone exe / Python / Node)을 비교한다.
+Un JIT 대비 Python geomean은 **4.092x**다.
 
 | 모드 | median | 비고 |
 |---|---|---|
@@ -34,8 +39,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-bench.ps1
 TIR core 경로가 실제로 native로 실행됨은 `UV_TIR_DEBUG=1`로 확인할 수 있다
 (예: `TIRDBG OK proto=1 fib`).
 plain exe는 Cranelift가 fib를 직접 네이티브 코드로 만든 결과로 **JIT 대비 약 10배,
-인터프리터 대비 약 1000배** 빠르다. 단, exe 행은 `bench.harness`(assert/결과 검증)가
-없고 700회 fib 자체의 회당 시간만 재므로 위 세 행과 동일한 조건은 아니다.
+인터프리터 대비 약 1000배** 빠르다. 단, 이 배율은 `compile-bench.ps1`의 자체
+타이밍(700회 fib, `bench.harness` 없음) 기준이다. 루트 `BENCHMARK.md`의 Exe 열은
+프로세스 실행 7회 median(예: fib24 1.3813 ms)으로 **단위가 다르므로 직접 비교하지
+말 것**. 공식 수치는 `BENCHMARK.md`, 방법론은 `docs/guides/BENCHMARK_GUIDE.md`가 기준이다.
 
 ## 주의사항
 
@@ -44,7 +51,7 @@ plain exe는 Cranelift가 fib를 직접 네이티브 코드로 만든 결과로 
   같거나 미미하게 빠르다. 이 벤치마크는 core에 들어가는 순수 int 재귀를 측정한다.
 - `fib(24)`은 약 100k회 재귀 호출이다. 순수 정수 루프만 있는 워크로드라면 격차가
   더 벌어지지만, 아직 루프 벤치마크를 compile-mode에서 측정하지 않았다.
-- `bench.ps1`(Node/Python 비교)은 compile mode 열을 아직 포함하지 않는다. 추가 시
-  `scripts/compile-bench.ps1`을 참조하라.
+- 전체 6레인 측정·리포트는 루트 `BENCHMARK.md`와 `docs/guides/BENCHMARK_GUIDE.md`를
+  참조한다. 위 표는 초기 `compile-bench.ps1` 측정값으로 남겨 둔 역사적 기록이다.
 - 검증(`=== Result: 2 passed, 0 failed ===`)은 세 모드 모두 통과해야 한다. native가
   틀린 답을 내면 측정 전에 스크립트가 실패로 끝난다.

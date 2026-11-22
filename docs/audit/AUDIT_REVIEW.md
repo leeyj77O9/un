@@ -5,6 +5,13 @@
 > `docs/guides/CLI.md`, `docs/guides/CLI.ko.md`, `bench/**` 및 미커밋분 전부)는
 > 읽기만 했고 수정·삭제·스테이징하지 않았다. 커밋/푸시도 하지 않았다.
 > 이 문서와 `docs/audit/evidence/*`가 유일한 변경 사항이다.
+>
+> **현재 상태 (2026-11-23, HEAD `f161f11`):** 아래 Part I~IV는 감사 시점 스냅샷이다.
+> P1(AUDIT-001)은 `edeabff`에서 해결됐고 AUDIT-003~008도 대부분 해결됐다. 남은
+> 항목은 AUDIT-010(생성 exe의 `dead_code` 경고, P3), AUDIT-011(간헐 빌드 실패,
+> P3/SUSPECTED), WASM 동적 confine(BLOCKED)뿐이다. 숫자를 현재값으로 덮어쓰지
+> 않고 "당시 → 현재" 대비로 보존한다. 현재 기준은 `docs/project/REFACTOR_SUMMARY.md`
+> 및 아래 Part V를 참조한다.
 
 ## 0. 요약
 
@@ -990,3 +997,179 @@ C# `Evaluator.cs` 인용과 존재하지 않는 opcode 이름은 제거.
   위 문서 수치는 이 변경을 반영한 값이며, Part II의 측정값은 당시 기록으로 보존한다.
 -모든 게이트 green, JIT 성능 회복 확인.
 -감사 보고서의 원래 발견사항은 보존했고, 이 Part III이 수정 사실을 명시한다.
+
+---
+---
+
+# Part IV — Independent Full Re-Audit (2026-11-22, Read-Only)
+
+Part I~III은 보존한다. 이 Part는 사용자의 요청으로 **현재 HEAD(a861113) 기준으로
+처음부터 다시 수행한 전체 감사** 결과다. 이번에도 READ-ONLY이며, 생성한 것은
+`docs/audit/evidence/r4_*.log` 및 이 보고서의 Part IV 추가분뿐이다.
+
+감사 중 사용자가 `69aeea8`…`a861113`(NRT 도입 5개 커밋)을 진행해 HEAD가 감사 시작 시
+`581b5b6`에서 종료 시 `a861113`으로 이동했다. 기준점은 **종료 시 HEAD**로 잡고,
+그 시점의 보호 대상은 `main.un` 1개뿐이었다(감사 시작 시의 27개 WIP는 모두 커밋됨).
+
+## 1. Baseline (재측정)
+
+| 항목 | 이전(Part III) | 현재 | 측정 |
+|---|---:|---:|---|
+| HEAD | 36aa40d → af36ada | **a861113** | `git rev-parse --short HEAD` |
+| Rust .rs (target 제외) | 91 | **113** | `Get-ChildItem rust -Recurse -Filter *.rs` |
+| rust 전체 라인 | 54,420 | **63,307** | `(Get-Content).Count` 합 |
+| rust/src 라인 | 54,028 | **55,734** | 동일 |
+| `rust/nrt/` .rs | 0 | **22** | 동일 |
+| `.un` 파일 | 135 | **156** | `Get-ChildItem test -Recurse -Filter *.un` |
+| Positive / Negative manifest | 48 / 51 | 48 / 51 | 유효행 수 |
+| CLI 명령 | 7 | 7 | `un help` |
+
+**AGENTS.md:11은 여전히 "Rust 91 files / 54,420줄 / .un 135개"로 stale** —
+현재 113 / 63,307(+ NRT 22개) / 156. 사용자가 NRT 문서화 커밋(`a861113`)을 했지만
+규모 수치는 갱신되지 않았다. 새 발견 AUDIT-009.
+
+## 2. Verification Matrix (Part IV)
+
+| ID | 검사 | 기대 | 실제 | 상태 | 증거 |
+|---|---|---|---|---|---|
+| R4-01 | 초기 Git 상태/보호 목록 | 기록 | 27개 WIP → 종료 시 `main.un` 1개 | PASS | §1 |
+| R4-02 | Release build | exit 0 | exit 0, warning 0 | PASS | r4_build.log |
+| R4-03 | cargo test --workspace | 통과 | 3(nrt)+219(lib)+8(playground) = **230 passed**, 0 failed | PASS | r4_cargo_test.log |
+| R4-04 | WASM build | exit 0 | exit 0, 10.55 s | PASS | r4_wasm.log |
+| R4-05 | test.ps1 | green | 48/1570/0/0, Negative **51**, Known 0, exit 0 | PASS | r4_test.log |
+| R4-06 | differential | 0 diff | **99 files, 0 differences** | PASS | r4_differential.log |
+| R4-07 | unbc-roundtrip | 바이트 동일 | 48/48 + Negative 42 identical + 9 skip | PASS | r4_roundtrip.log |
+| R4-08 | compile-check / obj-demo | 통과 | 23/0, PASS | PASS | r4_*.log |
+| R4-09 | exe-diff (NRT 포함) | 통과 | **31 passed, 0 failed**, no-VM 마커 + 5.5 MB exe 확인 | PASS | r4_exe_diff.log |
+| R4-10 | NRT 동치 (lambda/모듈/기본값/traceback) | byte 동일 | 4종 모두 `un run` ↔ plain exe 동일 | PASS | §4 |
+| R4-11 | NRT 거부 경계 | 거부 | 동적 타입→annotation 오류, random→`--embed` 안내 | PASS | §4 |
+| R4-12 | strict canary ×2 | exit 0 | 두 마커 모두 | PASS | §4 |
+| R4-13 | JIT 2회 호출 | 네이티브 유지 | ~29 ms (회귀 없음) | PASS | §4 |
+| R4-14 | bench -Group all -NoSave | 완료 | 6레인 완료, 567.8 s | PASS* | §6, `[BAD]` 1건은 SUSPECTED |
+| R4-15 | Manifest 무결성 | 정상 | 48/51, 누락·중복 0, Known 0/0 | PASS | §5 |
+| R4-16 | 손상 .unbc | 우아한 거부 | magic/version/trunc 모두 exit 1, panic 없음 | PASS | §5 |
+| R4-17 | AGENTS.md 규모 수치 | 일치 | 91/54,420/135 vs 실제 113/63,307/156 | **FAIL** | AUDIT-009 |
+| R4-18 | 생성 exe rustc 경고 | 경고 0 | `nrt_register_field` dead_code 경고 1건 | **FAIL** | AUDIT-010 |
+| R4-19 | bench `native_class.un` 빌드 | 항상 성공 | 1회 `[BAD] exit=1`, 5회 재현 시도 모두 exit 0 | NOT VERIFIED | AUDIT-011 |
+| R4-20 | WASM playground 동적 confine | 동적 확인 | 호스트 바이너리 없음 | BLOCKED | 정적 분석으로 환원 |
+| R4-21 | symlink 정책 | 동적 확인 | Part III 단위 테스트 통과, WASM 동적 미실시 | PASS(정적+단위) | §5 |
+| R4-22 | 저장소 위생 | 정상 | 추적 바이너리/로그 0, `.unbc` 잔여 0, 레거시 산출물 0 | PASS | §5 |
+| R4-23 | 종료 Git 무결성 | baseline 일치 | WIP `main.un` + 감사 산출물 2개뿐 | PASS | §7 |
+
+## 3. Executive Summary
+
+- PASS 18 / FAIL 2 / BLOCKED 1 / NOT VERIFIED 2 = 23건.
+- P0 **0**, P1 **0**, P2 **1**(AUDIT-009), P3 **2**(AUDIT-010/011).
+- 가장 중요한 결론: **NRT 도입 이후에도 모든 게이트가 green이고 JIT 회복이 유지된다.**
+  Part I의 P1(AUDIT-001)은 재발하지 않았다. 새로 발견된 것은 문서 수치 stale과
+  생성 exe의 rustc 경고뿐이며, 기능/보안/메모리 안전성 문제는 확인되지 않았다.
+
+## 4. NRT(VM-less plain build) 심층 검증
+
+`69aeea8`(rust/nrt 추가) → `6f493da`(libnrt 링크) → `6973b2a`(31 fixtures) →
+`a861113`(문서화) 변경을 실제 실행으로 검증했다.
+
+- **동치**: `lambdas.un`(캡처closure `10/11/15`), `module_globals.un`(`10/10`),
+  `defaults.un`(`11/21/12/15`), `nested_traceback.un`(VM과 완전히 동일한 traceback)
+  모두 `un run` ↔ plain exe stdout/stderr/exit byte 동일. exe 크기 ~5.54 MB
+  (libunvm.a 링크 시 ~17 MB) → no-VM 확인.
+- **거부 경계**: 타입 없는 파라미터 → `parameter 'a' requires a type annotation` (exit 1),
+  `random` 사용 → `rebuild with un build --embed` 안내 (exit 1), exe 미생성.
+- **no-VM 마커**: `exe-diff` Part C가 `no-VM native runtime` 문자열과 10 MB 미만
+  크기를 검증 → PASS.
+- **구현 구조 정적 확인**: `tir::nrt_supported`가 경계 판정,
+  `core_rejection_reason`이 힌트 출력. NRT closure tag=8, 전역 슬롯,
+  소스/프레임 등록을 통한 byte-identical traceback은 fixture 실행으로 확인.
+
+## 5. 테스트 진실성 / 보안 / 위생
+
+- 게이트 3종 수치는 문서(48/1570/51, 99/0, 48/48+42)와 **정확히 일치**.
+- Manifest 48/51행 모두 파일 존재, 중복 없음, KnownFailures/KnownDivergent 0/0.
+- 손상 .unbc 3종 모두 exit 1 + 명확한 오류(`not a .unbc file`,
+  `unsupported .unbc version 65535`, `unexpected end`), panic/abort 없음.
+- sandbox: Part III에서 추가한 `normalize_under` canonicalize + symlink 단위 테스트는
+  lib 219개에 포함되어 통과. WASM 동적 confine 실행은 호스트 부재로 BLOCKED(정적 환원).
+- HTTP/WS CRLF 방지(`net.rs:73`, `http.rs:185-191`)는 변경 없이 유지.
+- 위생: 추적 바이너리/obj/wasm/로그 0, `.unbc` 잔여 0, `unvm-audit-old.exe` 및
+  `-broken` 벤치 디렉터리 없음. `rust/nrt/` 23개 파일 모두 추적됨.
+
+## 6. 성능 / 회귀
+
+| 항목 | 이전(Part III) | 현재 | 판정 |
+|---|---:|---:|---|
+| `int_ops` JIT | 2.873 ms | **2.843 ms** | 회복 유지 |
+| Un JIT/Python | 6.990x | **843.581x** (jit/py 컬럼) / geomean은 로그 확인 | Int 루프 JIT 정상 |
+| `un build` exe (int_ops) | n/a | 2.857 ms | JIT와 동일 수준 |
+| `fib24` exe | n/a | 5.983 ms | native(unnative) 170.657 ms보다 빠름 |
+
+`bench.ps1`이 이제 6레인(unvm/unjit/python/node/unnative/unbuild)을 측정하며,
+`un_commit`은 실행 시점 HEAD(`a861113`)를 정상적으로 기록한다.
+`[BAD] build bench/native_class.un exit=1`은 1회만 관찰되고 5회 재현 시도 모두
+exit 0이었으므로 **간헐적 환경 요인(SUSPECTED)** 으로 기록하고 기능 결함으로 확정하지 않는다.
+
+## 7. 새 발견사항
+
+### [AUDIT-009] AGENTS.md 규모 수치 stale (P2)
+- Location: `AGENTS.md:11`
+- 문서: Rust 91 files / 54,420 lines / .un 135개
+- 실제: Rust 113 files / 63,307 lines(+NRT 22개 .rs) / .un 156개
+- 사용자가 `a861113`에서 NRT를 문서화하면서도 규모 수치는 갱신하지 않음.
+- 제안: 한 곳에서 자동 생성하거나 위 값으로 갱신. (이번 감사는 READ-ONLY라 미수정)
+
+### [AUDIT-010] plain exe 생성 시 rustc dead_code 경고 (P3)
+- Location: `un build`가 생성하는 `%TEMP%\un_build_driver_*.rs:6`
+- 증거: `warning: function 'nrt_register_field' is never used` — `cargo build` 자체는
+  경고 0이지만, 생성 드라이버의 `rustc` 단계에서 경고 1건 출력.
+- 영향: 기능 없음(사용하지 않는 extern 선언). "새 경고 추가 금지" 정신에 따라 정리 제안.
+- 제안: 생성 드라이버에서 미사용 extern 선언을 제거하거나 `#[allow(dead_code)]` 부여.
+
+### [AUDIT-011] bench exe 빌드 간헐 실패 (P3, SUSPECTED)
+- Location: `scripts/bench.ps1 -Group all` → `[BAD] build bench/native_class.un exit=1`
+- 1회 관찰, 동일 명령 5회 재실행 모두 exit 0. 병렬/임시 경로 경합 추정.
+- CONFIRMED로 처리하지 않음. 재현 시 로그 수집 후 원인 규명 권장.
+
+## 8. Final Audit Conclusion (Part IV)
+
+- **감사 상태: 완료(단, WASM 동적 confine 1건 BLOCKED).**
+- P0/P1 없음. Part I의 핵심 JIT 회귀는 재발하지 않았고, NRT 도입도 모든 게이트를
+  통과했다. 기능·정확성·보안·메모리 안전성 측면에서 새로운 중대 결함은 발견되지 않았다.
+- 신규 발견은 문서 수치 1건(P2), 경고 1건(P3), 간헐 실패 1건(P3)뿐이다.
+- 감사 중 사용자 커밋 진행으로 HEAD가 이동했으나, 종료 시점 기준으로 재검증했고
+  보호 대상은 `main.un`뿐이었다. **어떤 파일도 수정/스테이징하지 않았다.**
+
+---
+---
+
+# Part V — Post-audit refresh (2026-11-23, 작성 시점 HEAD 660559b)
+
+이 Part는 Part I~IV를 **수정하지 않고** 끝에 덧붙이는 갱신 메모다. 2026-11-23에
+HEAD `660559b` 기준으로 게이트를 다시 실행해 확인한 값이며, 대상은 문서 수치다.
+그 후 저장소 HEAD는 `f161f11`로 전진했으므로 아래 표의 "현재 값"은
+**작성 시점 기준값**으로 읽는다.
+
+## Part IV 수치 중 지금은 대체된 것
+
+| Part IV 항목 | Part IV 값 | 현재 값 (2026-11-23, HEAD 660559b) |
+|---|---:|---:|
+| 기준 HEAD | a861113 | **660559b** |
+| Rust .rs / 라인 / `.un` (§1) | 113 / 63,307 / 156 | **113 / 64,378 / 175** (rust/src 90 · 57,383줄 + rust/nrt 22 · 6,995줄 + playground 1) |
+| `cargo test --release --workspace` (R4-03) | 230 passed | **234 passed** (nrt 3 + lib 219 + un bin/LSP 4 + playground 8) |
+| `scripts/test.ps1` (R4-05) | 48 files / 1570 passed | **50 files / 1606 passed**, Negative **51** 매칭, Known 0 |
+| `scripts/differential.ps1` (R4-06) | 99 files, 0 differences | **101 files, 0 differences** |
+| `unbc-roundtrip -IncludeNegative` (R4-07) | 48/48 + 42 | **50/50** + 42 identical (9 compile-rejected skip) |
+| compile-check / exe-diff (R4-08/09) | 23/0, 31/0 | **33/0, 42/0** |
+| `BENCHMARK.md` (Part IV §6) | jit/py 843.581x (그 이전 6.990x/7.527x 포함) | **2026-11-23 03:42 +09:00, 커밋 e09a397** 재생성 — 6레인, Un JIT/Python **geomean 4.092x** |
+
+R4-17 / AUDIT-009(AGENTS.md 규모 수치 stale)도 같은 종류의 숫자 드리프트다.
+이번 재측정으로 기준값이 한 번 더 이동했을 뿐, 새 결함은 아니다.
+
+## 새로 확인된 것은 회귀가 아니라 도구/CI/벤치 변경
+
+Part IV 이후 추가된 것은 제네릭(generics), 데이터를 담는 enum variant,
+plain no-VM `un build`(`libnrt.a` 링크), `dict[int,int]`, `un lsp`,
+6레인 벤치, 그리고 LSP 테스트 4개다. CI(`.github/workflows/build.yml`)도
+12단계로 늘어 `compile-check.ps1`, `exe-diff.ps1`, `edge-fuzz.ps1` 게이트가
+추가되었다(Part I/II의 9단계 기술은 당시 기록으로 유효). 따라서 위 표의 차이는
+테스트 커버리지·도구 확장과 벤치 재측정에서 온 것이며, **Part I의 P1
+(AUDIT-001 JIT 조용한 퇴화)를 포함한 기능 회귀는 재발하지 않았다.**
+Part IV의 판정(P0/P1 없음, 게이트 green)은 그대로 유효하다.

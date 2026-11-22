@@ -3,7 +3,7 @@
 이 문서는 **현재 Rust 구현**(`rust/src/bytecode/`)을 기준으로 한 opcode 집합, 인코딩,
 Proto 구조, `.unbc` 직렬화 형식, 검증 규칙을 정의한다.
 
->历史 참고: 초기 문서는 C# 참조 구현의 opcode 이름(`LOAD_NONE`, `AND`, `WHILE_NOT`,
+> 역사 참고: 초기 문서는 C# 참조 구현의 opcode 이름(`LOAD_NONE`, `AND`, `WHILE_NOT`,
 > `JMP_FALSE` 등)을 사용했으나 현재 Rust 바이트코드는 다른 이름/인코딩을 쓴다.
 > 2026-11-20 감사(AUDIT-003)에서 문서를 현재 구현 기준으로 재작성했다.
 > C# 구현은 git 이력에만 남아 있고 현재 산출물에는 포함되지 않는다.
@@ -209,7 +209,7 @@ proto table   : count u32 + protos
 8. pattern 중첩 깊이 ≤ 64 (`MAX_PATTERN_DEPTH`).
 
 손상된 입력은 panic/abort가 아니라 exit 1 + 명확한 오류 메시지로 거부된다.
-`unbc-roundtrip.ps1 -IncludeNegative`가 Positive 48/48, compilable Negative 42/42을 검증한다.
+`unbc-roundtrip.ps1 -IncludeNegative`가 Positive 50/50, compilable Negative 42 identical(9 compile-rejected skip)을 검증한다.
 
 ## 8. JIT와의 관계
 

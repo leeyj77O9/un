@@ -29,7 +29,7 @@ all execute on the calling thread (see `docs/project/DECISIONS.md` D-012, D-054)
 | Stage | Module | Notes |
 | --- | --- | --- |
 | lex | `rust/src/lexer.rs` | indentation-based tokens; `Source` is mutated to record ignored new lines |
-| parse | `rust/src/parser.rs` | recursive descent with a precedence table (`parser.rs:1505-1534`); `Rc<Source>` is the only shared state |
+| parse | `rust/src/parser.rs` | recursive descent with a precedence table (`get_binary_precedence`); `Rc<Source>` is the only shared state |
 | optimize | `rust/src/optimize.rs` | constant folding + dead-branch elimination + desugaring (`desugar_local`) in a single bottom-up pass |
 | compile | `rust/src/compiler.rs` | stack machine → `Proto` per function; slot table for locals; peephole fuses `a*b+c` into `FusedIntMulAdd` |
 | translate | `rust/src/vm/transfer.rs` | stack → register translation; register count is `locals + max_stack_depth + 1`, capped at 256 |
@@ -89,9 +89,11 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
   (`TryEntry.acc_depth`) is read on handler entry to truncate the argument
   frame (`vm/mod.rs:346/354/371`) — TD-12 is resolved.
 - `PLAN_CACHE` (thread-local) maps `program.id` → `(Rc<Program>, Rc<Plan>)`.
-  Entries hold the owning `Rc<Program>` and live for the process
-  (TD-03 — growth is unchanged, but a pointer collision can no longer serve
-  a stale plan).
+  It is bounded to 64 entries with FIFO eviction by first insertion
+  (`vm/mod.rs:1672`, `PLAN_CACHE_LIMIT = 64`); insert-beyond-limit drops the
+  oldest entry's `Rc<Program>`/`Rc<Plan>`, and a later hit recompiles from
+  the program passed to `plan_for`. Keys are opaque monotone `Program.id`s,
+  so a pointer collision cannot serve a stale plan (TD-03 resolved).
 
 ## 5. JIT
 
@@ -105,8 +107,9 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
   number and log of a non-positive number bail to the interpreter, which
   raises the exact Un error).
 - Values are tagged: `0` = Int, `1` = Float (IEEE-754 bits), `2` = runtime
-  bail (the interpreter takes over), `3` = Bool. The tag is written through a
-  hidden pointer to a `(value, tag)` pair.
+  bail (the interpreter takes over), `3` = Bool, `5` = None, `6` = IntList.
+  The tag is written through a hidden pointer to a `(value, tag)` pair
+  (`rust/src/jit_cache.rs`: `TAG_NONE`, `TAG_INTLIST`; `4` is unused).
 - Float compares (`Lt/Le/Gt/Ge/Eq/Ne`) are native; mixed Int/Float operands
   promote with `fcvt_from_sint`; NaN semantics match Rust.
 - Eligibility is decided by `precheck_fn`. Compilation is **lazy**: eligible
@@ -152,10 +155,13 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
     the vendored Cranelift backend never frees native code inside a running
     process, see TD-05). `clear_program(id)` frees exactly one program's
     native code and is what tests use.
-  - `PLAN_CACHE` (thread-local) keeps every loaded `Rc<Program>` and
-    `Rc<Plan>` for the process lifetime (TD-03, by design — the registry is
-    cheap and the alternative is re-validation on every call; a mis-keyed
-    cache is impossible because keys are opaque ids, not pointers).
+  - `PLAN_CACHE` (thread-local) is bounded to `PLAN_CACHE_LIMIT = 64` entries
+    with FIFO eviction by first insertion (`vm/mod.rs:1672`); eviction drops
+    the oldest entry's `Rc<Program>`/`Rc<Plan>` and a later hit recompiles
+    from the program passed to `plan_for`. Keys are opaque monotone
+    `Program.id`s, so a mis-keyed cache is impossible (TD-03 resolved). This
+    bounds process-lifetime growth; it is not reclamation inside a running
+    program (module unload is still not designed).
   - The recursion-depth guard is an atomic counter (`JIT_DEPTH`); its bound
     (`max_recursion_depth`) is a `Relaxed` `AtomicUsize` cache that is
     refreshed by `world::set_max_recursion_depth()` (i.e. by
@@ -193,10 +199,10 @@ them.
 | `test/negative/manifest.txt` | `path|expected exit|expected substring` — exit code and stderr matching for error cases |
 | `test/KnownFailures.txt` | scripts that are expected to fail (currently empty) |
 | `test/KnownDivergent.txt` | documented divergences (currently none registered) |
-| `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (99 files) |
+| `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (101 files, 0 differences) |
 | `scripts/unbc-roundtrip.ps1` | `.unbc` round-trip byte comparison for Positive and compilable Negative files |
 | `scripts/bench.ps1` | warm-up + repetitions + statistics (min/median/mean/max/stddev/ops) |
-| `cargo test --release --workspace` | 227 tests (lib 219 + playground 8; lexer, parser, compiler, runtime, VM, native, net/redirects + JIT/sandbox regression guards) |
+| `cargo test --release --workspace` | 234 tests (nrt 3 + lib 219 + un bin/LSP 4 + playground 8; lexer, parser, compiler, runtime, VM, native, net/redirects + JIT/sandbox regression guards) |
 
 The build is release-only and requires the GNU toolchain:
 

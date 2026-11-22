@@ -80,10 +80,10 @@ uncommitted work in the tree):
 | S2-1 | The JIT runtime helpers had no failure channel: a missing member, a non-Int member or a `RefCell` borrow conflict all produced `0`, and a write to a missing slot was dropped | `rust/src/runtime/obj.rs:367-403` (pre-fix) | fixed — helpers now report a status and the JIT bails (tag=2) |
 | S2-2 | Class methods were compiled with an inconsistent arity: `precheck_fn` counted the hidden receiver argument, `emit_fn_in_module` did not, so the first real parameter was never bound | `rust/src/jit_bc.rs` (pre-fix) | resolved in Phase 8 — arity is consistent (params + receiver), and the receiver is bound to local slot 0; the name-checked intrinsic verifies the layout at call time |
 | S2-3 | `unsafe extern "C"` bodies could unwind into native code (a `RefCell` panic crossing the Cranelift frame is undefined behaviour) | `rust/src/runtime/obj.rs:376/398`, `rust/src/runtime/int_dict.rs:73-95` | partially fixed — the instance helpers are wrapped in `catch_unwind`; the IntDict arena still needs it |
-| S2-4 | The JIT tag contract was documented in three different places with three different legal tag sets (`0` Int, `1` Float, `2` bail, `3` Bool); `jit_fast.rs` panicked on any tag it did not know | `rust/src/jit_cache.rs:22`, `rust/src/vm/mod.rs:1532-1537`, `rust/src/jit_fast.rs:58-62` | open — see `docs/project/TECHNICAL_DEBT.md` TD-04 |
-| S2-5 | `jit_cache` keys entries by `Rc::as_ptr(program)`. The cache is never cleared, so the program is kept alive for the process lifetime and the pointer key can never be reused; but `jit_cache::clear()` exists and is never called, and the module-level header still documents a removed AST-based `"fn:<name>"` key format | `rust/src/jit_cache.rs:1-7, 100` | open — TD-02 |
-| S2-6 | `PLAN_CACHE` (thread-local) stores `(Rc<Program>, Rc<Plan>)` keyed by the same pointer and never evicts, so every loaded program is retained for the process lifetime | `rust/src/vm/mod.rs:1571-1573` | open — TD-03 |
-| S2-7 | `unsafe impl Send for JitEntry` — sound only because the vendored Cranelift backend `mem::forget`s every allocation, so native code is never freed | `rust/src/jit_cache.rs:57`, `vendor/cranelift-jit/src/memory/system.rs:146-151` | open — TD-05 |
+| S2-4 | The JIT tag contract was documented in three different places with three different legal tag sets (`0` Int, `1` Float, `2` bail, `3` Bool); `jit_fast.rs` panicked on any tag it did not know | `rust/src/jit_cache.rs:22`, `rust/src/vm/mod.rs:1532-1537`, `rust/src/jit_fast.rs:58-62` | resolved (2026-11-19) — `jit_cache.rs` is the single tag source; includes `TAG_NONE=5`/`TAG_INTLIST=6` |
+| S2-5 | `jit_cache` keys entries by `Rc::as_ptr(program)`. The cache is never cleared, so the program is kept alive for the process lifetime and the pointer key can never be reused; but `jit_cache::clear()` exists and is never called, and the module-level header still documents a removed AST-based `"fn:<name>"` key format | `rust/src/jit_cache.rs:1-7, 100` | resolved (2026-11-19) — `u64` program id keys, `clear()` wired at CLI/playground exit |
+| S2-6 | `PLAN_CACHE` (thread-local) stores `(Rc<Program>, Rc<Plan>)` keyed by the same pointer and never evicts, so every loaded program is retained for the process lifetime | `rust/src/vm/mod.rs:1571-1573` | resolved (2026-11-19) — `PLAN_CACHE_LIMIT = 64` with FIFO eviction |
+| S2-7 | `unsafe impl Send for JitEntry` — sound only because the vendored Cranelift backend `mem::forget`s every allocation, so native code is never freed | `rust/src/jit_cache.rs:57`, `vendor/cranelift-jit/src/memory/system.rs:146-151` | resolved (2026-11-19) — `clear_program`/`clear` free native code; residual in-flight window documented |
 
 ### S3 — Performance
 
@@ -91,11 +91,11 @@ uncommitted work in the tree):
 | --- | --- | --- | --- |
 | S3-1 | `std::env::var("UV_JIT_DEBUG")` was read **per emitted instruction** and per `Op::AddMethod` — an environment lookup inside the JIT emitter hot path | `rust/src/jit_bc.rs:241-1072`, `rust/src/vm/mod.rs:1551-1610` (pre-fix) | fixed — cached in `jit_cache::jit_debug()` |
 | S3-2 | The class field layout was recomputed on every `Op::AddMember`/`Op::AddMethod`, scanning every proto — O(classes × methods × protos × code) | `rust/src/vm/mod.rs:205-233` (pre-fix) | fixed — layout is seeded once per program at load time |
-| S3-3 | The JIT compiles every eligible proto eagerly at program load, including protos that end up as bail-stubs; measured cost on `test/test_suite.un` was 96 ms with the JIT vs 55 ms without | `rust/src/jit_bc.rs:114-127`, `rust/src/vm/mod.rs:1679` | open — TD-06 (no tiering / hotness counter) |
-| S3-4 | `obj::invoke`/`obj::call` rebuild the argument vector with `args.to_vec()` on every call | `rust/src/runtime/obj.rs:515, 520` | open — TD-08 |
-| S3-5 | `scope::snapshot` deep-clones the whole scope chain (symbols, order, slots, slot names, parents) and is called for every `go` future | `rust/src/runtime/scope.rs:227-249`, `rust/src/vm/mod.rs:1225` | open — TD-09 |
-| S3-6 | `set_attr_from` clones the assigned value up to three times per assignment | `rust/src/runtime/obj.rs:743-770` | open — TD-10 |
-| S3-7 | `Source::get_line` / `get_column` / `get_line_start` scan the whole source from offset 0 on every error render | `rust/src/source.rs:38-62` | open — TD-11 |
+| S3-3 | The JIT compiled every eligible proto eagerly at program load, including protos that end up as bail-stubs; measured cost on `test/test_suite.un` was 96 ms with the JIT vs 55 ms without | `rust/src/jit_bc.rs:114-127`, `rust/src/vm/mod.rs:1679` (pre-fix) | resolved (2026-11-19) — lazy per-first-call compilation via `jit_fast.rs` |
+| S3-4 | `obj::invoke`/`obj::call` rebuild the argument vector with `args.to_vec()` on every call | `rust/src/runtime/obj.rs:515, 520` | mitigated — TD-08 (positional path no longer allocates names; `to_vec` remains by API ownership) |
+| S3-5 | `scope::snapshot` deep-clones the whole scope chain (symbols, order, slots, slot names, parents) and is called for every `go` future | `rust/src/runtime/scope.rs:227-249`, `rust/src/vm/mod.rs:1225` | resolved by design (D-080) — fork-time capture-by-value is Un's contract |
+| S3-6 | `set_attr_from` clones the assigned value up to three times per assignment | `rust/src/runtime/obj.rs:743-770` | evidence-refresh — TD-10 (`Rc` refcount bumps, not deep copies) |
+| S3-7 | `Source::get_line` / `get_column` / `get_line_start` scan the whole source from offset 0 on every error render | `rust/src/source.rs:38-62` | resolved (2026-11-19) — line-start index, O(log lines) |
 
 ### S2-build — Build, packaging and verification integrity
 
@@ -162,19 +162,22 @@ symbol with exactly one occurrence in its own definition file is reported as
 
 | Gap | Detail | Where |
 | --- | --- | --- |
-| `core` round-trip | `vm/tests.rs::an_unbc_round_trip_preserves_behavior` runs source directly and then `source → .unbc file → read → run`, and asserts identical stdout and identical outcome kinds (success and error). **79 files, 0 differences** reported by the differential runner for JIT on/off | `rust/src/vm/tests.rs`, `scripts/differential.ps1` |
-| No JIT differential runner | `scripts/differential.ps1` now runs every test-manifest file with `UV_JIT=0` and with the default JIT and diffs stdout + exit code; **79 files, 0 differences** | `scripts/differential.ps1` |
-| No JIT test corpus | no `.un` file under `test/` mentions the JIT, so JIT-compiled shapes are only covered incidentally | `test/**` |
-| No CI | `.github/workflows/build.yml` builds with the GNU toolchain and runs `scripts/test.ps1` + `cargo test --release`; plus `rust-toolchain.toml` pins the toolchain | `.github/workflows/build.yml`, `rust-toolchain.toml` |
-| `AGENTS.md` drift | counts and paths were stale or wrong (file/line numbers, the `MIGRATION_*.md` location, the "no external crates" claim, the `main.un` tracking claim, the missing JIT intrinsics). All were corrected to the measured state during this pass | `AGENTS.md` |
+| `core` round-trip | `vm/tests.rs::an_unbc_round_trip_preserves_behavior` runs source directly and then `source → .unbc file → read → run`, and asserts identical stdout and identical outcome kinds (audit-time: 79 files, 0 differences; **current: 101 files, 0 differences**) | `rust/src/vm/tests.rs`, `scripts/differential.ps1` |
+| JIT differential runner | `scripts/differential.ps1` runs every test-manifest file with `UV_JIT=0` and with the default JIT and diffs stdout + exit code (audit-time: 79 files; **current: 101 files, 0 differences**) | `scripts/differential.ps1` |
+| JIT test corpus | **resolved** — `test/jit/strict.un` (Int) and `test/jit/strict_float.un` (Float) are CI canaries under `UV_JIT=2` | `test/jit/`, `.github/workflows/build.yml` |
+| CI | **resolved** — `.github/workflows/build.yml` runs 12 steps including compile-check, exe-diff, edge-fuzz and two strict canaries; `rust-toolchain.toml` pins the toolchain | `.github/workflows/build.yml`, `rust-toolchain.toml` |
+| `AGENTS.md` drift | **resolved** — counts and paths were refreshed to the 2026-11-23 measured state; the authoritative figures are in `docs/project/REFACTOR_SUMMARY.md` | `AGENTS.md`, `docs/project/REFACTOR_SUMMARY.md` |
 | `docs/project/DECISIONS.md` has duplicate IDs | `D-033` and `D-034` are each used twice | `docs/project/DECISIONS.md` — fixed in this pass: the second pair are now D-069/D-070 and `D-066` is reordered |
 
 ## 6. Result of this audit pass
 
-(as of 2026-11-16/17. Several counts have since moved — the authoritative current figures are
-maintained in `docs/guides/TEST_GUIDE.md` (Positive 48 files / 1570 passed, Negative 51 matched,
-differential 99 files, roundtrip 48/48 + 42/42). The numbers below are kept as the historical
-record of the audit run.)
+(as of 2026-11-16/17. Several counts have since moved — the authoritative current figures,
+re-measured **2026-11-23 at HEAD 660559b**, are Positive **50 files / 1606 passed** /
+0 failed / 0 crashed, Negative **51 matched / 0 divergences**, differential
+**101 files / 0 differences**, roundtrip **50/50 positive + 42 identical negative**
+(9 compile-rejected skip), and `cargo test --release --workspace` **234 passed / 0 failed**
+(nrt 3 + lib 219 + un bin/LSP 4 + playground 8). `docs/guides/TEST_GUIDE.md` is the baseline
+mirror. The numbers below are kept as the historical record of the audit run.)
 
 - Build: `cargo build --release` → **exit 0, 0 warnings**.
 - Tests: `scripts/test.ps1` → **Positive 40 files / 1391 passed / 0 failed /

@@ -64,7 +64,9 @@
 ## F-011. class 메서드는 `vm/mod.rs call_proto` 경로로는 jit에 못 들어간다 (원래 동작)
 
 - 사실: `call_proto`는 `bound_receiver=None`을 넘기고, `try_call_jit`는 class method(`ext_type.is_some()`)에서 None receiver면 decline. 즉 Un 바이트코드에서 `obj.method()`는 항상 인터프리터 실행. 반면 `fn_call`(host 경유)은 receiver를 넘긴다.
-- 결정: Compile Mode에서도 이 동작을 바꾸지 않는다. core에서 class/메서드는 어차피 네이티브 제외.
+- 결정: Compile Mode의 Vm 경로(`un native`)와 바이트코드 JIT에서는 이 동작을 바꾸지 않는다.
+  TIR core 대상에서 class/메서드는 네이티브 제외다. 다만 **plain `un build`는 별개 경로**로,
+  `libnrt.a`가 클래스 생성·필드·메서드·상속을 기계어로 실행한다 (`OBJ_MILESTONES.md`).
 
 ## F-012. Proto에는 span이 없다 — TIR↔proto 매칭 수단 필요
 
@@ -75,10 +77,10 @@
 
 - 사실: `Payload::Int(v >= id_base())`면 decline. 이 규칙은 list 핸들 오인 방지용. TIR core는 list 인자를 받지 않으므로 영향 없음. jit_bc 경로는 그대로 유지한다 (F-010의 `Unbc` kind).
 
-## F-014. exhaustive checking을 구현하지 않는 이유
+## F-014. match exhaustiveness — v1 보류 후 구현
 
 - 사실: Union의 구체 분해·`is` narrowing·match 패턴의 도달 가능 분석이 모두 필요하다. v1에서 잘못 구현하면 거짓 양성으로 정상 프로그램을 거부해 검증 가치를 해친다.
-- 결정: v1은 match arm 타입을 "union 후보 → 그 타입으로 좁혀지는" 정도의 좁히기만 하고(실제: arm body는 scrutinee 타입 그대로 + 패턴 바인딩은 해당 후보 타입), exhaustiveness는 검사하지 않는다. v2 항목으로 명문화. (`COMPILE_DESIGN.md` §4.6)
+- 결정(당시): v1은 match arm 타입을 "union 후보 → 그 타입으로 좁혀지는" 정도의 좁히기만 하고(실제: arm body는 scrutinee 타입 그대로 + 패턴 바인딩은 해당 후보 타입), exhaustiveness는 검사하지 않고 v2 항목으로 명문화했다. (`COMPILE_DESIGN.md` §4.6)
 - **해결 (2026-11-19, `dee5ab6`)**: bool은 `true`/`false` arm(또는 wildcard), none은 `none` arm(또는 wildcard), 스칼라/튜플/list/class tag는 `_` wildcard arm을 필수로 하는 match exhaustiveness 분석을 구현했다. 진단의 span은 scrutinee에 붙는다. 픽스처: `test/compile/matches.un`. (Union 구체 분해·`is` narrowing 기반 정밀 분석은 여전히 미구현 — 현재 규칙은 거짓 양성 없이 위 arm 조합만 요구한다.)
 
 ## F-015. `/`/`pow` 결과 타입과 인터프리터의 err 객체
@@ -166,6 +168,9 @@
   기존 테스트에서 `a_full_clear_lets_jit_run_again`이 `jit_cache::clear()`를
   호출해 같은 프로세스의 다른 테스트가 방금 등록한 entry를 지울 수 있는
   순서 경쟁이 있다 (CI에서도 scheduling에 따라 재현 가능).
-- 결정: 테스트를 수정하지 않는다 (AGENTS.md: 1570 passed/0 crashed 기준이며,
-  이 루트는 cargo test 결과 230 passed). 다음 유지보수 세션에서
-  `--test-threads=1` 또는 테스트별 program_id 격리로 고정하는 것을 권장한다.
+- 결정(당시): 테스트를 수정하지 않고 `--test-threads=1` 또는 테스트별 program_id
+  격리를 다음 유지보수 세션 권고로 남겼다.
+- **해결 (커밋 `edeabff`)**: `vm::tests::a_cleared_jit_program_runs_identically`가
+  전역 `clear()` 대신 `jit_cache::clear_program(program_id)`로 격리되고, `JIT_FNS`와
+  `TIR_FNS`가 분리되었다. 전역 `clear()`를 쓰는 `a_full_clear_lets_jit_run_again`은
+  의도된 테스트로 유지한다. 현재 기준 `cargo test --release --workspace` 234 passed.

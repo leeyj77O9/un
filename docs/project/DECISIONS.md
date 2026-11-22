@@ -2,6 +2,10 @@
 
 형식: `D-NNN | 제목 | 상태 | 결정 | 영향`
 - 상태: **Accepted** = 채택되어 코드에 반영, **Proposed** = 채택되었으나 코드 반영 전, **Pending** = 검증 필요
+- 이 문서는 append-only 결정 기록이다. 개별 항목의 검증 숫자(1415/1493/1525/205/213 등)는
+  **결정 시점 스냅샷**이며 현재 기준값이 아니다. 현재 기준은
+  `docs/project/REFACTOR_SUMMARY.md`의 "Current baseline"을 참조한다.
+  상태가 바뀐 결정은 원문을 지우지 않고 `Superseded by D-NNN` 각주만 덧붙인다.
 
 ## D-001 | C# 코드는 수정하지 않는다 | Accepted
 

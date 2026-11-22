@@ -5,7 +5,7 @@
 `un` is the command-line interface for the Un language: a bytecode-compiling,
 register-based VM written in Rust (`unvm`, the library/toolchain name). This
 page documents the `un` binary, not the language itself — for the language see
-`README.md` / `docs/README.md`; for the bytecode format see `docs/spec/BYTECODE.md`.
+`README.md` (EN) / `docs/README.ko.md` (KO); for the bytecode format see `docs/spec/BYTECODE.md`.
 
 > Naming history: the CLI binary was renamed from `unvm` to `un` on 2026-11-19.
 > The library crate, the WASM playground (`unvm-playground`), test fixtures and
@@ -31,7 +31,7 @@ Add that directory to `PATH` if you want to run `un` from anywhere.
 | `un compile <file.un>` | compile a script to `<file.un>.unbc` |
 | `un check <file.un>` | **experimental**: static type analysis only (compile mode) |
 | `un native <file.un>` | **experimental**: static analysis + native execution (compile mode) |
-| `un obj <file.un|file.unbc> [-o out.obj] [--entry name]` | **experimental**: translate source/bytecode to a relocatable object file (COFF .obj on Windows/GNU); core Int subset only |
+| `un obj <file.un|file.unbc> [-o out.obj] [--entry name]` | **experimental**: translate source/bytecode to a relocatable object file (COFF .obj on Windows/GNU); `.unbc` is Int core only, source path also compiles Str/list/dict/classes/exceptions natively |
 | `un build <file.un> [-o out.exe] [--embed]` | **experimental**: compile source to a relocatable object and link it into a standalone executable (via rustup's self-contained mingw gcc); `--embed` bakes the .unbc + VM runtime into a self-contained exe supporting any Un program |
 | `un dis <file.un>` | dump stack bytecode with line numbers |
 | `un dis-reg <file.un>` | dump the register-plan form of the bytecode |
@@ -257,7 +257,7 @@ All un values are lowered as i64. Protos outside the subset are skipped with a
 become trap stubs (a call to one traps at runtime instead of returning
 garbage). See `docs/compile/OBJ_MILESTONES.md` for milestones.
 
-### `un build <file.un> [-o out.exe]`
+### `un build <file.un> [-o out.exe] [--embed]`
 
 One command from source to a standalone native executable: emits the object
 file as above, then links it against a generated driver and `libnrt.a` (the

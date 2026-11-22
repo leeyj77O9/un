@@ -2,7 +2,7 @@
 
 `un`은 Un 언어의 명령행 인터페이스입니다 — Rust로 작성된 바이트코드 컴파일러 +
 레지스터 기반 VM(`unvm`, 라이브러리/툴체인 이름)입니다. 이 문서는 `un` 바이너리만
-다루고, 언어 자체는 `README.md` / `docs/README.md`, 바이트코드 포맷은
+다루고, 언어 자체는 `README.md`(영문) / `docs/README.ko.md`(국문), 바이트코드 포맷은
 `docs/spec/BYTECODE.md`를 참고하세요.
 
 > **명칭 이력**: CLI 바이너리는 2026-11-19에 `unvm`에서 `un`으로 개명되었습니다.
@@ -31,7 +31,7 @@ Windows(GNU 툴체인)에서는 `rust\target\release\un.exe`가 생성됩니다.
 | `un compile <file.un>` | 스크립트를 `<file.un>.unbc`로 컴파일 |
 | `un check <file.un>` | **실험적**: 정적 타입 분석만 (compile mode) |
 | `un native <file.un>` | **실험적**: 정적 분석 + native 실행 (compile mode) |
-| `un obj <file.un|file.unbc> [-o out.obj] [--entry name]` | **실험적**: 소스/바이트코드를 재배치 가능한 오브젝트 파일(Windows/GNU는 COFF .obj)로 번역; core Int 부분집합만 지원 |
+| `un obj <file.un|file.unbc> [-o out.obj] [--entry name]` | **실험적**: 소스/바이트코드를 재배치 가능한 오브젝트 파일(Windows/GNU는 COFF .obj)로 번역; `.unbc`는 core Int 부분집합만, 소스 경로는 Str/리스트/딕트/클래스/예외까지 네이티브 지원 |
 | `un build <file.un> [-o out.exe] [--embed]` | **실험적**: 소스를 재배치 가능한 오브젝트로 컴파일해 독립 실행형으로 링크 (rustup self-contained mingw gcc 경유); `--embed`는 .unbc와 VM 런타임을 실행형에 구워 임의의 Un 프로그램을 단일 exe로 |
 | `un dis <file.un>` | 라인 번호와 함께 스택 바이트코드 덤프 |
 | `un dis-reg <file.un>` | 바이트코드의 register-plan 형태 덤프 |
@@ -256,13 +256,16 @@ Windows/GNU는 COFF)로 되돌립니다. `un compile`이 생성한 `.unbc`를 �
 proto는 trap stub으로 정의되어 링크를 유지합니다(호출 시 트랩). 마일스톤은
 `docs/compile/OBJ_MILESTONES.md`를 참고하세요.
 
-### `un build <file.un> [-o out.exe]`
+### `un build <file.un> [-o out.exe] [--embed]`
 
 소스에서 독립 실행형 네이티브 실행형까지 한 명령으로 수행합니다. 위 과정으로
 오브젝트 파일을 방출한 뒤, `un_main()`을 호출하고 i64 결과를 출력하는 작은
-드라이버를 생성해 rustup의 self-contained mingw gcc로 링크합니다. 오브젝트가
-VM 런타임을 import하면(예: core 경로에서 `io.write` 호출) 링크가 미해결 심볼로
-실패합니다 — 현재 Int core에는 런타임 import가 없어서 독립 빌드가 가능합니다.
+드라이버를 생성해 rustup의 self-contained mingw gcc로 링크합니다. **plain exe는
+VM을 전혀 포함하지 않습니다**: `libnrt.a`(독립 네이티브 런타임)를 링크하며 약
+5 MB입니다. Str/리스트/딕트(제네릭 elem kind 포함), 클래스(상속 포함), 예외,
+기본값 인자, 클로저, 단순 사용자 모듈 import/전역, VM과 byte-identical한
+traceback을 네이티브로 실행합니다. 동적 `Any`/Union, 시간 기반 `random`, 모듈
+최상위 부수 효과가 있는 프로그램은 `--embed`를 쓰라는 안내와 함께 거부됩니다.
 
 **진입점의 동작.** plain native exe는 Un `main` 함수만 실행합니다(진입 proto를 `un_main`으로 export). 모듈 최상위 문장은 실행되지 않으며, 프로세스 종료 코드는 `main()`의 반환값입니다. 진입 로직은 `fn main()` 안에 써야 합니다. 이에 반해 `un run` / `un native` / `--embed`는 인터프리터 의미론입니다 — 모듈 최상위 문장이 한 번 실행되고, `main()`은 파일이 직접 호출할 때만 실행됩니다.
 

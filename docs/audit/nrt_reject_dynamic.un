@@ -1,0 +1,10 @@
+use io
+
+fn add(a, b)
+    -> a + b
+
+fn main() -> int
+    io.write(add(1, 2))
+    -> 0
+
+main()

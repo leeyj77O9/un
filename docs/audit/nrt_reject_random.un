@@ -1,0 +1,8 @@
+use io
+use random
+
+fn main() -> int
+    io.write(random.int(1, 100))
+    -> 0
+
+main()

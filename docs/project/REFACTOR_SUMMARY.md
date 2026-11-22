@@ -67,31 +67,44 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
   renamed to `runtime/modules.rs`; per-scope slot-name snapshots removed.
 - **Docs**: all engineering docs consolidated under `docs/` (this folder);
   `REFACTOR_PLAN.md` and the migration records under `docs/archive/` removed.
+- **Later additions (present as of the 2026-11-23 refresh)**: generics and
+  data-carrying enum variants; plain no-VM `un build` (links `libnrt.a`, the
+  exe contains no VM; `--embed` is the escape hatch for dynamic cases);
+  `dict[int,int]`, `un lsp`, and the 6-lane benchmark suite.
 
-## Current baseline (all verified 2026-11-17)
+## Current baseline (verified 2026-11-23 at HEAD 660559b; repository HEAD has since advanced to f161f11)
 
 | Gate | Result |
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
-| `cargo test --release --workspace` | **227 passed / 0 failed** (includes 2 JIT + 3 sandbox regression guards added 2026-11-20) |
-| `scripts/test.ps1` | Positive **48 files / 1570 passed** / 0 failed / 0 crashed; Negative **51 matched / 0 divergences**; Known **0**; exit **0** |
-| `scripts/differential.ps1` | **99 files, 0 differences** (JIT on vs off, byte-identical) |
-| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **48/48**; Negative compilable **42/42** identical |
+| `cargo test --release --workspace` | **234 passed / 0 failed** (nrt 3 + lib 219 + un bin/LSP 4 + playground 8; includes 2 JIT + 3 sandbox regression guards added 2026-11-20) |
+| `scripts/test.ps1` | Positive **50 files / 1606 passed** / 0 failed / 0 crashed; Negative **51 matched / 0 divergences**; Known **0**; exit **0** |
+| `scripts/differential.ps1` | **101 files, 0 differences** (JIT on vs off, byte-identical) |
+| `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **50/50**; Negative compilable **42/42** identical (+ 9 compile-rejected skip) |
 | `test/test_suite.un` | **109 passed / 0 failed** |
-| `scripts/bench.ps1 -Group all -Report` | all 15 x 4 lanes self-validate; root `BENCHMARK.md` regenerated; Un JIT/Python geomean **≈7x** (historical 2.124x; 2026-11-20 재측정 6.99x, `BENCHMARK.md` 7.527x — AUDIT-001 수정으로 JIT 정상 발동 복구) |
+| `scripts/compile-check.ps1` | **33 passed / 0 failed** |
+| `scripts/exe-diff.ps1` | **42 passed / 0 failed** |
+| `scripts/bench.ps1 -Group all -Report` | 6 lanes (unvm/unjit/python/node/unnative/unbuild) self-validate; `BENCHMARK.md` regenerated per run (생성 시점 커밋 명시); Un JIT/Python geomean **4.092x** (`BENCHMARK.md`, 재생성 2026-11-23 03:42 +09:00, 커밋 e09a397 기준) |
 
 ## Intentionally not done / known limits
 
-- Class methods with Float/Bool/None fields or constructors returning `none`
-  or building lists stay on the interpreter (bail → fallback), by design.
-- The JIT is an Int-subset accelerator, not a general native backend;
+- In the bytecode JIT (Int subset), class methods with Float/Bool/None fields
+  or constructors returning `none`/building lists bail to the interpreter.
+  This is separate from plain `un build`, whose NRT runs those cases natively.
+- The bytecode JIT is an Int-subset accelerator, not a general native backend;
   `UV_JIT=0` disables it entirely.
 - The vendored crates under `vendor/` carry raw-kernel32-FFI patches
   (cranelift-jit, region, icache-coherence) replacing windows-sys; new
   external crates remain off-limits.
 - `bench/results/` is gitignored (history shows it was committed early,
   un-tracked later).
-- CI (`.github/workflows/build.yml`) runs on every push to `main`: `cargo build --release`, `scripts/test.ps1`, `cargo test --release`, `scripts/differential.ps1`, `scripts/unbc-roundtrip.ps1 -IncludeNegative`. 2026-11-17에 두 번 green (`build #1`, `build #2`). The local runner sequence above remains the fast feedback loop.
+- CI (`.github/workflows/build.yml`) runs on every push/PR to `main` (12 steps):
+  checkout, install GNU toolchain, `cargo build --release`, `scripts/test.ps1`,
+  `cargo test`, `scripts/compile-check.ps1`, `scripts/exe-diff.ps1`,
+  `scripts/edge-fuzz.ps1`, `scripts/differential.ps1`,
+  `scripts/unbc-roundtrip.ps1 -IncludeNegative`, and the two strict-canary
+  steps (`UV_JIT=2`, `test/jit/strict.un` Int + `test/jit/strict_float.un`
+  Float). The local runner sequence above remains the fast feedback loop.
 - `test/KnownDivergent.txt` documents deliberate implementation differences
   (currently none registered); `test/KnownFailures.txt` is empty.
 
@@ -99,7 +112,7 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
 
 | File | Role |
 | --- | --- |
-| `docs/README.md` ↔ `README.md` | User docs (English / Korean), kept in sync |
+| `README.md` ↔ `docs/README.ko.md` | User docs (English / Korean), kept in sync |
 | `docs/spec/ARCHITECTURE.md` | Current architecture: pipeline, VM, JIT, module layout |
 | `docs/project/PROJECT_AUDIT.md` | Audit findings (S1/S2/S3) with fix mapping |
 | `docs/project/REFACTOR_LOG.md` | Per-pass verification records |

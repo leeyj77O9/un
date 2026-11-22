@@ -4,8 +4,10 @@ Benchmarks live in `bench/`. Each measurement is a script that validates its
 own result with assertions and then prints statistics for one workload. There
 is no benchmark code inside `test/`.
 
-All four language slots implement the *same algorithm on the same input with
-the same expected values*, and are self-validating before they measure:
+All three language harnesses implement the *same algorithm on the same input with
+the same expected values*, and are self-validating before they measure. The
+`bench.ps1 -Group all` runner measures six lanes: Un VM, Un JIT, Compile Mode,
+standalone exe, Python, and Node.js:
 
 - Un: `bench/<name>.un` — validated with `test/assert.un`, prints `N passed, M failed`
 - Node.js: `bench/node/<name>.mjs` — validated with `node:assert/strict`, prints `=== Verify: ok ===`
@@ -137,8 +139,9 @@ The runner pairs results by label, prints a table, and saves `results.csv`,
 - **Process startup**: each script is a fresh process; the timer covers steady
   state, and absolute times include startup overhead in each language equally.
 - **GC/JIT internals**: not available from Un.
-- **Multithreading**: `pool`/`go` are single-threaded cooperative shims today
-  (see TD-39), so they are not benchmarked.
+- **Multithreading**: `pool`/`go` remain single-threaded cooperative shims by
+  design (`DECISIONS.md` D-054/D-061; TD-39 was resolved 2026-11-19), so they
+  are not benchmarked.
 - **`%` and `//` in JIT**: integer div/mod are JIT-eligible only with a constant
   integer divisor; `i % 4 == 0` in a tight loop still measures interpreter work
   unless the divisor is constant.

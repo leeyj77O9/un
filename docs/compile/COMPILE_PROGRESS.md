@@ -3,13 +3,13 @@
 > 세션이 끊겨도 이 파일과 `COMPILE_DESIGN.md`, `COMPILE_FINDINGS.md`만 읽으면
 > 이어서 작업할 수 있어야 한다. 각 단계 완료 시 갱신한다.
 
-## 마지막 갱신: 2026-11-19 (v2 마무리: list[class] + exe-diff 하네스)
+## 마지막 갱신: 2026-11-23 (v2 마무리: list[class] + exe-diff 하네스; 제네릭/데이터 enum/CI 편입 반영)
 
 ## 단계별 상태
 
 | Phase | 작업 | 상태 | 검증 |
 |---|---|---|---|
-| 1 | 아키텍처 분석 + 설계 | **완료** | `scripts/test.ps1` 1570 passed / 51 negative (baseline 유지) |
+| 1 | 아키텍처 분석 + 설계 | **완료** | `scripts/test.ps1` 1606 passed / 51 negative (baseline 유지) |
 | 2 | `typeck` (정적 분석·타입 검사·추론) | **완료** | `un check` 구현·검증; `test/compile/typed_pass.un` 통과 양쪽 모드 |
 | 3 | `tir` (Typed IR + 검증기) | **완료** | core 판정 통과 함수 5개(add/square/mixed/id_bool/fib) native 실행 |
 | 4 | `natcode` (Cranelift 코드젠) | **완료** | `un native` 바이너리 fib(24) native 실행, bail 경로 interpreter와 출력 동일 |
@@ -42,6 +42,8 @@
 - `[T: numeric]` 제약이 union 타입을 거짓 거부하지 않도록 수정했다 (`typeck.rs`).
 - JIT `BuildDict`가 preserve 목록에 누락돼 dict 표시가 지워지던 회귀를 수정했다 (`jit_bc.rs`).
 - CI에 `compile-check`/`exe-diff`/`edge-fuzz` 스텝을 추가하고 README 한/영에 제네릭을 반영했다.
+- 데이터를 담는 enum variant(`enum Test[T,U]`의 `a: int`, `Test.a(42)`, `.value`, match
+  분해)를 구현했다 — VM/Compile Mode 경로만 동작하고 plain no-VM build는 여전히 거부한다.
 
 ### 제네릭 Phase 2–4 (2026-11-22)
 - **Phase 2 — 모노모피제이션**: `expand_generics`가 호출부에서 추론된 타입 인자별로
@@ -107,18 +109,24 @@
 - `un native <file.un>`: 분석 + TIR 변환 + Cranelift 네이티브 등록 + VM 실행.
 - `un run`/`un compile`: **변경 없음**.
 
-### 검증
-- `scripts/test.ps1`: Positive 48/1570, Negative 51 — **baseline 유지**.
-- `scripts/differential.ps1`: 99 files 0 differences — **green**.
-- `scripts/unbc-roundtrip.ps1 -IncludeNegative`: 48 files identical, negative 42 — **green**.
-- `cargo test --release`: 230 passed (nrt 3 + lib 219 + playground 8; 1회 `a_cleared_jit_program_runs_identically`가
-  flake로 1회 실패했으나 재실행 green; 기존 테스트 순서 경쟁, 본 변경과 무관 — F-022 참조).
-- `scripts/compile-check.ps1`: 18 passed (fixture 6 + untyped-source-rejected + errors 11).
-- `scripts/exe-diff.ps1`: **신규** — `test/compile/*.un`을 `un build --embed`로 링크한 exe가
-  `un run`과 stdout/stderr/exit code 바이트 동일인지, `test/compile/build/*.un`은 plain
-  `un build` exe가 동일한지 검사. plain build 불가 fixture(assert 모듈 사용 등)는
-  embed로만 검증한다.
-- `scripts/compile-bench.ps1`: un native fib(24) ≈ 169-174ms (un run ≈ 194-240ms).
+### 검증 (2026-11-23 재측정)
+- `scripts/test.ps1`: Positive 50 files / 1606 passed / 0 failed / 0 crashed,
+  Negative 51 matched / 0 documented divergences, Known 0 — **baseline 유지**.
+- `scripts/differential.ps1`: 101 files 0 differences — **green**.
+- `scripts/unbc-roundtrip.ps1 -IncludeNegative`: positive 50/50 identical,
+  negative 42 identical + 9 skipped(compile-rejected) — **green**.
+- `cargo test --release --workspace`: 234 passed (nrt 3 + lib 219 + un bin/LSP 4 +
+  playground 8), 0 failed — **green**.
+- `scripts/compile-check.ps1`: 33 passed, 0 failed.
+- `scripts/exe-diff.ps1`: 42 passed, 0 failed — `test/compile/*.un`을 `un build --embed`로
+  링크한 exe가 `un run`과 stdout/stderr/exit code 바이트 동일인지, `test/compile/build/*.un`은
+  plain `un build` exe가 동일한지 검사. plain build 불가 fixture(assert 모듈 사용 등)는
+  embed로만 검증한다. CI 스텝으로 편입됨(아래 "다음 작업" 참조).
+- `test/test_suite.un`: 109 passed, 0 failed.
+- `scripts/bench.ps1 -Group all`: 6 lanes (Un VM / Un JIT / Compile Mode / standalone
+  exe / Python / Node); `scripts/bench-report.ps1`이 `bench/report.html` 생성.
+  전체 결과는 루트 `BENCHMARK.md`(2026-11-23 03:42 +09:00, e09a397 재생성;
+  Un JIT/Python geomean 4.092x) 참조. `scripts/compile-bench.ps1`은 상세 비교용.
 
 ## 진행 로그
 
@@ -132,7 +140,7 @@
 
 1. class/collection native 지원 — Int/Float 코어 + 클래스 생성·메서드·필드·상속 (plain `un build`, TIR 메타데이터로 네이티브 등록 + `libnrt.a`) + `dict[str, int]`/`dict[str, float]` + `list[int]`/`list[float]` + `list[class]`. union/`any`의 narrowing 결과는 Vm 모드에서 interpreter fallback이 의도된 설계.
 2. TIR 인트린직 — class intrinsic (`unrt_*` NRT 런타임 함수; 과거 VM 브릿지는 plain 경로에서 제거), Float math intrinsics, `int(x)`/`float(x)` 언어 cast 인라인.
-3. 실패 테스트 프레임워크 — `test/compile/errors/` + manifest (11 fixtures), `compile-check.ps1`가 `un check`/`un native` 양쪽 exit 1 + 부분문자열 검사.
+3. 실패 테스트 프레임워크 — `test/compile/errors/` + manifest (19 fixtures), `compile-check.ps1`가 `un check`/`un native` 양쪽 exit 1 + 부분문자열 검사.
 4. 벤치마크 compile-mode 열 — `scripts/bench.ps1 -Group native` (fib(24) 정수;
    현재 기준 un native ≈ 171 ms, un run(VM) ≈ 191 ms, un jit ≈ 1.9 ms,
    standalone exe ≈ 6 ms). 이전 "unjit ≈ 230 ms" 수치는 JIT 퇴화기
@@ -141,10 +149,13 @@
 
 ## 다음 작업 (v3 후보)
 
-1. `scripts/exe-diff.ps1`를 CI(`.github/workflows/build.yml`)에 편입 검토 — 현재는 수동 게이트.
-2. `dict[str, Class]` 값 지원, `list[list[T]]` 중첩 컬렉션 — 현재 `--embed` 전용.
-3. native exe의 소스 컨텍스트 traceback.
-4. union/tuple/class tag 기반 exhaustiveness 정밀화 (F-014 잔여; 거짓 양성 없어야 함).
+1. `list[list[T]]` 중첩 컬렉션의 element 재인덱싱 — element가 불투명 핸들
+   (`ObjElem::Obj`)로 취급되어 아직 lowering하지 않는다 (`OBJ_MILESTONES.md`).
+   `dict[str, ClassName]` 값은 네이티브 지원됨.
+2. union/tuple/class tag 기반 exhaustiveness 정밀화 (F-014 잔여; 거짓 양성 없어야 함).
+
+> 완료된 항목은 위 "완료 (v2)"에 정리했다. CI 12스텝 편입(`225d08d`)과
+> native exe traceback(`OBJ_MILESTONES.md`)는 더 이상 다음 작업이 아니다.
 
 ## 완료 (v1.5)
 

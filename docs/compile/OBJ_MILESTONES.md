@@ -62,16 +62,16 @@ plain `un build`도 임의의 annotated 클래스를 지원한다(클래스는 T
 반환한다. 오브젝트 심볼은 `llvm-nm`으로 확인할 수 있다: `un_main`(export),
 `un_proto_<i>`/`un_tir_<i>`(Local).
 
-`scripts\compile-check.ps1`도 함께 쓴다 — `test/compile/*.un` 픽스처 6개가 `un run`/`un native` 바이트 동일 + exit 0인지,
+`scripts\compile-check.ps1`도 함께 쓴다 — `test/compile/*.un` 픽스처 13개가 `un run`/`un native` 바이트 동일 + exit 0인지,
 그리고 `test/compile/errors/*.un` 부정 픽스처가
 `un check`/`un native` 양쪽에서 exit 1 + 기대 진단 문자열을 내는지 검사한다
-(현재 18 checks, errors/* 11개 + untyped-source-rejected 포함). 거부 케이스를 추가하려면 픽스처 + `test/compile/errors/manifest.txt`
+(errors/* 19개, compile-check 33 passed). 거부 케이스를 추가하려면 픽스처 + `test/compile/errors/manifest.txt`
 한 행만 추가하면 된다.
 
 `scripts\exe-diff.ps1`은 **exe 검증**을 담당한다 — `test/compile/*.un`을 `un build --embed`로
 링크한 exe와, `test/compile/build/*.un`(plain native 빌드 가능 프로그램만 두는 디렉터리)을
 plain `un build`로 링크한 exe가 각각 `un run`과 stdout/stderr/exit code 바이트 동일한지
-검사한다 (현재 32 checks: embed 9 + plain 22 + no-VM 마커 1). Part B는 바이트
+검사한다 (현재 42 passed). Part B는 바이트
 동일성만 확인하므로, Part C가 `bare_for.un`에서 no-VM 마커와 exe 크기(<10 MB)를
 별도로 검증한다. 새 기능을 지원할 때마다 이 디렉터리에 빌드 가능 픽스처를 추가하면
 plain exe 회귀를 잡을 수 있다.
@@ -86,8 +86,11 @@ plain exe 회귀를 잡을 수 있다.
 - `list[int]`/`list[float]`: 리터럴(`[1, 2, 3]`), 파라미터/렛/대입, `for v in xs` 또는
   `for v in [1, 2, 3]`(리터럴 직접 반복),
   호출 인자/반환(`-> list[int]`), `io.write(xs)` 네이티브 출력까지 지원한다.
-  빈 리스트(타입 추론 불가)와 중첩 리스트(`list[list[int]]`)는 **거부**한다 —
-  `un build`는 exit 1로 실패하고 프로그램은 인터프리터에서 계속 실행된다.
+  빈 리스트(타입 추론 불가)는 **거부**한다. 그 외 element 타입은 제네릭 경로로
+  컴파일된다: `list[str]`, `list[bool]`, `dict[str, class]`의 값처럼 이전에
+  거부되던 타입도 NRT의 핸들 기반 컬렉션에 그대로 담긴다. 중첩 리스트
+  (`list[list[int]]`)도 생성·조회·출력은 되지만, element는 불투명 핸들(`ObjElem::Obj`)
+  로 취급되어 거기서 다시 정적 인덱싱/연산은 lowering하지 않는다.
   **인덱싱**: `xs[i]` read, `xs[i] = v` write(음수 인덱스 wrap), 범위 밖이면
   Obj 경로는 user trap `user2`로 프로세스를 종료한다(`un run`은 exit 1 + traceback).
 - `list[class]`: `list[int]`/`list[float]`와 같은 모든 위치(리터럴, 파라미터/렛/대입,
@@ -103,7 +106,9 @@ plain exe 회귀를 잡을 수 있다.
 - `dict[str, int]`/`dict[str, float]`: 리터럴(`{"k": v}`), `d["k"]` 인덱스 **read**,
   `d["k"] = v` **write**(없는 키는 삽입),
   파라미터/렛/대입/함수 반환, `io.write(d)`까지 지원한다. 빈 dict(추론 불가)와
-  중첩 dict(value가 dict), 비 str 키는 **거부**한다. `d["missing"] = v`처럼 새 키를 넣는
+  이제 `dict[str, str]`, `dict[str, Node]`, `dict[int, str]` 같은 조합도 값/키의
+  종류(elem kind)를 TIR에 명시해 네이티브로 컴파일된다. 비 str/int 키는 여전히 거부한다.
+  `d["missing"] = v`처럼 새 키를 넣는
   패턴도 인터프리터와 같이 동작한다. Obj 경로에서 `d["missing"]` read는
   user trap `user1`으로 프로세스를 종료한다
   (`un run`은 `error: key '{key}' not found in dictionary`를 내며 exit 1).
@@ -148,12 +153,13 @@ plain exe 회귀를 잡을 수 있다.
     `bind_module_functions`가 미리 바인딩).
   - 한계: plain native exe의 클래스 프로퍼티는 getter의 반환 타입이 정적 타입
     (`Int`/`Float`/`Bool`)으로 단정되지 않으므로(`any`), 순수 getter 읽기는
-    거부된다(annotate된 backing field는 정상). dict 값의 class 타입, 중첩된
-    클래스 선언, 클래스 등록 스파인의 기본값 표현식이 모듈 전역 변수를
-    참조하는 경우는 지원하지 않고 `--embed`를 써야 한다.
+    거부된다(annotate된 backing field는 정상). 중첩된 클래스 선언, 클래스 등록
+    스파인의 기본값 표현식이 모듈 전역 변수를 참조하는 경우는 지원하지 않고
+    `--embed`를 써야 한다. `dict[str, ClassName]`의 값도 elem kind에 class id를
+    담아 `d[k].field` / `d[k].method()`까지 네이티브로 lowering된다.
     `list[ClassName]`은 native로 지원된다(리터럴/`for v in xs`/`xs[i]` read+write/
     `add`·`insert`·`pop`·`pop(i)`·`reverse`·`sort`·`contains`·`index_of`/`len(xs)`);
-    중첩된 클래스 리스트(`list[list[Point]]`)와 빈 리스트는 거부하므로 `--embed`가 필요하다.
+    빈 리스트는 거부하므로 `--embed`가 필요하다.
   - 클래스를 쓰는 함수는 Vm(`un native`)에서는 여전히 인터프리터 fallback.
 - `str == str`은 VM의 `key_eq`로 네이티브 비교한다.
 - `//` 및 `Int / Int`에서 제수가 0이면 **catchable exception**이며, int `%` 0은

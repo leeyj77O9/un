@@ -1,6 +1,6 @@
 # COMPILE_DESIGN.md — Un Compile Mode 전체 설계
 
-> 기준: 2026-11-19, Phase 1 (아키텍처 분석) 완료 후 작성.
+> 기준: 2026-11-23, Phase 1 (아키텍처 분석) 완료 후 작성.
 > 이 문서는 설계의 기준 문서이며, 구현이 진행되면서 실제 코드와 어긋나는 부분이
 > 생기면 코드를 기준으로 갱신한다. 함께 보면 좋은 문서: `COMPILE_PROGRESS.md`,
 > `COMPILE_FINDINGS.md`, `COMPILE_TESTS.md`, `COMPILE_BENCHMARK.md`.
@@ -153,7 +153,7 @@ fn add(a, b)        # 오류: parameter 'a' requires a type annotation
   단, 이 규칙은 "모듈 단위로" 적용되며, **인터프리터 모드의 동작은 바꾸지
   않는다.** 기존 테스트는 전부 어노테이션이 없으므로 `un run`은 전부 통과하고,
   `un native`/`un check`에서는 거부되는 프로그램이 존재한다 — 이것이 명시적
-  문서화 대상 차이이다 (README.md / docs/README.md에 기록).
+  문서화 대상 차이이다 (README.md / docs/README.ko.md에 기록).
 - 예외: `fn` 키워드 없이 만들어지는 람다(`fn(a, b) -> a + b`, 즉 Lambda 노드)는
   **동적 값**으로 취급한다 (`Any`). 호출 검사는 하지 않는다. 인터프리터와 동일한
   호출 규칙을 공유한다.
@@ -199,9 +199,10 @@ fn process(value: T) -> T
 - Union 값을 Union 매개변수에 전달: 허용. Union 값에 대해 구체 타입 매개변수에
   전달: 부분집합 검사(members가 전부 target에 속해야 함) 통과 시 허용.
 - Union 값의 멤버 접근(`value.x`): 모든 멤버가 그 멤버를 가지면 허용 아니면 오류.
-  v1에서는 union member access는 `match` dispatch로만 해소 가능한 것으로 하고,
-  match 내 좁히기(narrowing)는 지원하되 **exhaustive checking은 하지 않는다**
-  (항상 `_` 필요). exhaustive checking은 v2 항목으로 문서에 명시.
+  union member access는 `match` dispatch로만 해소 가능한 것으로 하고,
+  match 내 좁히기(narrowing)는 지원한다. **exhaustive checking도 구현됨** —
+  bool/none는 해당 arm(또는 wildcard), 그 외 타입은 `_` wildcard arm을 필수로
+  검사한다 (`COMPILE_FINDINGS.md` F-014, `test/compile/matches.un`).
 - `any`: 모든 타입이 any로 변환 가능(implicit boxing), any에서 구체 타입으로의
   변환은 **명시적 변환 함수**(`int(x)`, `float(x)`, `str(x)`, `bool(x)`)로만 가능.
   그 외 any→구체 타입 대입은 오류. 이것이 동적 경계의 boxing/unboxing 규칙이다.
@@ -219,8 +220,9 @@ fn process(value: T) -> T
   `self.x`는 slot 0(클래스 메서드 ABI)에 `Class(name)` 바인딩.
 - 상속(`class Child: Base`): 필드 조회는 상속 체인을 순회
   (compile-time single pass, MRO는 Un의 실제 순서를 미러 — 런타임과 동일한
-  parent 순서). 단 v1 네이티브 대상에서 클래스 코드는 포함되지 않는다
-  (§5 core 제외 목록 참조). 타입 검사는 수행한다.
+  parent 순서). §5의 core 제외 목록은 Vm 모드(`un native`)의 in-process TIR
+  대상이다. **plain `un build`에서는 클래스/상속이 `libnrt.a`로 네이티브
+  실행된다** (§10, `OBJ_MILESTONES.md`). 타입 검사는 수행한다.
 
 ### 4.8 스코프 / 선언 / 참조
 
@@ -242,12 +244,13 @@ fn process(value: T) -> T
 검사하지 않는 것(v1, `any`로 흡수, 문서화):
 
 - 첫 번째 클래스가 아닌 다중 상속의 정밀 필드 타입 — 체인 순서대로 첫 발견 사용
-- `match` exhaustiveness, Union narrowing 범위 제한
+- Union narrowing 범위 제한 (`match` exhaustiveness는 구현됨 — §4.6, F-014)
 - 리스트/딕셔너리 **리터럴 요소 타입 추론** — `[1, 2, 3]` → `list[int]`로 추론
   (동질이면). 혼합 → `list[any]`.
 - 튜플 리터럴 `(1, "a")` → `tuple[int, str]`
-- 제너릭 함수(Un에 문법 없음 — 없음. 타입 매개변수 문법이 없으므로 몬오모피화는
-  해당 없음. 별칭 `T = int | str`가 가장 가까운 형태)
+- 제너릭: 초기 v1 설계에는 문법이 없었으나 **현재는 구현됨** —
+  `fn identity[T](x: T) -> T`, `class Box[T]`, 호출부 추론·명시적 `identity[int](42)`·
+  bound `[T: numeric]`를 지원하고 TIR이 monomorphization한다 (`tir.rs`, §10).
 
 ## 5. TIR (Typed IR)
 
@@ -292,6 +295,10 @@ enum TypedExpr { Int(i64), Float(f64), Bool(bool), Str(Rc<str>), None_, Local(u1
 
 Core가 아닌 함수는 인터프리터가 실행한다. 기존 `jit_bc`가 그 함수를 네이티브로
 컴파일할 수 있으면 그렇게 되고(기존 동작), 아니면 인터프리터 bytecode 실행이다.
+
+이 core 제약은 Vm 모드(`un native`)의 in-process TIR 네이티브 대상에 관한 것이다.
+**plain `un build`는 이 범위 밖의 클래스/상속·예외·Str·list/dict·closure·기본값
+인자·단순 모듈까지 `libnrt.a`로 네이티브 실행한다** (§10, `OBJ_MILESTONES.md`).
 
 ### 5.3 호출 규약
 
@@ -360,21 +367,25 @@ TIR 내부 호출은 완전한 정적 타입 직접 호출이므로 태그 검�
 
 ## 9. 끝까지 하지 않는 것 (명시적 보류)
 
-- Standalone native executable (`.exe` 산출): v1 범위 아님. 런타임을 배포 형태로
-  묶는 설계가 필요하며, 본 세션의 검증 가능한 완료 기준은 "네이티브 코드로
-  실행된다"(in-process JIT 호출)이다. 문서화.
-- union exhaustive checking, union member access 일반화, 제너릭 단일화(문법 없음)
+- Standalone native executable (`.exe` 산출): **구현됨** — `un build`가 소스 →
+  `.obj` → 링크를 수행하고, plain build는 `rust/nrt/`의 `libnrt.a`(독립 런타임)를
+  링크해 VM 없이 약 5 MB exe를 만든다. 클래스/상속·예외·Str·list/dict·제너릭 타입
+  컬렉션·closure·기본값 인자·단순 모듈·byte-identical traceback을 지원한다.
+  동적 `Any`/union, 시간 시드 `random`, 모듈 최상위 부수 효과는 `un build --embed`가
+  필요하다 (`OBJ_MILESTONES.md`).
+- union exhaustive checking의 정밀화(구체 분해·`is` narrowing 기반), union member
+  access 일반화 (제너릭 monomorphization은 구현됨 — §10 참조)
 - GC 전략 변경, Object 제거, 소유권 도입
 - 다중 오류 정밀화(예: 첫 오류만 보고) — 하지 않음, 수집형
 - Optimizer의 고급 최적화(상기 4단계 이후)
 
 ---
 
-## 10. 구현 상태 업데이트 (2026-11-19)
+## 10. 구현 상태 업데이트 (2026-11-23)
 
 이 문서의 §2〜§9는 원래 설계이며, 현재 코드와의 차이와 함께 다음을 명시한다.
 
-### 구현된 것 (2026-11-19 기준)
+### 구현된 것 (2026-11-23 기준)
 
 - **`un check <file.un>`** — §2의 `un check` 그대로 구현됨. 정적 분석만 수행,
   exit 0/1, 최대 50개 진단, caret+line 형식.
@@ -393,15 +404,26 @@ TIR 내부 호출은 완전한 정적 타입 직접 호출이므로 태그 검�
 - **bail 경로**: `//` div-zero, `INT_MIN // -1`, 네이티브 재귀 깊이 초과 등
   불가능한 조건은 `TAG_BAIL`로 보고되어 VM이 해당 호출만 interpreter로
   재실행한다. 출력/종료 코드는 `un run`과 바이트 동일.
+- **제너릭**: `fn identity[T](x: T) -> T`, `class Box[T]` 문법, 호출부 추론·명시적
+  `identity[int](42)`·bound `[T: numeric]`를 지원하고 TIR이 monomorphization한다
+  (`tir.rs`). 데이터를 담는 enum variant(`enum Test[T,U]`의 `Test.a(42)`, `.value`,
+  match 분해)도 VM/Compile Mode 경로에서 동작한다(plain no-VM build는 여전히 거부).
+- **Standalone exe**: `un build` + `libnrt.a`로 VM 없는 네이티브 exe 산출 (§9).
 
-### 미구현/제외 (의도된 v1 범위)
+### 미구현/제외 (범위)
 
-- classes, closures(자유 변수), collections(list/dict), unions, `any`,
-  native 함수 호출, float math intrinsics, match 패턴 — 인터프리터가 담당.
-- `bench.ps1`의 compile-mode 열 정식 편입은 보류. 현재는
-  `scripts/compile-bench.ps1`을 쓴다.
-- `test/compile/errors/` negative manifest — 보류 (`compile-check.ps1`이
-  인라인으로 한 케이스 검사).
+- 바이트코드 JIT(`jit_bc`) 대상에서는 classes, closures, collections, union,
+  `any`, 네이티브 호출, float math intrinsics, match가 여전히 인터프리터 폴백이다.
+  다만 **plain `un build` 경로**에서는 classes/상속, exceptions, Str, list/dict,
+  제너릭 타입 컬렉션, closure, 기본값 인자, 단순 모듈, byte-identical traceback이
+  `libnrt.a`로 네이티브 실행된다 (`OBJ_MILESTONES.md`).
+- Compile Mode 벤치마크는 `scripts/bench.ps1 -Group all`의 6개 레인(Un VM / Un JIT /
+  Compile Mode / standalone exe / Python / Node)에 편입되었고,
+  `scripts/bench-report.ps1`이 `bench/report.html`을 생성한다.
+  `scripts/compile-bench.ps1`은 상세 비교용으로 남아 있다. 전체 결과는 루트
+  `BENCHMARK.md` 참조.
+- `test/compile/errors/` negative manifest — 구현됨 (`manifest.txt` 기반,
+  `compile-check.ps1`가 33 passed 검증; §8).
 
 ### 배운 것 (요약)
 

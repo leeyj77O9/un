@@ -70,16 +70,16 @@ test/
                           circular_main.un
 ```
 
-Counts at the time of writing:
+Counts (2026-11-23):
 
 | Group | Files | Assertions |
 |---|---|---|
 | suite | 1 | 109 |
-| unit + integration + regression | 47 | (1570 - 109) |
-| **Positive total** | **48** | **1570** |
+| unit + integration + regression | 49 | (1606 - 109) |
+| **Positive total** | **50** | **1606** |
 | negative (exit-code checks) | 51 checks | 51 matched + 0 documented divergences |
 | known (documented defects) | 0 | none registered |
-| fixtures (not run directly) | 8 | n/a |
+| fixtures (not run directly) | 10 | n/a |
 
 ## Manifests
 
@@ -140,20 +140,23 @@ moved into meaningful tests (2026-11-16), and `scripts/test.ps1` passes with
 ## Current status
 
 ```
-Positive: 48 files, 1570 passed, 0 failed, 0 crashed
+Positive: 50 files, 1606 passed, 0 failed, 0 crashed
 Negative: 51 matched, 0 mismatched, 0 documented divergences
 Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```
 
-`cargo test --release --workspace` covers the Rust side (230 tests: nrt 3 + lib 219 + playground 8, including
-the JIT entry-map isolation, repeated-native-call, and sandbox path-confinement
-regression guards). Two
-additional runners compare execution shapes: `scripts/differential.ps1` runs
-every manifest file with `UV_JIT=0` and default JIT and diffs stdout + exit
-code (99 files, 0 differences), and `scripts/unbc-roundtrip.ps1
--IncludeNegative` byte-compares `un run` against `un compile` + `un run
-<file>.unbc` (Positive 48/48, compilable Negative 42/42).
+`cargo test --release --workspace` covers the Rust side (234 tests: nrt 3 + lib 219 + un bin/LSP 4 + playground 8, including
+the JIT entry-map isolation, repeated-native-call, sandbox path-confinement, and
+generic-type semantic-token regression guards). Additional runners compare
+execution shapes: `scripts/differential.ps1` runs every manifest file with
+`UV_JIT=0` and default JIT and diffs stdout + exit code (101 files, 0 differences);
+`scripts/unbc-roundtrip.ps1 -IncludeNegative` byte-compares `un run` against
+`un compile` + `un run <file>.unbc` (Positive 50/50, compilable Negative 42
+identical + 9 compile-rejected skips); `scripts/compile-check.ps1` cross-checks
+Compile Mode (33 passed, 0 failed); and `scripts/exe-diff.ps1` byte-compares
+plain no-VM and `--embed` executables against `un run` (42 passed, 0 failed).
+`scripts/edge-fuzz.ps1` runs cross-lane edge cases across VM/JIT/Compile/Python/Node.
 
 All previously known failures are fixed: negative-step slicing, `upper_bound`,
 `lower_bound` past-the-end, set equality, dict equality, `2 in [1, 2, 3]`,
