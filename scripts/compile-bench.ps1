@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Compile Mode 벤치마크. `bench/native_fib.un`을 VM/JIT/native 세 모드로 측정하고,
     `un build`로 만든 standalone exe(`bench/native_fib_exe.un`)도 함께 측정해 비교한다.

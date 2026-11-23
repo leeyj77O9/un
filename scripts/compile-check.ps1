@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Compile Mode 검증 러너. test/compile/*.un을 `un run`과 `un native`로 각각 실행하고
     stdout/stderr/exit code를 바이트 비교한다. 또한 `un check`의 종료 코드를 확인한다.

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     .unbc 왕복(round-trip) 검증 러너. C:\dev\un 에서 실행한다.
 

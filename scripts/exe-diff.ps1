@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Compile Mode exe differential — exe 출력이 `un run`과 바이트 동일한지 검증한다.
 .DESCRIPTION
