@@ -1008,6 +1008,13 @@ fn build_cmd(args: &[String]) {
             exit(1);
         }
     };
+    // Plain builds lower only functions and global initializers. Report any
+    // other top-level statement instead of silently dropping it.
+    if let Some(ignored) = unvm::compiler::find_ignored_top_level_statement(&root) {
+        let diagnostic = LangError::new(ignored.start, ignored.length, ignored.message());
+        print!("{}{}", diagnostic.display(&source), nl());
+        exit(1);
+    }
     let checked = match typeck::check_program(&source, &root) {
         Ok(checked) => checked,
         Err(errors) => {

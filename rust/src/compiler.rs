@@ -44,6 +44,94 @@ pub fn compile(source: &Source, ast: &Node) -> Result<Program, Panic> {
     c.emit_classes_init(ast)?;
     c.finish()
 }
+
+/// The first top-level statement that a plain (no-VM) `un build` executable
+/// would silently discard.
+///
+/// The bytecode path (`un run`, `un build --embed`) executes the whole
+/// `<module>` proto, so every top-level statement runs. The plain build path
+/// lowers *functions* to TIR and only keeps top-level plain assignments as
+/// global initializers prepended to `main`; every other top-level statement
+/// is dropped without a diagnostic. [`find_ignored_top_level_statement`]
+/// lets the build driver turn that silent loss into an explicit error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IgnoredTopLevel {
+    /// Character offset of the statement in the (possibly inlined) source.
+    pub start: usize,
+    /// Character length of the statement.
+    pub length: usize,
+}
+
+impl IgnoredTopLevel {
+    /// The diagnostic shown for a silently dropped top-level statement.
+    pub fn message(&self) -> &'static str {
+        "top-level statements are not supported in plain build; move them into fn main() or use un build --embed"
+    }
+}
+
+/// Return the first top-level statement in the optimized `root` that the
+/// plain build path would ignore, or `None` when every statement survives.
+///
+/// This is a pure AST query. `un run`, `un native`, `--embed` and the JIT never
+/// call it, so their semantics are unchanged.
+pub fn find_ignored_top_level_statement(root: &Node) -> Option<IgnoredTopLevel> {
+    if root.kind != NodeKind::Block {
+        return None;
+    }
+    root.children.iter().find_map(|child| {
+        if top_level_statement_survives_plain_build(child) {
+            None
+        } else {
+            Some(IgnoredTopLevel {
+                start: child.start,
+                length: child.length,
+            })
+        }
+    })
+}
+
+/// Mirror of what `TirProgram::lower` actually keeps at module scope:
+/// declarations, imports, plain global initializers, and the conventional
+/// bare `main()` entry call (the generated driver calls `un_main` directly,
+/// so that call is redundant rather than lost).
+fn top_level_statement_survives_plain_build(node: &Node) -> bool {
+    match node.kind {
+        NodeKind::Function
+        | NodeKind::Extension
+        | NodeKind::Class
+        | NodeKind::Enum
+        | NodeKind::TypeAlias
+        | NodeKind::Use => true,
+        NodeKind::Assign => {
+            // TIR only lowers module assignments whose left-hand side is a
+            // plain global identifier. Annotated (`x: T = e`), synthesized
+            // temporary and property/index targets are not registered as
+            // globals by the build driver, so they are dropped silently.
+            node.children
+                .first()
+                .is_some_and(|child| child.kind == NodeKind::Identifier)
+        }
+        NodeKind::Call => is_plain_main_call(node),
+        _ => false,
+    }
+}
+
+/// `main()` is parsed as `Call[Identifier("main"), Tuple([])]`. Other calls
+/// (including `main(1)`) are real top-level side effects.
+fn is_plain_main_call(node: &Node) -> bool {
+    match node.children.as_slice() {
+        [callee, args] => {
+            callee.kind == NodeKind::Identifier
+                && callee.value.as_ref().is_some_and(|value| {
+                    matches!(value, Const::Str(name) if name == "main")
+                })
+                && args.kind == NodeKind::Tuple
+                && args.children.is_empty()
+        }
+        _ => false,
+    }
+}
+
 impl<'a> Compiler<'a> {
     pub fn new(source: &'a Source) -> Self {
         let mut program = Program {

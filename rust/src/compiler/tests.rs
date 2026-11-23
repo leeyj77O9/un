@@ -7,7 +7,7 @@ use crate::optimize::optimize;
 use crate::parser::parse;
 use crate::source::Source;
 use crate::token::TokenType;
-use super::compile;
+use super::{compile, find_ignored_top_level_statement, IgnoredTopLevel};
 
 fn int_node(value: i64) -> Node {
     Node {
@@ -512,4 +512,81 @@ fn a_lambda_is_a_function_without_a_binding() {
     let root = &program.protos[program.root];
     let nested = &program.protos[root.protos[0]];
     assert_eq!(program.names[nested.name], "lambda");
+}
+
+// --- plain-build top-level statement detection (VM-02 / W-2026-11-24-LANG3) ---
+
+fn optimized_root(text: &str) -> (Node, Rc<Source>) {
+    let mut source = Source::new("test.un", text);
+    let tokens = lex(&mut source).expect("lex");
+    let source = Rc::new(source);
+    let node = parse(tokens, source.clone()).expect("parse");
+    let root = optimize(&node).expect("optimize").root;
+    (root, source)
+}
+
+fn ignored(text: &str) -> Option<(String, IgnoredTopLevel)> {
+    let (root, source) = optimized_root(text);
+    find_ignored_top_level_statement(&root).map(|found| (source.span(found.start, found.length), found))
+}
+
+#[test]
+fn a_bare_main_call_is_not_an_ignored_top_level_statement() {
+    // Every plain-build fixture ends this way; the generated driver calls
+    // `un_main` directly, so the call is redundant rather than silently lost.
+    assert!(ignored("use io\nfn main() -> int\n    io.write(1)\n    -> 0\nmain()\n").is_none());
+}
+
+#[test]
+fn declarations_globals_and_imports_are_not_ignored_top_level_statements() {
+    let text = concat!(
+        "use io\n",
+        "type Alias = int\n",
+        "x = 5\n",
+        "enum Color\n    Red\n",
+        "class Box\n    v: int\n",
+        "fn main() -> int\n    -> 0\n",
+        "main()\n",
+    );
+    assert!(ignored(text).is_none(), "all of these survive or are declarations");
+}
+
+#[test]
+fn an_annotated_top_level_global_is_reported() {
+    // `collect_global_names` skips `y: int`, so TIR drops this initializer.
+    assert!(ignored("use io\ny: int = 6\nfn main() -> int\n    -> 0\nmain()\n").is_some());
+}
+
+#[test]
+fn a_top_level_native_call_is_reported_with_its_span() {
+    let text = "use io\nio.write(\"boot\")\nfn main() -> int\n    -> 0\nmain()\n";
+    let (spanned, found) = ignored(text).expect("the top-level call must be reported");
+    assert_eq!(spanned, "io.write(\"boot\")");
+    assert_eq!(
+        found.message(),
+        "top-level statements are not supported in plain build; move them into fn main() or use un build --embed"
+    );
+}
+
+#[test]
+fn top_level_control_flow_and_non_identifier_targets_are_reported() {
+    assert!(ignored("use io\nif true\n    io.write(1)\nfn main() -> int\n    -> 0\nmain()\n").is_some());
+    assert!(ignored("use io\nwhile false\n    io.write(1)\nfn main() -> int\n    -> 0\nmain()\n").is_some());
+    assert!(ignored("use io\nobj.field = 1\nfn main() -> int\n    -> 0\nmain()\n").is_some());
+    assert!(ignored("use io\nmain(1)\nfn main(x: int) -> int\n    -> x\n").is_some());
+}
+
+#[test]
+fn a_bare_expression_statement_is_reported() {
+    // A bare identifier expression still has no plain-build representation.
+    assert!(ignored("use io\nx\nfn main() -> int\n    -> 0\nmain()\n").is_some());
+}
+
+#[test]
+fn un_run_still_compiles_and_executes_the_top_level_call() {
+    // The detector must not change the bytecode path: the `<module>` proto
+    // keeps every top-level statement, including the one we flag for plain
+    // builds.
+    let (program, _) = compile_text("use io\nio.write(\"boot\")\nfn main() -> int\n    -> 0\n");
+    assert!(code(&program).iter().any(|(op, _, _)| *op == Op::Call));
 }
