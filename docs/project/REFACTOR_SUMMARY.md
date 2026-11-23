@@ -84,7 +84,7 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
 | `test/test_suite.un` | **109 passed / 0 failed** |
 | `scripts/compile-check.ps1` | **36 passed / 0 failed** |
 | `scripts/exe-diff.ps1` | **42 passed / 0 failed** |
-| `scripts/bench.ps1 -Group all -Report` | 6 lanes (unvm/unjit/python/node/unnative/unbuild) self-validate; `BENCHMARK.md` regenerated per run (생성 시점 커밋 명시); Un JIT/Python geomean **3.882x** (`BENCHMARK.md`, 재생성 2026-11-24 00:47 +09:00, 커밋 64e4b7e 기준) |
+| `scripts/bench.ps1 -Group all -Report` | 6 lanes (unvm/unjit/python/node/unnative/unbuild) self-validate; `BENCHMARK.md` regenerated per run (생성 시점 커밋 명시); Un JIT/Python geomean **3.970x** (`BENCHMARK.md`, 재생성 2026-11-24 01:04 +09:00, 커밋 64e4b7e 기준) |
 
 ## Intentionally not done / known limits
 
