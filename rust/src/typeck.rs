@@ -475,7 +475,7 @@ impl<'a> Checker<'a> {
                         self.error_span(
                             span.0,
                             span.1,
-                            format!("unknown type '{n}' (fixed-width aliases require 'use types')"),
+                            format!("unknown type '{n}'"),
                         );
                     }
                     Ty::Unknown
@@ -4242,6 +4242,22 @@ impl<'a> Checker<'a> {
 
 
 
+/// A type variable only supports arithmetic when its bound is `int`, `float`
+/// or `int | float`. Without this gate an unbound `T + T` would pass `un check`
+/// and fail only at runtime for types that do not define `+` (e.g. lists).
+fn arithmetic_numeric_ok(checker: &Checker, ty: &Ty) -> bool {
+    match ty {
+        Ty::Generic { id, .. } => checker
+            .generic_bounds
+            .get(id)
+            .is_some_and(|bound| {
+                let atoms = bound_union_atoms(bound);
+                !atoms.is_empty() && atoms.iter().all(|atom| matches!(*atom, "int" | "float"))
+            }),
+        _ => ty.is_numeric(),
+    }
+}
+
 fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker, span: (usize, usize)) -> Ty {
     if matches!(lty, Ty::Unknown) || matches!(rty, Ty::Unknown) {
         return Ty::Unknown;
@@ -4254,9 +4270,15 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
             if matches!(op, Some(TokenType::Plus)) && *lty == Ty::Str && *rty == Ty::Str {
                 return Ty::Str;
             }
-            if lty.is_numeric() && rty.is_numeric() {
+            if arithmetic_numeric_ok(checker, lty) && arithmetic_numeric_ok(checker, rty) {
                 if *lty == Ty::Int && *rty == Ty::Int {
                     return Ty::Int;
+                }
+                if let Ty::Generic { .. } = lty {
+                    return lty.clone();
+                }
+                if let Ty::Generic { .. } = rty {
+                    return rty.clone();
                 }
                 if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
                     return Ty::Any;
@@ -4270,7 +4292,7 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
             Ty::Unknown
         }
         Some(TokenType::Slash) => {
-            if lty.is_numeric() && rty.is_numeric() {
+            if arithmetic_numeric_ok(checker, lty) && arithmetic_numeric_ok(checker, rty) {
                 return Ty::Float;
             }
             if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
@@ -4280,7 +4302,7 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
             Ty::Unknown
         }
         Some(TokenType::DoubleSlash) => {
-            if lty.is_numeric() && rty.is_numeric() {
+            if arithmetic_numeric_ok(checker, lty) && arithmetic_numeric_ok(checker, rty) {
                 return Ty::Int;            }
             if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
                 return Ty::Any;
@@ -4489,6 +4511,28 @@ fn dict_member_sig(key: &Ty, value: &Ty, name: &str) -> Option<(Vec<Ty>, Vec<Str
 
 /// Bind a type variable from a call-site argument. Repeated incompatible
 /// bindings widen to `Any` (the dynamic escape hatch) instead of failing.
+/// Split a bound expression on top-level `|` (e.g. `int | float`,
+/// `list[int] | dict[str, int]`). Brackets/parens keep nested commas and
+/// unions together.
+fn bound_union_atoms(bound: &str) -> Vec<&str> {
+    let mut atoms = Vec::new();
+    let mut depth = 0usize;
+    let mut last = 0usize;
+    for (i, ch) in bound.char_indices() {
+        match ch {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => {
+                atoms.push(bound[last..i].trim());
+                last = i + 1;
+            }
+            _ => {}
+        }
+    }
+    atoms.push(bound[last..].trim());
+    atoms.into_iter().filter(|atom| !atom.is_empty()).collect()
+}
+
 fn bound_ok(bound: &str, ty: &Ty, classes: &HashMap<String, ClassInfo>) -> bool {
     if matches!(ty, Ty::Any | Ty::Unknown | Ty::Generic { .. }) {
         return true;
@@ -4496,8 +4540,12 @@ fn bound_ok(bound: &str, ty: &Ty, classes: &HashMap<String, ClassInfo>) -> bool 
     if let Ty::Union(members) = ty {
         return members.iter().all(|m| bound_ok(bound, m, classes));
     }
+    let atoms = bound_union_atoms(bound);
+    if atoms.len() > 1 {
+        return atoms.iter().any(|atom| bound_ok(atom, ty, classes));
+    }
+    let bound = atoms.first().copied().unwrap_or("");
     match bound {
-        "numeric" => ty.is_numeric(),
         "int" => matches!(ty, Ty::Int),
         "float" => matches!(ty, Ty::Float),
         "bool" => matches!(ty, Ty::Bool),

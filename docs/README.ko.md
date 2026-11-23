@@ -55,7 +55,7 @@ Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(�
 - 선택적 타입 어노테이션: `x: int`, `a: list[int]`, `dict[str, int]`, `dict[int, int]`, `int | str`
   파라미터와 반환타입 (`fn add(a: int, b: int) -> int`)
 - **제네릭**: `fn identity[T](x: T) -> T`, `class Box[T]` — 호출부에서 타입을 추론하며
-  명시적 타입 인자 `identity[int](42)`도 쓸 수 있다. `[T: numeric]` 같은 제약을 지정할 수 있다
+  명시적 타입 인자 `identity[int](42)`도 쓸 수 있다. `[T: int | float]` 같은 제약을 지정할 수 있다
 - 어노테이션은 현재 가독성과 점진적 검사를 위한 용도이며, 엄격한 런타임 검사는 강화 중이다
 
 ### 동시성 (안정)
@@ -396,7 +396,7 @@ Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDive
 Negative 51 checks 매칭 + 0 documented divergences, Known 0 파일이다. (2026-11-23 재측정)
 Rust 테스트는 `cargo test --release --workspace` 254 passed(nrt 4 + lib 238 + LSP 4 +
 playground 8)다. JIT differential 101 파일 / 0 차이, `.unbc` 왕복 Positive 50/50 ·
-Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 33/0, exe 동치 검증 42/0이다.
+Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 34/0, exe 동치 검증 42/0이다.
 
 벤치마크는 6레인(Un VM, Un JIT, Compile Mode, standalone exe, CPython, Node.js)을 같은
 입력·알고리즘·측정 절차로 반복 측정하고, 결과를
@@ -837,7 +837,7 @@ class Heap
 
 - 바이트코드 컴파일러와 레지스터 기반 VM (lexer, parser, desugarer, optimizer, compiler, vm)
 - 핫 패스 Int 부분집합(loops, 산술, 비트연산, iter.range, FusedIntMulAdd, IntVec/IntDict intrinsic, Int 필드 위주 클래스 메서드, math Float intrinsic)을 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화, UV_JIT=2로 strict canary). Int-Int 전용 `d[k] = v` / `d[k]` IntDict intrinsic과 Bool 반환도 포함.
-- 제네릭 함수/클래스(`fn f[T]`, `class Box[T]`)와 호출부 추론, 명시적 타입 인자(`f[int](42)`), 제약(`[T: numeric]`)
+- 제네릭 함수/클래스(`fn f[T]`, `class Box[T]`)와 호출부 추론, 명시적 타입 인자(`f[int](42)`), 제약(`[T: int | float]`)
 - 타입 별칭(`type Id = int | str`), 패턴 가드·or-pattern·중첩 구조 분해, `match`/`un check`의 `is` 기반 타입 좁히기
 - 바이트 리터럴(`b"..."`), `bytes` 모듈, `fs.read_bytes`/`fs.write_bytes` 바이너리 파일 I/O(plain build는 NRT 지원 전까지 `--embed` 필요)
 - 페이로드를 갖는 enum variant(`Test.a(42)`)와 `match` 분해

@@ -11,10 +11,11 @@ test/compile/errors/syntax_error.un|expected a newline after the previous statem
 test/compile/errors/field_type_mismatch.un|cannot assign value of type 'str' to field 'tag' of type 'int'
 test/compile/errors/match_missing_wildcard.un|match exhaustiveness: expected a wildcard '_' arm
 test/compile/errors/match_bool_partial.un|match exhaustiveness: expected 'true' and 'false' arms
-test/compile/errors/fixed_width_builtin.un|fixed-width aliases require 'use types'
+test/compile/errors/fixed_width_builtin.un|unknown type 'u32'
 test/compile/errors/fixed_width_range.un|out of range for
 test/compile/errors/generic_arg_type.un|unsupported operand types for '+': 'str' and 'int'
-test/compile/errors/generic_bound.un|does not satisfy bound 'numeric'
+test/compile/errors/generic_bound.un|does not satisfy bound 'int | float'
+test/compile/errors/generic_unbounded_arith.un|unsupported operand types for '+': 'T' and 'T'
 test/compile/errors/generic_class_arg_type.un|expects 'str', got 'int'
 test/compile/errors/generic_class_field_type.un|cannot assign value of type 'int' to field 'value' of type 'str'
 test/compile/errors/enum_arg_type.un|expects 'int', got 'str'

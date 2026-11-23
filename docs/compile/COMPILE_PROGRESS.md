@@ -39,7 +39,7 @@
   (`nrt/src/dict.rs`).
 - 제네릭 본문에서만 호출되는 제네릭 함수도 인스턴스를 생성하도록 확장했다 (`tir.rs`).
   mangled 이름에 `__mono_` 접두어를 붙여 사용자 함수와 충돌하지 않게 했다.
-- `[T: numeric]` 제약이 union 타입을 거짓 거부하지 않도록 수정했다 (`typeck.rs`).
+- `[T: int | float]` 제약이 union 타입을 거짓 거부하지 않도록 수정했다 (`typeck.rs`).
 - JIT `BuildDict`가 preserve 목록에 누락돼 dict 표시가 지워지던 회귀를 수정했다 (`jit_bc.rs`).
 - CI에 `compile-check`/`exe-diff`/`edge-fuzz` 스텝을 추가하고 README 한/영에 제네릭을 반영했다.
 - 데이터를 담는 enum variant(`enum Test[T,U]`의 `a: int`, `Test.a(42)`, `.value`, match
@@ -53,7 +53,7 @@
 - **Phase 3 — 제네릭 클래스**: `class Box[T]`의 필드·생성자·메서드에서 타입 변수를 사용할 수
   있다. 클래스 제네릭을 포함한 프로그램은 TIR 네이티브 경로에서 제외되고 VM/`--embed`로
   실행된다 (`test/compile/generic_class.un`).
-- **Phase 4 — 제약**: `[T: numeric]` / `[T: int]` 등의 bound를 파싱·검증한다. 위반 시
+- **Phase 4 — 제약**: `[T: int | float]` / `[T: int]` 등의 bound를 파싱·검증한다. 위반 시
   `type argument ... does not satisfy bound` 오류 (`test/compile/errors/generic_bound.un`).
 - Vm 모드의 정상 폴백(Str/heap/native-call)에서 panic 메시지가 새어나가지 않도록
   `native_compile`이 해당 함수를 미리 제외한다.
@@ -117,7 +117,7 @@
   negative 42 identical + 9 skipped(compile-rejected) — **green**.
 - `cargo test --release --workspace`: 254 passed (nrt 4 + lib 238 + un bin/LSP 4 +
   playground 8), 0 failed — **green**.
-- `scripts/compile-check.ps1`: 33 passed, 0 failed.
+- `scripts/compile-check.ps1`: 34 passed, 0 failed.
 - `scripts/exe-diff.ps1`: 42 passed, 0 failed — `test/compile/*.un`을 `un build --embed`로
   링크한 exe가 `un run`과 stdout/stderr/exit code 바이트 동일인지, `test/compile/build/*.un`은
   plain `un build` exe가 동일한지 검사. plain build 불가 fixture(assert 모듈 사용 등)는

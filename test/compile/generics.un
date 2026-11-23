@@ -30,7 +30,7 @@ fn countdown[T](n: int, x: T) -> T
     -> countdown(n - 1, identity(x))
 
 # Numeric bound: only int/float instantiations are accepted.
-fn add[T: numeric](a: T, b: T) -> T
+fn add[T: int | float](a: T, b: T) -> T
     -> a + b
 
 assert.assert_eq(identity(42) + 1, 43, "generic int inference")
@@ -42,8 +42,8 @@ assert.assert_eq(twice(4, identity), 4, "generic passed as a callback value")
 assert.assert_eq(identity[int](11), 11, "explicit type arguments")
 assert.assert_eq(nest(5), 5, "nested generic calls")
 assert.assert_eq(countdown(5, 7), 7, "recursive generic call")
-assert.assert_eq(add(3, 4), 7, "numeric bound with int")
-assert.assert_eq(add(1.5, 2.5), 4.0, "numeric bound with float")
+assert.assert_eq(add(3, 4), 7, "int | float bound with int")
+assert.assert_eq(add(1.5, 2.5), 4.0, "int | float bound with float")
 # Exact type checks catch wrong-instance JIT dispatch (assert_eq's == is
 # permissive about int vs float).
 assert.assert_true(type(add(3, 4)) == type(1), "int instance type")

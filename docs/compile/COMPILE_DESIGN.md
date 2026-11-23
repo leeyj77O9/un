@@ -250,7 +250,7 @@ fn process(value: T) -> T
 - 튜플 리터럴 `(1, "a")` → `tuple[int, str]`
 - 제너릭: 초기 v1 설계에는 문법이 없었으나 **현재는 구현됨** —
   `fn identity[T](x: T) -> T`, `class Box[T]`, 호출부 추론·명시적 `identity[int](42)`·
-  bound `[T: numeric]`를 지원하고 TIR이 monomorphization한다 (`tir.rs`, §10).
+  bound `[T: int | float]`를 지원하고 TIR이 monomorphization한다 (`tir.rs`, §10).
 
 ## 5. TIR (Typed IR)
 
@@ -405,7 +405,7 @@ TIR 내부 호출은 완전한 정적 타입 직접 호출이므로 태그 검�
   불가능한 조건은 `TAG_BAIL`로 보고되어 VM이 해당 호출만 interpreter로
   재실행한다. 출력/종료 코드는 `un run`과 바이트 동일.
 - **제너릭**: `fn identity[T](x: T) -> T`, `class Box[T]` 문법, 호출부 추론·명시적
-  `identity[int](42)`·bound `[T: numeric]`를 지원하고 TIR이 monomorphization한다
+  `identity[int](42)`·bound `[T: int | float]`를 지원하고 TIR이 monomorphization한다
   (`tir.rs`). 데이터를 담는 enum variant(`enum Test[T,U]`의 `Test.a(42)`, `.value`,
   match 분해)도 VM/Compile Mode 경로에서 동작한다(plain no-VM build는 여전히 거부).
 - **Standalone exe**: `un build` + `libnrt.a`로 VM 없는 네이티브 exe 산출 (§9).
@@ -423,7 +423,7 @@ TIR 내부 호출은 완전한 정적 타입 직접 호출이므로 태그 검�
   `scripts/compile-bench.ps1`은 상세 비교용으로 남아 있다. 전체 결과는 루트
   `BENCHMARK.md` 참조.
 - `test/compile/errors/` negative manifest — 구현됨 (`manifest.txt` 기반,
-  `compile-check.ps1`가 33 passed 검증; §8).
+  `compile-check.ps1`가 34 passed 검증; §8).
 
 ### 배운 것 (요약)
 

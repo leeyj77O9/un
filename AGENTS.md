@@ -195,6 +195,7 @@ C:\dev\un
   (no-VM 마커 + exe 크기 + 클래스/모듈 출력 비교), 진행 상황은
   `docs/compile/OBJ_MILESTONES.md`.
 - **언어 기능(2026-11-23)**: 타입 별칭 `type Name = Ty`, 패턴 가드·or-pattern·중첩 구조 분해·`case x is T` narrowing, bytes 리터럴 `b"..."`과 `bytes` 모듈(12함수)·`fs.read_bytes`/`write_bytes`를 지원한다. `bytes`는 런타임에서 임시 `List<Int>` 표현을 쓰고(후속 `Payload::Bytes` 교체 지점은 `native/bytes.rs` 어댑터 3함수), plain build는 `nrt_supported`가 거부해 `--embed`를 안내한다. `un check`는 union narrowing과 exhaustiveness를 타입 수준에서 정밀화했다.
+- **제네릭 제약**: 타입 파라미터마다 제약을 하나 둘 수 있다(`fn add[T: int | float](a: T, b: T) -> T`). 사용 가능한 이름은 `int`, `float`, `int | float`, `bool`, `str`, `list`, `dict`와 클래스 이름이다. 산술 연산 `+ - * / // **`은 제약이 `int`, `float` 또는 `int | float`일 때만 허용되고, 제약 없는 `T + T`는 컴파일 오류다. `%`와 비트연산은 제네릭에 아직 지원되지 않는다. 제약은 호출부 인자에도 적용된다(예: `int | float`에 `str` 전달 시 거부).
 - `Runner.RunCore` 대응: 파싱 → desugar → optimize → compile → evaluate를 순서대로 수행한다.
   `Runner.Load`는 `Global.PATH` 기준으로 파일을 읽고 CRLF를 LF로 정규화한다.
 - `Scope`는 부모 체인을 갖는 슬롯 기반 심볼 테이블이다. `Scope`의 slot table에서
@@ -237,7 +238,7 @@ C:\dev\un
   1606 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
   Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다. (2026-11-23 재측정)
   그 외 게이트: `cargo test --release --workspace` 254 passed, differential 101 파일 / 0 차이,
-  `.unbc` 왕복 Positive 50/50 + Negative 42 identical(9 skip), compile-check 33/0, exe-diff 42/0.
+  `.unbc` 왕복 Positive 50/50 + Negative 42 identical(9 skip), compile-check 34/0, exe-diff 42/0.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).
 - `test/KnownFailures.txt`의 파일은 runner가 KNOWN FAIL로 기록하고 Positive 집계에

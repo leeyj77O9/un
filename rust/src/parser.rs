@@ -383,8 +383,36 @@ impl Parser {
         loop {
             let mut name = self.parse_identifier()?;
             if self.match_(TokenType::Colon) {
-                let bound = self.parse_identifier()?;
-                name = name.with_value(Const::Str(self.get_text(bound.start, bound.length)));
+                // A bound may be a union such as `int | float`, so capture the
+                // raw source text up to the next top-level comma or `]`.
+                let start = self.current().start;
+                let mut end = start;
+                let mut depth = 0usize;
+                loop {
+                    let token = self.current();
+                    match token.typ {
+                        TokenType::LBrack | TokenType::LParen => {
+                            depth += 1;
+                            end = token.start + token.length;
+                            self.next();
+                        }
+                        TokenType::RBrack | TokenType::RParen => {
+                            if depth == 0 {
+                                break;
+                            }
+                            depth -= 1;
+                            end = token.start + token.length;
+                            self.next();
+                        }
+                        TokenType::Comma if depth == 0 => break,
+                        TokenType::NewLine | TokenType::Dedent | TokenType::Eof => break,
+                        _ => {
+                            end = token.start + token.length;
+                            self.next();
+                        }
+                    }
+                }
+                name = name.with_value(Const::Str(self.get_text(start, end - start)));
             }
             names.push(name);
             if !self.match_(TokenType::Comma) {
