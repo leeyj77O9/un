@@ -1561,45 +1561,49 @@ impl VM {
             _ => return Err(self.error("slice assignment only supports list", span)),
         };
         let count = list.borrow().len() as i64;
-        let (mut a, mut b) = (0i64, count);
-        if let Some(o) = &start {
-            let i = match obj::payload(o) {
-                Payload::Int(i) => i,
-                _ => return Err(self.error("slice start must be int", span)),
-            };
-            let i = i as i32 as i64;
-            a = if i < 0 { i + count } else { i };
-            a = a.clamp(0, count);
-        }
-        if let Some(o) = &end {
-            let i = match obj::payload(o) {
-                Payload::Int(i) => i,
-                _ => return Err(self.error("slice end must be int", span)),
-            };
-            let i = i as i32 as i64;
-            b = if i < 0 { i + count } else { i };
-            b = b.clamp(0, count);
-        }
-        if let Some(o) = &step {
-            let i = match obj::payload(o) {
-                Payload::Int(i) => i,
-                _ => return Err(self.error("slice step must be int", span)),
-            };
-            let i = i as i32 as i64;
-            if i != 1 {
-                return Err(self.error("slice assignment with step != 1 not supported", span));
-            }
-        }
-        if b < a {
-            b = a;
-        }
-        let slice_len = b - a;
+        // Use the same normalisation as slice *reads* so negative bounds,
+        // omitted bounds and step follow one rule. `slice_indices` also keeps
+        // bounds as i64 (the old write path truncated them to i32).
+        let (a, mut b, step) = match collections::slice_indices(count, &start, &end, &step) {
+            Ok(bounds) => bounds,
+            Err(e) => return Err(self.error(err_message(&e), span)),
+        };
 
+        // Snapshot the RHS before mutating the list: RHS may be the list itself.
         let converted = obj::to_list(value);
         let rhs = match obj::payload(&converted) {
             Payload::List(v) => v.borrow().clone(),
             _ => return Err(self.error("slice assignment value must be list", span)),
         };
+
+        if step != 1 {
+            // Extended slices cannot change length; they replace exactly the
+            // selected positions, as in Python.
+            let positions = collections::slice_positions(count, a, b, step);
+            if positions.len() != rhs.len() {
+                return Err(self.error(
+                    format!(
+                        "attempt to assign sequence of size {} to extended slice of size {}",
+                        rhs.len(),
+                        positions.len()
+                    ),
+                    span,
+                ));
+            }
+            for (index, item) in positions.into_iter().zip(rhs) {
+                let result = collections::list_set_item(&list, &obj::int(index as i64), &item);
+                if obj::is_err(&result) {
+                    return Err(self.error(err_message(&result), span));
+                }
+            }
+            return Ok(());
+        }
+
+        // A reversed range is an empty insertion point, not an error.
+        if b < a {
+            b = a;
+        }
+        let slice_len = b - a;
         let common = std::cmp::min(slice_len, rhs.len() as i64);
         for i in 0..common {
             let result = collections::list_set_item(&list, &obj::int(a + i), &rhs[i as usize]);

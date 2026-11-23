@@ -2371,10 +2371,26 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Element type produced when an iterable is assigned to a slice. The VM
+    /// collects RHS values with `obj::to_list`, which accepts list, tuple, str,
+    /// dict (as key/value pairs), runtime iterators and `__list__` dunders.
+    fn slice_value_elem(&self, ty: &Ty) -> Option<Ty> {
+        match ty {
+            Ty::List(item) | Ty::Set(item) => Some((**item).clone()),
+            Ty::Tuple(items) => Some(Ty::union(items.to_vec())),
+            Ty::Str => Some(Ty::Str),
+            Ty::Dict(key, value) => Some(Ty::Tuple(Rc::from(vec![(**key).clone(), (**value).clone()]))),
+            // Iterators (e.g. `iter.range`) are dynamically typed at runtime.
+            Ty::Any | Ty::Unknown | Ty::Class(_) | Ty::Generic { .. } => Some(Ty::Any),
+            _ => None,
+        }
+    }
+
     fn assign_index(&mut self, target: &'a Node, obj_ty: Ty, vty: Ty, env: &mut Env) {
+        let is_slice = target.kind == NodeKind::Slice;
         let elem = match &obj_ty {
             Ty::List(elem) => Some(refine_unknown((**elem).clone())),
-            Ty::Dict(_, value) => Some((**value).clone()),
+            Ty::Dict(_, value) if !is_slice => Some((**value).clone()),
             Ty::Str => {
                 self.error_span(target.start, target.length, "string assignment does not support item assignment");
                 None
@@ -2395,11 +2411,28 @@ impl<'a> Checker<'a> {
                 None
             }
         };
-        if let Some(index) = target.children.get(1) {
+        for index in target.children.iter().skip(1) {
             let _ = self.check_expr(index, env);
         }
         if let Some(elem) = elem {
-            if !assignable(&elem, &vty, &self.classes) {
+            if is_slice {
+                // A slice assignment replaces a range with *all* elements of
+                // the RHS iterable, so the RHS itself must be iterable and its
+                // elements must fit the list element type.
+                match self.slice_value_elem(&vty) {
+                    Some(item) if assignable(&elem, &item, &self.classes) => {}
+                    Some(_) => self.error_span(
+                        target.start,
+                        target.length,
+                        format!("cannot assign value of type '{}' to slice of type '{}'", vty, elem),
+                    ),
+                    None => self.error_span(
+                        target.start,
+                        target.length,
+                        format!("slice assignment requires an iterable, got '{}'", vty),
+                    ),
+                }
+            } else if !assignable(&elem, &vty, &self.classes) {
                 self.error_span(
                     target.start,
                     target.length,

@@ -1,0 +1,27 @@
+use io
+use iter
+use test.assert as assert
+
+# Slice assignment in static checking and Compile Mode.
+fn main() -> none
+    a: list[int] = [1, 2, 3, 4, 5]
+    a[1:3] = [10, 20]
+    assert.assert_eq(a, [1, 10, 20, 4, 5], "replace range")
+
+    a[3:3] = [7, 8]
+    assert.assert_eq(a, [1, 10, 20, 7, 8, 4, 5], "insert into empty range")
+
+    a[1:4] = []
+    assert.assert_eq(a, [1, 8, 4, 5], "delete range")
+
+    b: list[int] = [1, 2, 3]
+    b[1:2] = iter.range(10, 12)
+    assert.assert_eq(b, [1, 10, 11, 3], "iterable RHS")
+
+    c: list[int] = [1, 2, 3, 4, 5]
+    c[::2] = [9, 20, 30]
+    assert.assert_eq(c, [9, 2, 20, 4, 30], "extended slice")
+
+    assert.summary()
+
+main()

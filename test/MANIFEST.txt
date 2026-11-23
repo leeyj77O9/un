@@ -37,6 +37,7 @@ unit|test/unit/runtime/enum_data.un
 unit|test/unit/runtime/enum_verify.un
 unit|test/unit/runtime/reentrant.un
 unit|test/unit/runtime/compound_assign.un
+unit|test/unit/runtime/slice_assign.un
 unit|test/unit/runtime/union_calls.un
 
 # ---------- unit: native ----------
