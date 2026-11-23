@@ -77,7 +77,7 @@ pub fn import_map(
                     let value = find_member(map, &name, module_name)?;
                     obj::member_set(&existing, &import_alias, &value);
                 }
-                scope::set(&scope, &alias, existing);
+                scope::set_local(&scope, &alias, existing);
                 return Ok(());
             }
             let module = obj::plain(world::intern_type("module"));
@@ -103,24 +103,24 @@ pub fn import_map(
                 }
                 obj::member_set(&module, &import_alias, &value);
             }
-            scope::set(&scope, &alias, module);
+            scope::set_local(&scope, &alias, module);
             return Ok(());
         }
         for (name, import_alias) in imports {
             if name == WILDCARD {
                 for (k, v) in map {
-                    scope::set(&scope, k, v.clone());
+                    scope::set_local(&scope, k, v.clone());
                 }
                 continue;
             }
             let value = find_member(map, &name, module_name)?;
-            scope::set(&scope, &import_alias, value);
+            scope::set_local(&scope, &import_alias, value);
         }
         return Ok(());
     }
     let object_name = module_alias.unwrap_or_else(|| module_object_name.to_owned());
     let module = module_object(map.to_vec());
-    scope::set(&scope, &object_name, module);
+    scope::set_local(&scope, &object_name, module);
     Ok(())
 }
 fn find_member(map: &[(String, Obj)], name: &str, module_name: &str) -> Result<Obj, Obj> {

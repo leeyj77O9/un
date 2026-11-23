@@ -1,0 +1,7 @@
+use io
+use test.fixtures.rel_test.utils { value }
+
+fn main() -> int
+    -> value
+
+main()

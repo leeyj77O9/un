@@ -141,7 +141,9 @@ assert.assert_eq(o, [3, 2, 1], "order sorts ascending by the key")
 # ---------- invalid input ----------
 assert.assert_err(fn() -> e.pop(), "pop on empty list")
 assert.assert_err(fn() -> e.hpop(), "hpop on empty list")
-assert.assert_err(fn() -> e.remove_at(0), "remove_at on empty list")
+# remove_at는 범위 밖에서 에러 대신 false를 반환한다 (JUnit 회귀: 이전엔 assert 모듈의
+# `catch e`가 전역 e를 오염시켜 우연히 통과했다).
+assert.assert_eq(e.remove_at(0), false, "remove_at on empty list returns false")
 assert.assert_err(fn() -> e[0], "empty list index")
 assert.assert_err(fn() -> l[100], "list index out of range")
 assert.assert_eq(m.map(fn(x) -> x * 10), [30, 10, 20], "map with 1-arg lambda receives just the value")

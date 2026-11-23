@@ -145,6 +145,11 @@ fn load_file(path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, 
     if let Err(message) = program.validate() {
         return Err(ModuleError::Panic(obj::panic("panic", message)));
     }
+    // Declare every compiled name locally before running the module. Without
+    // this a module top-level `len = 999` walks the parent chain and overwrites
+    // the global builtin `len`. Uninitialized slots are skipped by lookups, so
+    // names the module never assigns still resolve to globals as before.
+    scope::preseed_slots(&module_scope, &program.names);
     let mut vm = VM::with_context(Rc::new(program), source.clone(), ctx)
         .map_err(|message| ModuleError::Panic(obj::panic("panic", message)))?;
     let outcome = vm.run();

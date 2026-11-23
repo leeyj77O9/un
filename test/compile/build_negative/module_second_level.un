@@ -1,0 +1,7 @@
+use io
+use test.fixtures.import_forms as forms
+
+fn main() -> int
+    -> forms.value
+
+main()

@@ -582,10 +582,10 @@ fn find_gnu_toolchain() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
 /// files containing functions are supported; the files are textually inlined
 /// with mangled names so spans stay consistent with the combined source.
 fn inline_user_modules_text(code: &str, input: &str) -> Result<String, String> {
-    let native = [
-        "io", "inspect", "math", "iter", "os", "sys", "fs", "types", "time",
-        "random", "flow", "atomic", "re", "codes", "http", "ws",
-    ];
+    // Discover native modules from the same registry the runtime uses. A
+    // hand-maintained list here previously omitted `bytes`, making plain build
+    // mistake `use bytes` for a user module file.
+    let native = unvm::runtime::world::native_module_names();
     let mut out = String::new();
     let mut aliases: Vec<(String, String)> = Vec::new();
     let mut appended = String::new();
@@ -609,13 +609,13 @@ fn inline_user_modules_text(code: &str, input: &str) -> Result<String, String> {
                 return Err(format!("module import '{}' needs `un build --embed`", path_full));
             }
             let first = path_full.split('.').next().unwrap_or(path_full);
-            if native.contains(&first) {
+            if native.iter().any(|name| name == first) {
                 out.push_str(line);
                 out.push('\n');
                 continue;
             }
             let alias = alias.unwrap_or_else(|| path_full.rsplit('.').next().unwrap_or(path_full).to_string());
-            if native.contains(&alias.as_str()) || aliases.iter().any(|(a, _)| a == &alias) {
+            if native.iter().any(|name| name == &alias) || aliases.iter().any(|(a, _)| a == &alias) {
                 return Err(format!("module alias '{alias}' conflicts with a native module or another alias"));
             }
             let mut rel = std::path::PathBuf::new();
@@ -643,7 +643,7 @@ fn inline_user_modules_text(code: &str, input: &str) -> Result<String, String> {
                 if t.starts_with("use ") {
                     let p = t[4..].split_whitespace().next().unwrap_or("");
                     let first = p.split('.').next().unwrap_or(p);
-                    if !native.contains(&first) {
+                    if !native.iter().any(|name| name == first) {
                         return Err(format!("module '{}' imports another module (needs `un build --embed`)", file.display()));
                     }
                     appended.push_str(l);

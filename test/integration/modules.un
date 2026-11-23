@@ -32,8 +32,33 @@ assert.assert_true(g.contains_key("u2"), "the second alias is bound in the globa
 assert.assert_false(g.contains_key("utils"), "the file name is not bound when an alias is used")
 assert.assert_true(g.contains_key("io"), "imported modules appear in the global scope")
 
-# ---------- 캐시 ----------
-assert.assert_true(u1 is u2, "importing the same path twice gives the same module")
+# ---------- 캐시: 변경 가능한 값이 별칭之间 공유되는지로 검증 ----------
+# `is`는 module 타입 이름만 비교하므로 객체 동일성 검증으로는 부적합하다.
+use test.fixtures.import_forms.m as im
+use test.fixtures.import_forms.m as im2
+im.shared.add(9)
+assert.assert_eq(im2.shared, [1, 9], "module aliases share mutable module state")
+
+# ---------- 와일드카드 / 선택적 import ----------
+use test.fixtures.import_forms.m { value as v, label as lbl }
+use test.fixtures.import_forms.m.*
+assert.assert_eq(im.value, 7, "module alias member access")
+assert.assert_eq(v, 7, "selective import with alias")
+assert.assert_eq(lbl, "ok", "second selective import")
+assert.assert_eq(value, 7, "wildcard import binds globals")
+assert.assert_eq(shared[0], 1, "wildcard import binds mutable globals")
+
+# ---------- 함수 내부 import는 전역을 오염시키지 않는다 ----------
+fn local_wildcard()
+    use test.fixtures.import_forms.pollute.*
+    -> 1
+
+assert.assert_eq(local_wildcard(), 1, "function-local wildcard executes")
+assert.assert_eq(len([1, 2]), 2, "function-local wildcard does not clobber global len")
+
+# ---------- 마지막 세그먼트만 보고 네이티브로 오인하지 않는다 ----------
+use test.fixtures.io_shadow.io as file_io
+assert.assert_eq(file_io.value, "file module", "qualified io resolves to the file module")
 
 # ---------- 형 ----------
 assert.assert_eq(str(type(dm)), "<type: module>", "a module has the module type")

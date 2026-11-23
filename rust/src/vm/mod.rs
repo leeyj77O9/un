@@ -1338,10 +1338,13 @@ impl VM {
                 let imports = if imports.is_empty() { None } else { Some(imports) };
 
                 let parts: Vec<String> = path.split('.').map(|s| s.to_string()).collect();
-                let last = parts.last().cloned().unwrap_or_default();
+                // Only a bare name can denote a native module. Previously the
+                // *last* segment was checked, so `use foo.io` silently loaded
+                // native `io` and ignored `foo`.
+                let native_name = if parts.len() == 1 { parts.first().cloned() } else { None };
                 let scope = context::scope(&self.ctx);
-                let result = if world::is_native(&last) {
-                    modules::include(&last, alias, imports, &scope).map_err(module::ModuleError::Panic)
+                let result = if let Some(name) = native_name.as_deref().filter(|name| world::is_native(name)) {
+                    modules::include(name, alias, imports, &scope).map_err(module::ModuleError::Panic)
                 } else {
                     let source_path = self.ctx.borrow().source.path.clone();
                     module::import_file(&parts, &source_path, alias, imports, Some(context::traces(&self.ctx)), &scope)
