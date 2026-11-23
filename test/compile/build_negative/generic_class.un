@@ -1,0 +1,17 @@
+use io
+
+# Generic class declarations have type-variable fields that TIR cannot
+# represent yet, so plain `un build` must send the program to --embed rather
+# than silently miscompiling it.
+class Box[T]
+    value: T
+
+    fn __init__(value: T)
+        self.value = value
+
+fn main() -> int
+    b = Box(42)
+    io.write(b.value)
+    -> 0
+
+main()

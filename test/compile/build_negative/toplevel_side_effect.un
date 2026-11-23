@@ -1,0 +1,12 @@
+use io
+
+# A top-level side effect is silently dropped by the plain build lowering,
+# so the build driver must report it instead. Only the bare `main()` call is
+# permitted at module scope.
+io.write("boot")
+
+fn main() -> int
+    io.write(1)
+    -> 0
+
+main()

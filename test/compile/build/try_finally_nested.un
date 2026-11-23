@@ -1,0 +1,36 @@
+use io
+
+# try/catch/finally on both the normal and the throwing path, plus a nested
+# try whose catch rethrows into the outer catch. Results are printed so the
+# plain native exception lowering is compared with the VM byte-for-byte.
+fn guarded(n: int) -> int
+    result = 0
+    try
+        if n <= 0
+            throw("bad")
+        result = n * 10
+    catch err
+        result = -1
+    finally
+        result = result + 3
+    -> result
+
+fn nested_catch() -> int
+    count = 0
+    try
+        try
+            throw("inner")
+        catch e1
+            count = count + 1
+            throw("outer")
+    catch e2
+        count = count * 10
+    -> count
+
+fn main() -> int
+    io.write(guarded(4))
+    io.write(guarded(0))
+    io.write(nested_catch())
+    -> 0
+
+main()

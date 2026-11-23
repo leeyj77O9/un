@@ -1,0 +1,27 @@
+use io
+
+# Class inheritance with an overridden method and inherited field reads.
+# Every assertion is printed with io.write so `un run` and plain `un build`
+# can be compared byte-for-byte.
+class Animal(name: str)
+    fn speak() -> str
+        -> self.name + " speaks"
+
+class Dog(breed: str): Animal
+    fn speak() -> str
+        -> self.name + " barks"
+
+    fn label() -> str
+        -> self.breed + "/" + self.name
+
+fn main() -> int
+    a = Animal("creature")
+    d = Dog("rex", "lab")
+    io.write(a.speak())
+    io.write(d.speak())
+    io.write(d.label())
+    io.write(d.name)
+    io.write(d.breed)
+    -> 0
+
+main()

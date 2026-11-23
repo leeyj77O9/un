@@ -1,0 +1,10 @@
+use mods.topwrite
+use io
+
+# The imported module has a top-level `io.write`, which cannot be inlined into
+# the native global initializers. The build must name the offending module.
+fn main() -> int
+    io.write(1)
+    -> 0
+
+main()

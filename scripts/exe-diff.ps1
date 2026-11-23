@@ -10,6 +10,9 @@
     - 파트 B (plain): test/compile/build/*.un 을 plain `un build`로 링크한 exe가
       `un run`과 stdout/stderr/exit code 바이트 동일한지 검사한다. 이 디렉터리는 plain
       native exe로 컴파일 가능한 프로그램만 두므로 자동으로 exe 검증이 된다.
+    - 파트 D (negative): test/compile/build_negative/manifest.txt 의 각 행에 대해
+      plain `un build`가 exit 1 + 기대 문자열을 내는지 검사한다. 지원하지 않는 구문이
+      조용히 무시되거나 잘못 컴파일되지 않는지를 고정하는 게이트다.
     종료 코드: 하나라도 [FAIL]이면 1, 아니면 0.
 #>
 $ErrorActionPreference = "Stop"
@@ -130,12 +133,55 @@ if (Test-Path $nrtFixture) {
         Write-Host "[FAIL] nrt/bare_for.un (exe too large — VM likely linked)" -ForegroundColor Red
         $script:fail += 1
     } else {
-        $exe = Invoke-Raw -FilePath $exePath -ArgumentList @() -Tag "nrt_exe" -WorkDir $Root
-        if ((Bytes-Equal $run.out $exe.out) -and (Bytes-Equal $run.err $exe.err) -and ($run.code -eq $exe.code)) {
+        # Do not name this `$exe`: PowerShell variables are case-insensitive and
+        # that would clobber the `$Exe` path used by every part of this script.
+        $nrtExe = Invoke-Raw -FilePath $exePath -ArgumentList @() -Tag "nrt_exe" -WorkDir $Root
+        if ((Bytes-Equal $run.out $nrtExe.out) -and (Bytes-Equal $run.err $nrtExe.err) -and ($run.code -eq $nrtExe.code)) {
             Write-Host "[PASS] nrt/bare_for.un (no VM linked)" -ForegroundColor Green
             $script:pass += 1
         } else {
             Write-Host "[FAIL] nrt/bare_for.un (output differs)" -ForegroundColor Red
+            $script:fail += 1
+        }
+    }
+}
+
+# Part D: plain builds must reject unsupported programs with an explicit
+# diagnostic (exit 1 + expected substring) instead of silently dropping or
+# miscompiling them. Manifest rows are "path|expected substring"; paths are
+# relative to test/compile/build_negative. Blank/comment rows are ignored.
+$partDDir = Join-Path $Root "test\compile\build_negative"
+$partDManifest = Join-Path $partDDir "manifest.txt"
+if (Test-Path $partDManifest) {
+    foreach ($line in (Get-Content $partDManifest)) {
+        $entry = $line.Trim()
+        if ($entry -eq "" -or $entry.StartsWith("#")) { continue }
+        $parts = $entry.Split("|", 2)
+        $name = $parts[0].Trim()
+        if ($parts.Length -ne 2 -or $name -eq "") {
+            Write-Host "[FAIL] neg/manifest (malformed row: $entry)" -ForegroundColor Red
+            $script:fail += 1
+            continue
+        }
+        $needle = $parts[1].Trim()
+        $label = "neg/$name"
+        $src = Join-Path $partDDir $name
+        if (-not (Test-Path $src)) {
+            Write-Host "[FAIL] $label (missing fixture)" -ForegroundColor Red
+            $script:fail += 1
+            continue
+        }
+        $exePath = Join-Path $Tmp ("neg_" + [guid]::NewGuid().ToString("N") + ".exe")
+        $r = Invoke-Raw -FilePath $Exe -ArgumentList @("build", $src, "-o", $exePath) -Tag "neg" -WorkDir $Root
+        $text = [Text.Encoding]::UTF8.GetString($r.out) + [Text.Encoding]::UTF8.GetString($r.err)
+        if ($r.code -eq 1 -and $text.Contains($needle)) {
+            Write-Host "[PASS] $label" -ForegroundColor Green
+            $script:pass += 1
+        } else {
+            $why = @()
+            if ($r.code -ne 1) { $why += "exit $($r.code) != 1" }
+            if (-not $text.Contains($needle)) { $why += "missing '$needle'" }
+            Write-Host "[FAIL] $label ($($why -join ', '))" -ForegroundColor Red
             $script:fail += 1
         }
     }

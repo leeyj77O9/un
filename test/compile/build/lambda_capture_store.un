@@ -1,0 +1,21 @@
+use io
+
+# Lambdas capture surrounding locals, escape into a list, and are read back
+# and invoked through the list. All values are printed explicitly so the
+# plain native closure lowering is compared with the VM byte-for-byte.
+fn main() -> int
+    n = 7
+    m = 3
+    add = fn(x: int) -> x + n
+    scale = fn(x: int) -> x * m + n
+    fs = [add, scale]
+    io.write(fs[0](5))
+    io.write(fs[1](5))
+
+    ys = [scale]
+    io.write(ys[0](10))
+
+    io.write((fn(z: int) -> z + 100)(1))
+    -> 0
+
+main()

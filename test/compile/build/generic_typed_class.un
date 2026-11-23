@@ -1,0 +1,23 @@
+use io
+
+# Annotated generic collections holding class instances. Plain `un build`
+# rejects generic *class declarations* (covered in build_negative), but
+# monomorphized `list[Point]` / `dict[str, Point]` instances are fully native.
+# Every field read is printed for byte-for-byte VM / plain-build comparison.
+class Point(x: int, y: int)
+    fn total() -> int
+        -> self.x + self.y
+
+fn main() -> int
+    ps: list[Point] = [Point(1, 2), Point(3, 4)]
+    io.write(len(ps))
+    io.write(ps[0].total())
+    io.write(ps[1].x)
+
+    by_key: dict[str, Point] = {"a": Point(5, 6)}
+    io.write(by_key["a"].total())
+    by_key["b"] = Point(7, 8)
+    io.write(by_key["b"].x + by_key["b"].y)
+    -> 0
+
+main()

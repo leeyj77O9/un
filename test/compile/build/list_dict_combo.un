@@ -1,0 +1,31 @@
+use io
+
+# list/dict combination: int dict feeding an int list, str list driving a
+# str-keyed dict lookup, plus list mutation and query methods. Every step is
+# printed so VM and plain native output must match byte-for-byte.
+fn main() -> int
+    d: dict[int, int] = {1: 10, 2: 20}
+    xs: list[int] = [d[1], d[2]]
+    xs.add(30)
+    io.write(xs)
+    io.write(len(xs))
+
+    d[3] = xs[0] + xs[1]
+    io.write(d[1] + d[2] + d[3])
+
+    names: list[str] = ["a", "b"]
+    lookup: dict[str, int] = {"a": 1, "b": 2}
+    total = 0
+    for k in names
+        total += lookup[k]
+    io.write(total)
+
+    xs.sort()
+    io.write(xs)
+    io.write(xs.index_of(20))
+    io.write(xs.contains(30))
+    io.write(xs.pop())
+    io.write(len(xs))
+    -> 0
+
+main()
