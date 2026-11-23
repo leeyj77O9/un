@@ -403,11 +403,11 @@ and all of the above gates (12 steps total) on every push and PR.
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
-The current baseline is Positive 50 files / 1606 passed / 0 failed / 0 crashed,
+The current baseline is Positive 51 files / 1630 passed / 0 failed / 0 crashed,
 Negative 51 checks matched + 0 documented divergences, and Known 0 files
 (re-measured 2026-11-23). Rust tests: `cargo test --release --workspace` reports
-273 passed (nrt 4 + lib 246 + LSP 15 + playground 8). JIT differential: 101 files,
-0 differences. `.unbc` round-trip: Positive 50/50, Negative 42 identical
+273 passed (nrt 4 + lib 246 + LSP 15 + playground 8). JIT differential: 102 files,
+0 differences. `.unbc` round-trip: Positive 51/51, Negative 42 identical
 (9 compile-rejected skips), Compile cross-check 36/0, exe equality 42/0.
 
 Benchmarks measure 6 lanes (Un VM, Un JIT, Compile Mode, standalone exe, CPython,

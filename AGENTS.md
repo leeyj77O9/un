@@ -8,7 +8,7 @@
 - **Un**: 들여쓰기 기반 문법, 패턴 매칭, `go`/`wait` 비동기 실행을 제공하는 동적 타입 스크립팅 언어.
 - **구현**: Rust 바이트코드 컴파일러 + 레지스터 기반 VM (`unvm`, 라이브러리 이름 `unvm`).
 - **파이프라인**: `Source -> Lexer -> Parser -> Optimizer (desugar+fold) -> Bytecode Compiler -> Register VM`
-- **규모**: Rust 113개 파일(target 제외; `rust/src` 90 + `rust/nrt/` 22 + `rust/playground/` 1) / 64,378줄(`rust/src` 57,383 + `rust/nrt/` 6,995), `test/` 아래 `.un` 스크립트 175개. (2026-11-23 재측정)
+- **규모**: Rust 113개 파일(target 제외; `rust/src` 90 + `rust/nrt/` 22 + `rust/playground/` 1) / 64,378줄(`rust/src` 57,383 + `rust/nrt/` 6,995), `test/` 아래 `.un` 스크립트 177개. (2026-11-23 재측정)
 - **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을 읽을 때 Int 부분집합(i64 파라미터·지역변수, `iter.range` 루프, 정수 산술과 비트연산 `&` `|` `^`, `FusedIntMulAdd`)과 IntDict/IntVec/class intrinsic와 math Float intrinsic에 속하는 proto를 native로 컴파일하고 `jit_cache`에 등록한다. 결과는 hidden pointer로 (value, tag)를 기록하는데 tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2는 런타임 bail(엔진 오류가 아니라 의미론 보존을 위한 인터프리터 fallback)이다. 나머지는 전부 인터프리터로 fallback. 0인자 사용자 함수도 JIT 대상이다(컴파일러 합성 proto는 제외). **클래스 메서드는 JIT 대상이다**: receiver는 hidden pointer 형태의 raw `Rc<ObjData>` 포인터로 전달되고, 클래스 메서드는 receiver를 local slot 0에 바인딩한다. `self.<Int필드>`의 직접 read/write는 layout 인덱스와 `[이름 == 필드이름, payload == Int]`를 **호출 시점에 name-checked**하는 intrinsic으로 수행하고, 검증 실패 시 bail → 인터프리터로 fallback한다. `UV_JIT=0`으로 런타임에 opt-out. `UV_JIT=2`는 strict canary로, JIT 후보가 하나라도 fallback stub이 되면 exit code 2로 즉시 죽는다(`.github/workflows/build.yml`의 strict canary 3스텝이 `test/jit/strict.un`(Int), `strict_float.un`(Float), `strict_{collections,class,ops}.un`(컬렉션·클래스·연산)으로 검증).
 - **기준 문서**: `docs/project/REFACTOR_SUMMARY.md`(전체 요약), `docs/project/PROJECT_AUDIT.md`(감사 결과), `docs/project/REFACTOR_LOG.md`(변경 이력), `docs/spec/ARCHITECTURE.md`(구조), `docs/project/TECHNICAL_DEBT.md`(부채 목록)가 현재 상태의 기준 문서다.
 - **이전 역사**: 원래 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었다. Rust 포트가
@@ -234,11 +234,11 @@ C:\dev\un
   파일을 `un run` vs `un compile` + `un run <file>.unbc`로 실행해 stdout/stderr/
   exit code를 바이트 비교한다. `-IncludeNegative`를 쓰면 negative manifest도 포함한다.
 - `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
-  stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 50 files /
-  1606 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
+  stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 51 files /
+  1630 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
   Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다. (2026-11-23 재측정)
-  그 외 게이트: `cargo test --release --workspace` 273 passed, differential 101 파일 / 0 차이,
-  `.unbc` 왕복 Positive 50/50 + Negative 42 identical(9 skip), compile-check 36/0, exe-diff 42/0.
+  그 외 게이트: `cargo test --release --workspace` 273 passed, differential 102 파일 / 0 차이,
+  `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 37/0, exe-diff 52/0.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).
 - `test/KnownFailures.txt`의 파일은 runner가 KNOWN FAIL로 기록하고 Positive 집계에

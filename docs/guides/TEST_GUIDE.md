@@ -140,7 +140,7 @@ moved into meaningful tests (2026-11-16), and `scripts/test.ps1` passes with
 ## Current status
 
 ```
-Positive: 50 files, 1606 passed, 0 failed, 0 crashed
+Positive: 51 files, 1630 passed, 0 failed, 0 crashed
 Negative: 51 matched, 0 mismatched, 0 documented divergences
 Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
@@ -150,9 +150,9 @@ Overall exit code: 0
 the JIT entry-map isolation, repeated-native-call, sandbox path-confinement, and
 generic-type semantic-token regression guards). Additional runners compare
 execution shapes: `scripts/differential.ps1` runs every manifest file with
-`UV_JIT=0` and default JIT and diffs stdout + exit code (101 files, 0 differences);
+`UV_JIT=0` and default JIT and diffs stdout + exit code (102 files, 0 differences);
 `scripts/unbc-roundtrip.ps1 -IncludeNegative` byte-compares `un run` against
-`un compile` + `un run <file>.unbc` (Positive 50/50, compilable Negative 42
+`un compile` + `un run <file>.unbc` (Positive 51/51, compilable Negative 42
 identical + 9 compile-rejected skips); `scripts/compile-check.ps1` cross-checks
 Compile Mode (36 passed, 0 failed); and `scripts/exe-diff.ps1` byte-compares
 plain no-VM and `--embed` executables against `un run` (42 passed, 0 failed).

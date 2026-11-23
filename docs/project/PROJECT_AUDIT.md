@@ -162,8 +162,8 @@ symbol with exactly one occurrence in its own definition file is reported as
 
 | Gap | Detail | Where |
 | --- | --- | --- |
-| `core` round-trip | `vm/tests.rs::an_unbc_round_trip_preserves_behavior` runs source directly and then `source → .unbc file → read → run`, and asserts identical stdout and identical outcome kinds (audit-time: 79 files, 0 differences; **current: 101 files, 0 differences**) | `rust/src/vm/tests.rs`, `scripts/differential.ps1` |
-| JIT differential runner | `scripts/differential.ps1` runs every test-manifest file with `UV_JIT=0` and with the default JIT and diffs stdout + exit code (audit-time: 79 files; **current: 101 files, 0 differences**) | `scripts/differential.ps1` |
+| `core` round-trip | `vm/tests.rs::an_unbc_round_trip_preserves_behavior` runs source directly and then `source → .unbc file → read → run`, and asserts identical stdout and identical outcome kinds (audit-time: 79 files, 0 differences; **current: 102 files, 0 differences**) | `rust/src/vm/tests.rs`, `scripts/differential.ps1` |
+| JIT differential runner | `scripts/differential.ps1` runs every test-manifest file with `UV_JIT=0` and with the default JIT and diffs stdout + exit code (audit-time: 79 files; **current: 102 files, 0 differences**) | `scripts/differential.ps1` |
 | JIT test corpus | **resolved** — `test/jit/strict.un` (Int) and `test/jit/strict_float.un` (Float) are CI canaries under `UV_JIT=2` | `test/jit/`, `.github/workflows/build.yml` |
 | CI | **resolved** — `.github/workflows/build.yml` runs 12 steps including compile-check, exe-diff, edge-fuzz and two strict canaries; `rust-toolchain.toml` pins the toolchain | `.github/workflows/build.yml`, `rust-toolchain.toml` |
 | `AGENTS.md` drift | **resolved** — counts and paths were refreshed to the 2026-11-23 measured state; the authoritative figures are in `docs/project/REFACTOR_SUMMARY.md` | `AGENTS.md`, `docs/project/REFACTOR_SUMMARY.md` |

@@ -213,7 +213,7 @@ proto table   : count u32 + protos
    `1` named이고, named는 name 문자열 인덱스를 함께 읽는다.
 
 손상된 입력은 panic/abort가 아니라 exit 1 + 명확한 오류 메시지로 거부된다.
-`unbc-roundtrip.ps1 -IncludeNegative`가 Positive 50/50, compilable Negative 42 identical(9 compile-rejected skip)을 검증한다.
+`unbc-roundtrip.ps1 -IncludeNegative`가 Positive 51/51, compilable Negative 42 identical(9 compile-rejected skip)을 검증한다.
 
 ## 8. JIT와의 관계
 

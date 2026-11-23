@@ -24,7 +24,7 @@
 - 근거: `docs/guides/CLI.md:229-287`, `docs/compile/OBJ_MILESTONES.md:30-38`, `AGENTS.md` 빌드/링크 항목.
 - 네이티브 산출물의 핵심 보증은 `un run`과 stdout/stderr/exit code **byte-identical**이며,
   회귀 게이트는 `scripts/exe-diff.ps1`(현재 42/0)이다(`docs/compile/OBJ_MILESTONES.md:71-74`).
-- 게이트 수치는 문서마다 차이가 있다(예: `COMPILER_LANGUAGE_ROADMAP.md:23`의 workspace 254 vs `AGENTS.md`의 261).
+- 게이트 수치는 문서마다 차이가 있다(예: `COMPILER_LANGUAGE_ROADMAP.md:23`의 workspace 273 vs `AGENTS.md`의 261).
   정확한 현재값은 실행 시 재측정 — **확인 필요**.
 
 ## 1. 공개 ABI 계약
@@ -151,7 +151,7 @@ extern "C" { fn unvm_run_embedded(bytes: *const u8, len: usize) -> i32; }
   (`docs/spec/BYTECODE.md:198-215`).
 - 호환성 관행: 추가적 pattern tag(5~7)는 VERSION 1을 유지하고, **새 serialization 필드는 proto layout에
   append한 뒤 version을 bump**한다(`docs/spec/BYTECODE.md:211-213, 226-229`).
-- 검증 게이트: `unbc-roundtrip.ps1 -IncludeNegative`가 Positive 50/50, compilable Negative 42 identical(9 skip)
+- 검증 게이트: `unbc-roundtrip.ps1 -IncludeNegative`가 Positive 51/51, compilable Negative 42 identical(9 skip)
   을 확인한다(`docs/spec/BYTECODE.md:216`).
 
 ### 3.2 언어/ABI 버전 관리 제안 (아직 정책 없음 — 제안)
