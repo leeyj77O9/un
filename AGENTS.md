@@ -254,8 +254,8 @@ C:\dev\un
   측정은 웜업 + 반복 + 통계(최솟값·중위값·평균·최댓값·표준편차·연산 수)를 사용한다.
   `-Group all`은 6레인(Un VM/Un JIT/Compile Mode/standalone exe/Python/Node)을 측정하고,
   `scripts/bench-report.ps1`이 `bench/report.html`을 생성하며 `-Gate`로 회귀를 검사한다.
-  `BENCHMARK.md`는 측정 시점 커밋을 명시하며(최근 2026-11-24 01:04, `64e4b7e`,
-  Un JIT/Python geomean 3.970x), 결과와 측정 한계는 `docs/guides/BENCHMARK_GUIDE.md`를 참고한다.
+  `BENCHMARK.md`는 측정 시점 커밋을 명시하며(최근 2026-11-24 03:19, `64e4b7e`,
+  Un JIT/Python geomean 4.023x), 결과와 측정 한계는 `docs/guides/BENCHMARK_GUIDE.md`를 참고한다.
 - 변경 후 최소한 다음을 수행한다.
   1. `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml`
      — 오류 0, 새 경고 0.
