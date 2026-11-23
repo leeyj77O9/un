@@ -728,6 +728,75 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Walk a match/for pattern. Pattern variables are definitions local to the
+    /// arm, constructor arguments bind new names, and narrowing (`x: T` /
+    /// `x is T`) colours the type. Without this, pattern bindings either leak
+    /// into the enclosing scope as ordinary variables or are recorded only as
+    /// name uses, so goto-definition and references cannot find them.
+    fn walk_pattern(&mut self, node: &Node, scope: usize) {
+        match node.kind {
+            NodeKind::Wildcard => {}
+            NodeKind::OrPattern => {
+                for child in &node.children {
+                    self.walk_pattern(child, scope);
+                }
+            }
+            NodeKind::Guard => {
+                if let Some(pattern) = node.children.first() {
+                    self.walk_pattern(pattern, scope);
+                }
+                for condition in node.children.iter().skip(1) {
+                    self.walk(condition, scope);
+                }
+            }
+            NodeKind::Call => {
+                // Constructor pattern (`Enum.Variant(a, b)`): the callee is a
+                // value use, the arguments are new pattern bindings.
+                if let Some(callee) = node.children.first() {
+                    self.walk(callee, scope);
+                }
+                for arg in node.children.iter().skip(1) {
+                    self.walk_pattern(arg, scope);
+                }
+            }
+            NodeKind::Pair => {
+                // Named field `name: pattern`; only the value binds a name.
+                if let Some(value) = node.children.get(1) {
+                    self.walk_pattern(value, scope);
+                }
+            }
+            NodeKind::Typed => {
+                if let Some(target) = node.children.first() {
+                    self.walk_pattern(target, scope);
+                }
+                if let Some(type_node) = node.children.get(1) {
+                    self.walk_type(type_node, scope);
+                }
+                for child in node.children.iter().skip(2) {
+                    self.walk(child, scope);
+                }
+            }
+            NodeKind::Tuple | NodeKind::List | NodeKind::Set => {
+                for child in &node.children {
+                    self.walk_pattern(child, scope);
+                }
+            }
+            _ => self.collect_target(node, scope, DefKind::Variable),
+        }
+    }
+
+    /// A match arm gets its own scope so its bindings do not leak into the
+    /// enclosing function or collide with other arms.
+    fn walk_case(&mut self, node: &Node) {
+        let arm_scope = self.new_scope();
+        if let Some(pattern) = node.children.first() {
+            self.walk_pattern(pattern, arm_scope);
+        }
+        for child in node.children.iter().skip(1) {
+            self.walk(child, arm_scope);
+        }
+    }
+
     fn walk(&mut self, node: &Node, scope: usize) {
         match node.kind {
             NodeKind::Function | NodeKind::Extension | NodeKind::Lambda => {
@@ -917,6 +986,14 @@ impl<'a> Walker<'a> {
                     self.walk(child, scope);
                 }
             }
+            NodeKind::Match => {
+                // The first child is the scrutinee; the rest are a Block of
+                // Case arms, each handled by the `Case` arm below.
+                for child in &node.children {
+                    self.walk(child, scope);
+                }
+            }
+            NodeKind::Case => self.walk_case(node),
             NodeKind::Typed => {
                 if let Some(target) = node.children.first() {
                     self.collect_target(target, scope, DefKind::Variable);
@@ -930,7 +1007,7 @@ impl<'a> Walker<'a> {
             }
             NodeKind::For => {
                 if let Some(target) = node.children.first() {
-                    self.collect_target(target, scope, DefKind::Variable);
+                    self.walk_pattern(target, scope);
                 }
                 for child in node.children.iter().skip(1) {
                     self.walk(child, scope);
@@ -3243,6 +3320,44 @@ mod tests {
         );
         let sites = reference_sites(&analysis, "Id", 1);
         assert!(sites.len() >= 2, "references must include the declaration and the use: {sites:?}");
+    }
+
+    #[test]
+    fn match_pattern_bindings_are_arm_local_defs() {
+        let analysis = analyze(
+            "match x {\n    case Test.a(v) -> v + 1,\n    case y is int -> y,\n    _ -> 0\n}\n",
+            "p.un",
+        );
+        assert!(analysis.error.is_none(), "parse failed: {:?}", analysis.error);
+        let vars: Vec<&str> = analysis
+            .defs
+            .iter()
+            .filter(|def| def.kind == DefKind::Variable)
+            .map(|def| def.name.as_str())
+            .collect();
+        assert!(vars.contains(&"v"), "constructor pattern binding missing: {vars:?}");
+        assert!(vars.contains(&"y"), "narrowed pattern binding missing: {vars:?}");
+        let v_scope = analysis
+            .defs
+            .iter()
+            .find(|def| def.kind == DefKind::Variable && def.name == "v")
+            .expect("v def")
+            .scope;
+        assert_ne!(v_scope, 0, "pattern bindings must be arm-local, not top-level");
+        let spans = span_texts(&analysis);
+        assert!(spans.iter().any(|text| text == "int"), "narrowing type not coloured: {spans:?}");
+        let sites = reference_sites(&analysis, "v", v_scope);
+        assert!(sites.len() >= 2, "binding references must include body use: {sites:?}");
+    }
+
+    #[test]
+    fn for_pattern_bindings_are_defs() {
+        let analysis = analyze("for Test.a(v) in xs\n    io.write(v)\n", "p.un");
+        assert!(analysis.error.is_none(), "parse failed: {:?}", analysis.error);
+        assert!(
+            analysis.defs.iter().any(|def| def.kind == DefKind::Variable && def.name == "v"),
+            "for-pattern binding missing"
+        );
     }
 
     #[test]
