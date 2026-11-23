@@ -208,11 +208,11 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 
 ### 4.3 `--embed`가 필요한 기능 표
 
-판정 근거는 `rust/src/tir.rs:606-714`의 `nrt_supported`(allowlist)와 `rust/src/main.rs`의 명시 거부다.
+판정 근거는 `rust/src/tir.rs:606-714`의 `nrt_supported`(allowlist)와 `rust/src/main.rs`의 명시 거부다. `un build`(plain과 `--embed` 모두)는 기본적으로 **fully typed mode**여서 명시적 `any`/Union, variadic, 타입 없는 lambda를 거부한다. 동적 타입을 유지하려면 `un run`을 쓰거나 `un build --allow-dynamic`을 붙인다. `un check`/`un native`/`un obj`/LSP/playground의 기본 동작은 변하지 않는다.
 
 | 기능 | plain `un build` | `--embed` 필요 | 근거 |
 |---|---|---|---|
-| 명시적 `any` / Union 값 | 지원(tagged NObj dispatch) | 불필요 | `tir.rs` `nrt_supported` 승격, `nrt/dynops.rs::unrt_dyn_bin/un` |
+| 명시적 `any` / Union 값 | NRT는 지원하지만 `un build` 기본 모드가 **거부**(fully typed mode) | `--allow-dynamic`으로 해제 | `typeck.rs::CheckOptions`, `nrt/dynops.rs::unrt_dyn_bin/un` |
 | 시간 시드 `random` | 거부(byte-identical 불가) | 예 | `tir.rs:609, 702-706` |
 | `bytes` 모듈 / `b"..."`, `fs.read_bytes`/`write_bytes` | 거부(NRT ABI 없음) | 예 | `tir.rs:101-102, 703-706`, `AGENTS.md` |
 | 모듈 전역 쓰기 (`has_global_write`) | 거부 | 예 | `tir.rs:602, 712-713` |

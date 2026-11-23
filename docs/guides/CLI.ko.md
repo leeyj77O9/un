@@ -32,7 +32,7 @@ Windows(GNU 툴체인)에서는 `rust\target\release\un.exe`가 생성됩니다.
 | `un check <file.un>` | **실험적**: 정적 타입 분석만 (compile mode) |
 | `un native <file.un>` | **실험적**: 정적 분석 + native 실행 (compile mode) |
 | `un obj <file.un|file.unbc> [-o out.obj] [--entry name]` | **실험적**: 소스/바이트코드를 재배치 가능한 오브젝트 파일(Windows/GNU는 COFF .obj)로 번역; `.unbc`는 core Int 부분집합만, 소스 경로는 Str/리스트/딕트/클래스/예외까지 네이티브 지원 |
-| `un build <file.un> [-o out.exe] [--embed]` | **실험적**: 소스를 재배치 가능한 오브젝트로 컴파일해 독립 실행형으로 링크 (rustup self-contained mingw gcc 경유); `--embed`는 .unbc와 VM 런타임을 실행형에 구워 임의의 Un 프로그램을 단일 exe로 |
+| `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic]` | **실험적**: 소스를 재배치 가능한 오브젝트로 컴파일해 독립 실행형으로 링크 (rustup self-contained mingw gcc 경유); `--embed`는 .unbc와 VM 런타임을 실행형에 구워 임의의 Un 프로그램을 단일 exe로 |
 | `un dis <file.un>` | 라인 번호와 함께 스택 바이트코드 덤프 |
 | `un dis-reg <file.un>` | 바이트코드의 register-plan 형태 덤프 |
 | `un tokens <file.un>` | 토큰 스트림 출력 |
@@ -256,7 +256,7 @@ Windows/GNU는 COFF)로 되돌립니다. `un compile`이 생성한 `.unbc`를 �
 proto는 trap stub으로 정의되어 링크를 유지합니다(호출 시 트랩). 마일스톤은
 `docs/compile/OBJ_MILESTONES.md`를 참고하세요.
 
-### `un build <file.un> [-o out.exe] [--embed]`
+### `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic]`
 
 소스에서 독립 실행형 네이티브 실행형까지 한 명령으로 수행합니다. 위 과정으로
 오브젝트 파일을 방출한 뒤, `un_main()`을 호출하고 i64 결과를 출력하는 작은
