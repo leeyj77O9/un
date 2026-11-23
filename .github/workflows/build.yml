@@ -62,6 +62,14 @@ jobs:
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\edge-fuzz.ps1
 
+      # Threshold 100 keeps the CI gate on self-validation and catastrophic
+      # regressions; 10% is too noisy for the shared GitHub runner.
+      - name: Perf gate (standalone exe lane)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group unbuild
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench-report.ps1 -Gate -Threshold 100
+
       - name: Test (differential JIT on/off)
         shell: powershell
         run: |
