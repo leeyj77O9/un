@@ -396,7 +396,7 @@ Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDive
 Negative 51 checks 매칭 + 0 documented divergences, Known 0 파일이다. (2026-11-23 재측정)
 Rust 테스트는 `cargo test --release --workspace` 254 passed(nrt 4 + lib 238 + LSP 4 +
 playground 8)다. JIT differential 101 파일 / 0 차이, `.unbc` 왕복 Positive 50/50 ·
-Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 34/0, exe 동치 검증 42/0이다.
+Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 36/0, exe 동치 검증 42/0이다.
 
 벤치마크는 6레인(Un VM, Un JIT, Compile Mode, standalone exe, CPython, Node.js)을 같은
 입력·알고리즘·측정 절차로 반복 측정하고, 결과를

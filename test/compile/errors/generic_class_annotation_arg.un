@@ -1,0 +1,11 @@
+class Box[T]
+    value: T
+    fn __init__(value: T)
+        self.value = value
+
+fn take(b: Box[int]) -> int
+    -> 0
+
+fn main() -> int
+    s = Box("hi")
+    -> take(s)

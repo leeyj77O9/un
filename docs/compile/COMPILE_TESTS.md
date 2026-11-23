@@ -12,7 +12,7 @@
 | `scripts/differential.ps1` (UV_JIT=0 vs JIT 바이트 비교) | **green** — 101 files, 0 differences |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | **green** — positive 50/50 identical, 0 mismatched (negative 42 identical + 9 skipped(compile-rejected)) |
 | `cargo test --release --workspace` | **green** — 254 passed (nrt 4 + lib 238 + un bin/LSP 4 + playground 8), 0 failed |
-| `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 34 passed, 0 failed |
+| `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 36 passed, 0 failed |
 | `scripts/exe-diff.ps1` (exe ↔ `un run` 바이트 비교) | **green** — 42 passed, 0 failed |
 | `un native` 바이너리 정확성 (native 실행 vs interpreter 실행) | **검증됨** — typed_pass.un, loop/recursion/collatz 벤치필, div-zero·재귀 bail 경로 포함 |
 
@@ -78,7 +78,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 
 - 정식 negative manifest(`test/compile/errors/*.un` 19개 + `manifest.txt`)가 구현되어
   있다. `scripts/compile-check.ps1`이 각 픽스처가 `un check`/`un native` 양쪽에서
-  `exit 1`과 기대 진단 부분문자열을 내는지 검사한다(전체 34 passed, 0 failed).
+  `exit 1`과 기대 진단 부분문자열을 내는지 검사한다(전체 36 passed, 0 failed).
 - 어노테이션 누락 소스가 `requires a type annotation` 진단을 내는 것도 같은
   프레임워크에서 검사한다. 거부 케이스를 추가하려면 픽스처 + `manifest.txt` 한 행을
   더하면 된다.

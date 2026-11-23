@@ -82,7 +82,7 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
 | `scripts/differential.ps1` | **101 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **50/50**; Negative compilable **42/42** identical (+ 9 compile-rejected skip) |
 | `test/test_suite.un` | **109 passed / 0 failed** |
-| `scripts/compile-check.ps1` | **34 passed / 0 failed** |
+| `scripts/compile-check.ps1` | **36 passed / 0 failed** |
 | `scripts/exe-diff.ps1` | **42 passed / 0 failed** |
 | `scripts/bench.ps1 -Group all -Report` | 6 lanes (unvm/unjit/python/node/unnative/unbuild) self-validate; `BENCHMARK.md` regenerated per run (생성 시점 커밋 명시); Un JIT/Python geomean **4.092x** (`BENCHMARK.md`, 재생성 2026-11-23 03:42 +09:00, 커밋 e09a397 기준) |
 

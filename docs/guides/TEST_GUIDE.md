@@ -154,7 +154,7 @@ execution shapes: `scripts/differential.ps1` runs every manifest file with
 `scripts/unbc-roundtrip.ps1 -IncludeNegative` byte-compares `un run` against
 `un compile` + `un run <file>.unbc` (Positive 50/50, compilable Negative 42
 identical + 9 compile-rejected skips); `scripts/compile-check.ps1` cross-checks
-Compile Mode (34 passed, 0 failed); and `scripts/exe-diff.ps1` byte-compares
+Compile Mode (36 passed, 0 failed); and `scripts/exe-diff.ps1` byte-compares
 plain no-VM and `--embed` executables against `un run` (42 passed, 0 failed).
 `scripts/edge-fuzz.ps1` runs cross-lane edge cases across VM/JIT/Compile/Python/Node.
 

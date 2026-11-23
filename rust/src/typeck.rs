@@ -251,6 +251,14 @@ pub struct Checker<'a> {
     class_expr_args: HashMap<usize, (String, Vec<Ty>)>,
     /// Concrete type arguments of variables bound to a generic class instance.
     class_var_args: HashMap<String, (String, Vec<Ty>)>,
+    /// Type arguments written explicitly in an annotation (`b: Box[int]`),
+    /// keyed by the annotation node's source start offset.
+    class_annotation_args: HashMap<usize, (String, Vec<Ty>)>,
+    /// Per-function parameter class instantiations written in annotations.
+    fn_param_class_args: HashMap<String, Vec<Option<(String, Vec<Ty>)>>>,
+    /// Annotation-driven class arguments pending for the constructor call
+    /// that is about to be checked (keyed by the call node's start offset).
+    pending_class_args: HashMap<usize, (String, Vec<Ty>)>,
     silence: u32,
     checked_functions: Vec<FnCheck>,
     checked_by_span: HashMap<usize, usize>,
@@ -280,6 +288,9 @@ impl<'a> Checker<'a> {
             call_instances: HashMap::new(),
             class_expr_args: HashMap::new(),
             class_var_args: HashMap::new(),
+            class_annotation_args: HashMap::new(),
+            fn_param_class_args: HashMap::new(),
+            pending_class_args: HashMap::new(),
             silence: 0,
             checked_functions: Vec::new(),
             checked_by_span: HashMap::new(),
@@ -446,6 +457,22 @@ impl<'a> Checker<'a> {
                     }
                     return Ty::tuple(args);
                 }
+                _ if self.classes.contains_key(head) => {
+                    let expected = self
+                        .classes
+                        .get(head)
+                        .map(|info| info.generics.len())
+                        .unwrap_or(0);
+                    if args.len() != expected {
+                        self.error_span(
+                            span.0,
+                            span.1,
+                            format!("class '{head}' takes exactly {expected} type arguments"),
+                        );
+                        return Ty::Unknown;
+                    }
+                    return Ty::Class(Rc::from(head));
+                }
                 _ => {
                     self.error_span(span.0, span.1, format!("unknown generic type '{head}'"));
                     return Ty::Unknown;
@@ -503,7 +530,23 @@ impl<'a> Checker<'a> {
     }
 
     fn parse_annotation_node(&mut self, node: &Node) -> Ty {
-        self.parse_type_text(&self.text_of(node), self.span(node), 0)
+        let text = self.text_of(node);
+        let span = self.span(node);
+        let ty = self.parse_type_text(&text, span, 0);
+        if let Some(open) = find_top_bracket(&text) {
+            let head = text[..open].trim();
+            if self.classes.contains_key(head) {
+                let close = text.rfind(']').unwrap_or(text.len());
+                let inner = &text[open + 1..close];
+                let args = split_top_level(inner, ',')
+                    .iter()
+                    .map(|part| self.parse_type_text(part.trim(), span, 1))
+                    .collect();
+                self.class_annotation_args
+                    .insert(node.start, (head.to_string(), args));
+            }
+        }
+        ty
     }
 }
 
@@ -1717,6 +1760,7 @@ impl<'a> Checker<'a> {
 
         let mut params: Vec<Ty> = Vec::new();
         let mut param_names: Vec<String> = Vec::new();
+        let mut param_class_args: Vec<Option<(String, Vec<Ty>)>> = Vec::new();
         let mut required = 0usize;
         let mut variadic = false;
         let mut receiver = 0usize;
@@ -1724,6 +1768,7 @@ impl<'a> Checker<'a> {
             let class_name = decl.class_name.clone().unwrap_or_default();
             params.push(Ty::Class(Rc::from(class_name)));
             param_names.push("self".to_string());
+            param_class_args.push(None);
             receiver = 1;
         }
         if let Some(params_node) = node.children.iter().find(|c| c.kind == NodeKind::Tuple) {
@@ -1737,11 +1782,13 @@ impl<'a> Checker<'a> {
                 let has_default = matches!(inner.map(|i| i.kind), Some(NodeKind::Assign));
                 let ty = match param_type_node(param) {
                     Some(t) => {
-                        let text = self.text_of(t);
-                        let (start, length) = self.span(t);
-                        self.parse_type_text(&text, (start, length), 0)
+                        let ty = self.parse_annotation_node(t);
+                        let class_args = self.class_annotation_args.get(&t.start).cloned();
+                        param_class_args.push(class_args);
+                        ty
                     }
                     None => {
+                        param_class_args.push(None);
                         if is_variadic {
                             Ty::Any
                         } else if pname.is_empty() {
@@ -1767,6 +1814,8 @@ impl<'a> Checker<'a> {
                 param_names.push(pname);
             }
         }
+        self.fn_param_class_args
+            .insert(decl.name.clone(), param_class_args);
         let ret_child = match node.kind {
             NodeKind::Function | NodeKind::Accessor => node.children.get(3),
             NodeKind::Extension => node.children.get(4),
@@ -1979,8 +2028,50 @@ impl<'a> Checker<'a> {
                 }
                 match inner.kind {
                     NodeKind::Identifier => {
+                        if let Some(node) = annotation_node {
+                            if let Some(entry) =
+                                self.class_annotation_args.get(&node.start).cloned()
+                            {
+                                self.pending_class_args.insert(value.start, entry);
+                            }
+                        }
                         let vty = self.check_expr(value, env);
+                        self.pending_class_args.remove(&value.start);
                         self.note_bound_class_args(inner, value);
+                        // An explicit `Box[int]` annotation fixes the class
+                        // instantiation for this variable and must agree with
+                        // the arguments inferred at the constructor call.
+                        if let Some(node) = annotation_node {
+                            if let Some((class_name, expected_args)) =
+                                self.class_annotation_args.get(&node.start).cloned()
+                            {
+                                let mismatches: Vec<(Ty, Ty)> = self
+                                    .class_expr_args
+                                    .get(&value.start)
+                                    .filter(|(actual_name, _)| *actual_name == class_name)
+                                    .map(|(_, actual_args)| {
+                                        actual_args
+                                            .iter()
+                                            .zip(expected_args.iter())
+                                            .filter(|(actual, expected)| {
+                                                !assignable(expected, actual, &self.classes)
+                                            })
+                                            .map(|(actual, expected)| (actual.clone(), expected.clone()))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                for (actual, expected) in mismatches {
+                                    self.error(
+                                        value,
+                                        format!("expects '{expected}', got '{actual}'"),
+                                    );
+                                }
+                                self.class_var_args.insert(
+                                    self.text_of(inner),
+                                    (class_name, expected_args),
+                                );
+                            }
+                        }
                         self.bind_annotated(inner, ty, vty, env);
                         let name = self.text_of(inner);
                         if let Some((fw_name, range)) = fixed_width {
@@ -3534,10 +3625,36 @@ impl<'a> Checker<'a> {
         if generics.is_empty() || !self.classes.contains_key(sig_name) {
             return;
         }
-        let args: Vec<Ty> = generics
-            .iter()
-            .map(|(_, id)| subst.get(id).cloned().unwrap_or(Ty::Any))
-            .collect();
+        let pending = self.pending_class_args.get(&node.start).cloned();
+        let mut args = Vec::with_capacity(generics.len());
+        for (index, (name, id)) in generics.iter().enumerate() {
+            let inferred = subst.get(id).cloned();
+            match (inferred, pending.as_ref()) {
+                (Some(inferred), Some((_, expected_args))) => {
+                    let expected = expected_args.get(index).cloned().unwrap_or(inferred.clone());
+                    if !assignable(&expected, &inferred, &self.classes) {
+                        self.error(
+                            node,
+                            format!("expects '{}', got '{}'", expected, inferred),
+                        );
+                    }
+                    args.push(expected);
+                }
+                (Some(inferred), None) => args.push(inferred),
+                (None, Some((_, expected_args))) => {
+                    args.push(expected_args.get(index).cloned().unwrap_or(Ty::Any));
+                }
+                (None, None) => {
+                    self.error(
+                        node,
+                        format!(
+                            "cannot infer type argument '{name}' for '{sig_name}'; add a type annotation"
+                        ),
+                    );
+                    args.push(Ty::Any);
+                }
+            }
+        }
         self.class_expr_args
             .insert(node.start, (sig_name.to_string(), args));
     }
@@ -3794,6 +3911,12 @@ impl<'a> Checker<'a> {
                             }
                         }
                         self.check_call_args_any(node.children.get(1), env);
+                        self.note_class_ctor_args(
+                            node,
+                            &name,
+                            &info.generics,
+                            &std::collections::HashMap::new(),
+                        );
                         return Ty::Class(Rc::from(name.as_str()));
                     }
                     let ctor_sig = FnSig {
@@ -4159,6 +4282,62 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let vty = self.check_expr(arg, env);
+            // A parameter annotated as `Box[int]` must receive that exact
+            // instantiation, not just any `Box`.
+            let param_class = self
+                .fn_param_class_args
+                .get(&sig.name)
+                .and_then(|entries| entries.get(slot))
+                .cloned()
+                .flatten();
+            if let Some((class_name, expected_args)) = param_class {
+                let actual_class = self
+                    .class_expr_args
+                    .get(&arg.start)
+                    .cloned()
+                    .or_else(|| {
+                        if arg.kind == NodeKind::Identifier {
+                            self.class_var_args.get(&self.text_of(arg)).cloned()
+                        } else {
+                            None
+                        }
+                    });
+                if let Some((actual_name, actual_args)) = actual_class {
+                    if actual_name == class_name && actual_args.len() == expected_args.len() {
+                        let mismatch = actual_args
+                            .iter()
+                            .zip(expected_args.iter())
+                            .any(|(actual, expected)| !assignable(expected, actual, &self.classes));
+                        if mismatch {
+                            let expected_text = format!(
+                                "{}[{}]",
+                                class_name,
+                                expected_args
+                                    .iter()
+                                    .map(|ty| ty.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                            let actual_text = format!(
+                                "{}[{}]",
+                                actual_name,
+                                actual_args
+                                    .iter()
+                                    .map(|ty| ty.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                            self.error(
+                                arg,
+                                format!(
+                                    "argument '{}' of '{}' expects '{}', got '{}'",
+                                    sig.param_names[slot], sig.name, expected_text, actual_text
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
             unify_generic(&sig.params[slot], &vty, &mut subst);
             let expected = &sig.params[slot];
             if !assignable(expected, &vty, &self.classes) {

@@ -1,0 +1,6 @@
+class Box[T]
+    value: T
+
+fn main() -> int
+    b = Box()
+    -> 0

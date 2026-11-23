@@ -408,7 +408,7 @@ Negative 51 checks matched + 0 documented divergences, and Known 0 files
 (re-measured 2026-11-23). Rust tests: `cargo test --release --workspace` reports
 254 passed (nrt 4 + lib 238 + LSP 4 + playground 8). JIT differential: 101 files,
 0 differences. `.unbc` round-trip: Positive 50/50, Negative 42 identical
-(9 compile-rejected skips), Compile cross-check 34/0, exe equality 42/0.
+(9 compile-rejected skips), Compile cross-check 36/0, exe equality 42/0.
 
 Benchmarks measure 6 lanes (Un VM, Un JIT, Compile Mode, standalone exe, CPython,
 Node.js) with warmup and repeated runs; results go to

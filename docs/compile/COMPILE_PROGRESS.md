@@ -117,7 +117,7 @@
   negative 42 identical + 9 skipped(compile-rejected) — **green**.
 - `cargo test --release --workspace`: 254 passed (nrt 4 + lib 238 + un bin/LSP 4 +
   playground 8), 0 failed — **green**.
-- `scripts/compile-check.ps1`: 34 passed, 0 failed.
+- `scripts/compile-check.ps1`: 36 passed, 0 failed.
 - `scripts/exe-diff.ps1`: 42 passed, 0 failed — `test/compile/*.un`을 `un build --embed`로
   링크한 exe가 `un run`과 stdout/stderr/exit code 바이트 동일인지, `test/compile/build/*.un`은
   plain `un build` exe가 동일한지 검사. plain build 불가 fixture(assert 모듈 사용 등)는
