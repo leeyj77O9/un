@@ -334,6 +334,8 @@ enum SemanticToken {
     Property = 6,
     Function = 7,
     Type = 8,
+    TypeParameter = 9,
+    TypeAlias = 10,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -372,7 +374,8 @@ impl DefKind {
             DefKind::Variable => SemanticToken::Variable as u32,
             DefKind::Property => SemanticToken::Property as u32,
             DefKind::Function | DefKind::Extension => SemanticToken::Function as u32,
-            DefKind::TypeParameter | DefKind::TypeAlias => SemanticToken::Type as u32,
+            DefKind::TypeParameter => SemanticToken::TypeParameter as u32,
+            DefKind::TypeAlias => SemanticToken::TypeAlias as u32,
         }
     }
 
@@ -430,11 +433,10 @@ fn native_catalog() -> &'static NativeCatalog {
         crate::native::init("");
         let mut modules = HashMap::new();
         let mut module_names = Vec::new();
-        for module in [
-            "io", "inspect", "math", "iter", "os", "sys", "fs", "bytes", "types", "time", "random", "flow",
-            "atomic", "re", "codes", "http", "ws",
-        ] {
-            let Some(members) = unvm::runtime::world::native_members(module) else {
+        // Discover modules from the registry that `native::init` just populated,
+        // so adding a native module never requires editing this file again.
+        for module in unvm::runtime::world::native_module_names() {
+            let Some(members) = unvm::runtime::world::native_members(&module) else {
                 continue;
             };
             let mut sigs = Vec::new();
@@ -443,8 +445,8 @@ fn native_catalog() -> &'static NativeCatalog {
                 sigs.push(NativeSig { name, label });
             }
             if !sigs.is_empty() {
-                module_names.push(module.to_string());
-                modules.insert(module.to_string(), sigs);
+                module_names.push(module.clone());
+                modules.insert(module, sigs);
             }
         }
         NativeCatalog { modules, module_names }
@@ -1602,9 +1604,10 @@ fn resolve_semantic(analysis: &Analysis, site: &UseSite) -> u32 {
 }
 
 // Keep the legend in lockstep with `SemanticToken`; its order is observable.
-const _: () = assert!(SEMANTIC_TOKEN_TYPES.len() == SemanticToken::Type as u32 as usize + 1);
+const _: () = assert!(SEMANTIC_TOKEN_TYPES.len() == SemanticToken::TypeAlias as u32 as usize + 1);
 
-const SEMANTIC_TOKEN_TYPES: [&str; 9] = [
+// New entries are appended so the existing discriminants stay stable.
+const SEMANTIC_TOKEN_TYPES: [&str; 11] = [
     "namespace",
     "class",
     "enum",
@@ -1614,6 +1617,8 @@ const SEMANTIC_TOKEN_TYPES: [&str; 9] = [
     "property",
     "function",
     "type",
+    "typeParameter",
+    "typeAlias",
 ];
 
 fn semantic_tokens_json(analysis: &Analysis) -> Json {
@@ -3358,6 +3363,28 @@ mod tests {
             analysis.defs.iter().any(|def| def.kind == DefKind::Variable && def.name == "v"),
             "for-pattern binding missing"
         );
+    }
+
+    #[test]
+    fn semantic_legend_distinguishes_type_symbols() {
+        assert_eq!(SEMANTIC_TOKEN_TYPES.len(), 11);
+        assert_eq!(SEMANTIC_TOKEN_TYPES[SemanticToken::TypeParameter as usize], "typeParameter");
+        assert_eq!(SEMANTIC_TOKEN_TYPES[SemanticToken::TypeAlias as usize], "typeAlias");
+        assert_ne!(
+            DefKind::TypeParameter.semantic_token(),
+            DefKind::TypeAlias.semantic_token()
+        );
+    }
+
+    #[test]
+    fn native_catalog_tracks_registered_modules() {
+        let catalog = native_catalog();
+        let registered = unvm::runtime::world::native_module_names();
+        assert_eq!(catalog.module_names.len(), registered.len(), "catalog drifted from registry");
+        for name in &registered {
+            assert!(catalog.module_names.contains(name), "module missing from catalog: {name}");
+        }
+        assert!(!namespace_member_completions("bytes").is_empty(), "bytes module missing");
     }
 
     #[test]

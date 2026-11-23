@@ -53,3 +53,8 @@ pub fn is_native(name: &str) -> bool {
 pub fn native_members(name: &str) -> Option<Vec<(String, Obj)>> {
     WORLD.with(|w| w.borrow().natives.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()))
 }
+/// Names of all registered native modules, in registration order. Lets the
+/// LSP discover modules instead of keeping a hand-maintained list in sync.
+pub fn native_module_names() -> Vec<String> {
+    WORLD.with(|w| w.borrow().natives.iter().map(|(name, _)| name.clone()).collect())
+}
