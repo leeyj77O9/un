@@ -5,7 +5,8 @@
 //! captured values (already boxed as handles), the parameter kinds for all
 //! arguments, and the return kind.
 
-use crate::class::{box_return, call_native, Kind};
+use crate::abi::call_native_typed;
+use crate::class::{box_return, Kind};
 use crate::obj::{alloc, err, obj, NObj};
 
 static LAMBDAS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<i64, (usize, Vec<Kind>, Kind)>>> =
@@ -120,6 +121,6 @@ pub extern "C" fn unrt_call_obj(
         };
         a.push(unbox(p, *kind));
     }
-    let raw = call_native(unsafe { obj(callable).a as usize }, &a);
+    let raw = call_native_typed(unsafe { obj(callable).a as usize }, &a, &d.kinds, d.ret_kind);
     box_return(raw, d.ret_kind)
 }

@@ -644,6 +644,9 @@ struct FnEmit<'a> {
     unrt_dict_get_int: Option<cranelift_module::FuncId>,
     unrt_dict_set: Option<cranelift_module::FuncId>,
     unrt_dict_set_int: Option<cranelift_module::FuncId>,
+    unrt_dict_keys: Option<cranelift_module::FuncId>,
+    unrt_dict_values: Option<cranelift_module::FuncId>,
+    unrt_dict_clear: Option<cranelift_module::FuncId>,
     unrt_list_set: Option<cranelift_module::FuncId>,
     unrt_list_set_int: Option<cranelift_module::FuncId>,
     unrt_list_push: Option<cranelift_module::FuncId>,
@@ -896,6 +899,21 @@ fn emit_internal<M: Module>(
     };
     let unrt_dict_set_int = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_dict_set_int", vec![types::I64, types::I64, types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
+    let unrt_dict_keys = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_dict_keys", vec![types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
+    let unrt_dict_values = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_dict_values", vec![types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
+    let unrt_dict_clear = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_dict_clear", vec![types::I64], Some(types::I64))?)
     } else {
         None
     };
@@ -1213,6 +1231,9 @@ fn emit_internal<M: Module>(
         unrt_dict_get_int,
         unrt_dict_set,
         unrt_dict_set_int,
+        unrt_dict_keys,
+        unrt_dict_values,
+        unrt_dict_clear,
         unrt_list_set,
         unrt_list_set_int,
         unrt_list_push,
@@ -1755,6 +1776,42 @@ fn emit_stmt<M: Module>(
             let _ = builder.ins().call(sort_ref, &[list_v]);
             false
         }
+        TirStmt::ListClear { receiver } => {
+            let (list_v, _) = emit_expr(receiver, emitter, builder, module, f);
+            // `unrt_list_pop` always succeeds while `len > 0`, so the loop
+            // needs no error gate: the VM's `list.clear()` never raises.
+            let len_id = emitter.unrt_list_len.expect("unrt list-len import required");
+            let len_ref = module.declare_func_in_func(len_id, builder.func);
+            let pop_id = emitter.unrt_list_pop.expect("unrt list-pop import required");
+            let pop_ref = module.declare_func_in_func(pop_id, builder.func);
+            let loop_blk = builder.create_block();
+            let body_blk = builder.create_block();
+            let done_blk = builder.create_block();
+            builder.ins().jump(loop_blk, &[]);
+            builder.switch_to_block(loop_blk);
+            let len_res = builder.ins().call(len_ref, &[list_v]);
+            let len = builder.inst_results(len_res)[0];
+            let zero = builder.ins().iconst(types::I64, 0);
+            let more = builder.ins().icmp(IntCC::SignedGreaterThan, len, zero);
+            builder.ins().brif(more, body_blk, &[], done_blk, &[]);
+            builder.switch_to_block(body_blk);
+            let _ = builder.ins().call(pop_ref, &[list_v]);
+            builder.ins().jump(loop_blk, &[]);
+            builder.seal_block(body_blk);
+            builder.seal_block(loop_blk);
+            builder.switch_to_block(done_blk);
+            builder.seal_block(done_blk);
+            false
+        }
+        TirStmt::DictClear { receiver } => {
+            let (dict_v, _) = emit_expr(receiver, emitter, builder, module, f);
+            let id = emitter.unrt_dict_clear.expect("unrt import required for dict.clear");
+            let clear_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(clear_ref, &[dict_v]);
+            let raw = builder.inst_results(res)[0];
+            emit_self_return_gate(emitter, builder, module, raw, dict_v);
+            false
+        }
         TirStmt::MemberSet { receiver, member, value } => {
             let (recv, _) = emit_expr(receiver, emitter, builder, module, f);
             let (v, v_ty) = emit_expr(value, emitter, builder, module, f);
@@ -1898,10 +1955,13 @@ fn expr_preserves_list_len(e: &TirExpr) -> bool {
         | TirExpr::Local(_) | TirExpr::NoneValue | TirExpr::GlobalGet(_) => true,
         TirExpr::Promote(x) | TirExpr::CastInt(x) | TirExpr::CastFloat(x) | TirExpr::Un(_, x)
         | TirExpr::Len(x) | TirExpr::MemberGet { receiver: x, .. }
+        | TirExpr::DictKeys(x) | TirExpr::DictValues(x)
         | TirExpr::Located { inner: x, .. } => expr_preserves_list_len(x),
         TirExpr::ListContains(a, b) | TirExpr::ListIndexOf(a, b) => {
             expr_preserves_list_len(a) && expr_preserves_list_len(b)
         }
+        // `list.remove` shrinks its receiver.
+        TirExpr::ListRemove(..) => false,
         TirExpr::Select { cond, then_expr, else_expr } => {
             expr_preserves_list_len(cond)
                 && expr_preserves_list_len(then_expr)
@@ -1929,13 +1989,13 @@ fn expr_preserves_list_len(e: &TirExpr) -> bool {
 fn body_preserves_list_len(body: &[TirStmt]) -> bool {
     body.iter().all(|s| match s {
         // The only statements that grow or shrink a list.
-        TirStmt::ListAdd { .. } | TirStmt::ListInsert { .. } => false,
+        TirStmt::ListAdd { .. } | TirStmt::ListInsert { .. } | TirStmt::ListClear { .. } => false,
         TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) | TirStmt::Throw(e)
         | TirStmt::Return(Some(e)) => expr_preserves_list_len(e),
         // Indexed writes, member writes and reordering keep the length intact.
         TirStmt::Return(None) | TirStmt::Break | TirStmt::Skip | TirStmt::ListSet { .. }
-        | TirStmt::DictSet { .. } | TirStmt::MemberSet { .. } | TirStmt::GlobalSet(_, _)
-        | TirStmt::ListReverse { .. } | TirStmt::ListSort { .. } => true,
+        | TirStmt::DictSet { .. } | TirStmt::DictClear { .. } | TirStmt::MemberSet { .. }
+        | TirStmt::GlobalSet(_, _) | TirStmt::ListReverse { .. } | TirStmt::ListSort { .. } => true,
         TirStmt::If { cond, then_body, else_body } => {
             expr_preserves_list_len(cond)
                 && body_preserves_list_len(then_body)
@@ -3011,6 +3071,55 @@ fn emit_expr<M: Module>(
             let res = builder.ins().call(index_of_ref, &[list_v, obj]);
             let raw = builder.inst_results(res)[0];
             (raw, TirTy::Int)
+        }
+        TirExpr::ListRemove(receiver, item) => {
+            let (list_v, _) = emit_expr(receiver, emitter, builder, module, f);
+            let (arg_v, arg_ty) = emit_expr(item, emitter, builder, module, f);
+            let obj = wrap_as_obj(arg_v, arg_ty, emitter, builder, module);
+            // `unrt_list_index_of` + `unrt_list_pop_at` reproduce the VM's
+            // `list.remove(value)`: first equal element removed, Bool returned.
+            let index_id = emitter.unrt_list_index_of.expect("unrt import required for list.remove");
+            let index_ref = module.declare_func_in_func(index_id, builder.func);
+            let idx_res = builder.ins().call(index_ref, &[list_v, obj]);
+            let idx = builder.inst_results(idx_res)[0];
+            let minus_one = builder.ins().iconst(types::I64, -1);
+            let found = builder.ins().icmp(IntCC::NotEqual, idx, minus_one);
+            let pop_blk = builder.create_block();
+            let skip_blk = builder.create_block();
+            let merge_blk = builder.create_block();
+            let result = builder.append_block_param(merge_blk, types::I8);
+            builder.ins().brif(found, pop_blk, &[], skip_blk, &[]);
+            builder.switch_to_block(pop_blk);
+            let pop_id = emitter.unrt_list_pop_at.expect("unrt import required for list.remove");
+            let pop_ref = module.declare_func_in_func(pop_id, builder.func);
+            let _ = builder.ins().call(pop_ref, &[list_v, idx]);
+            let one = builder.ins().iconst(types::I8, 1);
+            builder.ins().jump(merge_blk, &[one.into()]);
+            builder.seal_block(pop_blk);
+            builder.switch_to_block(skip_blk);
+            let zero = builder.ins().iconst(types::I8, 0);
+            builder.ins().jump(merge_blk, &[zero.into()]);
+            builder.seal_block(skip_blk);
+            builder.seal_block(merge_blk);
+            builder.switch_to_block(merge_blk);
+            (result, TirTy::Bool)
+        }
+        TirExpr::DictKeys(receiver) | TirExpr::DictValues(receiver) => {
+            let (dict_v, dty) = emit_expr(receiver, emitter, builder, module, f);
+            let keys = matches!(expr, TirExpr::DictKeys(_));
+            let elem = match dty {
+                TirTy::DictStrInt | TirTy::DictStrFloat => crate::tir::ObjElem::Str,
+                TirTy::DictIntInt => crate::tir::ObjElem::Int,
+                TirTy::DictGen(k, v) => if keys { k } else { v },
+                _ => panic!("dict.keys/values requires a dict"),
+            };
+            let id = if keys { emitter.unrt_dict_keys } else { emitter.unrt_dict_values }
+                .expect("unrt import required for dict.keys/values");
+            let call_ref = module.declare_func_in_func(id, builder.func);
+            let res = builder.ins().call(call_ref, &[dict_v]);
+            let raw = builder.inst_results(res)[0];
+            emit_error_gate_regular(emitter, builder, module, raw);
+            (raw, TirTy::ListGen(elem))
         }
         TirExpr::DictGet(target, key) => {
             let (dict_v, dty) = emit_expr(target, emitter, builder, module, f);

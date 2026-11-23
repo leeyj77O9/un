@@ -27,6 +27,68 @@ pub enum ObjElem {
     Str,
     Class(u16),
     Lambda,
+    /// A collection element that is itself a list. `depth` counts the number
+    /// of list layers (>= 1) and `leaf` is the innermost scalar kind. Stored
+    /// flat (rather than `Box<ObjElem>`) so `ObjElem`/`TirTy` stay `Copy` for
+    /// the many by-value call sites in TIR lowering and code generation.
+    List { depth: u8, leaf: LeafElem },
+}
+
+/// Innermost scalar kind of a nested `ObjElem::List`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LeafElem {
+    Obj,
+    Int,
+    Float,
+    Bool,
+    Str,
+    Class(u16),
+    Lambda,
+}
+
+impl LeafElem {
+    fn from_elem(elem: ObjElem) -> Self {
+        match elem {
+            ObjElem::Obj => Self::Obj,
+            ObjElem::Int => Self::Int,
+            ObjElem::Float => Self::Float,
+            ObjElem::Bool => Self::Bool,
+            ObjElem::Str => Self::Str,
+            ObjElem::Class(id) => Self::Class(id),
+            ObjElem::Lambda => Self::Lambda,
+            // `list_elem` flattens nested lists, so this is unreachable.
+            ObjElem::List { .. } => Self::Obj,
+        }
+    }
+}
+
+impl ObjElem {
+    fn from_leaf(leaf: LeafElem) -> Self {
+        match leaf {
+            LeafElem::Obj => Self::Obj,
+            LeafElem::Int => Self::Int,
+            LeafElem::Float => Self::Float,
+            LeafElem::Bool => Self::Bool,
+            LeafElem::Str => Self::Str,
+            LeafElem::Class(id) => Self::Class(id),
+            LeafElem::Lambda => Self::Lambda,
+        }
+    }
+}
+
+/// Wrap an element kind as a list-of-that-kind, flattening an existing nested
+/// list so `list[list[int]]` is encoded as `List { depth: 2, leaf: Int }`.
+fn list_elem(elem: ObjElem) -> ObjElem {
+    match elem {
+        ObjElem::List { depth, leaf } => ObjElem::List {
+            depth: depth.saturating_add(1),
+            leaf,
+        },
+        other => ObjElem::List {
+            depth: 1,
+            leaf: LeafElem::from_elem(other),
+        },
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -71,6 +133,14 @@ pub(crate) fn elem_of_tir(ty: TirTy) -> ObjElem {
         TirTy::Str => ObjElem::Str,
         TirTy::Class(id) => ObjElem::Class(id),
         TirTy::Lambda(_) => ObjElem::Lambda,
+        // Collection types used as elements are object handles, but keeping
+        // their own element kind lets `xs[0][1]` lower to a typed read instead
+        // of an opaque `ObjElem::Obj` handle.
+        TirTy::ListInt => list_elem(ObjElem::Int),
+        TirTy::ListFloat => list_elem(ObjElem::Float),
+        TirTy::ListClass(id) => list_elem(ObjElem::Class(id)),
+        TirTy::ListLambda => list_elem(ObjElem::Lambda),
+        TirTy::ListGen(elem) => list_elem(elem),
         _ => ObjElem::Obj,
     }
 }
@@ -84,6 +154,7 @@ fn elem_of_tir_field(ty: &Ty) -> ObjElem {
         Ty::Str => ObjElem::Str,
         Ty::Class(_) => ObjElem::Class(u16::MAX),
         Ty::Func { .. } => ObjElem::Lambda,
+        Ty::List(elem) => list_elem(elem_of_tir_field(elem)),
         _ => ObjElem::Obj,
     }
 }
@@ -98,6 +169,16 @@ pub(crate) fn tir_of_elem(elem: ObjElem) -> TirTy {
         ObjElem::Str => TirTy::Str,
         ObjElem::Class(id) => TirTy::Class(id),
         ObjElem::Lambda => TirTy::Lambda(u32::MAX),
+        ObjElem::List { depth, leaf } => {
+            if depth <= 1 {
+                TirTy::ListGen(ObjElem::from_leaf(leaf))
+            } else {
+                TirTy::ListGen(ObjElem::List {
+                    depth: depth - 1,
+                    leaf,
+                })
+            }
+        }
     }
 }
 
@@ -390,6 +471,11 @@ pub enum TirExpr {
     ListPopAt(Box<TirExpr>, Box<TirExpr>),
     ListContains(Box<TirExpr>, Box<TirExpr>),
     ListIndexOf(Box<TirExpr>, Box<TirExpr>),
+    /// `list.remove(value)`: remove the first equal element, return Bool.
+    ListRemove(Box<TirExpr>, Box<TirExpr>),
+    /// `dict.keys()` / `dict.values()`: snapshot into a new list.
+    DictKeys(Box<TirExpr>),
+    DictValues(Box<TirExpr>),
     ListRepeat { value: Box<TirExpr>, len: Box<TirExpr>, ty: TirTy },
     DictGet(Box<TirExpr>, Box<TirExpr>),
     ListGet(Box<TirExpr>, Box<TirExpr>),
@@ -461,6 +547,11 @@ pub enum TirStmt {
     ListInsert { receiver: TirExpr, arg: TirExpr, index: TirExpr },
     ListReverse { receiver: TirExpr },
     ListSort { receiver: TirExpr },
+    /// Dormant: the VM/typeck does not yet expose `list.clear`, so lowering
+    /// never emits this today (doing so would diverge from `un run`). Kept so
+    /// enabling it later only needs a lowering arm.
+    ListClear { receiver: TirExpr },
+    DictClear { receiver: TirExpr },
     Try {
         body: Vec<TirStmt>,
         var: Option<u16>,
@@ -549,7 +640,9 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             | TirExpr::Local(_) | TirExpr::NoneValue => true,
             TirExpr::Promote(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a) | TirExpr::CastFloat(a)
             | TirExpr::Len(a) | TirExpr::ListPop(a) | TirExpr::ListPopAt(a, _)
-            | TirExpr::ListContains(a, _) | TirExpr::ListIndexOf(a, _) => expr_ok(a),
+            | TirExpr::ListContains(a, _) | TirExpr::ListIndexOf(a, _)
+            | TirExpr::DictKeys(a) | TirExpr::DictValues(a) => expr_ok(a),
+            TirExpr::ListRemove(a, b) => expr_ok(a) && expr_ok(b),
             TirExpr::Select { cond, then_expr, else_expr } => {
                 expr_ok(cond) && expr_ok(then_expr) && expr_ok(else_expr)
             }
@@ -594,7 +687,8 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             TirStmt::MemberSet { receiver, value, .. } => expr_ok(receiver) && expr_ok(value),
             TirStmt::ListAdd { receiver, arg }
             | TirStmt::ListInsert { receiver, arg, .. } => expr_ok(receiver) && expr_ok(arg),
-            TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver } => expr_ok(receiver),
+            TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver }
+            | TirStmt::ListClear { receiver } | TirStmt::DictClear { receiver } => expr_ok(receiver),
             TirStmt::NativeCall { module, member, args } => {
                 native_call_ok(module.as_str(), member.as_str(), None)
                     && args.iter().all(expr_ok)
@@ -611,21 +705,16 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             && ret != Some(TirTy::Bytes)
             && !matches!((module, member), ("fs", "read_bytes") | ("fs", "write_bytes"))
     }
-    // Closures and class methods are invoked through an all-integer C ABI shim
-    // in NRT; Float params/returns need XMM registers and would be garbage.
-    let indirect_abi_ok = |f: &TirFn| {
-        let indirect = f.name.starts_with("__lambda_")
-            || tir.class_methods.iter().any(|m| m.contains_key(&f.name));
-        !indirect
-            || (!f.params.contains(&TirTy::Float) && f.ret != Some(TirTy::Float))
-    };
+    // Closures and class methods use NRT's ABI-aware indirect-call shim
+    // (`call_native_typed`), which selects XMM-capable C signatures from the
+    // registered parameter/return kinds. Float params and returns are therefore
+    // supported on the plain `un build` path, so no indirect-only gate remains.
     !tir.functions.is_empty()
         && !tir.has_global_write
         && tir.functions.iter().all(|f| {
             f.params.iter().copied().all(ty_ok)
                 && f.locals.iter().copied().all(ty_ok)
                 && f.ret.map_or(true, ty_ok)
-                && indirect_abi_ok(f)
                 && f.defaults.iter().flatten().all(expr_ok)
                 && f.body.iter().all(stmt_ok)
         })
@@ -829,14 +918,14 @@ fn expr_uses_native(e: &TirExpr) -> bool {
         TirExpr::Promote(x) | TirExpr::Un(_, x) | TirExpr::Len(x) | TirExpr::ListPop(x)
         | TirExpr::CastInt(x) | TirExpr::CastFloat(x) | TirExpr::DictGet(_, x)
         | TirExpr::ListGet(_, x) | TirExpr::MemberGet { receiver: x, .. }
+        | TirExpr::DictKeys(x) | TirExpr::DictValues(x)
         | TirExpr::Located { inner: x, .. } => expr_uses_native(x),
         TirExpr::Select { cond, then_expr, else_expr } => {
             expr_uses_native(cond) || expr_uses_native(then_expr) || expr_uses_native(else_expr)
         }
         TirExpr::Bin(_, a, b) | TirExpr::Cmp(_, a, b) | TirExpr::ListPopAt(a, b)
-        | TirExpr::ListContains(a, b) | TirExpr::ListIndexOf(a, b) => {
-            expr_uses_native(a) || expr_uses_native(b)
-        }
+        | TirExpr::ListContains(a, b) | TirExpr::ListIndexOf(a, b)
+        | TirExpr::ListRemove(a, b) => expr_uses_native(a) || expr_uses_native(b),
         TirExpr::List(items) | TirExpr::Call(_, items) | TirExpr::Math(_, items)
         | TirExpr::ClassNew { args: items, .. } => items.iter().any(expr_uses_native),
         TirExpr::MethodCall { receiver, args, .. } => {
@@ -882,8 +971,9 @@ fn stmt_uses_native(s: &TirStmt) -> bool {
                 || finally_body.as_ref().is_some_and(|b| b.iter().any(stmt_uses_native))
         }
         TirStmt::Return(Some(e)) => expr_uses_native(e),
-        TirStmt::ListReverse { .. } | TirStmt::ListSort { .. } | TirStmt::Break | TirStmt::Skip
-        | TirStmt::Return(None) => false,
+        TirStmt::ListReverse { .. } | TirStmt::ListSort { .. }
+        | TirStmt::ListClear { .. } | TirStmt::DictClear { .. }
+        | TirStmt::Break | TirStmt::Skip | TirStmt::Return(None) => false,
     }
 }
 
@@ -918,7 +1008,8 @@ fn stmt_uses_classes(s: &TirStmt) -> bool {
         TirStmt::ListInsert { receiver, arg, index } => {
             expr_uses_classes(receiver) || expr_uses_classes(arg) || expr_uses_classes(index)
         }
-        TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver } => expr_uses_classes(receiver),
+        TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver }
+        | TirStmt::ListClear { receiver } | TirStmt::DictClear { receiver } => expr_uses_classes(receiver),
         TirStmt::DictSet { dict, key, value } => {
             expr_uses_classes(dict) || expr_uses_classes(key) || expr_uses_classes(value)
         }
@@ -966,9 +1057,9 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
         TirExpr::Len(inner) => expr_uses_classes(inner),
         TirExpr::ListPop(receiver) => expr_uses_classes(receiver),
         TirExpr::ListPopAt(receiver, _) => expr_uses_classes(receiver),
-        TirExpr::ListContains(receiver, _) | TirExpr::ListIndexOf(receiver, _) => {
-            expr_uses_classes(receiver)
-        }
+        TirExpr::ListContains(receiver, _) | TirExpr::ListIndexOf(receiver, _)
+        | TirExpr::DictKeys(receiver) | TirExpr::DictValues(receiver)
+        | TirExpr::ListRemove(receiver, _) => expr_uses_classes(receiver),
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_) | TirExpr::Local(_) => false,
     }
 }
@@ -1003,7 +1094,8 @@ fn stmt_uses_heap(s: &TirStmt) -> bool {
         TirStmt::ListInsert { receiver, arg, index } => {
             expr_uses_heap(receiver) || expr_uses_heap(arg) || expr_uses_heap(index)
         }
-        TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver } => expr_uses_heap(receiver),
+        TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver }
+        | TirStmt::ListClear { receiver } | TirStmt::DictClear { receiver } => expr_uses_heap(receiver),
         TirStmt::DictSet { dict, key, value } => {
             expr_uses_heap(dict) || expr_uses_heap(key) || expr_uses_heap(value)
         }
@@ -1043,7 +1135,10 @@ fn expr_uses_heap(e: &TirExpr) -> bool {
         | TirExpr::ListPop(_)
         | TirExpr::ListPopAt(_, _)
         | TirExpr::ListContains(_, _)
-        | TirExpr::ListIndexOf(_, _) => true,
+        | TirExpr::ListIndexOf(_, _)
+        | TirExpr::ListRemove(_, _)
+        | TirExpr::DictKeys(_)
+        | TirExpr::DictValues(_) => true,
         TirExpr::ListRepeat { .. } => true,
     }
 }
@@ -1068,7 +1163,8 @@ fn stmt_uses_str(s: &TirStmt) -> bool {
         TirStmt::ListInsert { receiver, arg, index } => {
             expr_uses_str(receiver) || expr_uses_str(arg) || expr_uses_str(index)
         }
-        TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver } => expr_uses_str(receiver),
+        TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver }
+        | TirStmt::ListClear { receiver } | TirStmt::DictClear { receiver } => expr_uses_str(receiver),
         TirStmt::DictSet { dict, key, value } => {
             expr_uses_str(dict) || expr_uses_str(key) || expr_uses_str(value)
         }
@@ -1117,7 +1213,10 @@ fn expr_uses_str(e: &TirExpr) -> bool {
         TirExpr::ListPop(_)
         | TirExpr::ListPopAt(_, _)
         | TirExpr::ListContains(_, _)
-        | TirExpr::ListIndexOf(_, _) => false,
+        | TirExpr::ListIndexOf(_, _)
+        | TirExpr::ListRemove(_, _)
+        | TirExpr::DictKeys(_)
+        | TirExpr::DictValues(_) => false,
     }
 }
 
@@ -1663,8 +1762,10 @@ impl TirProgram {
                 TirExpr::Promote(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a)
                 | TirExpr::CastFloat(a) | TirExpr::Len(a) | TirExpr::ListPop(a)
                 | TirExpr::ListContains(a, _) | TirExpr::ListIndexOf(a, _)
+                | TirExpr::DictKeys(a) | TirExpr::DictValues(a)
                 | TirExpr::MemberGet { receiver: a, .. } => pad_expr(a, program, class_names),
                 TirExpr::ListPopAt(a, b) | TirExpr::ListGet(a, b) | TirExpr::DictGet(a, b)
+                | TirExpr::ListRemove(a, b)
                 | TirExpr::Bin(_, a, b) | TirExpr::Cmp(_, a, b) => {
                     pad_expr(a, program, class_names); pad_expr(b, program, class_names);
                 }
@@ -1721,7 +1822,8 @@ impl TirProgram {
                 TirStmt::ListInsert { receiver, arg, index } => {
                     pad_expr(receiver, program, class_names); pad_expr(arg, program, class_names); pad_expr(index, program, class_names);
                 }
-                TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver } => pad_expr(receiver, program, class_names),
+                TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver }
+                | TirStmt::ListClear { receiver } | TirStmt::DictClear { receiver } => pad_expr(receiver, program, class_names),
                 TirStmt::NativeCall { args, .. } => {
                     for a in args { pad_expr(a, program, class_names); }
                 }
@@ -2089,8 +2191,10 @@ fn expr_uses_local(e: &TirExpr) -> bool {
         TirExpr::Dict(entries) => entries.iter().any(|(k, v)| expr_uses_local(k) || expr_uses_local(v)),
         TirExpr::Promote(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a) | TirExpr::CastFloat(a)
         | TirExpr::Len(a) | TirExpr::ListPop(a) | TirExpr::ListContains(a, _)
-        | TirExpr::ListIndexOf(a, _) | TirExpr::MemberGet { receiver: a, .. } => expr_uses_local(a),
+        | TirExpr::ListIndexOf(a, _) | TirExpr::MemberGet { receiver: a, .. }
+        | TirExpr::DictKeys(a) | TirExpr::DictValues(a) => expr_uses_local(a),
         TirExpr::ListPopAt(a, b) | TirExpr::ListGet(a, b) | TirExpr::DictGet(a, b)
+        | TirExpr::ListRemove(a, b)
         | TirExpr::Bin(_, a, b) | TirExpr::Cmp(_, a, b) => expr_uses_local(a) || expr_uses_local(b),
         TirExpr::ListRepeat { value, len, .. } => expr_uses_local(value) || expr_uses_local(len),
         TirExpr::Select { cond, then_expr, else_expr } => {
@@ -2208,6 +2312,10 @@ fn lower_stmt(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result
                 return Ok(());
             }
             if let Some(stmt) = lower_list_method_stmt(node, ctx)? {
+                out.push(stmt);
+                return Ok(());
+            }
+            if let Some(stmt) = lower_dict_method_stmt(node, ctx)? {
                 out.push(stmt);
                 return Ok(());
             }
@@ -2497,7 +2605,7 @@ fn infer_simple_ty(e: &TirExpr, locals: &[TirTy]) -> Option<TirTy> {
             else { ta.or(tb) }
         }
         TirExpr::Cmp(_, _, _) | TirExpr::Un(TirUnOp::Not, _) | TirExpr::Len(_)
-        | TirExpr::ListContains(_, _) => Some(TirTy::Bool),
+        | TirExpr::ListContains(_, _) | TirExpr::ListRemove(_, _) => Some(TirTy::Bool),
         TirExpr::Un(TirUnOp::Neg, a) => infer_simple_ty(a, locals),
         TirExpr::Located { inner, .. } => infer_simple_ty(inner, locals),
         TirExpr::List(_) => Some(TirTy::ListInt),
@@ -3570,8 +3678,84 @@ fn lower_list_method_expr(
             }
             Ok(Some((TirExpr::ListIndexOf(Box::new(receiver), Box::new(args.into_iter().next().unwrap())), CoreTy::Int)))
         }
+        "remove" => {
+            if args.len() != 1 {
+                return Err("'remove' expects exactly one argument".to_string());
+            }
+            Ok(Some((TirExpr::ListRemove(Box::new(receiver), Box::new(args.into_iter().next().unwrap())), CoreTy::Bool)))
+        }
         _ => Ok(None),
     }
+}
+
+fn dict_kinds(ty: CoreTy) -> Option<(ObjElem, ObjElem)> {
+    match ty {
+        CoreTy::DictStrInt => Some((ObjElem::Str, ObjElem::Int)),
+        CoreTy::DictStrFloat => Some((ObjElem::Str, ObjElem::Float)),
+        CoreTy::DictIntInt => Some((ObjElem::Int, ObjElem::Int)),
+        CoreTy::DictGen(k, v) => Some((k, v)),
+        _ => None,
+    }
+}
+
+fn lower_dict_method_expr(
+    member: &str,
+    receiver: TirExpr,
+    receiver_ty: CoreTy,
+    args_tuple: &Node,
+    ctx: &mut LowerCtx,
+) -> Result<Option<(TirExpr, CoreTy)>, String> {
+    if !matches!(member, "keys" | "values") {
+        return Ok(None);
+    }
+    let Some((k, v)) = dict_kinds(receiver_ty) else {
+        return Err(format!("method '{member}' requires a dict receiver in the core"));
+    };
+    if args_tuple.kind != NodeKind::Tuple || !args_tuple.children.is_empty() {
+        return Err(format!("'{member}' takes no arguments"));
+    }
+    let elem = if member == "keys" { k } else { v };
+    let expr = if member == "keys" {
+        TirExpr::DictKeys(Box::new(receiver))
+    } else {
+        TirExpr::DictValues(Box::new(receiver))
+    };
+    let _ = ctx;
+    Ok(Some((expr, CoreTy::ListGen(elem))))
+}
+
+fn lower_dict_method_stmt(node: &Node, ctx: &mut LowerCtx) -> Result<Option<TirStmt>, String> {
+    let callee = match node.children.first() {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    if callee.kind != NodeKind::Property {
+        return Ok(None);
+    }
+    let member_node = match callee.children.get(1) {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+    let member = ctx.source.span(member_node.start, member_node.length).to_string();
+    if member != "clear" {
+        return Ok(None);
+    }
+    let head = match callee.children.first() {
+        Some(h) => h,
+        None => return Ok(None),
+    };
+    let (receiver, rty) = lower_expr(head, ctx)?;
+    if dict_kinds(rty).is_none() {
+        return Err("method 'clear' requires a dict receiver in the core".to_string());
+    }
+    let args = match node.children.get(1) {
+        Some(args_node) => lower_arg_list(args_node, ctx)?,
+        None => Vec::new(),
+    };
+    if !args.is_empty() {
+        return Err("'clear' takes no arguments".to_string());
+    }
+    Ok(Some(TirStmt::DictClear { receiver }))
 }
 
 fn lower_list_method_stmt(node: &Node, ctx: &mut LowerCtx) -> Result<Option<TirStmt>, String> {
@@ -3836,6 +4020,14 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             }
             return Err(format!(
                 "method '{member}' on a list is not supported in the core"
+            ));
+        }
+        if dict_kinds(rty).is_some() {
+            if let Some(dict_method) = lower_dict_method_expr(&member, recv, rty, args_tuple, ctx)? {
+                return Ok(dict_method);
+            }
+            return Err(format!(
+                "method '{member}' on a dict is not supported in the core"
             ));
         }
         let id = match rty {
@@ -4218,6 +4410,7 @@ fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> 
             }
         }
         TirStmt::Throw(_) => {}
+        TirStmt::ListClear { .. } | TirStmt::DictClear { .. } => {}
     }
     Ok(())
 }
@@ -4316,10 +4509,24 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                 _ => Err("list.contains requires a list[int], list[float] or list[class]".to_string()),
             }
         }
-        TirExpr::ListIndexOf(receiver, _) => {
+        TirExpr::ListIndexOf(receiver, _) | TirExpr::ListRemove(receiver, _) => {
+            let is_remove = matches!(expr, TirExpr::ListRemove(_, _));
             match expr_ty(receiver, f, program, locals)? {
-                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::ListGen(_) => Ok(TirTy::Int),
-                _ => Err("list.index_of requires a list[int], list[float] or list[class]".to_string()),
+                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::ListGen(_) => {
+                    Ok(if is_remove { TirTy::Bool } else { TirTy::Int })
+                }
+                _ => Err("method requires a list[int], list[float] or list[class]".to_string()),
+            }
+        }
+        TirExpr::DictKeys(receiver) | TirExpr::DictValues(receiver) => {
+            let keys = matches!(expr, TirExpr::DictKeys(_));
+            match expr_ty(receiver, f, program, locals)? {
+                TirTy::DictStrInt | TirTy::DictStrFloat => Ok(TirTy::ListGen(ObjElem::Str)),
+                TirTy::DictIntInt => Ok(TirTy::ListGen(ObjElem::Int)),
+                TirTy::DictGen(k, v) => {
+                    Ok(TirTy::ListGen(if keys { k } else { v }))
+                }
+                _ => Err("dict.keys/values requires a dict receiver".to_string()),
             }
         }
         TirExpr::Len(arg) => {
@@ -4865,6 +5072,18 @@ fn validate_stmt(
                 match expr_ty(receiver, f, program, locals)? {
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) => {}
                     _ => return Err("list.reverse/list.sort requires a list[int], list[float] or list[class]".to_string()),
+                }
+            }
+            TirStmt::ListClear { receiver } => {
+                match expr_ty(receiver, f, program, locals)? {
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::ListGen(_) => {}
+                    _ => return Err("list.clear requires a list receiver".to_string()),
+                }
+            }
+            TirStmt::DictClear { receiver } => {
+                match expr_ty(receiver, f, program, locals)? {
+                    TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::DictGen(_, _) => {}
+                    _ => return Err("dict.clear requires a dict receiver".to_string()),
                 }
             }
             TirStmt::Try { body, var, catch_body, finally_body } => {

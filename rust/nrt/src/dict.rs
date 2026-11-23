@@ -277,6 +277,51 @@ pub extern "C" fn unrt_dict_set_int(dict: u64, key: i64, value: i64) -> u64 {
     }
 }
 
+/// Snapshot the dict keys into a new list, in insertion order. Mirrors the
+/// VM's `dict.keys()` native method (`KeyMap.keys()`).
+#[no_mangle]
+pub extern "C" fn unrt_dict_keys(dict: u64) -> u64 {
+    unsafe {
+        if obj(dict).tag != 7 {
+            return err("unrt: keys target is not a dict");
+        }
+        let keys: Vec<u64> = data(dict).pairs.iter().map(|(k, _)| *k).collect();
+        crate::list::unrt_list_from_elems(keys.as_ptr(), keys.len() as i64)
+    }
+}
+
+/// Snapshot the dict values into a new list, in insertion order. Mirrors the
+/// VM's `dict.values()` native method (`KeyMap.values()`).
+#[no_mangle]
+pub extern "C" fn unrt_dict_values(dict: u64) -> u64 {
+    unsafe {
+        if obj(dict).tag != 7 {
+            return err("unrt: values target is not a dict");
+        }
+        let values: Vec<u64> = data(dict).pairs.iter().map(|(_, v)| *v).collect();
+        crate::list::unrt_list_from_elems(values.as_ptr(), values.len() as i64)
+    }
+}
+
+/// Remove every entry from a dict. Returns the dict handle on success (so the
+/// existing self-return error gate applies) and an error handle otherwise.
+#[no_mangle]
+pub extern "C" fn unrt_dict_clear(dict: u64) -> u64 {
+    unsafe {
+        if obj(dict).tag != 7 {
+            return err("unrt: clear target is not a dict");
+        }
+        let d = data(dict);
+        d.pairs.clear();
+        d.index.clear();
+        d.class_counts = [0; 3];
+        d.int_map.clear();
+        // Keep `int_only`: it is a property of the dict's key/value types, not
+        // of its current contents, and the fast paths rely on it.
+    }
+    dict
+}
+
 #[no_mangle]
 pub extern "C" fn unrt_dict_set(dict: u64, key: u64, value: u64) -> u64 {
     unsafe {

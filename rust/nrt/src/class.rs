@@ -209,33 +209,10 @@ pub(crate) fn box_return(raw: u64, kind: u8) -> u64 {
     }
 }
 
-pub(crate) fn call_native(ptr: usize, args: &[u64]) -> u64 {
-    unsafe {
-        match args.len() {
-            0 => std::mem::transmute::<usize, extern "C" fn() -> u64>(ptr)(),
-            1 => std::mem::transmute::<usize, extern "C" fn(u64) -> u64>(ptr)(args[0]),
-            2 => std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(ptr)(args[0], args[1]),
-            3 => std::mem::transmute::<usize, extern "C" fn(u64, u64, u64) -> u64>(ptr)(
-                args[0], args[1], args[2],
-            ),
-            4 => std::mem::transmute::<usize, extern "C" fn(u64, u64, u64, u64) -> u64>(ptr)(
-                args[0], args[1], args[2], args[3],
-            ),
-            5 => std::mem::transmute::<usize, extern "C" fn(u64, u64, u64, u64, u64) -> u64>(ptr)(
-                args[0], args[1], args[2], args[3], args[4],
-            ),
-            6 => std::mem::transmute::<usize, extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64>(ptr)(
-                args[0], args[1], args[2], args[3], args[4], args[5],
-            ),
-            7 => std::mem::transmute::<usize, extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64>(
-                ptr,
-            )(args[0], args[1], args[2], args[3], args[4], args[5], args[6]),
-            _ => std::mem::transmute::<usize, extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64>(
-                ptr,
-            )(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]),
-        }
-    }
-}
+// Indirect calls now go through `abi::call_native_typed`, which reconstructs
+// the Cranelift C signature (including XMM Float arguments/returns) from the
+// registered parameter kinds. The former all-`u64` shim is intentionally gone:
+// it silently passed Float values in general-purpose registers.
 
 // Instance fields never need deallocation (plain executables are short-lived
 // and single-threaded), so pack them into a bump arena instead of doing one
@@ -313,8 +290,8 @@ pub extern "C" fn unrt_class_new(
         .methods
         .iter()
         .find(|m| m.name == "__init__")
-        .map(|m| (m.ptr, m.param_kinds, m.kinds_len));
-    if let Some((f, kinds, kinds_len)) = init {
+        .map(|m| (m.ptr, m.param_kinds, m.kinds_len, m.ret_kind));
+    if let Some((f, kinds, kinds_len, ret_kind)) = init {
         if class_debug() {
             eprintln!("NRT class_new id={id} argc={argc} kinds_len={kinds_len}");
         }
@@ -323,7 +300,7 @@ pub extern "C" fn unrt_class_new(
         let mut call_args = [0u64; 9];
         call_args[0] = instance;
         call_args[1..=n].copy_from_slice(&supplied[..n]);
-        let _ = call_native_at(f, &kinds[..kinds_len], &call_args[..n + 1]);
+        let _ = call_native_at(f, &kinds[..kinds_len], &call_args[..n + 1], ret_kind);
     } else {
         let call_args = unsafe { std::slice::from_raw_parts(args, argc) };
         let f = instance_fields(instance);
@@ -334,12 +311,13 @@ pub extern "C" fn unrt_class_new(
     instance
 }
 
-fn call_native_at(ptr: usize, kinds: &[Kind], args: &[u64]) -> u64 {
+fn call_native_at(ptr: usize, kinds: &[Kind], args: &[u64], ret_kind: Kind) -> u64 {
     // `args` starts with `self` (an object handle). Remaining values arrive as
     // boxed handles from the bridge but the emitted function expects raw
     // scalars for Int/Float/Bool parameters, so unbox according to `kinds`.
     // MAX_CORE_ARITY is 8, plus one `self` handle.
     let mut a = [0u64; 9];
+    let mut k = [3u8; 9]; // self is an object handle in a GPR
     a[0] = args[0];
     for (i, kind) in kinds.iter().enumerate() {
         let p = args.get(i + 1).copied().unwrap_or_else(|| crate::obj::unrt_obj_int(0));
@@ -349,8 +327,10 @@ fn call_native_at(ptr: usize, kinds: &[Kind], args: &[u64]) -> u64 {
             2 => crate::obj::unrt_bool_from_obj(p) as u64,
             _ => p,
         };
+        k[i + 1] = *kind;
     }
-    call_native(ptr, &a[..kinds.len() + 1])
+    let n = kinds.len() + 1;
+    crate::abi::call_native_typed(ptr, &a[..n], &k[..n], ret_kind)
 }
 
 #[no_mangle]
@@ -402,7 +382,7 @@ pub extern "C" fn unrt_method_call(
             String::from_utf8_lossy(name)
         ));
     };
-    let raw = call_native_at(f, &kinds[..kinds_len], &call_args[..n + 1]);
+    let raw = call_native_at(f, &kinds[..kinds_len], &call_args[..n + 1], ret_kind);
     box_return(raw, ret_kind)
 }
 

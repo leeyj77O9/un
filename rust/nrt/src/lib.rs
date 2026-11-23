@@ -5,6 +5,7 @@
 //! interpreter: every value is a native object handle and every operation is
 //! plain machine code.
 
+mod abi;
 mod class;
 mod closure;
 mod dict;
