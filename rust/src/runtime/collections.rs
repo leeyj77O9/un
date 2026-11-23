@@ -67,25 +67,24 @@ impl KeyMap {
     fn bump_gen(&mut self) {
         self.gen = self.gen.wrapping_add(1);
     }
-    /// Finds a key by walking only its hash bucket chain, so non-primitive-key
-    /// writes are O(bucket length) instead of O(all entries) with no Vec
-    /// allocation. All entries sharing a hash live in the same bucket.
-    /// hash bucket chain and allocates nothing. All entries with hash `h` live
-    /// in the same bucket, so the candidate set is identical.
-    fn find_in_bucket(&self, h: u64, key: &Obj) -> Option<usize> {
+    /// Candidate keys in the hash bucket chain. Keys are cloned so the caller
+    /// can run `key_eq` (which may re-enter via user `__eq__`) without holding
+    /// this map's RefCell borrow. All entries sharing a hash live in one bucket,
+    /// so this is O(bucket length) instead of O(all entries).
+    fn bucket_candidates(&self, h: u64) -> Vec<(usize, Obj)> {
         if self.buckets.is_empty() {
-            return None;
+            return Vec::new();
         }
+        let mut out = Vec::new();
         let mut idx = self.buckets[self.bucket(h)];
-        let mut found: Option<usize> = None;
         while idx != NONE {
             let e = &self.entries[idx];
-            if e.used && e.hash == h && obj::key_eq(&e.key, key) {
-                found = Some(found.map_or(idx, |prev| prev.min(idx)));
+            if e.used && e.hash == h {
+                out.push((idx, e.key.clone()));
             }
             idx = self.next[idx];
         }
-        found
+        out
     }
     pub fn remove_index(&mut self, idx: usize) -> bool {
         self.remove_at_unchecked(idx)
@@ -739,10 +738,15 @@ pub(crate) fn find_index(
         }
     }
     for _ in 0..64 {
-        let (target, gen) = {
+        let (candidates, gen) = {
             let b = km.borrow();
-            (b.find_in_bucket(h, key), b.generation())
+            (b.bucket_candidates(h), b.generation())
         };
+        let target = candidates
+            .iter()
+            .filter(|(_, k)| obj::key_eq(k, key))
+            .map(|(i, _)| *i)
+            .min();
         if km.borrow().generation() != gen {
             continue;
         }
@@ -765,10 +769,15 @@ pub fn dict_get_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Obj {
 pub fn dict_add_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Result<bool, Obj> {
     let h = obj::hash_code(key);
     for _ in 0..64 {
-        let (target, gen) = {
+        let (candidates, gen) = {
             let b = km.borrow();
-            (b.find_in_bucket(h, key), b.generation())
+            (b.bucket_candidates(h), b.generation())
         };
+        let target = candidates
+            .iter()
+            .filter(|(_, k)| obj::key_eq(k, key))
+            .map(|(i, _)| *i)
+            .min();
         let mut b = km.borrow_mut();
         if b.generation() != gen {
             continue;
@@ -786,10 +795,15 @@ pub fn dict_add_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Result
 pub fn map_remove_item(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Option<bool> {
     let h = obj::hash_code(key);
     for _ in 0..64 {
-        let (target, gen) = {
+        let (candidates, gen) = {
             let b = km.borrow();
-            (b.find_in_bucket(h, key), b.generation())
+            (b.bucket_candidates(h), b.generation())
         };
+        let target = candidates
+            .iter()
+            .filter(|(_, k)| obj::key_eq(k, key))
+            .map(|(i, _)| *i)
+            .min();
         let mut b = km.borrow_mut();
         if b.generation() != gen {
             continue;
@@ -823,10 +837,15 @@ pub fn dict_get_default(km: &Rc<RefCell<KeyMap>>, key: &Obj) -> Option<Option<Ob
 pub fn dict_set_item(km: &Rc<RefCell<KeyMap>>, key: &Obj, value: &Obj) -> Obj {
     let h = obj::hash_code(key);
     for _ in 0..64 {
-        let (target, gen) = {
+        let (candidates, gen) = {
             let b = km.borrow();
-            (b.find_in_bucket(h, key), b.generation())
+            (b.bucket_candidates(h), b.generation())
         };
+        let target = candidates
+            .iter()
+            .filter(|(_, k)| obj::key_eq(k, key))
+            .map(|(i, _)| *i)
+            .min();
         let mut b = km.borrow_mut();
         if b.generation() != gen {
             continue;

@@ -1,0 +1,5 @@
+use io
+fn main() -> none
+    f = fn(x) -> x
+    f(1)
+main()

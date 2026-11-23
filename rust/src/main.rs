@@ -62,7 +62,7 @@ fn print_help() {
     print!("  un check <file.un>    (compile mode: static type analysis only){}", nl());
     print!("  un native <file.un>   (compile mode: static analysis + native execution){}", nl());
     print!("  un obj <file.un|file.unbc> [-o out.obj] [--entry name]  (emit a relocatable object file){}", nl());
-    print!("  un build <file.un> [-o out.exe] [--embed] [--opt-level N]  (N=0|1|2|3|s|z; embed bakes the VM runtime){}", nl());
+    print!("  un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N]  (N=0|1|2|3|s|z; fully typed by default){}", nl());
     print!("  un lsp                (run the language server over stdio for the VS Code extension){}", nl());
 }
 fn read_source(path: &str) -> Source {
@@ -822,6 +822,7 @@ fn build_cmd(args: &[String]) {
     let mut input: Option<&String> = None;
     let mut output: Option<String> = None;
     let mut embed = false;
+    let mut allow_dynamic = false;
     let mut opt_level: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -829,13 +830,16 @@ fn build_cmd(args: &[String]) {
             "-o" | "--output" => {
                 i += 1;
                 let Some(path) = args.get(i) else {
-                    eprintln!("usage: un build <file.un> [-o out.exe] [--embed] [--opt-level N]");
+                    eprintln!("usage: un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N]");
                     exit(2);
                 };
                 output = Some(path.clone());
             }
             "--embed" => {
                 embed = true;
+            }
+            "--allow-dynamic" => {
+                allow_dynamic = true;
             }
             "--opt-level" => {
                 i += 1;
@@ -860,7 +864,7 @@ fn build_cmd(args: &[String]) {
         i += 1;
     }
     let Some(input) = input else {
-        eprintln!("usage: un build <file.un> [-o out.exe] [--embed]");
+        eprintln!("usage: un build <file.un> [-o out.exe] [--embed] [--allow-dynamic]");
         exit(2);
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -877,6 +881,29 @@ fn build_cmd(args: &[String]) {
     let driver_path = temp_dir.join(format!("un_build_driver_{}.rs", std::process::id()));
 
     if embed {
+        // Fully typed mode applies to the embedded build too: a compiled
+        // executable should never rely on dynamic typing. `--allow-dynamic`
+        // restores the previous permissive behaviour for both build modes.
+        if !allow_dynamic {
+            let (parsed, node) = parse_file(input);
+            let root = match optimize(&node) {
+                Ok(result) => result.root,
+                Err(panic) => {
+                    eprintln!("{}", panic.display());
+                    exit(1);
+                }
+            };
+            if let Err(errors) = typeck::check_program_with_options(
+                &parsed,
+                &root,
+                typeck::CheckOptions { forbid_dynamic: true },
+            ) {
+                for error in &errors {
+                    print!("{}{}", error.display(&parsed), nl());
+                }
+                exit(1);
+            }
+        }
         let program = match runner::compile_source(&Rc::new(read_source(input))) {
             Ok(program) => program,
             Err(runner::RunError::Parse(error)) => {
@@ -1039,7 +1066,11 @@ fn build_cmd(args: &[String]) {
         print!("{}{}", diagnostic.display(&source), nl());
         exit(1);
     }
-    let checked = match typeck::check_program(&source, &root) {
+    let checked = match typeck::check_program_with_options(
+        &source,
+        &root,
+        typeck::CheckOptions { forbid_dynamic: !allow_dynamic },
+    ) {
         Ok(checked) => checked,
         Err(errors) => {
             for error in &errors {

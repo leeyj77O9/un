@@ -102,7 +102,7 @@ $partA = Get-ChildItem (Join-Path $Root "test\compile") -Filter *.un -File | Sor
 foreach ($f in $partA) {
     $exePath = Join-Path $Tmp ($f.BaseName + ".exe")
     Check-Case -Label "embed/$($f.Name)" -Tag "embed_$($f.BaseName)" `
-        -BuildArgs @("build", "--embed", $f.FullName, "-o", $exePath) `
+        -BuildArgs @("build", "--embed", "--allow-dynamic", $f.FullName, "-o", $exePath) `
         -RunArgs @("run", $f.FullName)
 }
 

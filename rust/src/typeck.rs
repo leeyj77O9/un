@@ -222,9 +222,18 @@ struct DeclFn<'a> {
     class_name: Option<String>,
 }
 
+/// Options for static checking. The default preserves the established
+/// behaviour (`un check`, `un native`, `un obj`, LSP, playground). `un build`
+/// opts into `forbid_dynamic` so a compiled executable has no dynamic escapes.
+#[derive(Default, Clone, Copy)]
+pub struct CheckOptions {
+    pub forbid_dynamic: bool,
+}
+
 pub struct Checker<'a> {
     source: &'a Source,
     root: &'a Node,
+    strict_dynamic: bool,
     errors: Vec<LangError>,
     aliases: HashMap<String, Ty>,
     functions: Vec<DeclFn<'a>>,
@@ -270,10 +279,11 @@ pub struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
-    fn new(source: &'a Source, root: &'a Node) -> Self {
+    fn new(source: &'a Source, root: &'a Node, opts: CheckOptions) -> Self {
         Self {
             source,
             root,
+            strict_dynamic: opts.forbid_dynamic,
             errors: Vec::new(),
             aliases: HashMap::new(),
             functions: Vec::new(),
@@ -426,6 +436,13 @@ impl<'a> Checker<'a> {
             self.error_span(span.0, span.1, "empty alternative in type union");
             return Ty::Unknown;
         }
+        if self.strict_dynamic && alts.len() > 1 {
+            self.error_span(
+                span.0,
+                span.1,
+                "union type is not allowed in un build (fully typed mode); use a concrete type, or run with `un run`",
+            );
+        }
         let mut members = Vec::with_capacity(alts.len());
         for alt in alts {
             members.push(self.parse_type_atom(alt.trim(), span, depth));
@@ -507,7 +524,16 @@ impl<'a> Checker<'a> {
             "str" => Ty::Str,
             "bytes" => Ty::Bytes,
             "none" => Ty::None_,
-            "any" => Ty::Any,
+            "any" => {
+                if self.strict_dynamic {
+                    self.error_span(
+                        span.0,
+                        span.1,
+                        "type 'any' is not allowed in un build (fully typed mode); use a concrete type, or run with `un run`",
+                    );
+                }
+                Ty::Any
+            }
             n if is_fixed_width_alias(n) => {
                 if self.import_names.iter().any(|i| i == "types") {
                     match n {
@@ -1027,6 +1053,14 @@ impl<'a> Checker<'a> {
                 if target.kind == NodeKind::Identifier {
                     let value = &node.children[1];
                     let text = self.text_of(value);
+                    if self.strict_dynamic && (text.trim() == "any" || text.contains('|')) {
+                        self.error_span(
+                            node.start,
+                            node.length,
+                            "type aliases involving 'any' or unions are not allowed in un build (fully typed mode)",
+                        );
+                        return;
+                    }
                     if let Some(ty) = self.try_type_text(&text) {
                         let name = self.text_of(target);
                         self.aliases.insert(name, ty);
@@ -1821,8 +1855,26 @@ impl<'a> Checker<'a> {
                     None => {
                         param_class_args.push(None);
                         if is_variadic {
+                            if self.strict_dynamic {
+                                self.error(
+                                    param,
+                                    format!(
+                                        "parameter '*{}' of '{}' is variadic, which is not allowed in un build (fully typed mode)",
+                                        pname, decl.name
+                                    ),
+                                );
+                            }
                             Ty::Any
                         } else if pname.is_empty() {
+                            if self.strict_dynamic {
+                                self.error(
+                                    param,
+                                    format!(
+                                        "unnamed parameter of '{}' is not allowed in un build (fully typed mode)",
+                                        decl.name
+                                    ),
+                                );
+                            }
                             Ty::Unknown
                         } else {
                             self.error(
@@ -3853,6 +3905,16 @@ impl<'a> Checker<'a> {
             if params.kind == NodeKind::Tuple {
                 for param in &params.children {
                     if let Some(name) = param_name_text(param, self.source) {
+                        if self.strict_dynamic && param_type_node(param).is_none() {
+                            self.error(
+                                param,
+                                format!(
+                                    "lambda parameter '{name}' requires a type annotation in un build (fully typed mode)"
+                                ),
+                            );
+                        }
+                        // Keep the established `Ty::Any` stub: changing it would
+                        // alter `un check`/`un native` inference beyond this mode.
                         lambda_env.declare(&name, Ty::Any);
                     }
                 }
@@ -5191,5 +5253,13 @@ fn builtin_ty(name: &str) -> Option<Ty> {
 
 
 pub fn check_program(source: &Source, root: &Node) -> Result<CheckedProgram, Vec<LangError>> {
-    Checker::new(source, root).run()
+    check_program_with_options(source, root, CheckOptions::default())
+}
+
+pub fn check_program_with_options(
+    source: &Source,
+    root: &Node,
+    opts: CheckOptions,
+) -> Result<CheckedProgram, Vec<LangError>> {
+    Checker::new(source, root, opts).run()
 }

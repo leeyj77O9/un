@@ -1,0 +1,7 @@
+use io
+type A = any
+fn f(x: A) -> int
+    -> 1
+fn main() -> none
+    f(1)
+main()

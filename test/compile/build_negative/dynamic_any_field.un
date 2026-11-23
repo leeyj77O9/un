@@ -1,0 +1,7 @@
+use io
+class Box
+    value: any
+fn main() -> none
+    b = Box()
+    b.value = 1
+main()
