@@ -173,4 +173,4 @@
 - **해결 (커밋 `edeabff`)**: `vm::tests::a_cleared_jit_program_runs_identically`가
   전역 `clear()` 대신 `jit_cache::clear_program(program_id)`로 격리되고, `JIT_FNS`와
   `TIR_FNS`가 분리되었다. 전역 `clear()`를 쓰는 `a_full_clear_lets_jit_run_again`은
-  의도된 테스트로 유지한다. 현재 기준 `cargo test --release --workspace` 261 passed.
+  의도된 테스트로 유지한다. 현재 기준 `cargo test --release --workspace` 262 passed.
