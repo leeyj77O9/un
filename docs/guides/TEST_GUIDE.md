@@ -140,7 +140,7 @@ moved into meaningful tests (2026-11-16), and `scripts/test.ps1` passes with
 ## Current status
 
 ```
-Positive: 51 files, 1630 passed, 0 failed, 0 crashed
+Positive: 51 files, 1638 passed, 0 failed, 0 crashed
 Negative: 51 matched, 0 mismatched, 0 documented divergences
 Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0

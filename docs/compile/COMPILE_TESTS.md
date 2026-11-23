@@ -8,7 +8,7 @@
 
 | 구분 | 상태 |
 |---|---|
-| `un check` / `un native` 기존 회귀 (`scripts/test.ps1`) | **green** — Positive 51 files / 1630 passed / 0 failed / 0 crashed, Negative 51 matched / 0 documented divergences, Known 0 |
+| `un check` / `un native` 기존 회귀 (`scripts/test.ps1`) | **green** — Positive 51 files / 1638 passed / 0 failed / 0 crashed, Negative 51 matched / 0 documented divergences, Known 0 |
 | `scripts/differential.ps1` (UV_JIT=0 vs JIT 바이트 비교) | **green** — 102 files, 0 differences |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | **green** — positive 51/51 identical, 0 mismatched (negative 42 identical + 9 skipped(compile-rejected)) |
 | `cargo test --release --workspace` | **green** — 273 passed (nrt 4 + lib 246 + un bin/LSP 15 + playground 8), 0 failed |

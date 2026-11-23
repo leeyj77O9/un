@@ -9,7 +9,7 @@
 
 | Phase | 작업 | 상태 | 검증 |
 |---|---|---|---|
-| 1 | 아키텍처 분석 + 설계 | **완료** | `scripts/test.ps1` 1630 passed / 51 negative (baseline 유지) |
+| 1 | 아키텍처 분석 + 설계 | **완료** | `scripts/test.ps1` 1638 passed / 51 negative (baseline 유지) |
 | 2 | `typeck` (정적 분석·타입 검사·추론) | **완료** | `un check` 구현·검증; `test/compile/typed_pass.un` 통과 양쪽 모드 |
 | 3 | `tir` (Typed IR + 검증기) | **완료** | core 판정 통과 함수 5개(add/square/mixed/id_bool/fib) native 실행 |
 | 4 | `natcode` (Cranelift 코드젠) | **완료** | `un native` 바이너리 fib(24) native 실행, bail 경로 interpreter와 출력 동일 |
@@ -110,7 +110,7 @@
 - `un run`/`un compile`: **변경 없음**.
 
 ### 검증 (2026-11-23 재측정)
-- `scripts/test.ps1`: Positive 51 files / 1630 passed / 0 failed / 0 crashed,
+- `scripts/test.ps1`: Positive 51 files / 1638 passed / 0 failed / 0 crashed,
   Negative 51 matched / 0 documented divergences, Known 0 — **baseline 유지**.
 - `scripts/differential.ps1`: 102 files 0 differences — **green**.
 - `scripts/unbc-roundtrip.ps1 -IncludeNegative`: positive 51/51 identical,

@@ -392,7 +392,7 @@ CI(`.github/workflows/build.yml`)는 push/PR마다 release 빌드와 위 검증 
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
 Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
-포함하지 않는다. 현재 기준은 Positive 50 파일 / 1630 passed / 0 failed / 0 crashed,
+포함하지 않는다. 현재 기준은 Positive 51 파일 / 1638 passed / 0 failed / 0 crashed,
 Negative 51 checks 매칭 + 0 documented divergences, Known 0 파일이다. (2026-11-23 재측정)
 Rust 테스트는 `cargo test --release --workspace` 273 passed(nrt 4 + lib 246 + LSP 15 +
 playground 8)다. JIT differential 102 파일 / 0 차이, `.unbc` 왕복 Positive 51/51 ·

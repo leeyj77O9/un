@@ -235,10 +235,10 @@ C:\dev\un
   exit code를 바이트 비교한다. `-IncludeNegative`를 쓰면 negative manifest도 포함한다.
 - `scripts/test.ps1`은 `test/MANIFEST.txt`의 `group|path` 행을 실행하고 exit code와
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 51 files /
-  1630 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
+  1638 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
   Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다. (2026-11-23 재측정)
   그 외 게이트: `cargo test --release --workspace` 273 passed, differential 102 파일 / 0 차이,
-  `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 37/0, exe-diff 52/0.
+  `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 37/0, exe-diff 54/0.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).
 - `test/KnownFailures.txt`의 파일은 runner가 KNOWN FAIL로 기록하고 Positive 집계에
