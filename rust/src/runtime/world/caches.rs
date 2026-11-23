@@ -86,7 +86,16 @@ pub fn uninitialized_obj() -> Obj {
     })
 }
 pub fn is_uninitialized(o: &Obj) -> bool {
-    std::rc::Rc::ptr_eq(o, &uninitialized_obj())
+    // Compare against the sentinel still owned by WORLD. An immutable borrow
+    // avoids the borrow_mut + Rc clone of uninitialized_obj(), while identity
+    // remains tied to WORLD so world::reset() (which clears the field) stays
+    // correct: no sentinel yet, or a stale pre-reset sentinel, both compare false.
+    WORLD.with(|w| {
+        w.borrow()
+            .uninitialized
+            .as_ref()
+            .is_some_and(|u| std::rc::Rc::ptr_eq(o, u))
+    })
 }
 
 pub fn bool_obj(value: bool) -> Obj {

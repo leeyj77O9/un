@@ -355,22 +355,24 @@ pub fn range_next(st: &IterCell) -> Option<i64> {
         if def_cell.kind != Kind::Range {
             return None;
         }
-        let def = def_cell.head.borrow().def.clone();
-        let (stop, step) = match def.as_ref() {
+        // One head borrow: read def in place (no Rc clone) and cursor together.
+        let head = def_cell.head.borrow();
+        let (stop, step) = match head.def.as_ref() {
             StageDef::Range { stop, step, .. } => (*stop, *step),
             _ => return None,
         };
-        let value = def_cell.head.borrow().cursor;
-        (stop, step, value)
+        (stop, step, head.cursor)
     };
     let value = cursor_val(value);
     let in_bound = if step > 0 { value < stop } else { value > stop };
-    if !in_bound {
-        st.borrow_mut().head.borrow_mut().cursor = Cursor::Val(stop);
-        return None;
-    }
-    st.borrow_mut().head.borrow_mut().cursor = Cursor::Val(value.wrapping_add(step as i64));
-    Some(value)
+    let next_cursor = if in_bound {
+        Cursor::Val(value.wrapping_add(step as i64))
+    } else {
+        Cursor::Val(stop)
+    };
+    // Only the head's interior changes; an immutable st borrow suffices.
+    st.borrow().head.borrow_mut().cursor = next_cursor;
+    if in_bound { Some(value) } else { None }
 }
 
 pub fn head(st: &IterCell) -> (Kind, Stage) {

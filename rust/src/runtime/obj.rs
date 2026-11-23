@@ -289,13 +289,13 @@ pub fn payload_ref(o: &Obj) -> std::cell::Ref<'_, Payload> {
     std::cell::Ref::map(o.borrow(), |d| &d.payload)
 }
 pub fn is_err(o: &Obj) -> bool {
-    matches!(payload(o), Payload::Error { .. })
+    matches!(&*payload_ref(o), Payload::Error { .. })
 }
 pub fn is_panic(o: &Obj) -> bool {
-    matches!(payload(o), Payload::Panic { .. })
+    matches!(&*payload_ref(o), Payload::Panic { .. })
 }
 pub fn is_bool(o: &Obj) -> bool {
-    matches!(payload(o), Payload::Bool(_))
+    matches!(&*payload_ref(o), Payload::Bool(_))
 }
 pub fn key_eq(a: &Obj, b: &Obj) -> bool {
     if Rc::ptr_eq(a, b) {
@@ -390,7 +390,7 @@ pub fn key_not_found(name: &str) -> Obj {
     )
 }
 pub fn bool_value(o: &Obj) -> bool {
-    matches!(payload(o), Payload::Bool(true))
+    matches!(&*payload_ref(o), Payload::Bool(true))
 }
 fn valid_super(o: &Obj) -> Option<Obj> {
     let s = o.borrow().super_.clone();
@@ -1566,7 +1566,17 @@ fn int_int_binop(a: i64, op: BinOp, b: i64) -> Obj {
                 int(a.wrapping_rem(b))
             }
         }
-        Pow | BAnd | BOr | BXor | LShift | RShift => builtin_binop(&int(a), op, &int(b)),
+        // Pow is left on the builtin path: its negative-exponent and overflow
+        // errors are semantics-sensitive, so keep that fallback unchanged.
+        Pow => builtin_binop(&int(a), op, &int(b)),
+        // Direct Int paths avoid re-entering builtin_binop, which would
+        // recompute type_name twice and clone both payloads. These mirror
+        // bit()/int_binop exactly, including the `& 63` shift mask.
+        BAnd => int(a & b),
+        BOr => int(a | b),
+        BXor => int(a ^ b),
+        LShift => int(a << (b as i32 & 63)),
+        RShift => int(a >> (b as i32 & 63)),
         Eq => boolean(a == b),
         NEq => boolean(a != b),
         Lt => boolean(a < b),
@@ -1611,8 +1621,8 @@ pub fn binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
     binop_inner(o, op, other)
 }
 fn binop_inner(o: &Obj, op: BinOp, other: &Obj) -> Obj {
-    if let (Payload::Int(a), Payload::Int(b)) = (payload(o), payload(other)) {
-        return int_int_binop(a, op, b);
+    if let (Payload::Int(a), Payload::Int(b)) = (&*payload_ref(o), &*payload_ref(other)) {
+        return int_int_binop(*a, op, *b);
     }
     if can_have_dunder(o) {
         if let Some(v) = try_method(o, op.dunder(), &[other.clone()]) {

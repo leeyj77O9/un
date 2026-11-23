@@ -226,19 +226,24 @@ impl VM {
         owner
     }
 
-    fn plan(&self) -> &ProtoPlan {
-        &self.plan.protos[self.proto_idx]
-    }
-
     fn proto(&self) -> &Proto {
         &self.program.protos[self.proto_idx]
     }
 
     pub fn run(&mut self) -> Outcome {
+        // proto_idx/plan are never reassigned for the lifetime of a VM. Clone the
+        // Rc handles once so the current proto/plan data can be pinned in locals
+        // while `step`/`handle` still receive `&mut self`.
+        let plan = self.plan.clone();
+        let program = self.program.clone();
+        let proto_plan = &plan.protos[self.proto_idx];
+        let cur_proto = &program.protos[self.proto_idx];
+        let code = &proto_plan.code;
+        let depths = &proto_plan.depths;
+        let scratch_base = proto_plan.scratch_base;
         loop {
-            let Some(&ins) = self.plan().code.get(self.ip) else {
-                let scratch_base = self.plan().scratch_base;
-                let final_depth = self.plan().depths[self.plan().code.len()] as usize;
+            let Some(&ins) = code.get(self.ip) else {
+                let final_depth = depths[code.len()] as usize;
                 let value = if final_depth > 0 {
                     self.regs[scratch_base + final_depth - 1].clone()
                 } else {
@@ -246,8 +251,8 @@ impl VM {
                 };
                 return Outcome::Value(value);
             };
-            let depth_before = self.plan().depths[self.ip] as usize;
-            let result = match catch_internal(|| self.step(&ins, depth_before)) {
+            let depth_before = depths[self.ip] as usize;
+            let result = match catch_internal(|| self.step(&ins, depth_before, scratch_base, cur_proto)) {
                 Ok(result) => result,
                 Err(message) => Err(Outcome::Panic(obj::panic("panic", message))),
             };
@@ -256,9 +261,9 @@ impl VM {
                     if advance {
                         self.ip += 1;
                     }
-                    let depth = self.plan().depths.get(self.ip).copied().unwrap_or(depth_before as u8) as usize;
+                    let depth = depths.get(self.ip).copied().unwrap_or(depth_before as u8) as usize;
                     if depth > 0 {
-                        let slot = self.plan().scratch_base + depth - 1;
+                        let slot = scratch_base + depth - 1;
                         if let Some(top) = self.regs.get(slot) {
                             if matches!(obj::payload(top), Payload::Panic { .. }) {
                                 let o = top.clone();
@@ -366,49 +371,54 @@ impl VM {
         }
     }
 
-    fn s(&self, k: usize) -> usize {
-        self.plan().scratch_base + k
-    }
-
     fn bin(&mut self, op: BinOp, a: usize, b: usize, c: usize) {
-        let l = self.regs[b].clone();
-        let r = self.regs[c].clone();
-        self.regs[a] = obj::binop(&l, op, &r);
+        // obj::binop borrows its operands; compute into a local first so the two
+        // operand clones are unnecessary (safe even when a == b or a == c).
+        let result = obj::binop(&self.regs[b], op, &self.regs[c]);
+        self.regs[a] = result;
     }
 
-    fn slice_bounds(&mut self, flags: u16) -> (Option<Obj>, Option<Obj>, Option<Obj>) {
+    fn slice_bounds(
+        &mut self,
+        flags: u16,
+        scratch_base: usize,
+        depth: usize,
+    ) -> (Option<Obj>, Option<Obj>, Option<Obj>) {
         let nb = 1 + slice_bound_count(flags);
-        let base = self.depth_of_current();
-        let target = base - nb;
+        let target = depth - nb;
         let s_i = target + 1;
         let e_i = if flags & FLAG_SLICE_START != 0 { s_i + 1 } else { s_i };
         let st_i = if flags & FLAG_SLICE_END != 0 { e_i + 1 } else { e_i };
-        let read = |i: usize| self.regs[self.s(i)].clone();
+        let read = |i: usize| self.regs[scratch_base + i].clone();
         let start = if flags & FLAG_SLICE_START != 0 { Some(read(s_i)) } else { None };
         let end = if flags & FLAG_SLICE_END != 0 { Some(read(e_i)) } else { None };
         let step = if flags & FLAG_SLICE_STEP != 0 { Some(read(st_i)) } else { None };
         (step, end, start)
     }
 
-    fn depth_of_current(&self) -> usize {
-        self.plan().depths[self.ip] as usize
-    }
 }
 
 impl VM {
-    fn step(&mut self, ins: &Ins, depth: usize) -> Result<bool, Outcome> {
-        let src = {
-            let base = self.plan().scratch_base;
-            move |k: usize| base + k
-        };
-        let span = self.proto().span(self.ip);
+    fn step(
+        &mut self,
+        ins: &Ins,
+        depth: usize,
+        scratch_base: usize,
+        cur_proto: &Proto,
+    ) -> Result<bool, Outcome> {
+        let src = |k: usize| scratch_base + k;
+        let ip = self.ip;
+        // Deferred: span is only needed on error/control-flow paths (and Call
+        // frame construction). `ip`/`cur_proto` are unchanged at each use site,
+        // so this is byte-identical to the previous eager computation.
+        let span = || cur_proto.span(ip);
         match ins.op {
             Op::LoadNone => self.regs[src(depth)] = world::none_obj(),
             Op::LoadNull => self.regs[src(depth)] = world::null_obj(),
             Op::LoadTrue => self.regs[src(depth)] = world::bool_obj(true),
             Op::LoadFalse => self.regs[src(depth)] = world::bool_obj(false),
             Op::LoadConst => {
-                let c = self.program.constant(self.proto(), ins.d as usize).clone();
+                let c = self.program.constant(cur_proto, ins.d as usize).clone();
                 self.regs[src(depth)] = materialize(&c);
             }
             Op::LoadName => {
@@ -421,7 +431,7 @@ impl VM {
                 } else if world::get_class(&name).is_some() {
                     self.regs[src(depth)] = world::class_tobj(&name);
                 } else {
-                    return Err(self.error(format!("undefined variable '{name}'"), span));
+                    return Err(self.error(format!("undefined variable '{name}'"), span()));
                 }
             }
             Op::StoreName => {
@@ -458,7 +468,7 @@ impl VM {
                     return Ok(true);
                 }
                 let scope = context::scope(&self.ctx);
-                let name_idx = self.proto().locals.get(slot).copied().unwrap_or(0);
+                let name_idx = cur_proto.locals.get(slot).copied().unwrap_or(0);
                 let name = self.name(name_idx);
                 if let Some(v) = scope::get_opt(&scope, &name) {
                     self.regs[src(depth)] = deref_field(v);
@@ -472,7 +482,7 @@ impl VM {
                     self.regs[src(depth)] = world::class_tobj(&name);
                     return Ok(true);
                 }
-                return Err(self.error(format!("undefined variable '{name}'"), span));
+                return Err(self.error(format!("undefined variable '{name}'"), span()));
             }
             Op::StoreLocal => {
                 let value = self.regs[src(depth - 1)].clone();
@@ -499,11 +509,11 @@ impl VM {
                 let items = obj::unpack_items(&value);
                 if let Some(first) = items.first() {
                     if obj::is_err(first) {
-                        return Err(self.header_error(first, span));
+                        return Err(self.header_error(first, span()));
                     }
                 }
                 if items.len() != count {
-                    return Err(self.error("tuple unpack mismatch", span));
+                    return Err(self.error("tuple unpack mismatch", span()));
                 }
                 for (i, item) in items.iter().enumerate() {
                     self.regs[src(depth - 1 + (count - 1 - i))] = item.clone();
@@ -555,7 +565,7 @@ impl VM {
                 for part in &parts {
                     match obj::payload(part) {
                         Payload::Str(s) => out.push_str(&s),
-                        _ => return Err(self.error("f-string expression must be a string", span)),
+                        _ => return Err(self.error("f-string expression must be a string", span())),
                     }
                 }
                 self.regs[src(depth - n)] = obj::str(&out);
@@ -637,7 +647,7 @@ impl VM {
                 let v = self.regs[ins.b as usize].clone();
                 let b = obj::to_bool(&v);
                 if ins.flags & FLAG_STRICT != 0 && obj::is_err(&b) {
-                    return Err(self.error(err_message(&b), span));
+                    return Err(self.error(err_message(&b), span()));
                 }
                 self.regs[ins.a as usize] = b;
             }
@@ -651,7 +661,7 @@ impl VM {
                 let c = owner.borrow().slots.get(y).cloned().filter(|v| !world::is_uninitialized(v));
 
                 let load = |slot: usize| -> Obj {
-                    let name_idx = self.proto().locals.get(slot).copied().unwrap_or(0);
+                    let name_idx = cur_proto.locals.get(slot).copied().unwrap_or(0);
                     let name = self.name(name_idx);
                     if let Some(v) = scope::get_opt(&scope, &name) {
                         deref_field(v)
@@ -699,7 +709,7 @@ impl VM {
                 self.regs[ins.a as usize] = result;
             }
             Op::Jmp => {
-                self.ip = self.proto().jump_target(self.ip, ins.d);
+                self.ip = cur_proto.jump_target(self.ip, ins.d);
                 return Ok(false);
             }
             Op::JmpIf => {
@@ -714,12 +724,12 @@ impl VM {
                 };
                 let jump = if ins.flags & FLAG_JUMP_TRUE != 0 { cond } else { !cond };
                 if jump {
-                    self.ip = self.proto().jump_target(self.ip, ins.d);
+                    self.ip = cur_proto.jump_target(self.ip, ins.d);
                     return Ok(false);
                 }
             }
             Op::PushTry | Op::PushTryProp => {
-                let entry = self.proto().exc[ins.d as usize];
+                let entry = cur_proto.exc[ins.d as usize];
                 self.tries.push(TryEntry {
                     kind: entry.kind,
                     start: entry.start,
@@ -738,7 +748,7 @@ impl VM {
                 if let Some(e) = self.pending.take() {
                     if frames > 0 {
                         let err = obj::err_with_header(e.header.clone(), e.message.clone());
-                        let outcome = Outcome::Propagate(err, span.0, span.1);
+                        let outcome = Outcome::Propagate(err, span().0, span().1);
                         if let Some(index) = self.pending_finally() {
                             let entry = self.tries[index];
                             self.tries.truncate(index);
@@ -753,7 +763,7 @@ impl VM {
                 let top = self.regs[ins.a as usize].clone();
                 if obj::is_err(&top) {
                     if frames > 0 {
-                        let outcome = Outcome::Propagate(top, span.0, span.1);
+                        let outcome = Outcome::Propagate(top, span().0, span().1);
                         if let Some(index) = self.pending_finally() {
                             let entry = self.tries[index];
                             self.tries.truncate(index);
@@ -763,7 +773,7 @@ impl VM {
                         }
                         return Err(outcome);
                     }
-                    return Err(self.header_error(&top, span));
+                    return Err(self.header_error(&top, span()));
                 }
             }
             Op::PopTry => {
@@ -775,7 +785,7 @@ impl VM {
                 }
 
                 if let Some(value) = self.pending_return.take() {
-                    return Err(Outcome::Return(value, span.0, span.1));
+                    return Err(Outcome::Return(value, span().0, span().1));
                 }
 
                 if let Some(outcome) = self.pending_propagate.take() {
@@ -793,7 +803,7 @@ impl VM {
                 let name = self.name(ins.d as usize);
                 let outcome = obj::set_attr(&target, &name, &value);
                 if obj::is_err(&outcome) {
-                    return Err(self.error(err_message(&outcome), span));
+                    return Err(self.error(err_message(&outcome), span()));
                 }
                 self.regs[ins.a as usize] = outcome;
             }
@@ -841,19 +851,19 @@ impl VM {
                     self.regs[ins.a as usize] = self.regs[ins.a as usize].clone();
                     return Ok(true);
                 }
-                return self.set_item_slow(ins, span);
+                return self.set_item_slow(ins, span());
             }
 
             Op::Slice => {
-                let (step, end, start) = self.slice_bounds(ins.flags);
+                let (step, end, start) = self.slice_bounds(ins.flags, scratch_base, depth);
                 let target = self.regs[ins.b as usize].clone();
                 self.regs[ins.a as usize] = obj::slice(&target, start, end, step);
             }
             Op::SetSlice => {
-                let (step, end, start) = self.slice_bounds(ins.flags);
+                let (step, end, start) = self.slice_bounds(ins.flags, scratch_base, depth);
                 let value = self.regs[ins.a as usize].clone();
                 let target = self.regs[ins.b as usize].clone();
-                self.set_slice(&target, &value, start, end, step, span)?;
+                self.set_slice(&target, &value, start, end, step, span())?;
                 self.regs[ins.a as usize] = value;
             }
 
@@ -869,12 +879,12 @@ impl VM {
                     let v = &self.regs[ins.a as usize];
                     if obj::is_err(v) {
                         let e = v.clone();
-                        return Err(self.header_error(&e, span));
+                        return Err(self.header_error(&e, span()));
                     }
                 }
                 let v = self.regs[ins.a as usize].clone();
                 let Some(frame) = self.args.last_mut() else {
-                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span));
+                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span()));
                 };
                 frame.values.push(v);
                 frame.names.push(String::new());
@@ -883,7 +893,7 @@ impl VM {
                 let name = self.name(ins.d as usize);
                 let v = self.regs[ins.a as usize].clone();
                 let Some(frame) = self.args.last_mut() else {
-                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span));
+                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span()));
                 };
                 frame.values.push(v);
                 frame.names.push(name);
@@ -893,11 +903,11 @@ impl VM {
                 let items = obj::unpack_items(&source);
                 if let Some(first) = items.first() {
                     if obj::is_err(first) {
-                        return Err(self.header_error(first, span));
+                        return Err(self.header_error(first, span()));
                     }
                 }
                 let Some(frame) = self.args.last_mut() else {
-                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span));
+                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span()));
                 };
                 for item in items {
                     frame.values.push(item);
@@ -908,7 +918,7 @@ impl VM {
                 let value = self.regs[ins.a as usize].clone();
                 let dict = match obj::payload(&value) {
                     Payload::Dict(map) => map,
-                    _ => return Err(self.error("** argument must be dict", span)),
+                    _ => return Err(self.error("** argument must be dict", span())),
                 };
                 let pairs: Vec<(Obj, Obj)> = dict
                     .borrow()
@@ -916,7 +926,7 @@ impl VM {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 let Some(frame) = self.args.last_mut() else {
-                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span));
+                    return Err(self.error("malformed bytecode: argument instruction without a call frame", span()));
                 };
                 for (key, item) in pairs {
                     let name = match obj::payload(&key) {
@@ -941,13 +951,13 @@ impl VM {
                 context::push_frame(
                     &self.ctx,
                     Frame {
-                        name: source.span(span.0, span.1),
+                        name: source.span(span().0, span().1),
                         source,
-                        start: span.0,
-                        length: span.1,
+                        start: span().0,
+                        length: span().1,
                     },
                 );
-                let outcome = self.call_value(&callable, &Args::named(values, names), span);
+                let outcome = self.call_value(&callable, &Args::named(values, names), span());
                 let popped = context::pop_frame(&self.ctx);
                 let crosses_error = match &outcome {
                     Err(Outcome::Error(_)) | Err(Outcome::Propagate(..)) | Err(Outcome::Panic(_)) => true,
@@ -959,7 +969,7 @@ impl VM {
                         let name = self
                             .program
                             .names
-                            .get(self.proto().name)
+                            .get(cur_proto.name)
                             .cloned()
                             .unwrap_or_default();
                         context::push_trace(
@@ -976,7 +986,7 @@ impl VM {
                 match outcome {
                     Ok(result) => {
                         if obj::is_err(&result) {
-                            return Err(self.error(err_message(&result), span));
+                            return Err(self.error(err_message(&result), span()));
                         }
                         if obj::is_panic(&result) {
                             return Err(Outcome::Panic(result));
@@ -1009,7 +1019,7 @@ impl VM {
                 let iter = obj::unary(&iterable, obj::UnOp::Iter);
                 if !matches!(obj::payload(&iter), Payload::Iter(_)) {
                     let msg = self.program.message(ins.d as usize).to_string();
-                    return Err(self.error(msg, span));
+                    return Err(self.error(msg, span()));
                 }
                 self.regs[ins.a as usize] = iter;
             }
@@ -1030,7 +1040,7 @@ impl VM {
                 };
                 match obj::payload(&next) {
                     Payload::Error { message, .. } if message == "iteration stopped" => {
-                        self.ip = self.proto().jump_target(self.ip, ins.d);
+                        self.ip = cur_proto.jump_target(self.ip, ins.d);
                         return Ok(false);
                     }
                     Payload::Panic { .. } => {
@@ -1043,7 +1053,7 @@ impl VM {
                 }
             }
             Op::Break | Op::Skip => {
-                self.ip = self.proto().jump_target(self.ip, ins.d);
+                self.ip = cur_proto.jump_target(self.ip, ins.d);
                 return Ok(false);
             }
             Op::Return => {
@@ -1056,12 +1066,12 @@ impl VM {
                     self.ip = entry.handler;
                     return Ok(false);
                 }
-                return Err(Outcome::Return(value, span.0, span.1));
+                return Err(Outcome::Return(value, span().0, span().1));
             }
 
             Op::MakeFunc => {
                 let slot = ins.d as usize;
-                let module_index = self.proto().protos[slot];
+                let module_index = cur_proto.protos[slot];
                 let proto = self.program.protos[module_index].clone();
 
                 let defaults = (ins.flags >> 8) as usize;
@@ -1146,7 +1156,7 @@ impl VM {
                 match world::get_class(&name) {
                     Some(class) => self.regs[ins.a as usize] = class,
                     None => {
-                        return Err(self.error(format!("unknown base class '{name}'"), span));
+                        return Err(self.error(format!("unknown base class '{name}'"), span()));
                     }
                 }
             }
@@ -1210,7 +1220,7 @@ impl VM {
                 self.regs[ins.a as usize] = created;
             }
             Op::MatchPattern => {
-                let pattern = self.proto().patterns[ins.d as usize].clone();
+                let pattern = cur_proto.patterns[ins.d as usize].clone();
                 let value = self.regs[ins.b as usize].clone();
                 let scope = context::scope(&self.ctx);
                 let matched = self.match_pattern(&pattern, &value, &scope);
@@ -1218,7 +1228,7 @@ impl VM {
             }
             Op::MakeFuture => {
                 let slot = ins.d as usize;
-                let module_index = self.proto().protos[slot];
+                let module_index = cur_proto.protos[slot];
                 self.regs[ins.a as usize] = crate::native::flow::future_pending(
                     module_index,
                     self.program.clone(),
@@ -1229,7 +1239,7 @@ impl VM {
                 let value = self.regs[ins.a as usize].clone();
                 let state = match obj::payload(&value) {
                     Payload::Future(state) => state.clone(),
-                    _ => return Err(self.error("'wait' requires Future", span)),
+                    _ => return Err(self.error("'wait' requires Future", span())),
                 };
                 let result = match state.borrow().value.clone() {
                     Some(v) => v,
@@ -1249,7 +1259,7 @@ impl VM {
                         match execute_proto(&program, &ctx, index, plan_for(&program)) {
                             function::Flow::Return(v) => v,
                             function::Flow::Propagate(v) => {
-                                return Err(Outcome::Propagate(v, span.0, span.1))
+                                return Err(Outcome::Propagate(v, span().0, span().1))
                             }
                             function::Flow::Error(e) => return Err(Outcome::Error(e)),
                             function::Flow::Panic(p) => return Err(Outcome::Panic(p)),
@@ -1260,7 +1270,7 @@ impl VM {
                     }
                 };
                 if obj::is_err(&result) {
-                    return Err(self.error(err_message(&result), span));
+                    return Err(self.error(err_message(&result), span()));
                 }
                 if obj::is_panic(&result) {
                     return Err(Outcome::Panic(result));
@@ -1271,7 +1281,7 @@ impl VM {
             }
             Op::PushDefer => {
                 let slot = ins.d as usize;
-                let module_index = self.proto().protos[slot];
+                let module_index = cur_proto.protos[slot];
                 context::push_defer(
                     &self.ctx,
                     context::Defer::Proto {
@@ -1284,7 +1294,7 @@ impl VM {
                 let value = self.regs[ins.a as usize].clone();
                 let entry = obj::entry(&value);
                 if obj::is_err(&entry) {
-                    return Err(self.error(err_message(&entry), span));
+                    return Err(self.error(err_message(&entry), span()));
                 }
                 context::push_using(&self.ctx, entry);
             }
@@ -1292,7 +1302,7 @@ impl VM {
                 let v = &self.regs[ins.a as usize];
                 if obj::is_err(v) {
                     let e = v.clone();
-                    return Err(self.error(err_message(&e), span));
+                    return Err(self.error(err_message(&e), span()));
                 }
             }
             Op::Use => {
@@ -1331,15 +1341,15 @@ impl VM {
                     let name = self
                         .program
                         .names
-                        .get(self.proto().name)
+                        .get(cur_proto.name)
                         .cloned()
                         .unwrap_or_default();
                     context::push_trace(
                         &self.ctx,
                         context::TraceEntry {
                             source: context::source(&self.ctx),
-                            start: span.0,
-                            length: span.1,
+                            start: span().0,
+                            length: span().1,
                             name,
                         },
                     );
@@ -1355,7 +1365,7 @@ impl VM {
                     };
                     return Err(Outcome::Panic(obj::panic(name, text)));
                 }
-                return Err(self.error(message, span));
+                return Err(self.error(message, span()));
             }
             _ => {
                 return Err(Outcome::Panic(obj::panic(
@@ -1766,8 +1776,10 @@ fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
 
 fn plan_for(program: &Rc<Program>) -> Rc<Plan> {
     let key = program.id;
-    let found = PLAN_CACHE.with(|cache| cache.borrow().0.get(&key).cloned());
-    if let Some((_, cached_plan)) = found {
+    let found = PLAN_CACHE.with(|cache| {
+        cache.borrow().0.get(&key).map(|(_, plan)| plan.clone())
+    });
+    if let Some(cached_plan) = found {
         return cached_plan;
     }
     let plan = Rc::new(transfer::compile(program).expect(
