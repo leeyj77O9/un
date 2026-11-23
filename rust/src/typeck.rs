@@ -259,6 +259,11 @@ pub struct Checker<'a> {
     /// Annotation-driven class arguments pending for the constructor call
     /// that is about to be checked (keyed by the call node's start offset).
     pending_class_args: HashMap<usize, (String, Vec<Ty>)>,
+    /// Constant integer value of a checked binary expression, keyed by the
+    /// expression node's start offset. This is the bridge between `check_binop`
+    /// and fixed-width range checks at assignment sites: an expression that
+    /// involved a fixed-width variable still has a statically known value here.
+    expr_consts: HashMap<usize, i128>,
     silence: u32,
     checked_functions: Vec<FnCheck>,
     checked_by_span: HashMap<usize, usize>,
@@ -291,6 +296,7 @@ impl<'a> Checker<'a> {
             class_annotation_args: HashMap::new(),
             fn_param_class_args: HashMap::new(),
             pending_class_args: HashMap::new(),
+            expr_consts: HashMap::new(),
             silence: 0,
             checked_functions: Vec::new(),
             checked_by_span: HashMap::new(),
@@ -320,6 +326,17 @@ impl<'a> Checker<'a> {
 
     fn text_of(&self, node: &Node) -> String {
         self.source.span(node.start, node.length)
+    }
+
+    /// Constant integer value of an expression. Binary nodes reuse the value
+    /// recorded by `check_binary` right after `check_binop` ran on them, so the
+    /// range check at an assignment sees exactly the expression whose type was
+    /// just inferred (including operands that are fixed-width variables).
+    fn const_int_expr(&self, node: &Node, env: &Env) -> Option<i128> {
+        if let Some(value) = self.expr_consts.get(&node.start) {
+            return Some(*value);
+        }
+        const_int_value(node, self.source, env)
     }
 
     pub fn run(mut self) -> Result<CheckedProgram, Vec<LangError>> {
@@ -571,8 +588,13 @@ fn fixed_width_bounds(name: &str) -> Option<(&'static str, (i128, i128))> {
     })
 }
 
-fn const_int_value(node: &Node, source: &Source) -> Option<i128> {
+/// Evaluate a compile-time integer expression. In addition to pure literals
+/// this resolves identifiers whose value is statically known (`Env::const_ints`),
+/// which is what makes a fixed-width variable participate in a range check.
+/// Anything not provably constant returns `None` (no false-positive errors).
+fn const_int_value(node: &Node, source: &Source, env: &Env) -> Option<i128> {
     match node.kind {
+        NodeKind::Identifier => env.const_ints.get(&source.span(node.start, node.length)).copied(),
         NodeKind::Integer => {
             if let Some(crate::ast::Const::Int(v)) = &node.value {
                 return Some(*v as i128);
@@ -594,18 +616,18 @@ fn const_int_value(node: &Node, source: &Source) -> Option<i128> {
             Some(if negative { -value } else { value })
         }
         NodeKind::Unary => match node.op? {
-            TokenType::Minus => const_int_value(node.children.first()?, source).map(|v| -v),
-            TokenType::Positive => const_int_value(node.children.first()?, source),
-            TokenType::BNot => const_int_value(node.children.first()?, source).map(|v| !v),
+            TokenType::Minus => const_int_value(node.children.first()?, source, env)?.checked_neg(),
+            TokenType::Positive => const_int_value(node.children.first()?, source, env),
+            TokenType::BNot => const_int_value(node.children.first()?, source, env).map(|v| !v),
             _ => None,
         },
         NodeKind::Binary => {
-            let lhs = const_int_value(node.children.first()?, source)?;
-            let rhs = const_int_value(node.children.get(1)?, source)?;
+            let lhs = const_int_value(node.children.first()?, source, env)?;
+            let rhs = const_int_value(node.children.get(1)?, source, env)?;
             match node.op? {
-                TokenType::Plus => Some(lhs + rhs),
-                TokenType::Minus => Some(lhs - rhs),
-                TokenType::Asterisk => Some(lhs * rhs),
+                TokenType::Plus => lhs.checked_add(rhs),
+                TokenType::Minus => lhs.checked_sub(rhs),
+                TokenType::Asterisk => lhs.checked_mul(rhs),
                 TokenType::LeftShift => lhs.checked_shl(u32::try_from(rhs).ok()?),
                 TokenType::RightShift => lhs.checked_shr(u32::try_from(rhs).ok()?),
                 TokenType::BAnd => Some(lhs & rhs),
@@ -1281,6 +1303,12 @@ struct Env {
     in_function: bool,
     terminated: bool,
     fixed_width: HashMap<String, (String, (i128, i128))>,
+    /// Statically known integer values of variables. This mirrors `fixed_width`
+    /// (flat, cleared when entering a function) and lets a range check see
+    /// through `x: i8 = 127; y: i8 = x + 1` instead of only literal right-hand
+    /// sides. A variable whose current value is not a known integer constant is
+    /// removed here so no false-positive overflow is reported.
+    const_ints: HashMap<String, i128>,
 }
 
 impl Env {
@@ -1292,6 +1320,7 @@ impl Env {
             in_function: false,
             terminated: false,
             fixed_width: HashMap::new(),
+            const_ints: HashMap::new(),
         }
     }
 
@@ -1303,6 +1332,7 @@ impl Env {
             in_function: self.in_function,
             terminated: self.terminated,
             fixed_width: self.fixed_width.clone(),
+            const_ints: self.const_ints.clone(),
         }
     }
 
@@ -1481,6 +1511,7 @@ impl<'a> Checker<'a> {
         env.in_function = true;
         env.order.clear();
         env.fixed_width.clear();
+        env.const_ints.clear();
         let sig = self
             .sigs_by_span
             .get(&decl.node.start)
@@ -2013,8 +2044,9 @@ impl<'a> Checker<'a> {
                     .unwrap_or(Ty::Unknown);
                 let annotation_text_str = annotation_text.as_deref();
                 let fixed_width = annotation_text_str.and_then(fixed_width_bounds);
+                let value_const = self.const_int_expr(value, env);
                 if let Some((fw_name, range)) = fixed_width {
-                    if let Some(constant) = const_int_value(value, self.source) {
+                    if let Some(constant) = value_const {
                         if constant < range.0 || constant > range.1 {
                             self.error(
                                 value,
@@ -2072,13 +2104,25 @@ impl<'a> Checker<'a> {
                                 );
                             }
                         }
+                        let vty_is_int = vty == Ty::Int;
                         self.bind_annotated(inner, ty, vty, env);
                         let name = self.text_of(inner);
                         if let Some((fw_name, range)) = fixed_width {
                             env.fixed_width
-                                .insert(name, (fw_name.to_string(), range));
+                                .insert(name.clone(), (fw_name.to_string(), range));
                         } else {
-                            env.fixed_width.remove(&self.text_of(inner));
+                            env.fixed_width.remove(&name);
+                        }
+                        // Remember (or forget) the variable's constant value so
+                        // a later `y: i8 = x + 1` can be range-checked.
+                        if vty_is_int {
+                            if let Some(value) = value_const {
+                                env.const_ints.insert(name, value);
+                            } else {
+                                env.const_ints.remove(&name);
+                            }
+                        } else {
+                            env.const_ints.remove(&name);
                         }
                     }
                     NodeKind::Tuple => {
@@ -2091,11 +2135,12 @@ impl<'a> Checker<'a> {
                 }
             }
             NodeKind::Identifier => {
+                let value_const = self.const_int_expr(value, env);
                 let vty = self.check_expr(value, env);
                 let name = self.text_of(target);
                 self.note_bound_class_args(target, value);
                 if let Some((fw_name, (lo, hi))) = env.fixed_width.get(&name).cloned() {
-                    if let Some(constant) = const_int_value(value, self.source) {
+                    if let Some(constant) = value_const {
                         if constant < lo || constant > hi {
                             self.error(
                                 value,
@@ -2103,6 +2148,15 @@ impl<'a> Checker<'a> {
                             );
                         }
                     }
+                }
+                if vty == Ty::Int {
+                    if let Some(value) = value_const {
+                        env.const_ints.insert(name.clone(), value);
+                    } else {
+                        env.const_ints.remove(&name);
+                    }
+                } else {
+                    env.const_ints.remove(&name);
                 }
                 self.bind_name(&name, vty, env, target);
             }
@@ -3575,7 +3629,15 @@ impl<'a> Checker<'a> {
             self.check_expr(rhs, env)
         };
         let span = self.span(node);
-        check_binop(node.op, &lty, &rty, self, span)
+        let result = check_binop(node.op, &lty, &rty, self, span);
+        // Bridge `check_binop` to fixed-width range checks: remember whenever
+        // this binary expression has a statically known integer value.
+        if let Some(value) = const_int_value(node, self.source, env) {
+            self.expr_consts.insert(node.start, value);
+        } else {
+            self.expr_consts.remove(&node.start);
+        }
+        result
     }
 
     fn check_index(&mut self, node: &'a Node, env: &mut Env) -> Ty {
@@ -4421,25 +4483,89 @@ impl<'a> Checker<'a> {
 
 
 
+fn generic_bound_atoms(checker: &Checker, id: u32) -> Vec<String> {
+    checker
+        .generic_bounds
+        .get(&id)
+        .map(|bound| {
+            bound_union_atoms(bound)
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `int`, `float` and `int | float` constraints all support arithmetic and `%`.
+fn generic_numeric_bound(checker: &Checker, id: u32) -> bool {
+    let atoms = generic_bound_atoms(checker, id);
+    !atoms.is_empty() && atoms.iter().all(|a| matches!(a.as_str(), "int" | "float"))
+}
+
+/// Bitwise operators need an integer constraint (`int`) only: a `float` (or
+/// `int | float`) member would make the operation invalid at runtime.
+fn generic_int_bound(checker: &Checker, id: u32) -> bool {
+    let atoms = generic_bound_atoms(checker, id);
+    !atoms.is_empty() && atoms.iter().all(|a| a == "int")
+}
+
+fn bitwise_int_ok(checker: &Checker, ty: &Ty) -> bool {
+    match ty {
+        Ty::Generic { id, .. } => generic_int_bound(checker, *id),
+        Ty::Int | Ty::Any => true,
+        _ => false,
+    }
+}
+
 /// A type variable only supports arithmetic when its bound is `int`, `float`
 /// or `int | float`. Without this gate an unbound `T + T` would pass `un check`
 /// and fail only at runtime for types that do not define `+` (e.g. lists).
 fn arithmetic_numeric_ok(checker: &Checker, ty: &Ty) -> bool {
     match ty {
-        Ty::Generic { id, .. } => checker
-            .generic_bounds
-            .get(id)
-            .is_some_and(|bound| {
-                let atoms = bound_union_atoms(bound);
-                !atoms.is_empty() && atoms.iter().all(|atom| matches!(*atom, "int" | "float"))
-            }),
+        Ty::Generic { id, .. } => generic_numeric_bound(checker, *id),
         _ => ty.is_numeric(),
     }
 }
 
-fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker, span: (usize, usize)) -> Ty {
+/// Operators whose operand types are combined member-by-member when a union is
+/// involved. Comparisons/logical operators keep their existing behaviour.
+fn is_union_arith_op(op: Option<TokenType>) -> bool {
+    matches!(
+        op,
+        Some(
+            TokenType::Plus
+                | TokenType::Minus
+                | TokenType::Asterisk
+                | TokenType::DoubleAsterisk
+                | TokenType::Slash
+                | TokenType::DoubleSlash
+                | TokenType::Percent
+                | TokenType::BAnd
+                | TokenType::BOr
+                | TokenType::BXor
+                | TokenType::LeftShift
+                | TokenType::RightShift
+        )
+    )
+}
+
+fn ty_members(ty: &Ty) -> Vec<&Ty> {
+    match ty {
+        Ty::Union(members) => members.iter().collect(),
+        other => vec![other],
+    }
+}
+
+/// Result of an arithmetic operator on two non-union operands. `None` means
+/// the operator is not defined for that pair; the caller reports the error.
+fn scalar_arith_result(
+    op: Option<TokenType>,
+    lty: &Ty,
+    rty: &Ty,
+    checker: &Checker,
+) -> Option<Ty> {
     if matches!(lty, Ty::Unknown) || matches!(rty, Ty::Unknown) {
-        return Ty::Unknown;
+        return Some(Ty::Unknown);
     }
     match op {
         Some(TokenType::Plus)
@@ -4447,70 +4573,117 @@ fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker,
         | Some(TokenType::Asterisk)
         | Some(TokenType::DoubleAsterisk) => {
             if matches!(op, Some(TokenType::Plus)) && *lty == Ty::Str && *rty == Ty::Str {
-                return Ty::Str;
+                return Some(Ty::Str);
             }
             if arithmetic_numeric_ok(checker, lty) && arithmetic_numeric_ok(checker, rty) {
                 if *lty == Ty::Int && *rty == Ty::Int {
-                    return Ty::Int;
+                    return Some(Ty::Int);
                 }
                 if let Ty::Generic { .. } = lty {
-                    return lty.clone();
+                    return Some(lty.clone());
                 }
                 if let Ty::Generic { .. } = rty {
-                    return rty.clone();
+                    return Some(rty.clone());
                 }
                 if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
-                    return Ty::Any;
+                    return Some(Ty::Any);
                 }
-                return Ty::Float;
+                return Some(Ty::Float);
             }
             if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
-                return Ty::Any;
+                return Some(Ty::Any);
             }
-            checker.binary_error(span, op.unwrap(), lty, rty);
-            Ty::Unknown
+            None
         }
         Some(TokenType::Slash) => {
             if arithmetic_numeric_ok(checker, lty) && arithmetic_numeric_ok(checker, rty) {
-                return Ty::Float;
+                Some(Ty::Float)
+            } else if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
+                Some(Ty::Any)
+            } else {
+                None
             }
-            if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
-                return Ty::Any;
-            }
-            checker.binary_error(span, op.unwrap(), lty, rty);
-            Ty::Unknown
         }
         Some(TokenType::DoubleSlash) => {
             if arithmetic_numeric_ok(checker, lty) && arithmetic_numeric_ok(checker, rty) {
-                return Ty::Int;            }
-            if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
-                return Ty::Any;
+                Some(Ty::Int)
+            } else if matches!(lty, Ty::Any) || matches!(rty, Ty::Any) {
+                Some(Ty::Any)
+            } else {
+                None
             }
-            checker.binary_error(span, op.unwrap(), lty, rty);
-            Ty::Unknown
         }
         Some(TokenType::Percent) => {
+            // `%` is now allowed for numeric-constrained type parameters and
+            // yields the generic type itself. An unconstrained `T` stays an error.
+            if !arithmetic_numeric_ok(checker, lty) || !arithmetic_numeric_ok(checker, rty) {
+                return None;
+            }
+            if let Ty::Generic { .. } = lty {
+                return Some(lty.clone());
+            }
+            if let Ty::Generic { .. } = rty {
+                return Some(rty.clone());
+            }
             match (lty, rty) {
-                (Ty::Int, Ty::Int) => Ty::Int,
-                (Ty::Float, _) | (_, Ty::Float) => Ty::Float,
-                (Ty::Any, _) | (_, Ty::Any) => Ty::Any,
-                _ => {
-                    checker.binary_error(span, op.unwrap(), lty, rty);
-                    Ty::Unknown
-                }
+                (Ty::Int, Ty::Int) => Some(Ty::Int),
+                (Ty::Float, _) | (_, Ty::Float) => Some(Ty::Float),
+                (Ty::Any, _) | (_, Ty::Any) => Some(Ty::Any),
+                _ => None,
             }
         }
         Some(TokenType::BAnd) | Some(TokenType::BOr) | Some(TokenType::BXor)
         | Some(TokenType::LeftShift) | Some(TokenType::RightShift) => {
+            // Bitwise operators require `int` on both sides; a `float` (or
+            // mixed) constraint is rejected even when the other side is `Any`.
+            if !bitwise_int_ok(checker, lty) || !bitwise_int_ok(checker, rty) {
+                return None;
+            }
+            if let Ty::Generic { .. } = lty {
+                return Some(lty.clone());
+            }
+            if let Ty::Generic { .. } = rty {
+                return Some(rty.clone());
+            }
             match (lty, rty) {
-                (Ty::Int, Ty::Int) => Ty::Int,
-                (Ty::Any, _) | (_, Ty::Any) => Ty::Any,
-                _ => {
-                    checker.binary_error(span, op.unwrap(), lty, rty);
-                    Ty::Unknown
-                }
+                (Ty::Int, Ty::Int) => Some(Ty::Int),
+                (Ty::Any, _) | (_, Ty::Any) => Some(Ty::Any),
+                _ => None,
             }
         }
+        _ => None,
+    }
+}
+
+fn check_binop(op: Option<TokenType>, lty: &Ty, rty: &Ty, checker: &mut Checker, span: (usize, usize)) -> Ty {
+    if matches!(lty, Ty::Unknown) || matches!(rty, Ty::Unknown) {
+        return Ty::Unknown;
+    }
+    if is_union_arith_op(op) {
+        if matches!(lty, Ty::Union(_)) || matches!(rty, Ty::Union(_)) {
+            let mut results = Vec::new();
+            for l in ty_members(lty) {
+                for r in ty_members(rty) {
+                    match scalar_arith_result(op, l, r, checker) {
+                        Some(t) => results.push(t),
+                        None => {
+                            checker.binary_error(span, op.unwrap(), lty, rty);
+                            return Ty::Unknown;
+                        }
+                    }
+                }
+            }
+            return Ty::union(results);
+        }
+        return match scalar_arith_result(op, lty, rty, checker) {
+            Some(t) => t,
+            None => {
+                checker.binary_error(span, op.unwrap(), lty, rty);
+                Ty::Unknown
+            }
+        };
+    }
+    match op {
         Some(TokenType::Equal) | Some(TokenType::Unequal) => {
             if eq_comparable(lty, rty) {
                 return Ty::Bool;
