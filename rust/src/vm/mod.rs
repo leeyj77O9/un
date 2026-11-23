@@ -231,6 +231,19 @@ impl VM {
     }
 
     pub fn run(&mut self) -> Outcome {
+        // Panic isolation (TD-16/TD-40): convert any Rust panic in this proto to
+        // the same Un-level panic object as before, but cross the catch_unwind
+        // boundary once per proto instead of once per instruction. Catching here
+        // (rather than in execute_proto) keeps `self` alive across the unwind,
+        // matching the old per-instruction behaviour where the VM survived a
+        // caught panic.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run_inner())) {
+            Ok(outcome) => outcome,
+            Err(payload) => Outcome::Panic(obj::panic("panic", internal_error_message(&payload))),
+        }
+    }
+
+    fn run_inner(&mut self) -> Outcome {
         // proto_idx/plan are never reassigned for the lifetime of a VM. Clone the
         // Rc handles once so the current proto/plan data can be pinned in locals
         // while `step`/`handle` still receive `&mut self`.
@@ -252,11 +265,7 @@ impl VM {
                 return Outcome::Value(value);
             };
             let depth_before = depths[self.ip] as usize;
-            let result = match catch_internal(|| self.step(&ins, depth_before, scratch_base, cur_proto)) {
-                Ok(result) => result,
-                Err(message) => Err(Outcome::Panic(obj::panic("panic", message))),
-            };
-            match result {
+            match self.step(&ins, depth_before, scratch_base, cur_proto) {
                 Ok(advance) => {
                     if advance {
                         self.ip += 1;
