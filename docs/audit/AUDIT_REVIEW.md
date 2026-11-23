@@ -1158,7 +1158,7 @@ HEAD `660559b` 기준으로 게이트를 다시 실행해 확인한 값이며, �
 | `scripts/differential.ps1` (R4-06) | 99 files, 0 differences | **101 files, 0 differences** |
 | `unbc-roundtrip -IncludeNegative` (R4-07) | 48/48 + 42 | **50/50** + 42 identical (9 compile-rejected skip) |
 | compile-check / exe-diff (R4-08/09) | 23/0, 31/0 | **33/0, 42/0** |
-| `BENCHMARK.md` (Part IV §6) | jit/py 843.581x (그 이전 6.990x/7.527x 포함) | **2026-11-23 03:42 +09:00, 커밋 e09a397** 재생성 — 6레인, Un JIT/Python **geomean 4.092x** |
+| `BENCHMARK.md` (Part IV §6) | jit/py 843.581x (그 이전 6.990x/7.527x 포함) | **2026-11-23 18:21 +09:00, 커밋 957873d** 재생성 — 6레인, Un JIT/Python **geomean 3.789x** |
 
 R4-17 / AUDIT-009(AGENTS.md 규모 수치 stale)도 같은 종류의 숫자 드리프트다.
 이번 재측정으로 기준값이 한 번 더 이동했을 뿐, 새 결함은 아니다.
