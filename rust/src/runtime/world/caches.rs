@@ -95,6 +95,10 @@ struct ObjCaches {
     uninitialized: Option<Obj>,
     true_: Option<Obj>,
     false_: Option<Obj>,
+    /// Interned type names cached here so creating Int/Float values does not
+    /// borrow the large global WORLD RefCell every time.
+    int_type: Option<std::rc::Rc<str>>,
+    float_type: Option<std::rc::Rc<str>>,
 }
 
 impl ObjCaches {
@@ -104,8 +108,28 @@ impl ObjCaches {
             uninitialized: None,
             true_: None,
             false_: None,
+            int_type: None,
+            float_type: None,
         }
     }
+}
+
+fn int_type_cached() -> std::rc::Rc<str> {
+    OBJ_CACHES.with(|c| {
+        let mut c = c.borrow_mut();
+        c.int_type
+            .get_or_insert_with(|| WORLD.with(|w| w.borrow().type_cache["int"].clone()))
+            .clone()
+    })
+}
+
+pub fn float_type_cached() -> std::rc::Rc<str> {
+    OBJ_CACHES.with(|c| {
+        let mut c = c.borrow_mut();
+        c.float_type
+            .get_or_insert_with(|| WORLD.with(|w| w.borrow().type_cache["float"].clone()))
+            .clone()
+    })
 }
 
 thread_local! {
@@ -161,7 +185,7 @@ pub fn bool_obj(value: bool) -> Obj {
 
 pub fn int_cached(value: i64) -> Obj {
     if value < INT_CACHE_LOW || value > INT_CACHE_HIGH {
-        return int_obj(value, int_type());
+        return int_obj(value, int_type_cached());
     }
     OBJ_CACHES.with(|c| {
         let mut c = c.borrow_mut();

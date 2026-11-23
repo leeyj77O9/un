@@ -742,7 +742,7 @@ pub fn field_set(field: &Obj, value: &Obj) {
     prop_write(&prop, &owner, value);
 }
 pub fn is_field_ref(o: &Obj) -> bool {
-    matches!(obj::payload(o), Payload::FieldRef(..))
+    matches!(&*obj::payload_ref(o), Payload::FieldRef(..))
 }
 #[cfg(test)]
 mod tests;

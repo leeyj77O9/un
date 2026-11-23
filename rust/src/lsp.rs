@@ -1803,6 +1803,9 @@ fn write_message(out: &mut dyn Write, message: &Json) {
 
 struct Server {
     documents: HashMap<String, String>,
+    /// Last analysis per document, keyed by the exact text it was built from.
+    /// Editing triggers a rebuild; every other request reuses it.
+    analyses: HashMap<String, (String, std::rc::Rc<Analysis>)>,
     compile_mode: bool,
     semantic_highlighting: bool,
     inlay_hints: bool,
@@ -1831,12 +1834,19 @@ impl Server {
 }
 
 impl Server {
-    fn analyze_uri(&self, uri: &str) -> Option<Analysis> {
-        let text = self.documents.get(uri)?;
-        Some(analyze(text, uri))
+    fn analyze_uri(&mut self, uri: &str) -> Option<std::rc::Rc<Analysis>> {
+        let text = self.documents.get(uri)?.clone();
+        if let Some((cached_text, analysis)) = self.analyses.get(uri) {
+            if cached_text == &text {
+                return Some(analysis.clone());
+            }
+        }
+        let analysis = std::rc::Rc::new(analyze(&text, uri));
+        self.analyses.insert(uri.to_owned(), (text, analysis.clone()));
+        Some(analysis)
     }
 
-    fn diagnostics_for(&self, uri: &str) -> Vec<Json> {
+    fn diagnostics_for(&mut self, uri: &str) -> Vec<Json> {
         let analysis = match self.analyze_uri(uri) {
             Some(analysis) => analysis,
             None => return Vec::new(),
@@ -1853,11 +1863,11 @@ impl Server {
             return Vec::new();
         }
         let shared = Rc::new(analysis.source.clone());
-        let root = match analysis.root {
+        let root = match analysis.root.as_ref() {
             Some(root) => root,
             None => return Vec::new(),
         };
-        let optimized = match optimize(&root) {
+        let optimized = match optimize(root) {
             Ok(result) => result.root,
             Err(panic) => {
                 let end = shared.code.len();
@@ -1880,7 +1890,7 @@ impl Server {
         }
     }
 
-    fn publish_diagnostics(&self, out: &mut dyn Write, uri: &str) {
+    fn publish_diagnostics(&mut self, out: &mut dyn Write, uri: &str) {
         let diagnostics = self.diagnostics_for(uri);
         notify(
             out,
@@ -1892,7 +1902,7 @@ impl Server {
         );
     }
 
-    fn publish_all_diagnostics(&self, out: &mut dyn Write) {
+    fn publish_all_diagnostics(&mut self, out: &mut dyn Write) {
         let uris: Vec<String> = self.documents.keys().cloned().collect();
         for uri in uris {
             self.publish_diagnostics(out, &uri);
@@ -3030,7 +3040,8 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                 .and_then(|analysis| {
                     analysis
                         .tokens
-                        .map(|tokens| folding_ranges_json(&analysis.source, &tokens))
+                        .as_ref()
+                        .map(|tokens| folding_ranges_json(&analysis.source, tokens))
                 })
                 .unwrap_or_default();
             respond(out, id, Json::Arr(folds));
@@ -3146,6 +3157,7 @@ fn take_message(buffer: &mut Vec<u8>) -> Option<String> {
 pub fn run() -> i32 {
     let mut server = Server {
         documents: HashMap::new(),
+        analyses: HashMap::new(),
         compile_mode: false,
         semantic_highlighting: true,
         inlay_hints: true,

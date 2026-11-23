@@ -219,7 +219,11 @@ pub fn int(value: i64) -> Obj {
     world::int_cached(value)
 }
 pub fn float(value: f64) -> Obj {
-    obj_new("float", Payload::Float(value))
+    // `obj_new` would look up "float" in the global type table on every call.
+    Rc::new(RefCell::new(ObjData::new(
+        world::float_type_cached(),
+        Payload::Float(value),
+    )))
 }
 pub fn boolean(value: bool) -> Obj {
     world::bool_obj(value)
@@ -802,9 +806,10 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
             }
         }
     }
-    if let Some(m) = member(o, name) {
-        if is_property(&m) {
-            return property_get(&m, receiver);
+    let direct = member(o, name);
+    if let Some(m) = &direct {
+        if is_property(m) {
+            return property_get(m, receiver);
         }
     }
     if has_possible_method(o) {
@@ -820,7 +825,7 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
             }
         }
     }
-    if let Some(v) = member(o, name) {
+    if let Some(v) = direct {
         return bind_self(v, receiver);
     }
     if let Some(s) = valid_super(o) {

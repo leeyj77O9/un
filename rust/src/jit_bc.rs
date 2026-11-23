@@ -1,6 +1,5 @@
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 use cranelift_codegen::ir::{AbiParam, BlockArg, InstBuilder, Value, types};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
@@ -139,7 +138,14 @@ pub fn register_eligible(program: &Program, program_id: u64) {
 fn register_eligible_inner(program: &Program, program_id: u64) {
     let strict = crate::jit_cache::jit_strict();
     let mut failed: Vec<(usize, String)> = Vec::new();
-    let ret_kinds = analyze_return_kinds(program);
+    // Translate the bytecode once and share it between return-kind analysis and
+    // every candidate emitter. Previously each candidate recompiled the whole
+    // program.
+    let plan = crate::vm::transfer::compile(program).ok();
+    let ret_kinds = match &plan {
+        Some(p) => analyze_return_kinds_with_plan(program, p),
+        None => (0..program.protos.len()).map(|i| (i, 0)).collect(),
+    };
 
     let candidates: Vec<usize> = (0..program.protos.len())
         .filter(|i| precheck_fn(program, *i).is_some())
@@ -561,9 +567,11 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
             Some(fid) => *fid,
             None => continue,
         };
+        let Some(shared_plan) = plan.as_ref() else { break };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             emit_fn_in_module(
                 program,
+                shared_plan,
                 idx,
                 &mut module,
                 &decls,
@@ -3206,13 +3214,20 @@ const INTLIST_BORROWED: u8 = 8;
 const INTLIST_UNION: u8 = 9;
 
 pub fn analyze_return_kinds(program: &Program) -> HashMap<usize, u8> {
+    let plan = match crate::vm::transfer::compile(program) {
+        Ok(p) => p,
+        Err(_) => return (0..program.protos.len()).map(|i| (i, 0)).collect(),
+    };
+    analyze_return_kinds_with_plan(program, &plan)
+}
+
+/// Same analysis as `analyze_return_kinds` but reuses a plan already computed
+/// by the caller, so JIT registration translates the bytecode only once for
+/// the whole program instead of once per candidate proto.
+fn analyze_return_kinds_with_plan(program: &Program, plan: &crate::vm::Plan) -> HashMap<usize, u8> {
     let n = program.protos.len();
     let mut tags: HashMap<usize, u8> = (0..n).map(|i| (i, 0)).collect();
-    let plan_rc = match crate::vm::transfer::compile(program) {
-        Ok(p) => Rc::new(p),
-        Err(_) => return tags,
-    };
-    let plan = &plan_rc.protos;
+    let plan = &plan.protos;
 
     let callee_lookup: HashMap<String, usize> = {
         let mut m = HashMap::new();
@@ -3983,6 +3998,7 @@ pub fn emit_fallback_stub_in_module(
 
 fn emit_fn_in_module(
     program: &Program,
+    plan: &crate::vm::Plan,
     proto_index: usize,
     module: &mut JITModule,
     decls: &HashMap<usize, cranelift_module::FuncId>,
@@ -4023,7 +4039,6 @@ fn emit_fn_in_module(
     let is_class = proto.ext_type.is_some();
     let arity = proto.params.len() + usize::from(is_class);
 
-    let plan = crate::vm::transfer::compile(program).ok()?;
     let plan = &plan.protos[proto_index];
     let code = &plan.code;
 

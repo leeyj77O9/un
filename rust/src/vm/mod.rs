@@ -221,7 +221,7 @@ impl VM {
             return s.clone();
         }
         let cur = context::scope(&self.ctx);
-        let owner = cur.borrow().slot_scope.clone().unwrap_or_else(|| cur.clone());
+        let owner = scope::slot_owner(&cur);
         self.slot_scope = Some(owner.clone());
         owner
     }
@@ -274,7 +274,7 @@ impl VM {
                     if depth > 0 {
                         let slot = scratch_base + depth - 1;
                         if let Some(top) = self.regs.get(slot) {
-                            if matches!(obj::payload(top), Payload::Panic { .. }) {
+                            if obj::is_panic(top) {
                                 let o = top.clone();
                                 return Outcome::Panic(o);
                             }

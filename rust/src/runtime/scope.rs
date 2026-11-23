@@ -14,6 +14,9 @@ pub struct ScopeData {
     pub slots: Vec<Obj>,
 
     pub slot_scope: Option<Scope>,
+    /// True when this scope owns its own slot vectors (set by `preseed_slots`).
+    /// Replaces a self-referential `slot_scope` that leaked one Rc per call.
+    pub owns_slots: bool,
 }
 pub fn new(parent: Option<Scope>, is_function_scope: bool) -> Scope {
     Rc::new(RefCell::new(ScopeData {
@@ -23,6 +26,7 @@ pub fn new(parent: Option<Scope>, is_function_scope: bool) -> Scope {
         order: Vec::new(),
         slots: Vec::new(),
         slot_scope: None,
+        owns_slots: false,
     }))
 }
 pub fn empty() -> Scope {
@@ -44,9 +48,17 @@ pub fn preseed_slots(scope: &Scope, names: &[String]) -> bool {
         d.order.push(name.clone());
         d.symbols.insert(name.clone(), idx);
     }
-    drop(d);
-    scope.borrow_mut().slot_scope = Some(scope.clone());
+    d.owns_slots = true;
     true
+}
+
+/// Scope that owns the slot vectors reachable from `scope`.
+pub fn slot_owner(scope: &Scope) -> Scope {
+    let d = scope.borrow();
+    if d.owns_slots {
+        return scope.clone();
+    }
+    d.slot_scope.clone().unwrap_or_else(|| scope.clone())
 }
 
 pub fn inherit_slot_scope(parent: &Scope, child: &Scope) {
@@ -57,11 +69,12 @@ pub fn inherit_slot_scope(parent: &Scope, child: &Scope) {
 pub fn get_slot(scope: &Scope, idx: usize) -> Option<Obj> {
     {
         let d = scope.borrow();
-        let shares_owner = d
-            .slot_scope
-            .as_ref()
-            .map(|owner| Rc::ptr_eq(owner, scope))
-            .unwrap_or(false);
+        let shares_owner = d.owns_slots
+            || d
+                .slot_scope
+                .as_ref()
+                .map(|owner| Rc::ptr_eq(owner, scope))
+                .unwrap_or(false);
         if shares_owner {
             let v = d.slots.get(idx)?;
             return if world::is_uninitialized(v) {
@@ -81,12 +94,14 @@ pub fn get_slot(scope: &Scope, idx: usize) -> Option<Obj> {
 }
 
 pub fn set_slot(scope: &Scope, idx: usize, value: Obj) -> bool {
-    let is_owner = scope
-        .borrow()
-        .slot_scope
-        .as_ref()
-        .map(|owner| Rc::ptr_eq(owner, scope))
-        .unwrap_or(false);
+    let d = scope.borrow();
+    let is_owner = d.owns_slots
+        || d
+            .slot_scope
+            .as_ref()
+            .map(|owner| Rc::ptr_eq(owner, scope))
+            .unwrap_or(false);
+    drop(d);
     if is_owner {
         let mut d = scope.borrow_mut();
         return match d.slots.get_mut(idx) {
@@ -156,11 +171,17 @@ pub fn set(scope: &Scope, key: &str, value: Obj) {
     declare_new(scope, key, value);
 }
 pub fn set_local(scope: &Scope, key: &str, value: Obj) {
-    let slot = scope.borrow().symbols.get(key).copied();
-    match slot {
-        Some(idx) => scope.borrow_mut().slots[idx] = value,
-        None => declare_new(scope, key, value),
+    // One RefCell borrow instead of a read borrow followed by a write borrow.
+    // Local stores are among the most frequent operations in the interpreter.
+    let mut d = scope.borrow_mut();
+    if let Some(&idx) = d.symbols.get(key) {
+        d.slots[idx] = value;
+        return;
     }
+    let idx = d.slots.len();
+    d.symbols.insert(key.to_owned(), idx);
+    d.order.push(key.to_owned());
+    d.slots.push(value);
 }
 #[cfg(test)]
 pub(crate) fn declare(scope: &Scope, key: &str, initial: Option<Obj>) {
@@ -233,6 +254,7 @@ pub fn snapshot(scope: &Scope) -> Scope {
         order,
         slots,
         slot_scope: slot_scope.clone(),
+        owns_slots: scope.borrow().owns_slots,
     }))
 }
 #[cfg(test)]
