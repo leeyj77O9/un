@@ -348,17 +348,18 @@ enum DefKind {
     Property,
     Namespace,
     TypeParameter,
+    TypeAlias,
 }
 
 impl DefKind {
     fn symbol_kind(self) -> f64 {
         match self {
-            DefKind::Function => 12.0,            DefKind::Extension => 6.0,            DefKind::Class => 5.0,            DefKind::Enum => 10.0,            DefKind::EnumMember => 22.0,            DefKind::Variable => 13.0,            DefKind::Parameter => 13.0,            DefKind::Property => 8.0,            DefKind::Namespace => 2.0,            DefKind::TypeParameter => 26.0,        }
+            DefKind::Function => 12.0,            DefKind::Extension => 6.0,            DefKind::Class => 5.0,            DefKind::Enum => 10.0,            DefKind::EnumMember => 22.0,            DefKind::Variable => 13.0,            DefKind::Parameter => 13.0,            DefKind::Property => 8.0,            DefKind::Namespace => 2.0,            DefKind::TypeParameter | DefKind::TypeAlias => 26.0,        }
     }
 
     fn completion_kind(self) -> f64 {
         match self {
-            DefKind::Function | DefKind::Extension => 3.0,            DefKind::Class | DefKind::Enum => 7.0,            DefKind::EnumMember => 20.0,            DefKind::Variable | DefKind::Parameter => 6.0,            DefKind::Property => 10.0,            DefKind::Namespace => 9.0,            DefKind::TypeParameter => 25.0,        }
+            DefKind::Function | DefKind::Extension => 3.0,            DefKind::Class | DefKind::Enum => 7.0,            DefKind::EnumMember => 20.0,            DefKind::Variable | DefKind::Parameter => 6.0,            DefKind::Property => 10.0,            DefKind::Namespace => 9.0,            DefKind::TypeParameter | DefKind::TypeAlias => 25.0,        }
     }
 
     fn semantic_token(self) -> u32 {
@@ -371,7 +372,7 @@ impl DefKind {
             DefKind::Variable => SemanticToken::Variable as u32,
             DefKind::Property => SemanticToken::Property as u32,
             DefKind::Function | DefKind::Extension => SemanticToken::Function as u32,
-            DefKind::TypeParameter => SemanticToken::Type as u32,
+            DefKind::TypeParameter | DefKind::TypeAlias => SemanticToken::Type as u32,
         }
     }
 
@@ -566,14 +567,29 @@ impl<'a> Walker<'a> {
                         cursor += 1;
                     }
                     let bound_start = cursor;
+                    // A bound may be a union (`T: int | float`). Scan the whole
+                    // expression, then colour each alternative separately so
+                    // `float` is not left unstyled.
                     while cursor < code.len()
-                        && (code[cursor].is_alphanumeric() || code[cursor] == '_')
+                        && (code[cursor].is_alphanumeric()
+                            || code[cursor] == '_'
+                            || code[cursor].is_whitespace()
+                            || code[cursor] == '|')
                     {
                         cursor += 1;
                     }
-                    if cursor > bound_start {
-                        self.type_spans.push((bound_start, cursor));
-                        self.skip.insert((bound_start, cursor));
+                    let bound = code[bound_start..cursor].iter().collect::<String>();
+                    let mut offset = 0usize;
+                    for atom in bound.split('|') {
+                        let leading = atom.chars().take_while(|ch| ch.is_whitespace()).count();
+                        let text = atom.trim();
+                        if !text.is_empty() {
+                            let start = bound_start + offset + leading;
+                            let end = start + text.chars().count();
+                            self.type_spans.push((start, end));
+                            self.skip.insert((start, end));
+                        }
+                        offset += atom.chars().count() + 1;
                     }
                 }
             }
@@ -582,12 +598,15 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_type(&mut self, node: &Node, scope: usize) {
-        let _ = scope;
         match node.kind {
             NodeKind::Identifier => {
                 let (start, end) = self.span_of(node);
                 self.type_spans.push((start, end));
                 self.skip.insert((start, end));
+                // Keep the name so references/rename can find type uses (e.g.
+                // `x: Id`, bounds, generic args) in addition to declarations.
+                let name = self.source.span(node.start, node.length).to_string();
+                self.uses.push(UseSite { name, start, end, scope, member: false });
             }
             NodeKind::Property => {
                 for child in &node.children {
@@ -763,6 +782,20 @@ impl<'a> Walker<'a> {
                         continue;
                     }
                     self.walk(child, new_scope);
+                }
+            }
+            NodeKind::TypeAlias => {
+                // `type Name = Ty`: bind the name as a type definition and
+                // colour the aliased type expression, so go-to-definition,
+                // hover and completion work for aliases just like classes.
+                if let Some(name) = node.children.first() {
+                    if name.kind == NodeKind::Identifier {
+                        let (start, end) = self.span_of(node);
+                        self.push_def(name, DefKind::TypeAlias, scope, start, end);
+                    }
+                }
+                if let Some(typ) = node.children.get(1) {
+                    self.walk_type(typ, scope);
                 }
             }
             NodeKind::Class => {
@@ -1064,6 +1097,11 @@ const DECL_PREFIXES: &[DeclPrefix] = &[
     DeclPrefix { keyword: "fn ", kind: DefKind::Function, opens_scope: false, type_params: true, skip_invalid: true },
     DeclPrefix { keyword: "get ", kind: DefKind::Property, opens_scope: false, type_params: false, skip_invalid: false },
     DeclPrefix { keyword: "set ", kind: DefKind::Property, opens_scope: false, type_params: false, skip_invalid: false },
+    // `type <ident> = ...` is a contextual keyword. `type(x)` has no space and
+    // `type = 5` has no identifier after the space, so neither reaches here;
+    // keeping skip_invalid false lets the latter fall through to the assignment
+    // hint scan below.
+    DeclPrefix { keyword: "type ", kind: DefKind::TypeAlias, opens_scope: false, type_params: false, skip_invalid: false },
 ];
 
 /// Text-scan a document when parsing fails (e.g. while the user is typing).
@@ -1189,11 +1227,26 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
                         bound += 1;
                     }
                     let bound_start = bound;
-                    while bound < close && (code[bound].is_alphanumeric() || code[bound] == '_') {
+                    // Union bounds (`T: int | float`) need every alternative
+                    // coloured, not just the first identifier.
+                    while bound < close
+                        && (code[bound].is_alphanumeric()
+                            || code[bound] == '_'
+                            || code[bound].is_whitespace()
+                            || code[bound] == '|')
+                    {
                         bound += 1;
                     }
-                    if bound > bound_start {
-                        type_spans.push((bound_start, bound));
+                    let bound_text = code[bound_start..bound].iter().collect::<String>();
+                    let mut offset = 0usize;
+                    for atom in bound_text.split('|') {
+                        let leading = atom.chars().take_while(|ch| ch.is_whitespace()).count();
+                        let text = atom.trim();
+                        if !text.is_empty() {
+                            let start = bound_start + offset + leading;
+                            type_spans.push((start, start + text.chars().count()));
+                        }
+                        offset += atom.chars().count() + 1;
                     }
                     cursor = bound;
                 }
@@ -2371,8 +2424,12 @@ fn text_document_position(params: &Json) -> Option<(String, i64, i64)> {    let 
 
 const KEYWORD_COMPLETIONS: &[&str] = &[
     "if", "elif", "else", "match", "for", "while", "break", "skip", "try", "catch", "finally",
-    "defer", "return", "use", "using", "fn", "class", "enum", "go", "wait", "in", "is", "as",
+    "defer", "use", "using", "fn", "class", "enum", "go", "wait", "in", "is", "as",
     "and", "or", "xor", "not",
+    // Contextual keywords. They are identifiers to the lexer, so offering them
+    // here cannot break `type(x)`, a variable named `type`, or `case` as a name.
+    // `return` is deliberately absent: Un returns with `->`, not a keyword.
+    "type", "case", "get", "set",
 ];
 
 const KEYWORD_SNIPPETS: &[(&str, &str, &str)] = &[
@@ -2381,7 +2438,12 @@ const KEYWORD_SNIPPETS: &[(&str, &str, &str)] = &[
     ("else", "else\n    $0", "else branch"),
     ("for", "for ${1:item} in ${2:iter}\n    $0", "for loop"),
     ("while", "while ${1:condition}\n    $0", "while loop"),
-    ("match", "match ${1:value}\n    ${2:case} -> $0", "match expression"),
+    ("match", "match ${1:value} { ${2:pattern} -> $0 }", "match expression"),
+    ("type", "type ${1:Name} = ${2:int | str}", "type alias"),
+    ("case", "case ${1:pattern} if ${2:condition} -> ${3:body},", "guarded match arm"),
+    ("get", "get ${1:name} -> ${2:field}", "getter"),
+    ("set", "set ${1:name} = ${2:value}", "setter"),
+    ("->", "-> ${1:expr}", "return expression"),
     ("try", "try\n    $0\ncatch ${1:e}\n    ", "try-catch"),
     ("catch", "catch ${1:e}\n    $0", "catch block"),
     ("finally", "finally\n    $0", "finally block"),
@@ -2394,7 +2456,14 @@ const KEYWORD_SNIPPETS: &[(&str, &str, &str)] = &[
     ("using", "using ${1:name} = ${2:expr}\n    $0", "using statement"),
 ];
 
-const TYPE_COMPLETIONS: &[&str] = &["int", "float", "bool", "str", "any"];
+/// Primitive and container type names from the current spec. Fixed-width
+/// aliases (`u8`…`f64`) also need `use types`, but are offered so the editor can
+/// complete them and the static checker gives the precise diagnostic.
+const TYPE_COMPLETIONS: &[&str] = &[
+    "int", "float", "bool", "str", "bytes", "any",
+    "list", "set", "dict", "tuple",
+    "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64",
+];
 
 const LANGUAGE_COMPLETIONS: &[&str] = &["none", "true", "false", "self", "field", "value"];
 
@@ -3084,5 +3153,109 @@ mod tests {
         let analysis = fallback_analysis("fn id[T](x: T) -> T\n    -> x\nfn broken(\n", "g.un", None);
         let spans = span_texts(&analysis);
         assert!(spans.iter().any(|text| text == "T"), "fallback type parameter missing: {spans:?}");
+    }
+
+    #[test]
+    fn type_alias_is_a_definition() {
+        let analysis = analyze(
+            "type Id = int | str\nfn main() -> none\n    x: Id = 42\n",
+            "alias.un",
+        );
+        assert!(analysis.error.is_none(), "parse failed: {:?}", analysis.error);
+        let aliases: Vec<&str> = analysis
+            .defs
+            .iter()
+            .filter(|def| def.kind == DefKind::TypeAlias)
+            .map(|def| def.name.as_str())
+            .collect();
+        assert_eq!(aliases, vec!["Id"], "type alias definition missing");
+        let spans = span_texts(&analysis);
+        assert!(spans.iter().any(|text| text.contains("int")), "aliased type not coloured: {spans:?}");
+        assert!(spans.iter().any(|text| text == "Id"), "alias use site not coloured: {spans:?}");
+    }
+
+    #[test]
+    fn fallback_keeps_type_alias_def_without_eating_assignments() {
+        let analysis = fallback_analysis(
+            "type Id = int | str\ntype = \"hello\"\ntype(1)\nfn broken(\n",
+            "alias.un",
+            None,
+        );
+        let aliases: Vec<&str> = analysis
+            .defs
+            .iter()
+            .filter(|def| def.kind == DefKind::TypeAlias)
+            .map(|def| def.name.as_str())
+            .collect();
+        assert_eq!(aliases, vec!["Id"], "fallback type alias definition missing");
+        assert_eq!(
+            analysis.var_class_hints.get("type").map(String::as_str),
+            Some("str"),
+            "`type = \"hello\"` must still reach the assignment hint scan"
+        );
+    }
+
+    #[test]
+    fn match_snippet_uses_current_brace_syntax() {
+        let (_, snippet, _) = KEYWORD_SNIPPETS
+            .iter()
+            .find(|(label, _, _)| *label == "match")
+            .expect("match snippet missing");
+        assert!(snippet.starts_with("match "), "bad snippet: {snippet}");
+        assert!(snippet.contains('{') && snippet.contains('}'), "match body must use braces: {snippet}");
+        assert!(!snippet.contains("case"), "stale `case` keyword in snippet: {snippet}");
+    }
+
+    #[test]
+    fn union_generic_bound_colours_all_alternatives() {
+        let analysis = analyze(
+            "fn add[T: int | float](a: T, b: T) -> T\n    -> a + b\n",
+            "g.un",
+        );
+        assert!(analysis.error.is_none(), "parse failed: {:?}", analysis.error);
+        let spans = span_texts(&analysis);
+        assert!(spans.iter().any(|text| text == "int"), "bound `int` missing: {spans:?}");
+        assert!(spans.iter().any(|text| text == "float"), "bound `float` missing: {spans:?}");
+    }
+
+    #[test]
+    fn fallback_union_generic_bound_colours_all_alternatives() {
+        let analysis = fallback_analysis(
+            "fn add[T: int | float](a: T, b: T) -> T\n    -> a + b\nfn broken(\n",
+            "g.un",
+            None,
+        );
+        let spans = span_texts(&analysis);
+        assert!(spans.iter().any(|text| text == "int"), "bound `int` missing: {spans:?}");
+        assert!(spans.iter().any(|text| text == "float"), "bound `float` missing: {spans:?}");
+    }
+
+    #[test]
+    fn type_uses_are_navigable_references() {
+        let analysis = analyze(
+            "type Id = int | str\nfn main() -> none\n    x: Id = 42\n",
+            "alias.un",
+        );
+        let use_names: Vec<&str> = analysis.uses.iter().map(|site| site.name.as_str()).collect();
+        assert!(
+            use_names.contains(&"Id"),
+            "type annotation use not recorded: {use_names:?}"
+        );
+        let sites = reference_sites(&analysis, "Id", 1);
+        assert!(sites.len() >= 2, "references must include the declaration and the use: {sites:?}");
+    }
+
+    #[test]
+    fn completions_match_current_grammar() {
+        for keyword in ["type", "case", "get", "set"] {
+            assert!(KEYWORD_COMPLETIONS.contains(&keyword), "missing keyword: {keyword}");
+        }
+        assert!(!KEYWORD_COMPLETIONS.contains(&"return"), "`return` is not an Un keyword");
+        for ty in ["bytes", "list", "set", "dict", "tuple"] {
+            assert!(TYPE_COMPLETIONS.contains(&ty), "missing type: {ty}");
+        }
+        for (label, _, _) in KEYWORD_SNIPPETS {
+            assert!(*label != "return", "`return` snippet is invalid Un syntax");
+        }
     }
 }
