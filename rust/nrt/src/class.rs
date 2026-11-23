@@ -1,9 +1,17 @@
 //! Native class objects. Class descriptors are registered from the generated
 //! driver (`nrt_register_*`), so no bytecode or VM class registry is needed.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use crate::obj::{alloc, err, obj, NObj};
+
+// `std::env::var_os` on Windows performs an OS call; `unrt_class_new` sits on
+// the hot path of class benchmarks and must not pay for it per instance.
+static CLASS_DEBUG: OnceLock<bool> = OnceLock::new();
+#[inline(always)]
+fn class_debug() -> bool {
+    *CLASS_DEBUG.get_or_init(|| std::env::var_os("NRT_CLASS_DEBUG").is_some())
+}
 
 static CLASSES: Mutex<Vec<ClassData>> = Mutex::new(Vec::new());
 /// Frozen registry used on the hot path: no lock, populated by the generated
@@ -62,6 +70,85 @@ fn bytes_of(ptr: *const u8, len: usize) -> &'static [u8] {
     } else {
         unsafe { std::slice::from_raw_parts(ptr, len) }
     }
+}
+
+// --- Internal name -> registry-index caches ---------------------------------
+// Codegen embeds one static byte string per name reference, so the same
+// `(pointer, length)` pair repeats on every call. A direct-mapped cache turns
+// the repeated linear scans in `unrt_class_new`, `unrt_member_get/set` and
+// `unrt_method_call` into a single indexed probe.
+//
+// SAFETY: plain `un build` executables are single-threaded (the NRT subset has
+// no `go`/`wait`), so these `static mut` slots have one reader/writer. Every
+// access goes through a raw pointer obtained with `addr_of_mut!`; no reference
+// to the static itself is created. A hit is validated against the frozen
+// registry before use, so a stale or aliased slot can only fall back to the
+// original linear search — it can never return a wrong index or change an
+// error message.
+const NAME_CACHE_SLOTS: usize = 16;
+const NO_OWNER: usize = usize::MAX;
+/// (name pointer, name length, owner id, resolved index)
+type NameCacheEntry = (u64, usize, usize, usize);
+static mut CLASS_ID_CACHE: [NameCacheEntry; NAME_CACHE_SLOTS] =
+    [(0, 0, NO_OWNER, NO_OWNER); NAME_CACHE_SLOTS];
+static mut FIELD_IDX_CACHE: [NameCacheEntry; NAME_CACHE_SLOTS] =
+    [(0, 0, NO_OWNER, NO_OWNER); NAME_CACHE_SLOTS];
+static mut METHOD_IDX_CACHE: [NameCacheEntry; NAME_CACHE_SLOTS] =
+    [(0, 0, NO_OWNER, NO_OWNER); NAME_CACHE_SLOTS];
+
+#[inline(always)]
+fn class_id_cache() -> *mut NameCacheEntry {
+    std::ptr::addr_of_mut!(CLASS_ID_CACHE) as *mut NameCacheEntry
+}
+#[inline(always)]
+fn field_idx_cache() -> *mut NameCacheEntry {
+    std::ptr::addr_of_mut!(FIELD_IDX_CACHE) as *mut NameCacheEntry
+}
+#[inline(always)]
+fn method_idx_cache() -> *mut NameCacheEntry {
+    std::ptr::addr_of_mut!(METHOD_IDX_CACHE) as *mut NameCacheEntry
+}
+
+#[inline(always)]
+fn name_cache_slot(name_ptr: *const u8, name_len: usize, owner: usize) -> usize {
+    ((name_ptr as usize >> 4) ^ name_len.wrapping_mul(31) ^ owner.wrapping_mul(131))
+        & (NAME_CACHE_SLOTS - 1)
+}
+
+/// Probe the cache; on miss run `search`, then cache a successful result.
+/// `in_bounds` guards the cached index against the frozen registry.
+///
+/// The registry is immutable after `nrt_freeze_classes` (the only path that
+/// makes `classes()` return `Some`), and codegen names are static byte strings,
+/// so `(pointer, length)` identity plus an index bounds check is sufficient —
+/// re-comparing the name bytes on every hit would cost as much as the scan.
+#[inline(always)]
+unsafe fn cached_index<S>(
+    cache: *mut NameCacheEntry,
+    name: &[u8],
+    name_ptr: *const u8,
+    owner: usize,
+    in_bounds: impl Fn(usize) -> bool,
+    search: S,
+) -> Option<usize>
+where
+    S: FnOnce() -> Option<usize>,
+{
+    let slot = name_cache_slot(name_ptr, name.len(), owner);
+    let e = *cache.add(slot);
+    if e.0 == name_ptr as u64
+        && e.1 == name.len()
+        && e.2 == owner
+        && e.3 != NO_OWNER
+        && in_bounds(e.3)
+    {
+        return Some(e.3);
+    }
+    let found = search();
+    if let Some(i) = found {
+        *cache.add(slot) = (name_ptr as u64, name.len(), owner, i);
+    }
+    found
 }
 
 #[no_mangle]
@@ -150,8 +237,39 @@ pub(crate) fn call_native(ptr: usize, args: &[u64]) -> u64 {
     }
 }
 
-fn instance_fields(p: u64) -> &'static mut Vec<u64> {
-    unsafe { &mut *(obj(p).b as *mut Vec<u64>) }
+// Instance fields never need deallocation (plain executables are short-lived
+// and single-threaded), so pack them into a bump arena instead of doing one
+// heap allocation per object. `NObj.b` is an opaque i64 handle at the C ABI,
+// so the internal pointer representation can change freely.
+static mut FIELD_ARENA: Vec<u64> = Vec::new();
+static mut FIELD_BUMP: usize = 0;
+
+fn alloc_field_block(n: usize) -> &'static mut [u64] {
+    unsafe {
+        let bump = std::ptr::addr_of_mut!(FIELD_BUMP);
+        let off = *bump;
+        let needed = off + n + 1; // first word stores the field count
+        let arena = std::ptr::addr_of_mut!(FIELD_ARENA);
+        if needed > (*arena).capacity() {
+            let target = needed.max((*arena).len() * 2).max(4096);
+            (*arena).reserve(target);
+        }
+        if needed > (*arena).len() {
+            (*arena).set_len(needed);
+        }
+        let base = (*arena).as_mut_ptr().add(off);
+        *base = n as u64;
+        *bump = needed;
+        std::slice::from_raw_parts_mut(base.add(1), n)
+    }
+}
+
+fn instance_fields(p: u64) -> &'static mut [u64] {
+    unsafe {
+        let base = obj(p).b as *mut u64;
+        let len = *base as usize;
+        std::slice::from_raw_parts_mut(base.add(1), len)
+    }
 }
 
 #[no_mangle]
@@ -166,7 +284,16 @@ pub extern "C" fn unrt_class_new(
         Some(c) => c,
         None => return err("class registry is not frozen"),
     };
-    let id = registry.iter().position(|c| c.name.as_bytes() == name);
+    let id = unsafe {
+        cached_index(
+            class_id_cache(),
+            name,
+            name_ptr,
+            NO_OWNER,
+            |i| i < registry.len(),
+            || registry.iter().position(|c| c.name.as_bytes() == name),
+        )
+    };
     let Some(id) = id else {
         return err(&format!("class '{}' not registered", String::from_utf8_lossy(name)));
     };
@@ -174,10 +301,11 @@ pub extern "C" fn unrt_class_new(
     // per field per instance.
     static NONE_OBJ: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let none = *NONE_OBJ.get_or_init(|| crate::obj::unrt_obj_none());
-    let mut fields: Vec<u64> = Vec::new();
-    fields.resize(registry[id].fields.len(), none);
-    let p = Box::into_raw(Box::new(fields));
-    let instance = unsafe { alloc(NObj { tag: 9, a: id as i64, b: p as i64 }) };
+    let fields = alloc_field_block(registry[id].fields.len());
+    fields.fill(none);
+    // The arena owns the field words; `b` points at the count header.
+    let fields_ptr = unsafe { fields.as_mut_ptr().sub(1) };
+    let instance = unsafe { alloc(NObj { tag: 9, a: id as i64, b: fields_ptr as i64 }) };
 
     // Copy the descriptor out before calling: `__init__` writes fields via
     // `unrt_member_set`, which locks the same registry (Mutex is not reentrant).
@@ -187,7 +315,7 @@ pub extern "C" fn unrt_class_new(
         .find(|m| m.name == "__init__")
         .map(|m| (m.ptr, m.param_kinds, m.kinds_len));
     if let Some((f, kinds, kinds_len)) = init {
-        if std::env::var_os("NRT_CLASS_DEBUG").is_some() {
+        if class_debug() {
             eprintln!("NRT class_new id={id} argc={argc} kinds_len={kinds_len}");
         }
         let supplied = unsafe { std::slice::from_raw_parts(args, argc) };
@@ -251,10 +379,20 @@ pub extern "C" fn unrt_method_call(
         Some(c) => c,
         None => return err("class registry is not frozen"),
     };
-    let method = registry.get(id).and_then(|c| {
-        c.methods
-            .iter()
-            .find(|m| m.name.as_bytes() == name)
+    let method_idx = unsafe {
+        cached_index(
+            method_idx_cache(),
+            name,
+            name_ptr,
+            id,
+            |i| registry.get(id).map_or(false, |c| i < c.methods.len()),
+            || registry.get(id).and_then(|c| c.methods.iter().position(|m| m.name.as_bytes() == name)),
+        )
+    };
+    let method = method_idx.and_then(|i| {
+        registry
+            .get(id)
+            .and_then(|c| c.methods.get(i))
             .map(|m| (m.ptr, m.param_kinds, m.kinds_len, m.ret_kind))
     });
     let Some((f, kinds, kinds_len, ret_kind)) = method else {
@@ -281,7 +419,16 @@ pub extern "C" fn unrt_member_get(obj_handle: u64, name_ptr: *const u8, name_len
         Some(c) => c,
         None => return err("class registry is not frozen"),
     };
-    let idx = registry.get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name));
+    let idx = unsafe {
+        cached_index(
+            field_idx_cache(),
+            name,
+            name_ptr,
+            id,
+            |i| registry.get(id).map_or(false, |c| i < c.fields.len()),
+            || registry.get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name)),
+        )
+    };
     match idx {
         Some(i) => instance_fields(obj_handle)[i],
         None => err(&format!("class '{}' has no field '{}'", registry.get(id).map(|c| c.name.as_str()).unwrap_or("?"), String::from_utf8_lossy(name))),
@@ -306,7 +453,16 @@ pub extern "C" fn unrt_member_set(
         Some(c) => c,
         None => return err("class registry is not frozen"),
     };
-    let idx = registry.get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name));
+    let idx = unsafe {
+        cached_index(
+            field_idx_cache(),
+            name,
+            name_ptr,
+            id,
+            |i| registry.get(id).map_or(false, |c| i < c.fields.len()),
+            || registry.get(id).and_then(|c| c.fields.iter().position(|f| f.as_bytes() == name)),
+        )
+    };
     match idx {
         Some(i) => instance_fields(obj_handle)[i] = value,
         None => return err(&format!("class '{}' has no field '{}'", registry.get(id).map(|c| c.name.as_str()).unwrap_or("?"), String::from_utf8_lossy(name))),

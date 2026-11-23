@@ -2,7 +2,7 @@
 //! Mirrors `runtime/context.rs::trace_string` and `error.rs::LangError::display`.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::obj::display;
@@ -15,10 +15,26 @@ struct SourceInfo {
 
 static SOURCE: Mutex<Option<SourceInfo>> = Mutex::new(None);
 // Lock-free call frames. Each slot holds (name pointer, name length, start,
-// source length). Plain no-VM executables are single-threaded; atomics are used
-// only so the statics are Sync. This removes a mutex lock/unlock per call.
+// source length). Relaxed atomic stores on the slots compile to plain `mov`
+// on x86; the depth counter is a plain cell because plain no-VM executables
+// are single-threaded. Together this removes both the mutex and the two
+// atomic RMWs that used to run on every function call.
 const MAX_FRAMES: usize = 512;
-static FRAME_DEPTH: AtomicUsize = AtomicUsize::new(0);
+// Plain executables are single-threaded (no `go`/`wait` in the NRT subset), so
+// the depth counter does not need an atomic read-modify-write on every function
+// call. The two RMWs per call used to dominate recursive benchmarks (fib24).
+// Access is through raw pointers to a `static mut` so no reference to the
+// static is ever created (avoids `static_mut_refs` and keeps the `Sync`
+// question moot: nothing can observe it from another thread).
+static mut FRAME_DEPTH: usize = 0;
+#[inline(always)]
+fn frame_depth() -> usize {
+    unsafe { std::ptr::addr_of_mut!(FRAME_DEPTH).read() }
+}
+#[inline(always)]
+fn set_frame_depth(d: usize) {
+    unsafe { std::ptr::addr_of_mut!(FRAME_DEPTH).write(d) }
+}
 static FRAME_SLOTS: std::sync::OnceLock<Vec<[AtomicU64; 4]>> = std::sync::OnceLock::new();
 
 fn frame_slots() -> &'static Vec<[AtomicU64; 4]> {
@@ -102,9 +118,12 @@ pub extern "C" fn nrt_register_source(
 
 #[no_mangle]
 pub extern "C" fn nrt_push_frame(name_ptr: *const u8, name_len: usize, start: usize, len: usize) {
-    let d = FRAME_DEPTH.fetch_add(1, Ordering::Relaxed);
+    let d = frame_depth();
+    set_frame_depth(d + 1);
     if d < MAX_FRAMES {
         let slot = &frame_slots()[d];
+        // Relaxed atomic stores compile to plain `mov` on x86; keeping them
+        // preserves the existing slot representation used by `traceback`.
         slot[0].store(name_ptr as u64, Ordering::Relaxed);
         slot[1].store(name_len as u64, Ordering::Relaxed);
         slot[2].store(start as u64, Ordering::Relaxed);
@@ -114,12 +133,12 @@ pub extern "C" fn nrt_push_frame(name_ptr: *const u8, name_len: usize, start: us
 
 #[no_mangle]
 pub extern "C" fn nrt_pop_frame() {
-    FRAME_DEPTH.fetch_sub(1, Ordering::Relaxed);
+    set_frame_depth(frame_depth().saturating_sub(1));
 }
 
 #[no_mangle]
 pub extern "C" fn nrt_clear_trace() {
-    FRAME_DEPTH.store(0, Ordering::Relaxed);
+    set_frame_depth(0);
 }
 
 #[no_mangle]
@@ -138,7 +157,7 @@ pub extern "C" fn nrt_take_error_site() -> u64 {
 
 pub(crate) fn traceback(message: &str) {
     let src = SOURCE.lock().unwrap();
-    let depth = FRAME_DEPTH.load(Ordering::Relaxed).min(MAX_FRAMES);
+    let depth = frame_depth().min(MAX_FRAMES);
     let slots = frame_slots();
     let frames: Vec<(usize, usize, usize, usize)> = (0..depth)
         .map(|i| {

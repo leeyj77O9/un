@@ -83,6 +83,23 @@ pub extern "C" fn unrt_list_set(list: u64, idx: i64, value: u64) -> u64 {
     }
     list
 }
+
+/// Raw-i64 write for statically typed `list[int]`: boxes the value once and
+/// stores the handle directly, skipping the generated-code boxing round trip.
+/// On an out-of-range index it returns the exact same error object as
+/// `unrt_list_set` ("list index out of range").
+#[no_mangle]
+pub extern "C" fn unrt_list_set_int(list: u64, idx: i64, value: i64) -> u64 {
+    unsafe {
+        let v = items(list);
+        match index(v, idx) {
+            Some(i) => v[i] = crate::obj::unrt_obj_int(value),
+            None => return err("list index out of range"),
+        }
+    }
+    list
+}
+
 #[no_mangle]
 pub extern "C" fn unrt_list_pop(list: u64) -> u64 {
     unsafe {

@@ -4,18 +4,64 @@
 
 use crate::obj::{alloc, eq_obj, err, obj, NObj};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
+
+/// Deterministic, allocation-free hasher for the internal integer-keyed
+/// indexes. `RandomState`'s SipHash setup dominates short dict lookups; the
+/// in-process index only needs good distribution, not DoS resistance, and
+/// collisions are still resolved by `eq_obj` / exact i64 comparison.
+#[derive(Default)]
+struct FastHasher(u64);
+
+impl Hasher for FastHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        // Generic fallback (only used if a non-integer key reaches an index).
+        let mut h = self.0 ^ 0x9e3779b97f4a7c15;
+        for &b in bytes {
+            h = (h ^ b as u64).wrapping_mul(0xff51afd7ed558ccd);
+        }
+        self.0 = splitmix64(h);
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = splitmix64(i);
+    }
+    #[inline]
+    fn write_i64(&mut self, i: i64) {
+        self.0 = splitmix64(i as u64);
+    }
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.0 = splitmix64(i as u64);
+    }
+    #[inline]
+    fn write_i32(&mut self, i: i32) {
+        self.0 = splitmix64(i as u64);
+    }
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.0 = splitmix64(i as u64);
+    }
+}
+
+type FastIndex = HashMap<u64, Vec<usize>, BuildHasherDefault<FastHasher>>;
+type FastIntMap = HashMap<i64, (i64, usize), BuildHasherDefault<FastHasher>>;
 
 struct DictData {
     pairs: Vec<(u64, u64)>,
     /// hash -> candidate indices, in insertion order.
-    index: HashMap<u64, Vec<usize>>,
+    index: FastIndex,
     /// Number of keys per equivalence class (numeric, str, other). Used to
     /// skip the cross-type fallback scan when all keys share the lookup class.
     class_counts: [usize; 3],
     /// Direct storage for statically typed `dict[int, int]`: key -> (value,
     /// index in `pairs` so len()/display() stay correct). Empty otherwise.
-    int_map: HashMap<i64, (i64, usize)>,
+    int_map: FastIntMap,
     int_only: bool,
 }
 
@@ -77,9 +123,9 @@ pub(crate) fn display_dict(p: u64) -> String {
     }
 }
 fn dict_new(pairs_vec: Vec<(u64, u64)>) -> u64 {
-    let mut index: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut index: FastIndex = HashMap::default();
     let mut class_counts = [0usize; 3];
-    let mut int_map = HashMap::new();
+    let mut int_map: FastIntMap = HashMap::default();
     let mut int_only = true;
     for (i, (k, v)) in pairs_vec.iter().enumerate() {
         index.entry(hash_obj(*k)).or_default().push(i);
@@ -160,8 +206,53 @@ pub extern "C" fn unrt_dict_get(dict: u64, key: u64) -> u64 {
     }
 }
 
+/// Raw-i64 read for statically typed `dict[int, int]`.
+///
+/// Success writes `0` to `err_out` and returns the value directly, skipping
+/// boxing/unboxing and the boxed-key hash lookup. Failure writes the exact
+/// same error object `unrt_dict_get` would produce to `err_out` and returns
+/// `0`; the generated call site keeps its usual span/error-site handling.
+#[no_mangle]
+pub extern "C" fn unrt_dict_get_int(dict: u64, key: i64, err_out: *mut u64) -> i64 {
+    unsafe {
+        if obj(dict).tag != 7 {
+            if !err_out.is_null() {
+                *err_out = err("unrt: dict argument is not a dict");
+            }
+            return 0;
+        }
+        // Same handle the boxed path receives from `wrap_as_obj(Int)`, so
+        // `display()` produces a byte-identical message for missing keys.
+        let key_h = crate::obj::unrt_obj_int(key);
+        let found = if data(dict).int_only {
+            data(dict).int_map.get(&key).copied().map(|(v, _)| v)
+        } else {
+            find(dict, key_h).map(|(i, _)| crate::obj::int_of(data(dict).pairs[i].1))
+        };
+        match found {
+            Some(v) => {
+                if !err_out.is_null() {
+                    *err_out = 0;
+                }
+                v
+            }
+            None => {
+                let e = err(&format!(
+                    "key '{}' not found in dictionary",
+                    crate::obj::display(key_h)
+                ));
+                if !err_out.is_null() {
+                    *err_out = e;
+                }
+                0
+            }
+        }
+    }
+}
+
 /// Fast path for statically typed `dict[int, int]`: raw i64 key/value, no
-/// boxing, no SipHash, no `eq_obj`. Returns the dict handle for the error gate.
+/// boxing, no SipHash, no `eq_obj`. Always returns the dict handle and never
+/// produces an error object (the generated call site relies on this contract).
 #[no_mangle]
 pub extern "C" fn unrt_dict_set_int(dict: u64, key: i64, value: i64) -> u64 {
     unsafe {

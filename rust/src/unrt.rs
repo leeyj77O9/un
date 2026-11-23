@@ -695,6 +695,35 @@ pub extern "C" fn unrt_list_set(list: u64, idx: i64, value: u64) -> u64 {
     }
 }
 
+/// Fused `list[int]` write for the standalone native path (matching the NRT
+/// ABI). Takes the value as a raw i64 so the caller does not need a boxing FFI,
+/// and returns the `list` handle on success (or an error Obj for an
+/// out-of-range index). The generated code compares the result against the
+/// input list handle via `emit_self_return_gate`, preserving the same error,
+/// catch and traceback behaviour as the boxed path.
+#[no_mangle]
+pub extern "C" fn unrt_list_set_int(list: u64, idx: i64, value: i64) -> u64 {
+    let Some(list) = borrow_obj(list) else {
+        return to_raw(crate::runtime::obj::err("unrt: list argument is not a list"));
+    };
+    match crate::runtime::obj::payload(&list) {
+        crate::runtime::obj::Payload::List(vec) => {
+            let count = vec.borrow().len() as i64;
+            let mut i = idx;
+            if i < 0 || i >= count {
+                i = i.saturating_add(count);
+            }
+            if i < 0 || i >= count {
+                return to_raw(crate::runtime::obj::err("list index out of range"));
+            }
+            let boxed = crate::runtime::obj::int(value);
+            vec.borrow_mut()[i as usize] = boxed;
+            to_raw(list)
+        }
+        _ => to_raw(crate::runtime::obj::err("unrt: set target is not a list")),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn unrt_dict_get(dict: u64, key: u64) -> u64 {
     let Some(dict) = borrow_obj(dict) else {
@@ -708,6 +737,42 @@ pub extern "C" fn unrt_dict_get(dict: u64, key: u64) -> u64 {
             to_raw(crate::runtime::collections::dict_get_item(&km, &key))
         }
         _ => to_raw(crate::runtime::obj::err("unrt: lookup target is not a dict")),
+    }
+}
+
+/// Fused `dict[int, int]` lookup for the standalone native path (matching the
+/// NRT ABI). On success returns the raw i64 value and writes 0 to `err_out`.
+/// On failure writes the error Obj handle to `err_out` and returns 0. The
+/// generated code checks `err_out` and routes the handle through the regular
+/// error gate, preserving source span, message and catch semantics.
+#[no_mangle]
+pub extern "C" fn unrt_dict_get_int(dict: u64, key: i64, err_out: *mut u64) -> i64 {
+    unsafe { *err_out = 0 };
+    let Some(dict) = borrow_obj(dict) else {
+        unsafe {
+            *err_out = to_raw(crate::runtime::obj::err("unrt: dict argument is not a dict"));
+        }
+        return 0;
+    };
+    let key_obj = crate::runtime::obj::int(key);
+    let value = match crate::runtime::obj::payload(&dict) {
+        crate::runtime::obj::Payload::Dict(km) => {
+            crate::runtime::collections::dict_get_item(&km, &key_obj)
+        }
+        _ => {
+            unsafe {
+                *err_out = to_raw(crate::runtime::obj::err("unrt: lookup target is not a dict"));
+            }
+            return 0;
+        }
+    };
+    if crate::runtime::obj::is_err(&value) || crate::runtime::obj::is_panic(&value) {
+        unsafe { *err_out = to_raw(value) };
+        return 0;
+    }
+    match crate::runtime::obj::payload(&value) {
+        crate::runtime::obj::Payload::Int(v) => v,
+        _ => 0,
     }
 }
 

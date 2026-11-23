@@ -35,6 +35,100 @@ impl ArgKind {
     }
 }
 
+/// Conservative "this function can never reach an uncaught runtime error"
+/// analysis over the TIR call graph.
+///
+/// `TirExpr::Call` in `NativeMode::Obj` normally brackets each direct call with
+/// `nrt_push_frame` / `nrt_pop_frame` so an uncaught error can print a full
+/// traceback. A function whose body is built purely from scalar arithmetic,
+/// control flow and calls to other such functions can never have a traceback
+/// dumped while its frame is live, so the two FFI calls are pure overhead
+/// there. The analysis is a least fixpoint: a function is pure only when every
+/// local operation is pure and every callee is pure as well (cycles such as
+/// recursive `fib` settle to "pure" if no impure operation exists anywhere in
+/// the strongly connected component). Unknown/foreign operations are treated
+/// as impure, so this never removes a frame that could be observable.
+fn compute_error_free(fns: &[TirFn]) -> Vec<bool> {
+    fn expr_error_free(e: &TirExpr, pure: &[bool]) -> bool {
+        match e {
+            TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Local(_)
+            | TirExpr::Promote(_) | TirExpr::CastInt(_) | TirExpr::CastFloat(_)
+            | TirExpr::Cmp(_, _, _) | TirExpr::Un(_, _) => true,
+            TirExpr::Bin(op, a, b) => {
+                // Div/Mod can raise divide-by-zero; Str concat goes through NRT.
+                matches!(
+                    op,
+                    TirBinOp::Add
+                        | TirBinOp::Sub
+                        | TirBinOp::Mul
+                        | TirBinOp::BAnd
+                        | TirBinOp::BOr
+                        | TirBinOp::BXor
+                        | TirBinOp::Shl
+                        | TirBinOp::Shr
+                ) && expr_error_free(a, pure)
+                    && expr_error_free(b, pure)
+            }
+            TirExpr::Select { cond, then_expr, else_expr } => {
+                expr_error_free(cond, pure)
+                    && expr_error_free(then_expr, pure)
+                    && expr_error_free(else_expr, pure)
+            }
+            TirExpr::Located { inner, .. } => expr_error_free(inner, pure),
+            TirExpr::Call(i, args) => {
+                pure.get(*i as usize).copied().unwrap_or(false)
+                    && args.iter().all(|a| expr_error_free(a, pure))
+            }
+            // Everything else touches the heap / NRT / an error gate.
+            _ => false,
+        }
+    }
+
+    fn stmt_error_free(s: &TirStmt, pure: &[bool]) -> bool {
+        match s {
+            TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) => expr_error_free(e, pure),
+            TirStmt::Return(Some(e)) => expr_error_free(e, pure),
+            TirStmt::Return(None) | TirStmt::Break | TirStmt::Skip => true,
+            TirStmt::If { cond, then_body, else_body } => {
+                expr_error_free(cond, pure)
+                    && then_body.iter().all(|s| stmt_error_free(s, pure))
+                    && else_body.iter().all(|s| stmt_error_free(s, pure))
+            }
+            TirStmt::While { cond, body } => {
+                expr_error_free(cond, pure) && body.iter().all(|s| stmt_error_free(s, pure))
+            }
+            TirStmt::ForRange { start, end, step, body, .. } => {
+                expr_error_free(start, pure)
+                    && expr_error_free(end, pure)
+                    && expr_error_free(step, pure)
+                    && body.iter().all(|s| stmt_error_free(s, pure))
+            }
+            // Collection/class/native/try statements all carry error paths.
+            _ => false,
+        }
+    }
+
+    let mut pure = vec![true; fns.len()];
+    loop {
+        let mut changed = false;
+        for (i, f) in fns.iter().enumerate() {
+            if !pure[i] {
+                continue;
+            }
+            let ok = f.body.iter().all(|s| stmt_error_free(s, &pure))
+                && f.defaults.iter().flatten().all(|e| expr_error_free(e, &pure));
+            if !ok {
+                pure[i] = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    pure
+}
+
 pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> Vec<String> {
     let debug_trace = std::env::var_os("UV_TIR_DEBUG").is_some();
     if tir.functions.is_empty() {
@@ -133,7 +227,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
         let internal_sig = internal_signature(&module, f, NativeMode::Vm);
         let ffi_sig = ffi_signature(&module, f);
         let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            emit_internal(f, &mut module, &internal_fids, *internal, &internal_sig, &tir.functions, NativeMode::Vm)
+            emit_internal(f, &mut module, &internal_fids, *internal, &internal_sig, &tir.functions, NativeMode::Vm, true)
         }));
         if std::env::var_os("UV_TIR_DEBUG").is_some() {
             match &guard {
@@ -369,6 +463,7 @@ pub fn obj_compile(
         }
     }
 
+    let error_free = compute_error_free(&tir.functions);
     let mut emitted: Vec<String> = Vec::new();
     for (i, f) in tir.functions.iter().enumerate() {
         let Some(&fid) = fids.get(&i) else {
@@ -376,8 +471,9 @@ pub fn obj_compile(
             continue;
         };
         let sig = internal_signature(&module, f, NativeMode::Obj);
+        let needs_frame = error_free.get(i).copied().map(|p| !p).unwrap_or(true);
         let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            emit_internal(f, &mut module, &fids, fid, &sig, &tir.functions, NativeMode::Obj)
+            emit_internal(f, &mut module, &fids, fid, &sig, &tir.functions, NativeMode::Obj, needs_frame)
         }));
         match guard {
             Ok(Ok(())) => emitted.push(f.name.clone()),
@@ -523,6 +619,7 @@ struct FnEmit<'a> {
     loop_skips: Vec<Block>,
     terminated: bool,
     mode: NativeMode,
+    needs_frame: bool,
     active_handlers: Vec<cranelift_codegen::ir::Block>,
     current_span: Option<(usize, usize)>,
     unrt_str_new: Option<cranelift_module::FuncId>,
@@ -544,9 +641,11 @@ struct FnEmit<'a> {
     unrt_float_from_obj: Option<cranelift_module::FuncId>,
     unrt_dict_from_pairs: Option<cranelift_module::FuncId>,
     unrt_dict_get: Option<cranelift_module::FuncId>,
+    unrt_dict_get_int: Option<cranelift_module::FuncId>,
     unrt_dict_set: Option<cranelift_module::FuncId>,
     unrt_dict_set_int: Option<cranelift_module::FuncId>,
     unrt_list_set: Option<cranelift_module::FuncId>,
+    unrt_list_set_int: Option<cranelift_module::FuncId>,
     unrt_list_push: Option<cranelift_module::FuncId>,
     unrt_write_error: Option<cranelift_module::FuncId>,
     nrt_set_error_site: Option<cranelift_module::FuncId>,
@@ -619,6 +718,7 @@ fn emit_internal<M: Module>(
     sig: &cranelift_codegen::ir::Signature,
     fns: &[TirFn],
     mode: NativeMode,
+    needs_frame: bool,
 ) -> Result<(), ()> {
     let fid_enter = if mode == NativeMode::Vm {
         Some(
@@ -769,6 +869,16 @@ fn emit_internal<M: Module>(
     } else {
         None
     };
+    let unrt_dict_get_int = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_dict_get_int",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
     let unrt_obj_is_err = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_obj_is_err", vec![types::I64], Some(types::I64))?)
     } else {
@@ -791,6 +901,11 @@ fn emit_internal<M: Module>(
     };
     let unrt_list_set = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_list_set", vec![types::I64, types::I64, types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
+    let unrt_list_set_int = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_list_set_int", vec![types::I64, types::I64, types::I64], Some(types::I64))?)
     } else {
         None
     };
@@ -1073,6 +1188,7 @@ fn emit_internal<M: Module>(
         loop_skips: Vec::new(),
         terminated: false,
         mode,
+        needs_frame,
         active_handlers: Vec::new(),
         current_span: None,
         unrt_str_new,
@@ -1094,9 +1210,11 @@ fn emit_internal<M: Module>(
         unrt_float_from_obj,
         unrt_dict_from_pairs,
         unrt_dict_get,
+        unrt_dict_get_int,
         unrt_dict_set,
         unrt_dict_set_int,
         unrt_list_set,
+        unrt_list_set_int,
         unrt_list_push,
         unrt_write_error,
         nrt_set_error_site,
@@ -1400,6 +1518,17 @@ fn emit_stmt<M: Module>(
             let idx_var = builder.declare_var(types::I64);
             let zero = builder.ins().iconst(types::I64, 0);
             builder.def_var(idx_var, zero);
+            // The trip count only needs one FFI call when the body cannot pop
+            // elements from a list. Otherwise keep the per-iteration reload.
+            let hoist_len = body_preserves_list_len(body);
+            let hoisted_len = if hoist_len {
+                let len_id = emitter.unrt_list_len.expect("unrt import required for lists");
+                let len_ref = module.declare_func_in_func(len_id, builder.func);
+                let len_res = builder.ins().call(len_ref, &[col_v]);
+                Some(builder.inst_results(len_res)[0])
+            } else {
+                None
+            };
             let header = builder.create_block();
             let body_blk = builder.create_block();
             let exit_blk = builder.create_block();
@@ -1407,10 +1536,15 @@ fn emit_stmt<M: Module>(
             builder.ins().jump(header, &[]);
             builder.switch_to_block(header);
             let idx = builder.use_var(idx_var);
-            let len_id = emitter.unrt_list_len.expect("unrt import required for lists");
-            let len_ref = module.declare_func_in_func(len_id, builder.func);
-            let len_res = builder.ins().call(len_ref, &[col_v]);
-            let len_v = builder.inst_results(len_res)[0];
+            let len_v = match hoisted_len {
+                Some(v) => v,
+                None => {
+                    let len_id = emitter.unrt_list_len.expect("unrt import required for lists");
+                    let len_ref = module.declare_func_in_func(len_id, builder.func);
+                    let len_res = builder.ins().call(len_ref, &[col_v]);
+                    builder.inst_results(len_res)[0]
+                }
+            };
             let cont = builder.ins().icmp(IntCC::SignedLessThan, idx, len_v);
             builder.ins().brif(cont, body_blk, &[], exit_blk, &[]);
             builder.switch_to_block(body_blk);
@@ -1556,18 +1690,33 @@ fn emit_stmt<M: Module>(
             false
         }
         TirStmt::ListSet { list, index, value } => {
-            let (list_v, _) = emit_expr(list, emitter, builder, module, f);
+            let (list_v, lty) = emit_expr(list, emitter, builder, module, f);
             let (idx_v, ity) = emit_expr(index, emitter, builder, module, f);
             if ity != TirTy::Int {
                 panic!("list index must be int");
             }
             let (v_v, v_ty) = emit_expr(value, emitter, builder, module, f);
-            let wrapped = wrap_as_obj(v_v, v_ty, emitter, builder, module);
-            let set_id = emitter.unrt_list_set.expect("unrt import required for list assignment");
+            // For `list[int]` with an i64 value the fused NRT ABI takes the raw
+            // value, skipping the per-write boxing FFI. The result contract is
+            // unchanged (returns `list` on success), so the existing
+            // self-return gate still preserves errors, catch and traceback.
+            let (set_id, written) = if lty == TirTy::ListInt && v_ty == TirTy::Int {
+                (
+                    emitter.unrt_list_set_int.expect("unrt int-list import required"),
+                    v_v,
+                )
+            } else {
+                (
+                    emitter.unrt_list_set.expect("unrt import required for list assignment"),
+                    wrap_as_obj(v_v, v_ty, emitter, builder, module),
+                )
+            };
             let set_ref = module.declare_func_in_func(set_id, builder.func);
-            let res = builder.ins().call(set_ref, &[list_v, idx_v, wrapped]);
+            let res = builder.ins().call(set_ref, &[list_v, idx_v, written]);
             let raw = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, raw);
+            // NRT returns `list` on success; only an out-of-range write yields
+            // a different (error) handle, so no FFI tag checks are needed.
+            emit_self_return_gate(emitter, builder, module, raw, list_v);
             false
         }
         TirStmt::ListAdd { receiver, arg } => {
@@ -1617,7 +1766,9 @@ fn emit_stmt<M: Module>(
             let set_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(set_ref, &[recv, nptr, nlen, v]);
             let obj = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, obj);
+            // NRT returns the receiver on success; a mismatch is the only
+            // possible failure (unknown field / bad receiver).
+            emit_self_return_gate(emitter, builder, module, obj, recv);
             false
         }
         TirStmt::Throw(expr) => {
@@ -1715,11 +1866,12 @@ fn emit_stmt<M: Module>(
             }
             let (v_v, v_ty) = emit_expr(value, emitter, builder, module, f);
             if dtype == TirTy::DictIntInt && kty == TirTy::Int && v_ty == TirTy::Int {
+                // The fused `unrt_dict_set_int` ABI always returns the dict
+                // handle (it never produces an error object), so the two FFI
+                // tag checks in `emit_error_gate` would be dead code here.
                 let id = emitter.unrt_dict_set_int.expect("unrt int-dict import required");
                 let f_ref = module.declare_func_in_func(id, builder.func);
-                let res = builder.ins().call(f_ref, &[dict_v, key_v, v_v]);
-                let raw = builder.inst_results(res)[0];
-                emit_error_gate(emitter, builder, module, raw);
+                let _ = builder.ins().call(f_ref, &[dict_v, key_v, v_v]);
                 return false;
             }
             let key_v = wrap_as_obj(key_v, kty, emitter, builder, module);
@@ -1728,10 +1880,86 @@ fn emit_stmt<M: Module>(
             let set_ref = module.declare_func_in_func(set_id, builder.func);
             let res = builder.ins().call(set_ref, &[dict_v, key_v, wrapped]);
             let raw = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, raw);
+            // NRT returns the dict handle on success.
+            emit_self_return_gate(emitter, builder, module, raw, dict_v);
             false
         }
     }
+}
+
+/// True when evaluating `e` cannot remove elements from a list. Used to decide
+/// whether a `for x in list` bound can be computed once instead of every
+/// iteration (the standalone NRT keeps a live list, so a `ListPop` in the body
+/// could otherwise change the trip count).
+fn expr_preserves_list_len(e: &TirExpr) -> bool {
+    match e {
+        TirExpr::ListPop(_) | TirExpr::ListPopAt(_, _) => false,
+        TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_)
+        | TirExpr::Local(_) | TirExpr::NoneValue | TirExpr::GlobalGet(_) => true,
+        TirExpr::Promote(x) | TirExpr::CastInt(x) | TirExpr::CastFloat(x) | TirExpr::Un(_, x)
+        | TirExpr::Len(x) | TirExpr::MemberGet { receiver: x, .. }
+        | TirExpr::Located { inner: x, .. } => expr_preserves_list_len(x),
+        TirExpr::ListContains(a, b) | TirExpr::ListIndexOf(a, b) => {
+            expr_preserves_list_len(a) && expr_preserves_list_len(b)
+        }
+        TirExpr::Select { cond, then_expr, else_expr } => {
+            expr_preserves_list_len(cond)
+                && expr_preserves_list_len(then_expr)
+                && expr_preserves_list_len(else_expr)
+        }
+        TirExpr::Bin(_, a, b) | TirExpr::Cmp(_, a, b) | TirExpr::DictGet(a, b)
+        | TirExpr::ListGet(a, b) => expr_preserves_list_len(a) && expr_preserves_list_len(b),
+        TirExpr::List(items) => items.iter().all(expr_preserves_list_len),
+        TirExpr::Dict(pairs) => pairs.iter().all(|(k, v)| {
+            expr_preserves_list_len(k) && expr_preserves_list_len(v)
+        }),
+        TirExpr::ListRepeat { value, len, .. } => {
+            expr_preserves_list_len(value) && expr_preserves_list_len(len)
+        }
+        // A call may mutate any list reachable from its arguments (or a
+        // captured/global one), so never assume it preserves list length.
+        TirExpr::NativeCallExpr { .. } | TirExpr::ClassNew { .. }
+        | TirExpr::Math(..) | TirExpr::Call(..)
+        | TirExpr::CallObj { .. } | TirExpr::MethodCall { .. } => false,
+        TirExpr::MakeClosure { .. } => true,
+    }
+}
+
+/// True when none of the statements in `body` can change a list's length.
+fn body_preserves_list_len(body: &[TirStmt]) -> bool {
+    body.iter().all(|s| match s {
+        // The only statements that grow or shrink a list.
+        TirStmt::ListAdd { .. } | TirStmt::ListInsert { .. } => false,
+        TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) | TirStmt::Throw(e)
+        | TirStmt::Return(Some(e)) => expr_preserves_list_len(e),
+        // Indexed writes, member writes and reordering keep the length intact.
+        TirStmt::Return(None) | TirStmt::Break | TirStmt::Skip | TirStmt::ListSet { .. }
+        | TirStmt::DictSet { .. } | TirStmt::MemberSet { .. } | TirStmt::GlobalSet(_, _)
+        | TirStmt::ListReverse { .. } | TirStmt::ListSort { .. } => true,
+        TirStmt::If { cond, then_body, else_body } => {
+            expr_preserves_list_len(cond)
+                && body_preserves_list_len(then_body)
+                && body_preserves_list_len(else_body)
+        }
+        TirStmt::While { cond, body } => {
+            expr_preserves_list_len(cond) && body_preserves_list_len(body)
+        }
+        TirStmt::ForRange { start, end, step, body, .. } => {
+            expr_preserves_list_len(start)
+                && expr_preserves_list_len(end)
+                && expr_preserves_list_len(step)
+                && body_preserves_list_len(body)
+        }
+        TirStmt::ForEach { collection, body, .. } => {
+            expr_preserves_list_len(collection) && body_preserves_list_len(body)
+        }
+        TirStmt::NativeCall { args, .. } => args.iter().all(expr_preserves_list_len),
+        TirStmt::Try { body, catch_body, finally_body, .. } => {
+            body_preserves_list_len(body)
+                && body_preserves_list_len(catch_body)
+                && finally_body.as_ref().map_or(true, |b| body_preserves_list_len(b))
+        }
+    })
 }
 
 fn const_int_sign(step: &TirExpr) -> i64 {
@@ -1791,6 +2019,87 @@ fn emit_set_error_site<M: Module>(
         let r = module.declare_func_in_func(id, builder.func);
         let _ = builder.ins().call(r, &[s, l]);
     }
+}
+
+/// Fast error gate for NRT calls whose success contract is "return the input
+/// handle unchanged". `unrt_list_set`, `unrt_dict_set` and `unrt_member_set`
+/// all return their first argument on success and a freshly allocated error
+/// object (tag 5) on failure; they never produce a panic (tag 10). Comparing
+/// the result pointer against the input therefore detects every possible
+/// failure with a single integer compare, replacing the two FFI tag checks in
+/// `emit_error_gate`. The error path (source span, message, traceback, catch
+/// dispatch) is byte-for-byte the same as the generic gate.
+fn emit_self_return_gate<M: Module>(
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    result: cranelift_codegen::ir::Value,
+    expected: cranelift_codegen::ir::Value,
+) {
+    let ok = builder.ins().icmp(IntCC::Equal, result, expected);
+    let ok_blk = builder.create_block();
+    let err_blk = builder.create_block();
+    builder.ins().brif(ok, ok_blk, &[], err_blk, &[]);
+    builder.seal_block(ok_blk);
+    builder.switch_to_block(err_blk);
+    emit_set_error_site(emitter, builder, module);
+    let wid = emitter.unrt_write_error.expect("unrt import required");
+    let wref = module.declare_func_in_func(wid, builder.func);
+    let _ = builder.ins().call(wref, &[result]);
+    match emitter.active_handlers.last().copied() {
+        Some(handler) => {
+            builder.ins().jump(handler, &[]);
+        }
+        None => {
+            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+            let d_ref = module.declare_func_in_func(d_id, builder.func);
+            let _ = builder.ins().call(d_ref, &[]);
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+        }
+    }
+    builder.seal_block(err_blk);
+    builder.switch_to_block(ok_blk);
+}
+
+/// Error gate for NRT calls whose contract only ever yields a regular error
+/// (tag 5) on failure, never a panic (tag 10). Skips the `unrt_obj_is_panic`
+/// FFI while keeping the exact same error path (span, message, traceback).
+fn emit_error_gate_regular<M: Module>(
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    obj: cranelift_codegen::ir::Value,
+) {
+    let is_err_id = match emitter.unrt_obj_is_err {
+        Some(id) => id,
+        None => return,
+    };
+    let is_err_ref = module.declare_func_in_func(is_err_id, builder.func);
+    let res = builder.ins().call(is_err_ref, &[obj]);
+    let raw = builder.inst_results(res)[0];
+    let is_err = builder.ins().ireduce(types::I8, raw);
+    let err_blk = builder.create_block();
+    let ok_blk = builder.create_block();
+    builder.ins().brif(is_err, err_blk, &[], ok_blk, &[]);
+    builder.seal_block(ok_blk);
+    builder.switch_to_block(err_blk);
+    emit_set_error_site(emitter, builder, module);
+    let wid = emitter.unrt_write_error.expect("unrt import required");
+    let wref = module.declare_func_in_func(wid, builder.func);
+    let _ = builder.ins().call(wref, &[obj]);
+    match emitter.active_handlers.last().copied() {
+        Some(handler) => {
+            builder.ins().jump(handler, &[]);
+        }
+        None => {
+            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+            let d_ref = module.declare_func_in_func(d_id, builder.func);
+            let _ = builder.ins().call(d_ref, &[]);
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+        }
+    }
+    builder.seal_block(err_blk);
+    builder.switch_to_block(ok_blk);
 }
 
 fn emit_error_gate<M: Module>(
@@ -2026,6 +2335,11 @@ fn emit_math_inline<M: Module>(
         _ => {}
     }
     let fname = match mf {
+        // In the standalone object build libm is already linked, so call
+        // `sin` directly instead of going through NRT's one-line wrapper.
+        // The Vm/JIT path keeps `un_math_sin` because JIT symbol resolution
+        // only registers the `un_math_*` names.
+        Sin if emitter.mode == NativeMode::Obj => "sin",
         Sin => "un_math_sin",
         Cos => "un_math_cos",
         Tan => "un_math_tan",
@@ -2203,7 +2517,7 @@ fn emit_expr<M: Module>(
         }
         TirExpr::CallObj { callee, args, ret } => {
             let (cv, _) = emit_expr(callee, emitter, builder, module, f);
-            if emitter.mode == NativeMode::Obj {
+            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
                 if let Some(push) = emitter.nrt_push_frame {
                     let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
                     let np = builder.ins().symbol_value(types::I64, gv);
@@ -2234,7 +2548,7 @@ fn emit_expr<M: Module>(
             let id = emitter.unrt_call_obj.expect("closure call import required");
             let r = module.declare_func_in_func(id, builder.func);
             let call = builder.ins().call(r, &[cv, ap, ac]);
-            if emitter.mode == NativeMode::Obj {
+            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
                 if let Some(pop) = emitter.nrt_pop_frame {
                     let pop_ref = module.declare_func_in_func(pop, builder.func);
                     let _ = builder.ins().call(pop_ref, &[]);
@@ -2337,7 +2651,7 @@ fn emit_expr<M: Module>(
             let new_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(new_ref, &[nptr, nlen, ptr, argc]);
             let obj = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, obj);
+            emit_error_gate_regular(emitter, builder, module, obj);
             (obj, *ret)
         }
         TirExpr::MemberGet { receiver, member, ret } => {
@@ -2349,12 +2663,73 @@ fn emit_expr<M: Module>(
             let get_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(get_ref, &[recv, nptr, nlen]);
             let obj = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, obj);
+            emit_error_gate_regular(emitter, builder, module, obj);
             let v = unbox_obj(obj, *ret, emitter, builder, module);
             (v, *ret)
         }
         TirExpr::MethodCall { receiver, member, args, ret } => {
-            let (recv, _) = emit_expr(receiver, emitter, builder, module, f);
+            let (recv, recv_ty) = emit_expr(receiver, emitter, builder, module, f);
+            // When the receiver's class and the method name are both known at
+            // compile time, call the emitted native function directly. This
+            // skips the `unrt_method_call` FFI, the registry name lookup and
+            // the box/unbox round trip for arguments and the return value.
+            // Only exact (class, name, arity) matches on scalar-returning
+            // methods are eligible; anything else keeps the generic path.
+            let direct = if emitter.mode == NativeMode::Obj {
+                match recv_ty {
+                    TirTy::Class(class_id) => emitter.fns.iter().enumerate().find_map(|(i, callee)| {
+                        let first_ok = callee.params.first() == Some(&TirTy::Class(class_id));
+                        let arity_ok = callee.params.len() == args.len() + 1;
+                        let ret_ok = matches!(
+                            callee.ret,
+                            Some(TirTy::Int | TirTy::Float | TirTy::Bool)
+                        );
+                        if &callee.name == member.as_ref() && first_ok && arity_ok && ret_ok {
+                            Some(i)
+                        } else {
+                            None
+                        }
+                    }),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(index) = direct.and_then(|i| emitter.internal_fids.get(&i).copied()) {
+                let mut vals = Vec::with_capacity(args.len() + 1);
+                vals.push(recv);
+                for a in args {
+                    let (v, _) = emit_expr(a, emitter, builder, module, f);
+                    vals.push(v);
+                }
+                let mut call_result = None;
+                if emitter.needs_frame {
+                    if let (Some(push), Some(pop)) = (emitter.nrt_push_frame, emitter.nrt_pop_frame) {
+                        let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
+                        let np = builder.ins().symbol_value(types::I64, gv);
+                        let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
+                        let (start, len) = emitter.current_span.unwrap_or((0, 0));
+                        let s = builder.ins().iconst(types::I64, start as i64);
+                        let l = builder.ins().iconst(types::I64, len as i64);
+                        let push_ref = module.declare_func_in_func(push, builder.func);
+                        let _ = builder.ins().call(push_ref, &[np, nl, s, l]);
+                        let callee_ref = module.declare_func_in_func(index, builder.func);
+                        let call = builder.ins().call(callee_ref, &vals);
+                        call_result = Some(builder.inst_results(call)[0]);
+                        let pop_ref = module.declare_func_in_func(pop, builder.func);
+                        let _ = builder.ins().call(pop_ref, &[]);
+                    }
+                }
+                let result = match call_result {
+                    Some(v) => v,
+                    None => {
+                        let callee_ref = module.declare_func_in_func(index, builder.func);
+                        let call = builder.ins().call(callee_ref, &vals);
+                        builder.inst_results(call)[0]
+                    }
+                };
+                return (result, *ret);
+            }
             let arg_vals: Vec<_> = args
                 .iter()
                 .map(|a| emit_expr(a, emitter, builder, module, f))
@@ -2380,7 +2755,7 @@ fn emit_expr<M: Module>(
             let call_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(call_ref, &[recv, nptr, nlen, ptr, argc]);
             let obj = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, obj);
+            emit_error_gate_regular(emitter, builder, module, obj);
             let v = unbox_obj(obj, *ret, emitter, builder, module);
             (v, *ret)
         }
@@ -2492,7 +2867,7 @@ fn emit_expr<M: Module>(
             }
         }
         TirExpr::NativeCallExpr { module: mod_name, member: member_name, args, ret } => {
-            if emitter.mode == NativeMode::Obj {
+            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
                 if let Some(push) = emitter.nrt_push_frame {
                     let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
                     let np = builder.ins().symbol_value(types::I64, gv);
@@ -2532,7 +2907,7 @@ fn emit_expr<M: Module>(
             let res = builder.ins().call(call_ref, &[mod_ptr, mod_len, member_ptr, member_len, sp, argc]);
             let raw = builder.inst_results(res)[0];
             emit_error_gate(emitter, builder, module, raw);
-            if emitter.mode == NativeMode::Obj {
+            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
                 if let Some(pop) = emitter.nrt_pop_frame {
                     let pr = module.declare_func_in_func(pop, builder.func);
                     let _ = builder.ins().call(pr, &[]);
@@ -2563,12 +2938,32 @@ fn emit_expr<M: Module>(
                 _ => unreachable!("bridged native call result must be Int, Float, Bool or Str"),
             }
         }
-        TirExpr::Len(arg) => {            let (arg_v, _) = emit_expr(arg, emitter, builder, module, f);
+        TirExpr::Len(arg) => {
+            let (arg_v, arg_ty) = emit_expr(arg, emitter, builder, module, f);
+            // `unrt_len` always boxes the result as an object, which forces an
+            // error gate + unbox round trip at every call site. For a
+            // statically typed list `unrt_list_len` returns the raw i64 length
+            // directly; the handle is a list by construction, so no error gate
+            // is needed. Both the standalone NRT and the `--embed` VM bridge
+            // export this symbol with the same signature.
+            if matches!(
+                arg_ty,
+                TirTy::ListInt
+                    | TirTy::ListFloat
+                    | TirTy::ListClass(_)
+                    | TirTy::ListLambda
+                    | TirTy::ListGen(_)
+            ) {
+                let id = emitter.unrt_list_len.expect("unrt list-len import required");
+                let len_ref = module.declare_func_in_func(id, builder.func);
+                let res = builder.ins().call(len_ref, &[arg_v]);
+                return (builder.inst_results(res)[0], TirTy::Int);
+            }
             let id = emitter.unrt_len.expect("unrt import required for len()");
             let len_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(len_ref, &[arg_v]);
             let raw = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, raw);
+            emit_error_gate_regular(emitter, builder, module, raw);
             let ub_ref = module.declare_func_in_func(emitter.unrt_int_from_obj.expect("unrt import required for int unbox"), builder.func);
             let res = builder.ins().call(ub_ref, &[raw]);
             (builder.inst_results(res)[0], TirTy::Int)
@@ -2580,7 +2975,7 @@ fn emit_expr<M: Module>(
             let pop_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(pop_ref, &[list_v]);
             let raw = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, raw);
+            emit_error_gate_regular(emitter, builder, module, raw);
             list_elem_unbox(lty, emitter, builder, module, raw)
         }
         TirExpr::ListPopAt(receiver, index) => {
@@ -2593,7 +2988,7 @@ fn emit_expr<M: Module>(
             let pop_ref = module.declare_func_in_func(id, builder.func);
             let res = builder.ins().call(pop_ref, &[list_v, idx_v]);
             let raw = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, raw);
+            emit_error_gate_regular(emitter, builder, module, raw);
             list_elem_unbox(lty, emitter, builder, module, raw)
         }
         TirExpr::ListContains(receiver, item) => {
@@ -2623,12 +3018,47 @@ fn emit_expr<M: Module>(
             if kty != TirTy::Str && kty != TirTy::Int {
                 panic!("dict key must be str or int");
             }
+            // Fast path for `dict[int, int]` with an int key: the new NRT ABI
+            // returns the raw i64 value and reports failures through an
+            // out-parameter, avoiding key boxing + result unboxing + the
+            // generic getter FFI (3 calls saved on the success path).
+            if dty == TirTy::DictIntInt && kty == TirTy::Int {
+                if let Some(get_id) = emitter.unrt_dict_get_int {
+                    let slot = builder.create_sized_stack_slot(
+                        cranelift_codegen::ir::StackSlotData::new(
+                            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                            8,
+                            8,
+                        ),
+                    );
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let err_addr = builder.ins().stack_addr(types::I64, slot, 0);
+                    builder.ins().store(MemFlagsData::new(), zero, err_addr, 0);
+                    let get_ref = module.declare_func_in_func(get_id, builder.func);
+                    let res = builder.ins().call(get_ref, &[dict_v, key_v, err_addr]);
+                    let value = builder.inst_results(res)[0];
+                    let err_val = builder.ins().load(types::I64, MemFlagsData::new(), err_addr, 0);
+                    let nonzero = builder.ins().icmp(IntCC::NotEqual, err_val, zero);
+                    let err_blk = builder.create_block();
+                    let ok_blk = builder.create_block();
+                    builder.ins().brif(nonzero, err_blk, &[], ok_blk, &[]);
+                    builder.switch_to_block(err_blk);
+                    emit_error_gate_regular(emitter, builder, module, err_val);
+                    // `emit_error_gate_regular` either jumps to a catch handler
+                    // or traps; if it somehow falls through, merge into `ok_blk`.
+                    builder.ins().jump(ok_blk, &[]);
+                    builder.seal_block(err_blk);
+                    builder.seal_block(ok_blk);
+                    builder.switch_to_block(ok_blk);
+                    return (value, TirTy::Int);
+                }
+            }
             let key_v = wrap_as_obj(key_v, kty, emitter, builder, module);
             let get_id = emitter.unrt_dict_get.expect("unrt import required for dict indexing");
             let get_ref = module.declare_func_in_func(get_id, builder.func);
             let res = builder.ins().call(get_ref, &[dict_v, key_v]);
             let raw = builder.inst_results(res)[0];
-            emit_error_gate(emitter, builder, module, raw);
+            emit_error_gate_regular(emitter, builder, module, raw);
             match dty {
                 TirTy::DictStrInt | TirTy::DictIntInt => {
                     let id = emitter.unrt_int_from_obj.expect("unrt import required for int unbox");
@@ -2656,16 +3086,54 @@ fn emit_expr<M: Module>(
                 panic!("list index must be int");
             }
             if lty == TirTy::ListInt {
+                // `unrt_list_get_int` signals out-of-range through a pending
+                // error (not a return handle), so a raw call would let a plain
+                // exe print 0 where `un run` errors. Keep the raw fast path
+                // only when bounds are statically checked; otherwise use the
+                // boxed `unrt_list_get` + error gate so span/traceback stay
+                // byte-identical with `un run`.
+                let len_id = emitter.unrt_list_len.expect("unrt list-len import required");
+                let len_ref = module.declare_func_in_func(len_id, builder.func);
+                let len_res = builder.ins().call(len_ref, &[list_v]);
+                let len = builder.inst_results(len_res)[0];
+                let neg_len = builder.ins().ineg(len);
+                let ge_neg = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, idx_v, neg_len);
+                let lt_len = builder.ins().icmp(IntCC::SignedLessThan, idx_v, len);
+                let in_bounds = builder.ins().band(ge_neg, lt_len);
+                let fast_blk = builder.create_block();
+                let oob_blk = builder.create_block();
+                let merge_blk = builder.create_block();
+                let merge_val = builder.append_block_param(merge_blk, types::I64);
+                builder.ins().brif(in_bounds, fast_blk, &[], oob_blk, &[]);
+                // In-bounds: raw i64 read (no pending error possible).
+                builder.switch_to_block(fast_blk);
                 let id = emitter.unrt_list_get_int.expect("unrt int-list import required");
                 let f_ref = module.declare_func_in_func(id, builder.func);
                 let res = builder.ins().call(f_ref, &[list_v, idx_v]);
-                return (builder.inst_results(res)[0], TirTy::Int);
+                let fast_val = builder.inst_results(res)[0];
+                builder.ins().jump(merge_blk, &[fast_val.into()]);
+                builder.seal_block(fast_blk);
+                // Out-of-range: boxed read returns an error handle that the
+                // regular gate routes through the same span/catch/trace code.
+                builder.switch_to_block(oob_blk);
+                let get_id = emitter.unrt_list_get.expect("unrt import required for list indexing");
+                let get_ref = module.declare_func_in_func(get_id, builder.func);
+                let oob_res = builder.ins().call(get_ref, &[list_v, idx_v]);
+                let err_obj = builder.inst_results(oob_res)[0];
+                emit_error_gate_regular(emitter, builder, module, err_obj);
+                // The gate either traps or jumps to a handler; this jump only
+                // keeps the CFG well-formed for the (unreachable) fall-through.
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.ins().jump(merge_blk, &[zero.into()]);
+                builder.seal_block(oob_blk);
+                builder.switch_to_block(merge_blk);
+                return (merge_val, TirTy::Int);
             }
             let get_id = emitter.unrt_list_get.expect("unrt import required for list indexing");
             let get_ref = module.declare_func_in_func(get_id, builder.func);
             let raw = builder.ins().call(get_ref, &[list_v, idx_v]);
             let raw = builder.inst_results(raw)[0];
-            emit_error_gate(emitter, builder, module, raw);
+            emit_error_gate_regular(emitter, builder, module, raw);
             match lty {
                 TirTy::ListInt => {
                     let id = emitter.unrt_int_from_obj.expect("unrt import required for int unbox");
@@ -2735,6 +3203,20 @@ fn emit_expr<M: Module>(
             }
         }
         TirExpr::Bin(op, lhs, rhs) => {
+            // A field read has no side effects, so an identical `self.x` on
+            // both sides of an operator only needs one NRT lookup. This is
+            // deliberately restricted to structurally equal `MemberGet` pairs
+            // emitted back-to-back, where no mutation can happen in between.
+            if let (
+                TirExpr::MemberGet { receiver: r1, member: m1, .. },
+                TirExpr::MemberGet { receiver: r2, member: m2, .. },
+            ) = (&**lhs, &**rhs)
+            {
+                if m1 == m2 && format!("{r1:?}") == format!("{r2:?}") {
+                    let (a, a_ty) = emit_expr(lhs, emitter, builder, module, f);
+                    return emit_binop(*op, a, a_ty, a, a_ty, emitter, builder, module);
+                }
+            }
             let (a, a_ty) = emit_expr(lhs, emitter, builder, module, f);
             let (b, b_ty) = emit_expr(rhs, emitter, builder, module, f);
             emit_binop(*op, a, a_ty, b, b_ty, emitter, builder, module)
@@ -2753,7 +3235,9 @@ fn emit_expr<M: Module>(
                 arg_vals.push(v);
             }
             // Record the call site so a deeper error can print a trace frame.
-            if emitter.mode == NativeMode::Obj {
+            // Error-free functions never contribute an observable frame, so
+            // skip the two FFI round trips entirely for them.
+            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
                 if let (Some(push), Some(pop)) = (emitter.nrt_push_frame, emitter.nrt_pop_frame) {
                     let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
                     let np = builder.ins().symbol_value(types::I64, gv);

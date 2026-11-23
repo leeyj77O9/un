@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub(crate) struct NObj {
     pub(crate) tag: i64, // 0 Int, 1 Float, 2 Bool, 3 List, 4 None, 5 Error, 6 Str, 7 Dict
@@ -12,6 +13,24 @@ pub(crate) struct NObj {
 
 // Cache window for boxed small integers (loop indices, zero fills).
 const SMALL_INTS: i64 = 16384;
+
+// Immutable small integers are pre-built in a static array so the hot path is
+// a bounds check plus an address computation — no OnceLock, no atomic load,
+// no lazy Box allocation. These objects are never mutated (tag 0 is an
+// immutable Int); all `obj_mut` call sites in NRT operate on list/instance
+// objects created by `alloc`, never on these handles.
+const fn small_int(v: usize) -> NObj {
+    NObj { tag: 0, a: v as i64, b: 0 }
+}
+static SMALL_INT_OBJS: [NObj; SMALL_INTS as usize] = {
+    let mut arr = [small_int(0); SMALL_INTS as usize];
+    let mut i = 1;
+    while i < SMALL_INTS as usize {
+        arr[i] = small_int(i);
+        i += 1;
+    }
+    arr
+};
 
 // Objects are intentionally leaked: the process is short-lived, so there is
 // no need to track allocations for deallocation.
@@ -152,20 +171,11 @@ pub extern "C" fn unrt_obj_none() -> u64 {
 }
 #[no_mangle]
 pub extern "C" fn unrt_obj_int(v: i64) -> u64 {
-    // Small integers are immutable and extremely common (loop indices, zero
-    // fills); share one boxed object per value instead of allocating each time.
-    if v >= 0 && v < SMALL_INTS {
-        static SMALL: std::sync::OnceLock<[std::sync::atomic::AtomicU64; SMALL_INTS as usize]> =
-            std::sync::OnceLock::new();
-        let cache = SMALL.get_or_init(|| std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)));
-        let slot = &cache[v as usize];
-        let cached = slot.load(std::sync::atomic::Ordering::Relaxed);
-        if cached != 0 {
-            return cached;
-        }
-        let fresh = unsafe { alloc(NObj { tag: 0, a: v, b: 0 }) };
-        slot.store(fresh, std::sync::atomic::Ordering::Relaxed);
-        return fresh;
+    // Small integers are immutable and extremely common (loop indices, list
+    // fills, dict keys). Return a pointer into the pre-built static array:
+    // one bounds check and a multiply-add, no synchronization or allocation.
+    if (0..SMALL_INTS).contains(&v) {
+        return std::ptr::addr_of!(SMALL_INT_OBJS[v as usize]) as u64;
     }
     unsafe { alloc(NObj { tag: 0, a: v, b: 0 }) }
 }
