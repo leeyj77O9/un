@@ -240,6 +240,10 @@ fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
         }
         Ty::Set(elem) => tir_ty_from_ty(classes, elem).map(|t| TirTy::SetGen(elem_of_tir(t))),
         Ty::Func { .. } => Some(TirTy::Lambda(u32::MAX)),
+        // Dynamic values are boxed NObj handles. Reusing `TirTy::Obj` keeps
+        // the ABI table single-sourced: object handles are I64 bits in both
+        // the object emitter and the standalone runtime.
+        Ty::Any | Ty::Union(_) | Ty::Unknown => Some(TirTy::Obj),
         _ => None,
     }
 }
@@ -608,8 +612,9 @@ pub struct TirProgram {
 /// and dicts, classes (incl. inheritance), closures, try/catch, native modules
 /// (except `random`, which is time-seeded and cannot match `un run` byte for
 /// byte, and `bytes`/binary fs helpers, which have no standalone NRT ABI).
-/// Dynamic `Any`/union code and module-global side effects beyond simple
-/// inlined assignments stay on the `--embed` path.
+/// Dynamic `Any`/union values are tagged NObj handles whose operators dispatch
+/// through the NRT bridge, so they are supported too. Module-global side
+/// effects beyond simple inlined assignments stay on the `--embed` path.
 pub fn nrt_supported(tir: &TirProgram) -> bool {
     fn ty_ok(ty: TirTy) -> bool {
         matches!(
@@ -702,6 +707,8 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
     fn native_call_ok(module: &str, member: &str, ret: Option<TirTy>) -> bool {
         module != "random"
             && module != "bytes"
+            && module != "flow"
+            && module != "atomic"
             && ret != Some(TirTy::Bytes)
             && !matches!((module, member), ("fs", "read_bytes") | ("fs", "write_bytes"))
     }
@@ -903,6 +910,16 @@ pub fn fn_uses_str(f: &TirFn) -> bool {
         return true;
     }
     f.body.iter().any(stmt_uses_str)
+}
+
+/// True when a function manipulates tagged dynamic (`any`/union) handles.
+/// The dispatch helpers (`unrt_dyn_bin`, `unrt_dyn_un`) exist only in the
+/// standalone NRT, so Vm-mode JIT codegen must leave these functions to the
+/// interpreter. Obj-mode (plain `un build`) emits them normally.
+pub fn fn_uses_dynamic(f: &TirFn) -> bool {
+    f.params.iter().any(|t| *t == TirTy::Obj)
+        || f.locals.iter().any(|t| *t == TirTy::Obj)
+        || f.ret == Some(TirTy::Obj)
 }
 
 /// True when a native-module call needs the `unrt_call_native` bridge, which
@@ -1238,6 +1255,8 @@ pub fn core_rejection_reason(fcheck: &FnCheck) -> Option<String> {
     }
     match &sig.ret {
         Ty::Int | Ty::Float | Ty::Bool | Ty::None_ | Ty::Str => {}
+        // Dynamic returns are tagged NObj handles; NRT boxes/unboxes them.
+        Ty::Any | Ty::Unknown | Ty::Union(_) => {}
         Ty::List(elem) => {
             if !matches!(elem.as_ref(), Ty::Int | Ty::Float | Ty::Class(_)) {
                 return Some(format!("'{}' returns non-core 'list[{}]'", sig.name, elem.display()));
@@ -1270,6 +1289,11 @@ pub fn is_core_fn(fcheck: &FnCheck) -> bool {
 fn is_core_ty(ty: &Ty) -> bool {
     match ty {
         Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::None_ | Ty::Class(_) => true,
+        // `any` (and inferred/union forms) lower to `TirTy::Obj`: a tagged
+        // NObj handle whose operations dispatch through the NRT dynamic bridge.
+        // The standalone runtime can box/unbox and dispatch on the tag, so
+        // these programs no longer need `un build --embed`.
+        Ty::Any | Ty::Unknown | Ty::Union(_) => true,
         Ty::List(elem) => is_core_elem(elem),
         Ty::Dict(key, value) => {
             matches!(key.as_ref(), Ty::Str | Ty::Int) && is_core_elem(value)
@@ -2127,7 +2151,7 @@ fn lower_function<'a>(
         Ty::Bool => Some(TirTy::Bool),
         Ty::None_ => None,
         Ty::Str => Some(TirTy::Str),
-        Ty::List(_) | Ty::Class(_) | Ty::Dict(_, _) => {
+        Ty::List(_) | Ty::Class(_) | Ty::Dict(_, _) | Ty::Any | Ty::Union(_) | Ty::Unknown => {
             Some(
                 tir_ty_from_ty(classes, &fcheck.sig.ret)
                     .ok_or_else(|| format!("return type '{}' is not core-supported", fcheck.sig.ret.display()))?,
@@ -3159,6 +3183,7 @@ fn class_member_ty(ctx: &LowerCtx, ty: &Ty) -> Result<CoreTy, String> {
             let id = ctx.classes.id(name).ok_or_else(|| format!("unknown class '{name}'"))?;
             Ok(CoreTy::Class(id))
         }
+        Ty::Any | Ty::Union(_) | Ty::Unknown => Ok(CoreTy::Obj),
         other => Err(format!("field of type '{}' is not supported in the core", other.display())),
     }
 }
@@ -3212,7 +3237,8 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 let (ve, vty) = lower_expr(value_node, ctx)?;
                 if let Some(prev) = value_cty {
                     if prev != vty {
-                        return Err("dict values must all have the same type".to_string());
+                        // Heterogeneous `dict[str, any]` stores boxed values.
+                        value_cty = Some(CoreTy::Obj);
                     }
                 } else {
                     value_cty = Some(vty);
@@ -3312,7 +3338,10 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 let (e, c) = lower_expr(child, ctx)?;
                 if let Some(prev) = elem_cty {
                     if prev != c {
-                        return Err("list elements must all have the same type".to_string());
+                        // Heterogeneous lists (including `list[any]`) store
+                        // boxed handles; scalars box at the collection boundary
+                        // in `emit_expr`.
+                        elem_cty = Some(CoreTy::Obj);
                     }
                 } else {
                     elem_cty = Some(c);
@@ -3403,6 +3432,7 @@ fn lower_unary(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Str
     match node.op {
         Some(TokenType::Minus) => match ty {
             CoreTy::Int | CoreTy::Float => Ok((TirExpr::Un(TirUnOp::Neg, Box::new(expr)), ty)),
+            CoreTy::Obj => Ok((TirExpr::Un(TirUnOp::Neg, Box::new(expr)), CoreTy::Obj)),
             _ => Err("negation requires a number".to_string()),
         },
         Some(TokenType::Positive) => match ty {
@@ -3464,6 +3494,39 @@ fn lower_binary_op(
     b_ty: CoreTy,
 ) -> Result<(TirExpr, CoreTy), String> {
     let numeric = |t: CoreTy| matches!(t, CoreTy::Int | CoreTy::Float);
+    // A dynamic operand means the runtime tag decides the operation. Emit the
+    // same TIR node and let natcode dispatch through `unrt_dyn_bin`.
+    if a_ty == CoreTy::Obj || b_ty == CoreTy::Obj {
+        let bin = match op {
+            TokenType::Plus => Some(TirBinOp::Add),
+            TokenType::Minus => Some(TirBinOp::Sub),
+            TokenType::Asterisk => Some(TirBinOp::Mul),
+            TokenType::Slash => Some(TirBinOp::Div),
+            TokenType::DoubleSlash => Some(TirBinOp::IDiv),
+            TokenType::Percent => Some(TirBinOp::Mod),
+            TokenType::BAnd => Some(TirBinOp::BAnd),
+            TokenType::BOr => Some(TirBinOp::BOr),
+            TokenType::BXor => Some(TirBinOp::BXor),
+            TokenType::LeftShift => Some(TirBinOp::Shl),
+            TokenType::RightShift => Some(TirBinOp::Shr),
+            _ => None,
+        };
+        if let Some(bin) = bin {
+            return Ok((TirExpr::Bin(bin, Box::new(a), Box::new(b)), CoreTy::Obj));
+        }
+        let cmp = match op {
+            TokenType::Equal => Some(TirCmp::Eq),
+            TokenType::Unequal => Some(TirCmp::Ne),
+            TokenType::LessThan => Some(TirCmp::Lt),
+            TokenType::GreaterThan => Some(TirCmp::Gt),
+            TokenType::LessOrEqual => Some(TirCmp::Le),
+            TokenType::GreaterOrEqual => Some(TirCmp::Ge),
+            _ => None,
+        };
+        if let Some(cmp) = cmp {
+            return Ok((TirExpr::Cmp(cmp, Box::new(a), Box::new(b)), CoreTy::Bool));
+        }
+    }
     match op {
         TokenType::Plus => {
             if a_ty == CoreTy::Str && b_ty == CoreTy::Str {
@@ -4087,12 +4150,40 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         all.append(&mut args);
         return Ok((TirExpr::Call(func_index, all), CoreTy::Int));
     }
-    if callee.kind != NodeKind::Identifier {
-        return Err("only direct calls are supported in the core".to_string());
+    // A callable produced by another expression (e.g. `make()(x)`) is a
+    // dynamic call: the callee is a tagged NObj handle dispatched by NRT.
+    if !matches!(callee.kind, NodeKind::Identifier) {
+        let (cv, cty) = lower_expr(callee, ctx)?;
+        if !matches!(cty, CoreTy::Obj | CoreTy::Lambda(_)) {
+            return Err("only callable values can be invoked in the core".to_string());
+        }
+        let args_node = args_tuple_for_lambda
+            .filter(|n| n.kind == NodeKind::Tuple)
+            .ok_or_else(|| "call arguments must be positional".to_string())?;
+        let args = lower_arg_list(args_node, ctx)?;
+        return Ok((TirExpr::CallObj {
+            callee: Box::new(cv),
+            args,
+            ret: TirTy::Obj,
+        }, CoreTy::Obj));
     }
     let name = ctx.source.span(callee.start, callee.length);
     if let Some(slot) = slot_of(ctx, &name) {
+        let local_ty = ctx.locals.get(slot as usize).copied();
         let lambda_info = ctx.lambda_vars.get(&slot).cloned();
+        if lambda_info.is_none() && local_ty == Some(TirTy::Obj) {
+            // Calling a value whose static type is `any`: NRT checks the tag
+            // and returns an error for non-callable values at runtime.
+            let args_node = args_tuple_for_lambda
+                .filter(|n| n.kind == NodeKind::Tuple)
+                .ok_or_else(|| "call arguments must be positional".to_string())?;
+            let args = lower_arg_list(args_node, ctx)?;
+            return Ok((TirExpr::CallObj {
+                callee: Box::new(TirExpr::Local(slot)),
+                args,
+                ret: TirTy::Obj,
+            }, CoreTy::Obj));
+        }
         if let Some((_func_index, _captures)) = lambda_info {
             let args_node = args_tuple_for_lambda
                 .filter(|n| n.kind == NodeKind::Tuple)
@@ -4251,6 +4342,7 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             let id = ctx.classes.id(name).ok_or_else(|| format!("unknown class '{name}'"))?;
             CoreTy::Class(id)
         }
+        Ty::Any | Ty::Union(_) | Ty::Unknown => CoreTy::Obj,
         other => {
             return Err(format!(
                 "'{name}' returns '{}' which is not core-supported",
@@ -4441,6 +4533,8 @@ fn ty_to_tir_simple(ty: &Ty) -> Result<TirTy, String> {
         },
         Ty::Set(elem) => TirTy::SetGen(elem_of_tir_field(elem)),
         Ty::Class(_) => TirTy::Class(u16::MAX),
+        // Dynamic fields are boxed NObj handles, like dynamic params/returns.
+        Ty::Any | Ty::Union(_) | Ty::Unknown => TirTy::Obj,
         other => return Err(format!("field of type '{}' is not supported in the core", other.display())),
     })
 }
@@ -4572,7 +4666,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                 let t = expr_ty(value, f, program, locals)?;
                 if let Some(prev) = vty {
                     if prev != t {
-                        return Err("dict values must all have the same type".to_string());
+                        vty = Some(TirTy::Obj);
                     }
                 } else {
                     vty = Some(t);
@@ -4688,11 +4782,11 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             if elements.is_empty() {
                 return Err("empty list literal cannot be typed in the core".to_string());
             }
-            let ty = expr_ty(&elements[0], f, program, locals)?;
+            let mut ty = expr_ty(&elements[0], f, program, locals)?;
             for element in &elements[1..] {
                 let ety = expr_ty(element, f, program, locals)?;
                 if ety != ty {
-                    return Err("list elements must all have the same type".to_string());
+                    ty = TirTy::Obj;
                 }
             }
             if ty == TirTy::Int {
@@ -4723,6 +4817,9 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             }
             let t = expr_ty(then_expr, f, program, locals)?;
             let e = expr_ty(else_expr, f, program, locals)?;
+            if t == TirTy::Obj || e == TirTy::Obj {
+                return Ok(TirTy::Obj);
+            }
             if !same_ty(t, e) {
                 return Err("select branches must have the same type".to_string());
             }
@@ -4733,6 +4830,12 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             let b = expr_ty(rhs, f, program, locals)?;
             use TirBinOp::*;
             let numeric = |t: TirTy| matches!(t, TirTy::Int | TirTy::Float);
+            // Any operand with a dynamic (tagged handle) type goes through the
+            // NRT dispatch bridge; the result stays boxed so further dynamic
+            // operations can inspect its tag.
+            if a == TirTy::Obj || b == TirTy::Obj {
+                return Ok(TirTy::Obj);
+            }
             match op {
                 Add => {
                     if a == TirTy::Str && b == TirTy::Str {
@@ -4780,6 +4883,9 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
         TirExpr::Cmp(_, lhs, rhs) => {
             let a = expr_ty(lhs, f, program, locals)?;
             let b = expr_ty(rhs, f, program, locals)?;
+            if a == TirTy::Obj || b == TirTy::Obj {
+                return Ok(TirTy::Bool);
+            }
             let numeric_pair = matches!((a, b), (TirTy::Int, TirTy::Int) | (TirTy::Int, TirTy::Float) | (TirTy::Float, TirTy::Int) | (TirTy::Float, TirTy::Float));
             if numeric_pair
                 || (same_ty(a, b) && !matches!(a, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)))
@@ -4792,6 +4898,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             let t = expr_ty(inner, f, program, locals)?;
             match op {
                 TirUnOp::Neg => match t {
+                    TirTy::Obj => Ok(TirTy::Obj),
                     TirTy::Int => Ok(TirTy::Int),
                     TirTy::Float => Ok(TirTy::Float),
                     TirTy::Bool => Err("negation of bool".to_string()),
@@ -4799,7 +4906,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Bytes => Err("negation of bytes".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
                     | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda
-                    | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
+                    | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
                         Err("negation of collection or class instance".to_string())
                     }
                 },
@@ -4832,7 +4939,11 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             }
             for (arg, param) in args.iter().zip(&callee.params) {
                 let arg_ty = expr_ty(arg, f, program, locals)?;
-                if !same_ty(arg_ty, *param) {
+                // Scalars box into a dynamic handle at the call boundary;
+                // NRT performs the boxing via `unrt_obj_int/float/bool`.
+                let boxes = *param == TirTy::Obj
+                    && matches!(arg_ty, TirTy::Int | TirTy::Float | TirTy::Bool | TirTy::Obj);
+                if !same_ty(arg_ty, *param) && !boxes {
                     return Err(format!(
                         "argument type mismatch for '{}': expected '{}', got '{}'",
                         callee.name,
@@ -4904,7 +5015,9 @@ fn validate_stmt(
                 let ty = expr_ty(expr, f, program, locals)?;
                 let expected = locals_ty(locals, *s)
                     .ok_or_else(|| format!("local slot {} out of range", s))?;
-                if ty != expected {
+                let boxes = expected == TirTy::Obj
+                    && matches!(ty, TirTy::Int | TirTy::Float | TirTy::Bool | TirTy::Obj);
+                if ty != expected && !boxes {
                     return Err(format!(
                         "assignment of '{}' to '{}' slot {}",
                         param_name(ty),
@@ -5116,7 +5229,13 @@ fn validate_stmt(
                     }
                     (Some(ret), Some(expr)) => {
                         let ty = expr_ty(expr, f, program, locals)?;
-                        if !same_ty(ty, ret) {
+                        // Scalar <-> dynamic conversions happen at the return
+                        // boundary in natcode (`unrt_obj_*` / unbox helpers).
+                        let boxes_or_unboxes = (ty == TirTy::Obj
+                            && matches!(ret, TirTy::Int | TirTy::Float | TirTy::Bool | TirTy::Obj))
+                            || (ret == TirTy::Obj
+                                && matches!(ty, TirTy::Int | TirTy::Float | TirTy::Bool));
+                        if !same_ty(ty, ret) && !boxes_or_unboxes {
                             return Err(format!(
                                 "return of '{}' where '{}' was declared",
                                 param_name(ty),

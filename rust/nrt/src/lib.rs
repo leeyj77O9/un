@@ -9,6 +9,7 @@ mod abi;
 mod class;
 mod closure;
 mod dict;
+mod dynops;
 mod globals;
 mod list;
 mod math_native;

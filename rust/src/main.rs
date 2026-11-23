@@ -62,7 +62,7 @@ fn print_help() {
     print!("  un check <file.un>    (compile mode: static type analysis only){}", nl());
     print!("  un native <file.un>   (compile mode: static analysis + native execution){}", nl());
     print!("  un obj <file.un|file.unbc> [-o out.obj] [--entry name]  (emit a relocatable object file){}", nl());
-    print!("  un build <file.un> [-o out.exe] [--embed]  (emit .obj and link into a native executable; --embed bakes the whole VM runtime for any-program support){}", nl());
+    print!("  un build <file.un> [-o out.exe] [--embed] [--opt-level N]  (N=0|1|2|3|s|z; embed bakes the VM runtime){}", nl());
     print!("  un lsp                (run the language server over stdio for the VS Code extension){}", nl());
 }
 fn read_source(path: &str) -> Source {
@@ -822,19 +822,32 @@ fn build_cmd(args: &[String]) {
     let mut input: Option<&String> = None;
     let mut output: Option<String> = None;
     let mut embed = false;
+    let mut opt_level: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "-o" | "--output" => {
                 i += 1;
                 let Some(path) = args.get(i) else {
-                    eprintln!("usage: un build <file.un> [-o out.exe] [--embed]");
+                    eprintln!("usage: un build <file.un> [-o out.exe] [--embed] [--opt-level N]");
                     exit(2);
                 };
                 output = Some(path.clone());
             }
             "--embed" => {
                 embed = true;
+            }
+            "--opt-level" => {
+                i += 1;
+                let Some(level) = args.get(i) else {
+                    eprintln!("usage: un build <file.un> [--opt-level 0|1|2|3|s|z]");
+                    exit(2);
+                };
+                if !matches!(level.as_str(), "0" | "1" | "2" | "3" | "s" | "z") {
+                    eprintln!("invalid opt-level '{level}' (expected 0|1|2|3|s|z)");
+                    exit(2);
+                }
+                opt_level = Some(level.clone());
             }
             other => {
                 if input.is_some() {
@@ -910,6 +923,8 @@ fn build_cmd(args: &[String]) {
             .arg("x86_64-pc-windows-gnu")
             .arg("--edition")
             .arg("2021")
+            .arg("-C")
+            .arg(format!("opt-level={}", opt_level.as_deref().unwrap_or("0")))
             .arg("-C")
             .arg(format!("linker={}", gcc.display()))
             .arg("-C")
@@ -1012,6 +1027,15 @@ fn build_cmd(args: &[String]) {
     // other top-level statement instead of silently dropping it.
     if let Some(ignored) = unvm::compiler::find_ignored_top_level_statement(&root) {
         let diagnostic = LangError::new(ignored.start, ignored.length, ignored.message());
+        print!("{}{}", diagnostic.display(&source), nl());
+        exit(1);
+    }
+    if let Some(async_node) = unvm::compiler::find_unsupported_async_node(&root) {
+        let diagnostic = LangError::new(
+            async_node.start,
+            async_node.length,
+            async_node.message(),
+        );
         print!("{}{}", diagnostic.display(&source), nl());
         exit(1);
     }
@@ -1210,6 +1234,8 @@ fn build_cmd(args: &[String]) {
         .arg("x86_64-pc-windows-gnu")
         .arg("--edition")
         .arg("2021")
+        .arg("-C")
+        .arg(format!("opt-level={}", opt_level.as_deref().unwrap_or("0")))
         .arg("-C")
         .arg(format!("linker={}", gcc.display()))
         .arg("-C")

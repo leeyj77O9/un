@@ -7,7 +7,9 @@ use crate::optimize::optimize;
 use crate::parser::parse;
 use crate::source::Source;
 use crate::token::TokenType;
-use super::{compile, find_ignored_top_level_statement, IgnoredTopLevel};
+use super::{
+    compile, find_ignored_top_level_statement, find_unsupported_async_node, IgnoredTopLevel,
+};
 
 fn int_node(value: i64) -> Node {
     Node {
@@ -589,4 +591,14 @@ fn un_run_still_compiles_and_executes_the_top_level_call() {
     // builds.
     let (program, _) = compile_text("use io\nio.write(\"boot\")\nfn main() -> int\n    -> 0\n");
     assert!(code(&program).iter().any(|(op, _, _)| *op == Op::Call));
+}
+
+#[test]
+fn go_or_wait_in_an_uncalled_function_is_reported() {
+    let (root, _) = optimized_root(
+        "fn worker() -> int\n    x = go 1\n    -> wait x\nfn main() -> int\n    -> 0\n",
+    );
+    assert!(find_unsupported_async_node(&root).is_some());
+    let (root, _) = optimized_root("fn main() -> int\n    -> 0\n");
+    assert!(find_unsupported_async_node(&root).is_none());
 }

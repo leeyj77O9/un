@@ -54,7 +54,7 @@ jobs:
           $out | Select-Object -Last 60 | ForEach-Object { Write-Host $_ }
           if ($code -ne 0) {
             $detail = ($out | Select-Object -Last 8) -join ' | '
-            Write-Host "::error::exe-diff failed ($code). bins=$(Test-Path rust\target\release\un.exe) libnrt=$(Test-Path rust\target\release\libnrt.a) libunvm=$(Test-Path rust\target\release\libunvm.a). $detail"
+            Write-Output "::error::exe-diff failed ($code). bins=$(Test-Path rust\target\release\un.exe) libnrt=$(Test-Path rust\target\release\libnrt.a) libunvm=$(Test-Path rust\target\release\libunvm.a). $detail"
             exit $code
           }
 

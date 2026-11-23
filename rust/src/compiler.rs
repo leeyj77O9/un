@@ -69,6 +69,37 @@ impl IgnoredTopLevel {
     }
 }
 
+/// A `go`/`wait` node found anywhere in the source tree, including functions
+/// that are never called. Plain executables have no async runtime, so the
+/// build driver reports this instead of silently falling back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedAsync {
+    pub start: usize,
+    pub length: usize,
+}
+
+impl UnsupportedAsync {
+    pub fn message(&self) -> &'static str {
+        "go/wait are not supported in plain build; rebuild with `un build --embed`"
+    }
+}
+
+/// Find the first `go`/`wait` unary node in the whole AST.
+pub fn find_unsupported_async_node(root: &Node) -> Option<UnsupportedAsync> {
+    fn visit(node: &Node) -> Option<UnsupportedAsync> {
+        if node.kind == NodeKind::Unary
+            && matches!(node.op, Some(TokenType::Go) | Some(TokenType::Wait))
+        {
+            return Some(UnsupportedAsync {
+                start: node.start,
+                length: node.length,
+            });
+        }
+        node.children.iter().find_map(visit)
+    }
+    visit(root)
+}
+
 /// Return the first top-level statement in the optimized `root` that the
 /// plain build path would ignore, or `None` when every statement survives.
 ///

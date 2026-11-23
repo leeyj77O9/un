@@ -208,7 +208,11 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
     for f in &tir.functions {
         let heap = crate::tir::fn_uses_heap(f);
         let native_call = crate::tir::fn_uses_native_call(f);
-        if crate::tir::fn_uses_str(f) || heap || native_call {
+        if crate::tir::fn_uses_str(f)
+            || heap
+            || native_call
+            || crate::tir::fn_uses_dynamic(f)
+        {
             // Both Str-only and heap-using functions are expected to run in the
             // interpreter in Vm mode; a bail stub is enough, no user-facing
             // warning (it would also break run/native output equivalence).
@@ -680,6 +684,10 @@ struct FnEmit<'a> {
     unrt_obj_is_panic: Option<cranelift_module::FuncId>,
     unrt_obj_eq: Option<cranelift_module::FuncId>,
     unrt_len: Option<cranelift_module::FuncId>,
+    /// Dynamic (tagged) dispatch helpers. Only present in Obj mode; Vm-mode
+    /// functions that touch `TirTy::Obj` are bailed to the interpreter.
+    unrt_dyn_bin: Option<cranelift_module::FuncId>,
+    unrt_dyn_un: Option<cranelift_module::FuncId>,
     str_literals: HashMap<Vec<u8>, cranelift_module::DataId>,
     str_literal_count: u32,
     fn_index: u32,
@@ -1098,6 +1106,26 @@ fn emit_internal<M: Module>(
     } else {
         None
     };
+    let unrt_dyn_bin = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_dyn_bin",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_dyn_un = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_dyn_un",
+            vec![types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
 
     let vars: Vec<Variable> = f
         .locals
@@ -1267,6 +1295,8 @@ fn emit_internal<M: Module>(
         unrt_obj_is_panic,
         unrt_obj_eq,
         unrt_len,
+        unrt_dyn_bin,
+        unrt_dyn_un,
         str_literals: HashMap::new(),
         str_literal_count: 0,
         fn_index: f.index as u32,
@@ -1411,7 +1441,9 @@ fn emit_stmt<M: Module>(
     match stmt {
         TirStmt::Let(slot, expr) | TirStmt::Set(slot, expr) => {
             let var = emitter.vars[*slot as usize];
-            let (value, _) = emit_expr(expr, emitter, builder, module, f);
+            let (value, value_ty) = emit_expr(expr, emitter, builder, module, f);
+            let declared = emitter.local_tys[*slot as usize];
+            let value = coerce_value(value, value_ty, declared, emitter, builder, module);
             builder.def_var(var, value);
             false
         }
@@ -1604,7 +1636,9 @@ fn emit_stmt<M: Module>(
             false
         }
         TirStmt::Return(Some(expr)) => {
-            let (value, _) = emit_expr(expr, emitter, builder, module, f);
+            let (value, value_ty) = emit_expr(expr, emitter, builder, module, f);
+            let expected = f.ret.unwrap_or(TirTy::Bool);
+            let value = coerce_value(value, value_ty, expected, emitter, builder, module);
             emit_internal_return(
                 f,
                 builder,
@@ -2642,12 +2676,24 @@ fn emit_expr<M: Module>(
                 ),
             );
             let mut elem_ty = None;
-            for (i, element) in elements.iter().enumerate() {
+            let mut vals = Vec::with_capacity(elements.len());
+            for element in elements.iter() {
                 let (v, ty) = emit_expr(element, emitter, builder, module, f);
-                if elem_ty.is_none() {
-                    elem_ty = Some(ty);
-                }
-                let v = if matches!(ty, TirTy::Int | TirTy::Float) {
+                elem_ty = Some(match elem_ty {
+                    None => ty,
+                    Some(prev) if prev == ty => prev,
+                    // Mixed `list[any]`: every element must be a boxed handle.
+                    Some(prev) if prev == TirTy::Obj || ty == TirTy::Obj => TirTy::Obj,
+                    // Heterogeneous scalar lists are boxed as `any` elements.
+                    Some(_) => TirTy::Obj,
+                });
+                vals.push((v, ty));
+            }
+            let elem_ty = elem_ty.expect("non-empty list");
+            for (i, (v, ty)) in vals.into_iter().enumerate() {
+                // Scalars box at the dynamic collection boundary; for a typed
+                // `list[int]`/`list[float]` the raw value is stored directly.
+                let v = if matches!(ty, TirTy::Int | TirTy::Float) && elem_ty != TirTy::Obj {
                     v
                 } else {
                     wrap_as_obj(v, ty, emitter, builder, module)
@@ -2655,7 +2701,6 @@ fn emit_expr<M: Module>(
                 let addr = builder.ins().stack_addr(types::I64, slot_t, (8 * i) as i32);
                 builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), v, addr, 0);
             }
-            let elem_ty = elem_ty.expect("non-empty list");
             let ptr = builder.ins().stack_addr(types::I64, slot_t, 0);
             let len = builder.ins().iconst(types::I64, elements.len() as i64);
             let (from_fid, ret_ty) = match elem_ty {
@@ -2839,9 +2884,12 @@ fn emit_expr<M: Module>(
                 }
                 let k_v = wrap_as_obj(k_v, k_ty, emitter, builder, module);
                 let (v_v, v_ty) = emit_expr(value, emitter, builder, module, f);
-                if elem_ty.is_none() {
-                    elem_ty = Some(v_ty);
-                }
+                elem_ty = Some(match elem_ty {
+                    None => v_ty,
+                    Some(prev) if prev == v_ty => prev,
+                    // Heterogeneous `dict[str, any]` stores boxed values.
+                    Some(_) => TirTy::Obj,
+                });
                 let v_v = wrap_as_obj(v_v, v_ty, emitter, builder, module);
                 let base = (16 * i) as i32;
                 let addr = builder.ins().stack_addr(types::I64, slot_t, base);
@@ -3284,6 +3332,15 @@ fn emit_expr<M: Module>(
         TirExpr::Un(op, inner) => {
             let (value, ty) = emit_expr(inner, emitter, builder, module, f);
             match op {
+                TirUnOp::Neg if ty == TirTy::Obj => {
+                    let id = emitter.unrt_dyn_un.expect("dynamic dispatch import required");
+                    let fref = module.declare_func_in_func(id, builder.func);
+                    let code = builder.ins().iconst(types::I64, 0);
+                    let res = builder.ins().call(fref, &[code, value]);
+                    let obj = builder.inst_results(res)[0];
+                    emit_error_gate(emitter, builder, module, obj);
+                    (obj, TirTy::Obj)
+                }
                 TirUnOp::Neg => match ty {
                     TirTy::Int => (builder.ins().ineg(value), TirTy::Int),
                     TirTy::Float => (builder.ins().fneg(value), TirTy::Float),
@@ -3338,10 +3395,11 @@ fn emit_expr<M: Module>(
         TirExpr::Call(index, args) => {
             let calleefid = emitter.internal_fids[&(*index as usize)];
             let callee_ret = emitter.fns[*index as usize].ret;
+            let param_tys = emitter.fns[*index as usize].params.clone();
             let mut arg_vals = Vec::with_capacity(args.len());
-            for arg in args {
-                let (v, _) = emit_expr(arg, emitter, builder, module, f);
-                arg_vals.push(v);
+            for (arg, param_ty) in args.iter().zip(param_tys.iter()) {
+                let (v, ty) = emit_expr(arg, emitter, builder, module, f);
+                arg_vals.push(coerce_value(v, ty, *param_ty, emitter, builder, module));
             }
             // Record the call site so a deeper error can print a trace frame.
             // Error-free functions never contribute an observable frame, so
@@ -3400,6 +3458,78 @@ fn emit_expr<M: Module>(
     }
 }
 
+/// Op codes for `unrt_dyn_bin`. Keep in lockstep with `nrt/src/dynops.rs`.
+fn dyn_bin_code(op: TirBinOp) -> i64 {
+    match op {
+        TirBinOp::Add => 0,
+        TirBinOp::Sub => 1,
+        TirBinOp::Mul => 2,
+        TirBinOp::Div => 3,
+        TirBinOp::IDiv => 4,
+        TirBinOp::Mod => 5,
+        TirBinOp::BAnd => 6,
+        TirBinOp::BOr => 7,
+        TirBinOp::BXor => 8,
+        TirBinOp::Shl => 9,
+        TirBinOp::Shr => 10,
+    }
+}
+
+fn dyn_cmp_code(op: TirCmp) -> i64 {
+    match op {
+        TirCmp::Lt => 20,
+        TirCmp::Le => 21,
+        TirCmp::Gt => 22,
+        TirCmp::Ge => 23,
+        TirCmp::Eq => 24,
+        TirCmp::Ne => 25,
+    }
+}
+
+/// Box scalar operands, dispatch through NRT, and leave the tagged result boxed.
+fn emit_dyn_bin<M: Module>(
+    code: i64,
+    a: cranelift_codegen::ir::Value,
+    a_ty: TirTy,
+    b: cranelift_codegen::ir::Value,
+    b_ty: TirTy,
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+) -> cranelift_codegen::ir::Value {
+    let id = emitter.unrt_dyn_bin.expect("dynamic dispatch import required");
+    let fref = module.declare_func_in_func(id, builder.func);
+    let op = builder.ins().iconst(types::I64, code);
+    let a = wrap_as_obj(a, a_ty, emitter, builder, module);
+    let b = wrap_as_obj(b, b_ty, emitter, builder, module);
+    let res = builder.ins().call(fref, &[op, a, b]);
+    let obj = builder.inst_results(res)[0];
+    emit_error_gate(emitter, builder, module, obj);
+    obj
+}
+
+/// Coerce a value across the scalar/dynamic boundary. `TirTy::Obj` values are
+/// already boxed NObj handles, so only Int/Float/Bool need boxing/unboxing.
+fn coerce_value<M: Module>(
+    v: cranelift_codegen::ir::Value,
+    from: TirTy,
+    to: TirTy,
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+) -> cranelift_codegen::ir::Value {
+    if from == to {
+        return v;
+    }
+    if to == TirTy::Obj && matches!(from, TirTy::Int | TirTy::Float | TirTy::Bool) {
+        wrap_as_obj(v, from, emitter, builder, module)
+    } else if from == TirTy::Obj && matches!(to, TirTy::Int | TirTy::Float | TirTy::Bool) {
+        unbox_obj(v, to, emitter, builder, module)
+    } else {
+        v
+    }
+}
+
 fn emit_binop<M: Module>(
     op: TirBinOp,
     a: cranelift_codegen::ir::Value,
@@ -3410,6 +3540,12 @@ fn emit_binop<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
 ) -> (cranelift_codegen::ir::Value, TirTy) {
+    // Dynamic values must be checked before Str: a Str operand paired with an
+    // `any` operand still goes through tag-based dispatch.
+    if a_ty == TirTy::Obj || b_ty == TirTy::Obj {
+        let obj = emit_dyn_bin(dyn_bin_code(op), a, a_ty, b, b_ty, emitter, builder, module);
+        return (obj, TirTy::Obj);
+    }
     match op {
         TirBinOp::Add if a_ty == TirTy::Str && b_ty == TirTy::Str => {
             let id = emitter.unrt_str_cat.expect("unrt import required for Str concat");
@@ -3538,6 +3674,11 @@ fn emit_cmp<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
 ) -> (cranelift_codegen::ir::Value, TirTy) {
+    if a_ty == TirTy::Obj || b_ty == TirTy::Obj {
+        let obj = emit_dyn_bin(dyn_cmp_code(op), a, a_ty, b, b_ty, emitter, builder, module);
+        let raw = unbox_obj(obj, TirTy::Bool, emitter, builder, module);
+        return (raw, TirTy::Bool);
+    }
     let numeric_pair = matches!((a_ty, b_ty), (TirTy::Int, TirTy::Int) | (TirTy::Int, TirTy::Float) | (TirTy::Float, TirTy::Int) | (TirTy::Float, TirTy::Float));
     if numeric_pair {
         if a_ty == TirTy::Int && b_ty == TirTy::Int {
