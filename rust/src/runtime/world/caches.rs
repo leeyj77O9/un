@@ -1,5 +1,6 @@
 ﻿
 use super::WORLD;
+use std::cell::RefCell;
 use crate::runtime::obj::{Obj, int_obj, plain, str_obj};
 
 pub const MAX_POOL_SIZE: usize = 10000;
@@ -74,24 +75,70 @@ pub fn null_obj() -> Obj {
         o
     })
 }
+
+// ---------------------------------------------------------------------------
+// Dedicated thread-local caches for the hot singleton / small-int objects.
+//
+// These used to be fields of the giant `WORLD` RefCell, so every int/bool/
+// sentinel lookup paid a `WORLD.with(|w| w.borrow_mut())` plus a Vec/Option
+// lookup and an `Rc` clone. `int_ops` touches them millions of times, so the
+// accumulated WORLD traffic was measurable. Keeping them in their own
+// thread_local removes that round trip while preserving identity semantics:
+// one canonical `Rc` per value, shared for the lifetime of the cache.
+// ---------------------------------------------------------------------------
+
+const INT_CACHE_LOW: i64 = -1024;
+const INT_CACHE_HIGH: i64 = 100000;
+
+struct ObjCaches {
+    int_cache: Vec<Obj>,
+    uninitialized: Option<Obj>,
+    true_: Option<Obj>,
+    false_: Option<Obj>,
+}
+
+impl ObjCaches {
+    fn new() -> Self {
+        Self {
+            int_cache: Vec::new(),
+            uninitialized: None,
+            true_: None,
+            false_: None,
+        }
+    }
+}
+
+thread_local! {
+    static OBJ_CACHES: RefCell<ObjCaches> = RefCell::new(ObjCaches::new());
+}
+
+/// Drop and rebuild the dedicated caches. Mirrors the old behaviour where
+/// `world::reset()` replaced the whole `World` (and therefore dropped these
+/// fields), so stale pre-reset sentinels/ints never compare equal to fresh
+/// ones and the small-int pool is rebuilt against the new interned type name.
+pub(crate) fn reset_obj_caches() {
+    OBJ_CACHES.with(|c| *c.borrow_mut() = ObjCaches::new());
+}
+
 pub fn uninitialized_obj() -> Obj {
-    WORLD.with(|w| {
-        let mut w = w.borrow_mut();
-        if let Some(u) = &w.uninitialized {
+    OBJ_CACHES.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some(u) = &c.uninitialized {
             return u.clone();
         }
-        let o = plain(w.type_cache["__uninitialized__"].clone());
-        w.uninitialized = Some(o.clone());
+        // Lazy: only the first miss needs the WORLD interned type name.
+        let type_name = WORLD.with(|w| w.borrow().type_cache["__uninitialized__"].clone());
+        let o = plain(type_name);
+        c.uninitialized = Some(o.clone());
         o
     })
 }
 pub fn is_uninitialized(o: &Obj) -> bool {
-    // Compare against the sentinel still owned by WORLD. An immutable borrow
-    // avoids the borrow_mut + Rc clone of uninitialized_obj(), while identity
-    // remains tied to WORLD so world::reset() (which clears the field) stays
-    // correct: no sentinel yet, or a stale pre-reset sentinel, both compare false.
-    WORLD.with(|w| {
-        w.borrow()
+    // Immutable borrow of the dedicated cache + ptr_eq, equivalent to the old
+    // immutable WORLD borrow. After reset the cache is empty, so a stale
+    // pre-reset sentinel compares false just as before.
+    OBJ_CACHES.with(|c| {
+        c.borrow()
             .uninitialized
             .as_ref()
             .is_some_and(|u| std::rc::Rc::ptr_eq(o, u))
@@ -99,35 +146,32 @@ pub fn is_uninitialized(o: &Obj) -> bool {
 }
 
 pub fn bool_obj(value: bool) -> Obj {
-    WORLD.with(|w| {
-        let mut w = w.borrow_mut();
-        let names = (w.type_cache["bool"].clone(), w.type_cache["obj"].clone());
-        let slot = if value { &mut w.true_ } else { &mut w.false_ };
+    OBJ_CACHES.with(|c| {
+        let mut c = c.borrow_mut();
+        let slot = if value { &mut c.true_ } else { &mut c.false_ };
         if let Some(b) = slot {
             return b.clone();
         }
-        let o = crate::runtime::obj::bool_obj_new(value, names.0);
+        let type_name = WORLD.with(|w| w.borrow().type_cache["bool"].clone());
+        let o = crate::runtime::obj::bool_obj_new(value, type_name);
         *slot = Some(o.clone());
         o
     })
 }
 
 pub fn int_cached(value: i64) -> Obj {
-    const LOW: i64 = -1024;
-    const HIGH: i64 = 100000;
-    if value < LOW || value > HIGH {
+    if value < INT_CACHE_LOW || value > INT_CACHE_HIGH {
         return int_obj(value, int_type());
     }
-    WORLD.with(|w| {
-        let mut w = w.borrow_mut();
-        if w.int_cache.is_empty() {
-            let int_name = w.type_cache["int"].clone();
-            for i in LOW..=HIGH {
-                w.int_cache
-                    .push(int_obj(i, int_name.clone()));
+    OBJ_CACHES.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.int_cache.is_empty() {
+            let int_name = WORLD.with(|w| w.borrow().type_cache["int"].clone());
+            for i in INT_CACHE_LOW..=INT_CACHE_HIGH {
+                c.int_cache.push(int_obj(i, int_name.clone()));
             }
         }
-        w.int_cache[(value - LOW) as usize].clone()
+        c.int_cache[(value - INT_CACHE_LOW) as usize].clone()
     })
 }
 

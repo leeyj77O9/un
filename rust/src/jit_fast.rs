@@ -77,6 +77,14 @@ pub(crate) fn try_call_jit(
     args: &Args,
     bound_receiver: Option<Obj>,
 ) -> Option<Obj> {
+    // Fastest possible opt-out: with the bytecode JIT disabled and no
+    // Compile-Mode TIR entry registered, no native path can serve this call.
+    // Return before touching the `get_tir_entry` / `jit_lazy_attempted`
+    // mutexes (which used to be locked on every proto call under UV_JIT=0).
+    // TIR entries intentionally bypass UV_JIT, so they keep their lookup.
+    if !crate::jit_cache::jit_enabled() && !crate::jit_cache::has_tir_entries() {
+        return None;
+    }
     if !args.names.iter().all(|n| n.is_empty()) {
         return None;
     }

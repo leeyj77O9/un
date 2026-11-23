@@ -24,13 +24,9 @@ pub struct World {
 
     str_pool: HashMap<std::rc::Rc<str>, crate::runtime::obj::Obj>,
     str_pool_size: usize,
-    int_cache: Vec<crate::runtime::obj::Obj>,
 
     none: Option<crate::runtime::obj::Obj>,
     null: Option<crate::runtime::obj::Obj>,
-    uninitialized: Option<crate::runtime::obj::Obj>,
-    true_: Option<crate::runtime::obj::Obj>,
-    false_: Option<crate::runtime::obj::Obj>,
 
     original_classes: HashMap<String, Vec<(String, crate::runtime::obj::Obj)>>,
     original_base_types: HashMap<String, String>,
@@ -75,12 +71,8 @@ impl World {
             type_cache,
             str_pool: HashMap::new(),
             str_pool_size: 0,
-            int_cache: Vec::new(),
             none: None,
             null: None,
-            uninitialized: None,
-            true_: None,
-            false_: None,
             original_classes: HashMap::new(),
             original_base_types: HashMap::new(),
             class_layouts: HashMap::new(),
@@ -104,5 +96,9 @@ impl World {
 
 pub fn reset() {
     WORLD.with(|w| *w.borrow_mut() = World::new());
+    // Keep the dedicated object caches in lockstep with WORLD: the old
+    // fields were dropped by World::new(), so the small-int pool, the two
+    // bool singletons and the uninitialized sentinel must be rebuilt too.
+    caches::reset_obj_caches();
     crate::jit_cache::sync_max_jit_depth(crate::runtime::function::MAX_RECURSION_DEPTH);
 }

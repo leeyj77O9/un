@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const TAG_INT: i64 = 0;
 pub const TAG_FLOAT: i64 = 1;
@@ -126,6 +128,17 @@ static JIT_FNS: LazyLock<Mutex<HashMap<u64, HashMap<u32, JitEntry>>>> =
 static TIR_FNS: LazyLock<Mutex<HashMap<u64, HashMap<u32, JitEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Cheap lock-free mirror of "is TIR_FNS non-empty?". Compile-Mode entries
+/// deliberately bypass `UV_JIT`, so `try_call_jit` may only skip the cache
+/// lookups entirely when the bytecode JIT is off *and* no TIR entry exists.
+/// Set before insertion and cleared only when the map is actually empty, so a
+/// registered TIR entry is never missed on the call path.
+static TIR_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn has_tir_entries() -> bool {
+    TIR_REGISTERED.load(Ordering::Acquire)
+}
+
 /// Number of native JIT invocations that actually reached `vm::jit_call`.
 /// Used by regression tests to prove the JIT is really executing, not merely
 /// registering a stub that always falls back to the interpreter.
@@ -141,36 +154,49 @@ pub fn reset_jit_native_calls() {
     JIT_NATIVE_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-static JIT_ENABLED: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("UV_JIT")
-        .map(|v| {
-            let v = v.trim();
-            v != "0" && !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("off")
-        })
-        .unwrap_or(true)
-});
+/// One process-wide snapshot of `UV_JIT`, read exactly once. `jit_enabled`
+/// and `jit_strict` share it so they can never disagree about the same env
+/// value (e.g. `2`/`strict` must be both enabled and strict). The fast path is
+/// two atomic loads through `OnceLock`, with no mutex and no env lookup.
+#[derive(Clone, Copy)]
+struct JitConfig {
+    enabled: bool,
+    strict: u8,
+}
+
+fn jit_config() -> &'static JitConfig {
+    static CONFIG: OnceLock<JitConfig> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        let raw = std::env::var("UV_JIT").ok();
+        let value = raw.as_deref().map(str::trim);
+        let enabled = match value {
+            None => true,
+            Some(v) => {
+                v != "0" && !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("off")
+            }
+        };
+        // Preserve the original parsing exactly: only "2" / "strict" enable
+        // the canary; every other value (including "0") leaves strict off.
+        let strict = match value {
+            Some("2") => 2,
+            Some(v) if v.eq_ignore_ascii_case("strict") => 2,
+            _ => 0,
+        };
+        JitConfig { enabled, strict }
+    })
+}
 
 pub fn jit_enabled() -> bool {
-    *JIT_ENABLED
+    jit_config().enabled
 }
 
 pub fn jit_strict() -> u8 {
-    static STRICT: LazyLock<u8> = LazyLock::new(|| {
-        std::env::var("UV_JIT")
-            .map(|v| match v.trim() {
-                "2" => 2,
-                v if v.eq_ignore_ascii_case("strict") => 2,
-                _ => 0,
-            })
-            .unwrap_or(0)
-    });
-    *STRICT
+    jit_config().strict
 }
 
 pub fn jit_debug() -> bool {
-    static JIT_DEBUG: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("UV_JIT_DEBUG").is_some());
-    *JIT_DEBUG
+    static JIT_DEBUG: OnceLock<bool> = OnceLock::new();
+    *JIT_DEBUG.get_or_init(|| std::env::var_os("UV_JIT_DEBUG").is_some())
 }
 
 static JIT_LAZY_ATTEMPTED: LazyLock<Mutex<HashSet<u64>>> =
@@ -200,6 +226,8 @@ pub fn register_jit_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
 }
 
 pub fn register_tir_entry(program_id: u64, proto_index: u32, entry: JitEntry) {
+    // Publish first so the call path can never miss a registered TIR entry.
+    TIR_REGISTERED.store(true, Ordering::Release);
     TIR_FNS
         .lock()
         .expect("jit_cache")
@@ -220,15 +248,17 @@ pub fn get_tir_entry(program_id: u64, proto_index: u32) -> Option<JitEntry> {
 }
 
 pub fn clear_program(program_id: u64) -> usize {
-    let (entries, modules) = {
+    let (entries, modules, has_tir) = {
         let mut fns = JIT_FNS.lock().expect("jit_cache");
         let mut tirs = TIR_FNS.lock().expect("jit_cache");
         let mut modules = JIT_MODULES.lock().expect("jit_cache");
         let entries = fns.remove(&program_id).map(|m| m.len()).unwrap_or(0);
         tirs.remove(&program_id);
+        let has_tir = tirs.values().any(|m| !m.is_empty());
         let modules = modules.remove(&program_id).unwrap_or_default();
-        (entries, modules)
+        (entries, modules, has_tir)
     };
+    TIR_REGISTERED.store(has_tir, Ordering::Release);
     JIT_LAZY_ATTEMPTED
         .lock()
         .expect("jit_cache")
@@ -247,6 +277,7 @@ pub fn clear() {
     JIT_LAZY_ATTEMPTED.lock().expect("jit_cache").clear();
     JIT_FNS.lock().expect("jit_cache").clear();
     TIR_FNS.lock().expect("jit_cache").clear();
+    TIR_REGISTERED.store(false, Ordering::Release);
     for (_id, modules) in modules.into_iter() {
         for module in modules {
             unsafe { module.free_memory() };
