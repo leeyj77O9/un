@@ -125,8 +125,8 @@
 - `test/test_suite.un`: 109 passed, 0 failed.
 - `scripts/bench.ps1 -Group all`: 6 lanes (Un VM / Un JIT / Compile Mode / standalone
   exe / Python / Node); `scripts/bench-report.ps1`이 `bench/report.html` 생성.
-  전체 결과는 루트 `BENCHMARK.md`(2026-11-23 22:43 +09:00, 64e4b7e 재생성;
-  Un JIT/Python geomean 3.917x) 참조. `scripts/compile-bench.ps1`은 상세 비교용.
+  전체 결과는 루트 `BENCHMARK.md`(2026-11-24 00:47 +09:00, 64e4b7e 재생성;
+  Un JIT/Python geomean 3.882x) 참조. `scripts/compile-bench.ps1`은 상세 비교용.
 
 ## 진행 로그
 
