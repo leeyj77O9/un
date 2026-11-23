@@ -80,17 +80,18 @@ plain exe 회귀를 잡을 수 있다.
 
 아래 초기 제한 목록은 역사적 기록이다. 현재 상태는 "No-VM plain executable" 섹션을
 참고할 것 — Float/딕셔너리/클래스/클로저/예외/모듈 로딩/전역 상태 대부분이 이제
-지원된다. 남은 제한은 동적 타입(`Any`/Union), 시간 시드 `random`, 모듈 최상위
-부수 효과, Float 인자/반환을 가진 closure/메서드(ABI 제약), 기본값이 있는 base
-  클래스 ctor 파라미터의 인자 순서, 메서드 오버라이드 시 기본값 선택이다.
+지원된다. Float 인자/반환을 가진 closure/메서드도 typed indirect shim
+(`nrt/abi.rs::call_native_typed`)으로 지원된다. 남은 제한은 동적 타입
+  (`Any`/Union), 시간 시드 `random`, 모듈 최상위 부수 효과(이제 명시적 거부),
+기본값이 있는 base 클래스 ctor 파라미터의 인자 순서, 메서드 오버라이드 시 기본값 선택이다.
 - `list[int]`/`list[float]`: 리터럴(`[1, 2, 3]`), 파라미터/렛/대입, `for v in xs` 또는
   `for v in [1, 2, 3]`(리터럴 직접 반복),
   호출 인자/반환(`-> list[int]`), `io.write(xs)` 네이티브 출력까지 지원한다.
   빈 리스트(타입 추론 불가)는 **거부**한다. 그 외 element 타입은 제네릭 경로로
   컴파일된다: `list[str]`, `list[bool]`, `dict[str, class]`의 값처럼 이전에
   거부되던 타입도 NRT의 핸들 기반 컬렉션에 그대로 담긴다. 중첩 리스트
-  (`list[list[int]]`)도 생성·조회·출력은 되지만, element는 불투명 핸들(`ObjElem::Obj`)
-  로 취급되어 거기서 다시 정적 인덱싱/연산은 lowering하지 않는다.
+  (`list[list[int]]`)도 element kind를 유지해 `xs[0][1]` read/write가 lowering된다
+  (`ObjElem::List { depth, leaf }`).
   **인덱싱**: `xs[i]` read, `xs[i] = v` write(음수 인덱스 wrap), 범위 밖이면
   Obj 경로는 user trap `user2`로 프로세스를 종료한다(`un run`은 exit 1 + traceback).
 - `list[class]`: `list[int]`/`list[float]`와 같은 모든 위치(리터럴, 파라미터/렛/대입,
@@ -100,7 +101,8 @@ plain exe 회귀를 잡을 수 있다.
   `list[int]`/`list[float]`가 거부하는 것(빈 리스트, 중첩 리스트, 비 str 키 등)은 동일하게 거부한다.
 - `list[int]`/`list[float]` 메서드: `add(v)`(append), `insert(v, i)`(인덱스 clamp),
   `reverse()`, `sort()`(VM comparator), `pop()`/`pop(i)`(원소 반환),
-  `contains(v)`, `index_of(v)`까지 네이티브 지원한다. 나머지 리스트 메서드는
+  `contains(v)`, `index_of(v)`, `remove(v)`까지 네이티브 지원한다. `list.clear()`는
+  VM/typeck이 지원하지 않아 no-VM 전용 허용은 하지 않는다. 나머지 리스트 메서드는
   인터프리터로 넘긴다. 정적 체커(`un check`/`un native`)는
   등록된 list/dict 멤버 시그니처를 알고 있으며, 없는 멤버를 호출하면 컴파일 오류다.
 - `dict[str, int]`/`dict[str, float]`: 리터럴(`{"k": v}`), `d["k"]` 인덱스 **read**,
@@ -112,6 +114,7 @@ plain exe 회귀를 잡을 수 있다.
   패턴도 인터프리터와 같이 동작한다. Obj 경로에서 `d["missing"]` read는
   user trap `user1`으로 프로세스를 종료한다
   (`un run`은 `error: key '{key}' not found in dictionary`를 내며 exit 1).
+  `d.keys()` / `d.values()`(삽입 순서 스냅샷 리스트)와 `d.clear()`도 네이티브 지원한다.
 - `len(x)`: `str`(UTF-16 코드 유닛, 인터프리터와 동일)과 `list[int]`/`list[float]`/
   `list[class]`/`dict[str, int]`/`dict[str, float]`의 크기를 반환한다. 다른 타입은 인터프리터로 넘긴다.
   `un native`에서는 len 포함 함수도 모두 인터프리터 fallback.
@@ -188,7 +191,10 @@ plain exe 회귀를 잡을 수 있다.
   `un_main`으로 export)만 실행된다. 인라인된 사용자 모듈의 최상위 전역 초기화는
   `main` 본문 앞에 삽입되어 실행된다. `un run` / `un native` / `--embed`는 인터프리터
   의미론이라 모듈 최상위 문장이 한 번 실행되고 `main()`은 파일이 직접 호출할 때만 실행된다.
-  함정 예: 메인 파일 top-level의 `io.write("boot")`는 plain exe에서 조용히 무시된다.
+  이전에는 메인 파일 top-level의 `io.write("boot")`가 plain exe에서 **조용히 무시**됐지만,
+  이제는 명시적 컴파일 오류로 거부한다(`top-level statements are not supported in plain build;
+  move them into fn main() or use un build --embed`). `un run` / `un native` / `--embed`의
+  의미론은 그대로다.
 - `use`로 가져와야 하는 모듈이라도 `io.write`처럼 **네이티브 테이블에 등록된** native 호출은
   `unrt_call_native`로 연결되므로 독립 exe에서 바로 동작한다. 사용자 `.un` 모듈 import도
   빌드 시 텍스트 인라인으로 지원한다(단순 함수/전역 초기화만; 전역 재할당 등 부수 효과는
