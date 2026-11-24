@@ -411,7 +411,7 @@ Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 36/0, exe 
 입력·알고리즘·측정 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`, `results.json`, `results.md`에 저장한다.
 `scripts\bench-report.ps1`은 결과를 `bench/report.html`로 변환하고 `-Gate`로 회귀를 검사한다.
-현재 보고서의 Un JIT/Python 기하평균은 **4.342x**이며, 새 워크로드
+현재 보고서의 Un JIT/Python 기하평균은 **4.301x**이며, 새 워크로드
 `dict_str5000`(문자열 키 dict 삽입·조회), `bytes_ops`(bytes 모듈 왕복),
 `slice_ops`(리스트 슬라이스 읽기·할당)이 포함되어 있다.
 

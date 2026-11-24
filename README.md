@@ -426,7 +426,7 @@ Benchmarks measure 6 lanes (Un VM, Un JIT, Compile Mode, standalone exe, CPython
 Node.js) with warmup and repeated runs; results go to
 `bench/results/<timestamp>/results.csv`, `results.json`, and `results.md`.
 `scripts\bench-report.ps1` renders `bench/report.html` and checks regressions with
-`-Gate`. The current report puts Un JIT at a **4.342x geomean over CPython** and
+`-Gate`. The current report puts Un JIT at a **4.301x geomean over CPython** and
 includes three new workloads — `dict_str5000` (string-key dict inserts/lookups),
 `bytes_ops` (bytes module round-trips), and `slice_ops` (list slice read/assign).
 
