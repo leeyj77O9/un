@@ -46,7 +46,7 @@ pub struct World {
     allowed: Option<HashSet<String>>,
     allow_exit: bool,
 
-    module_cache: HashMap<String, Vec<(String, crate::runtime::obj::Obj)>>,
+    module_cache: HashMap<String, CachedModule>,
     loading: HashSet<String>,
 
     max_recursion_depth: usize,

@@ -68,7 +68,7 @@ pub fn import_file(
 pub fn load(full_path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, Obj)>, ModuleError> {
     let cache_key = cache_key(full_path);
     if let Some(cached) = world::module_cache_get(&cache_key) {
-        return Ok(cached);
+        return Ok(cached.exports);
     }
 
     if !world::loading_add(&cache_key) {
@@ -79,27 +79,43 @@ pub fn load(full_path: &str, trace: Option<context::Traces>) -> Result<Vec<(Stri
     }
     let result = load_inner(full_path, trace);
     world::loading_remove(&cache_key);
-    if let Ok(map) = &result {
-        world::module_cache_set(&cache_key, map.clone());
+    if let Ok((exports, program_ids)) = &result {
+        let mut ids = program_ids.iter().copied();
+        world::module_cache_set(
+            &cache_key,
+            world::CachedModule {
+                exports: exports.clone(),
+                program_id: ids.next().unwrap_or(0),
+                extra_program_ids: ids.collect(),
+            },
+        );
     }
-    result
+    result.map(|(exports, _)| exports)
 }
-fn load_inner(full_path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, Obj)>, ModuleError> {
+/// Returns the exports together with every `Program.id` compiled while loading.
+/// Directory modules merge several files, so all of their ids are returned;
+/// the cache keeps them so unload can release each program's JIT entries.
+fn load_inner(
+    full_path: &str,
+    trace: Option<context::Traces>,
+) -> Result<(Vec<(String, Obj)>, Vec<u64>), ModuleError> {
     let file_path = if full_path.ends_with(".un") {
         full_path.to_owned()
     } else {
         format!("{full_path}.un")
     };
     if std::path::Path::new(&file_path).is_file() {
-        return load_file(&file_path, trace);
+        return load_file(&file_path, trace).map(|(exports, id)| (exports, vec![id]));
     }
     let dir = std::path::Path::new(full_path);
     if dir.is_dir() {
         let mod_path = dir.join("mod.un");
         if mod_path.is_file() {
-            return load_file(&mod_path.display().to_string(), trace);
+            return load_file(&mod_path.display().to_string(), trace)
+                .map(|(exports, id)| (exports, vec![id]));
         }
         let mut map: Vec<(String, Obj)> = Vec::new();
+        let mut program_ids: Vec<u64> = Vec::new();
         let mut files: Vec<String> = Vec::new();
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
@@ -118,21 +134,26 @@ fn load_inner(full_path: &str, trace: Option<context::Traces>) -> Result<Vec<(St
         }
         files.sort();
         for file in files {
-            for (name, value) in load_file(&file, trace.clone())? {
+            let (exports, program_id) = load_file(&file, trace.clone())?;
+            program_ids.push(program_id);
+            for (name, value) in exports {
                 match map.iter_mut().find(|(k, _)| *k == name) {
                     Some(entry) => entry.1 = value,
                     None => map.push((name, value)),
                 }
             }
         }
-        return Ok(map);
+        return Ok((map, program_ids));
     }
     Err(ModuleError::Panic(obj::panic(
         "panic",
         format!("module '{full_path}' not found"),
     )))
 }
-fn load_file(path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, Obj)>, ModuleError> {
+fn load_file(
+    path: &str,
+    trace: Option<context::Traces>,
+) -> Result<(Vec<(String, Obj)>, u64), ModuleError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) => {
@@ -163,6 +184,7 @@ fn load_file(path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, 
     // the global builtin `len`. Uninitialized slots are skipped by lookups, so
     // names the module never assigns still resolve to globals as before.
     scope::preseed_slots(&module_scope, &program.names);
+    let program_id = program.id;
     let mut vm = VM::with_context(Rc::new(program), source.clone(), ctx)
         .map_err(|message| ModuleError::Panic(obj::panic("panic", message)))?;
     let outcome = vm.run();
@@ -180,7 +202,7 @@ fn load_file(path: &str, trace: Option<context::Traces>) -> Result<Vec<(String, 
             }
         }
     }
-    Ok(scope::local_symbols(&module_scope))
+    Ok((scope::local_symbols(&module_scope), program_id))
 }
 fn resolve_module(joined: &std::path::Path, source_path: &str) -> Option<String> {
     if let Some(dir) = std::path::Path::new(source_path).parent() {

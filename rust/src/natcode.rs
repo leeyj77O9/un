@@ -2,7 +2,7 @@
 use crate::jit_cache::{self, ArgKind, JitEntry, TAG_BAIL, TAG_BOOL, TAG_FLOAT, TAG_INT, TAG_NONE};
 use crate::bytecode::Program;
 use crate::objify::EmitOutcome;
-use crate::tir::{abi_kind, elem_of_tir, tir_is_ref, tir_of_elem, TirBinOp, TirCmp, TirExpr, TirFn, TirPattern, TirProgram, TirStmt, TirTy, TirUnOp};
+use crate::tir::{abi_kind, elem_of_tir, tir_is_ref, tir_of_elem, TirBinOp, TirCmp, TirExpr, TirFn, TirMatchArm, TirPattern, TirProgram, TirStmt, TirTy, TirUnOp};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{types, Block, AbiParam, InstBuilder, MemFlagsData, UserFuncName};
@@ -1556,7 +1556,7 @@ fn emit_no_match_case<M: Module>(
 }
 
 fn emit_match_arms<M: Module>(
-    arms: &[(TirPattern, Vec<TirStmt>)],
+    arms: &[TirMatchArm],
     index: usize,
     merge_blk: Block,
     scrut_value: cranelift_codegen::ir::Value,
@@ -1568,15 +1568,27 @@ fn emit_match_arms<M: Module>(
     f: &TirFn,
 ) {
     if index >= arms.len() {
+        // Guards make fallthrough reachable: a false guard lands here after
+        // every arm has been tried, so the existing no-match bridge is used.
         emit_no_match_case(span, emitter, builder, module, f);
         return;
     }
-    let (pattern, body) = &arms[index];
+    let arm = &arms[index];
     let body_blk = builder.create_block();
     let fail_blk = builder.create_block();
-    match pattern {
-        TirPattern::Wildcard | TirPattern::Bind(_) => {
-            builder.ins().jump(body_blk, &[]);
+    // A true guard (or no guard) enters the body; a false guard shares the
+    // pattern-miss landing pad, matching `compiler.rs::code_match`.
+    let guard_blk = arm.guard.as_ref().map(|_| builder.create_block());
+    let success_blk = guard_blk.unwrap_or(body_blk);
+    match &arm.pattern {
+        TirPattern::Wildcard => {
+            builder.ins().jump(success_blk, &[]);
+        }
+        TirPattern::Bind(slot) => {
+            // Assign the bind slot on success, before a guard can read it.
+            let var = emitter.vars[*slot as usize];
+            builder.def_var(var, scrut_value);
+            builder.ins().jump(success_blk, &[]);
         }
         TirPattern::Literal(lit) => {
             let (lit_value, lit_ty) = emit_expr(lit, emitter, builder, module, f);
@@ -1590,12 +1602,19 @@ fn emit_match_arms<M: Module>(
                 builder,
                 module,
             );
-            builder.ins().brif(cond, body_blk, &[], fail_blk, &[]);
+            builder.ins().brif(cond, success_blk, &[], fail_blk, &[]);
         }
+    }
+    if let (Some(guard_blk), Some(guard)) = (guard_blk, arm.guard.as_ref()) {
+        builder.switch_to_block(guard_blk);
+        emitter.terminated = false;
+        let (cond, _) = emit_expr(guard, emitter, builder, module, f);
+        builder.ins().brif(cond, body_blk, &[], fail_blk, &[]);
+        builder.seal_block(guard_blk);
     }
     builder.switch_to_block(body_blk);
     emitter.terminated = false;
-    let body_terminated = emit_block(body, emitter, builder, module, f);
+    let body_terminated = emit_block(&arm.body, emitter, builder, module, f);
     if !body_terminated {
         builder.ins().jump(merge_blk, &[]);
     }
@@ -2279,7 +2298,8 @@ fn body_preserves_list_len(body: &[TirStmt]) -> bool {
         }
         TirStmt::Match { arms, .. } => arms
             .iter()
-            .all(|(_, body)| body_preserves_list_len(body)),
+            .all(|arm| arm.guard.as_ref().map_or(true, expr_preserves_list_len)
+                && body_preserves_list_len(&arm.body)),
     })
 }
 
