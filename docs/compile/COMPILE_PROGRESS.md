@@ -115,7 +115,7 @@
 - `scripts/differential.ps1`: 102 files 0 differences — **green**.
 - `scripts/unbc-roundtrip.ps1 -IncludeNegative`: positive 51/51 identical,
   negative 42 identical + 9 skipped(compile-rejected) — **green**.
-- `cargo test --release --workspace`: 273 passed (nrt 4 + lib 246 + un bin/LSP 15 +
+- `cargo test --release --workspace`: 277 passed (nrt 4 + lib 246 + un bin/LSP 19 +
   playground 8), 0 failed — **green**.
 - `scripts/compile-check.ps1`: 36 passed, 0 failed.
 - `scripts/exe-diff.ps1`: 42 passed, 0 failed — `test/compile/*.un`을 `un build --embed`로
@@ -125,8 +125,8 @@
 - `test/test_suite.un`: 109 passed, 0 failed.
 - `scripts/bench.ps1 -Group all`: 6 lanes (Un VM / Un JIT / Compile Mode / standalone
   exe / Python / Node); `scripts/bench-report.ps1`이 `bench/report.html` 생성.
-  전체 결과는 루트 `BENCHMARK.md`(2026-11-24 08:53 +09:00, 64e4b7e 재생성;
-  Un JIT/Python geomean 4.154x) 참조. `scripts/compile-bench.ps1`은 상세 비교용.
+  전체 결과는 루트 `BENCHMARK.md`(2026-11-24 10:48 +09:00, 64e4b7e 재생성;
+  Un JIT/Python geomean 4.318x) 참조. `scripts/compile-bench.ps1`은 상세 비교용.
 
 ## 진행 로그
 

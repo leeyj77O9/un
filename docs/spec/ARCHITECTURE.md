@@ -206,7 +206,7 @@ them.
 | `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (102 files, 0 differences) |
 | `scripts/unbc-roundtrip.ps1` | `.unbc` round-trip byte comparison for Positive and compilable Negative files |
 | `scripts/bench.ps1` | warm-up + repetitions + statistics (min/median/mean/max/stddev/ops) |
-| `cargo test --release --workspace` | 273 tests (nrt 4 + lib 246 + un bin/LSP 15 + playground 8; lexer, parser, compiler, runtime, VM, native, net/redirects + JIT/sandbox regression guards) |
+| `cargo test --release --workspace` | 273 tests (nrt 4 + lib 246 + un bin/LSP 19 + playground 8; lexer, parser, compiler, runtime, VM, native, net/redirects + JIT/sandbox regression guards) |
 
 The build is release-only and requires the GNU toolchain:
 
