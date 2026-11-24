@@ -183,7 +183,16 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
   - Wholesale native memory is only ever reclaimed at process exit. Any
     future hot-reload/module-unload story must keep the arena/id namespace
     coherent across `clear()` boundaries; today nothing unloads a module
-    at runtime.
+    at runtime (D-093).
+  - **Execution-boundary cleanup contract (D-093)**: `jit_cache::clear()` is
+    called at exactly four boundaries — CLI success (`main.rs`), CLI error
+    (`report()`), every playground run, and `unvm_run_embedded()` exit
+    (`unrt.rs`). After `clear()`, entering any JIT entry is out of contract.
+  - **No GC / no Weak (D-093)**: the instance→bound-method→`self_`→instance
+    and closure→scope→slots→Fn cycles are intentional and bounded. They are
+    reclaimed by `world::reset()` / process exit. Converting them to `Weak`
+    would break bound-method lifetime and lambda escape semantics and risk
+    JIT raw-receiver use-after-free. Long-lived embedders restart the process.
 
 ## 6. Native modules
 

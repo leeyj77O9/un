@@ -1299,3 +1299,38 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **주의**: `.NET` parity를 계약으로 삼던 부분(mod_zero / replace_missing / replace_empty /
   dict_add_duplicate / types_overflow*)은 `error:` 기준으로 재작성됐다. 이후 내장 오류를
   새로 추가할 때도 `System.*` 접두사는 쓰지 않는다.
+
+## D-093 | Un의 메모리 모델: RC + 실행 경계 정리, GC/Weak 없음 | Accepted
+
+- **배경**: MEM-01/MEMPLAN-01 분석(2026-11-24). Un에는 GC가 없고 `rust/src/runtime` 전역에
+  `Weak`이 0개다. VM/JIT/embed는 `Rc<RefCell<...>>` 참조 카운팅만으로 객체를 해제하며,
+  no-VM plain exe는 `Box::into_raw`로 할당하고 해제 코드 없이 프로세스 종료 시 OS가 회수한다.
+  순환 참조는 수집되지 않는다.
+- **결정**: 다음을 **언어/런타임 계약으로 확정**한다.
+  1. **GC는 도입하지 않는다.** 외부 crate 없이 marking collector를 만드는 비용과
+     byte-identical 게이트 위험이 이득보다 크다.
+  2. **`self_`와 closure/capture의 강한 참조는 의도다.** `let f = obj.m; obj = null; f()`
+     가 동작해야 하고, lambda escape/capture-by-value가 계약(D-080)이다. 따라서
+     `ObjData.self_`→`Weak`, `FnData.closure`→`Weak`, `Scope.slots`→`Weak` 전환은
+     **하지 않는다**. TD-22/TD-09의 순환은 "유계 누수"로 분류하고 매 실행의
+     `world::reset()`(native::init)와 프로세스 종료 시점 회수로 충분하다고 본다.
+  3. **JIT 코드 메모리는 실행 경계에서 명시 해제한다.** vendored Cranelift의 Drop이
+     `mem::forget`하므로 `jit_cache::clear_program`/`clear()`가 유일한 해제 경로다.
+     호출 지점은 CLI 정상(`main.rs`), CLI 에러(`report()`), playground 매 실행,
+     **embed `unvm_run_embedded()` 종료 시**(`unrt.rs`) 4곳으로 확정(2026-11-24 보완).
+     `clear()` 이후 JIT 코드를 다시 진입하는 것은 계약 위반이다.
+  4. **`PLAN_CACHE`는 상한 64개 FIFO로 유지**(TD-03). 실행 중 재클레이밍 정책은 두지 않는다.
+     모듈 unload/hot-reload는 **미설계 상태로 명시**하고, 필요해지면 opt-in API로 별도 결정(D-신규)한다.
+  5. **NRT는 의도적 누수 모델을 유지한다.** `NObj`와 내부 버퍼는 `Box::into_raw`,
+     작은 정수 0..16383은 정적 배열. bump arena는 측정 후 필요할 때만 NRT-06이 별도 제안한다.
+     현재는 allocator pressure가 유의미하지 않아 도입하지 않는다.
+  6. **메모리 증가 추적은 프로세스 단위로만 한다.** 장기 실행 embed/REPL/서버는
+     위 계약상 누적이 예상되므로, 필요한 경우 호스트가 프로세스를 재시작하는 전제를 문서화한다.
+- **영향**: 공개 API/C ABI/`Op`/`unrt_*` 심볼 변경 없음. TD-03/TD-05/TD-22의 상태를
+  "해결"이 아니라 "계약 확정(유계 누수 포함)"으로 재기재. ARCHITECTURE의 Resource lifecycle
+  절에 실행 경계 4곳과 clear 후 계약을 명시.
+- **근거**: `MEM-01`(경로별 메모리 모델), `MEMPLAN-01`(Weak 전환 시 byte-identical 위반
+  및 JIT raw receiver UAF 위험), `test/unit/runtime/classes.un`의 bound-method 수명,
+  `test/unit/runtime/async.un`의 lambda escape, `vendor/cranelift-jit/src/memory/system.rs`.
+- **검증**: 전체 게이트(Positive 51/1638, differential 102/0, roundtrip 51/51+42,
+  compile-check 37/0, exe-diff 63/0, strict canary 5종)와 embed 반복 실행 회귀.
