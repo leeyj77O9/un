@@ -1,0 +1,9 @@
+use mods.color as c
+use io
+
+fn main() -> int
+    io.write(c.label(1))
+    io.write(c.label(2))
+    -> 0
+
+main()

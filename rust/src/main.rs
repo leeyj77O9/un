@@ -672,6 +672,12 @@ fn inline_user_modules_text(code: &str, input: &str) -> Result<String, String> {
                 if t.starts_with("fn ") || l.starts_with(' ') || l.starts_with('\t') {
                     appended.push_str(&mangle_line(&mangled, &format!("{alias}_")));
                     appended.push('\n');
+                } else if t.starts_with("enum ") {
+                    // Enum declarations are compile-time metadata: no runtime
+                    // assignment to rewrite. Pass through unchanged so a module
+                    // can export an enum like it exports a class.
+                    appended.push_str(&mangled);
+                    appended.push('\n');
                 } else if t.split_once('=').is_some() {
                     appended.push_str(&mangled);
                     appended.push('\n');

@@ -1,0 +1,9 @@
+enum Color
+    RED = 1
+    BLUE = 2
+
+fn label(n: int) -> str
+    if n == 1
+        -> "red"
+    else
+        -> "blue"

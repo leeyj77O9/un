@@ -757,11 +757,33 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
         }
     }
     // Both expression and statement lowering reach native calls, so they must
-    // share one gate. `random` is time-seeded; `flow`/`atomic` have no NRT
-    // implementation. `bytes` and the binary fs helpers are implemented in
-    // `nrt/src/bytes_native.rs`, so they are allowed here.
-    fn native_call_ok(module: &str, _member: &str, _ret: Option<TirTy>) -> bool {
-        module != "random" && module != "flow" && module != "atomic"
+    // share one gate. `nrt` is linked as a staticlib only, so this crate cannot
+    // query its dispatch table directly: the denials below are a hand-maintained
+    // mirror. Keep in sync with NRT dispatch: nrt/src/native.rs + bytes_native
+    // + net_native + list::dispatch + obj::collections_dispatch.
+    // `random` is time-seeded and `flow`/`atomic`/`inspect` have no NRT
+    // implementation at all; the per-module lists cover members that exist on
+    // the VM path but are absent from NRT. Without this gate a plain build emits
+    // an exe that fails at runtime with "native module '<module>.<member>' is
+    // not supported in a no-VM executable" (GAP-01). `bytes.*`,
+    // `fs.read_bytes`/`fs.write_bytes` live in nrt/src/bytes_native.rs and stay
+    // allowed.
+    fn native_call_ok(module: &str, member: &str, _ret: Option<TirTy>) -> bool {
+        if matches!(module, "random" | "flow" | "atomic" | "inspect") {
+            return false;
+        }
+        !matches!(
+            (module, member),
+            ("io", "open")
+                | ("fs", "read" | "write" | "append" | "delete" | "copy" | "move" | "rename"
+                    | "touch" | "mkdir" | "rmdir" | "list" | "files" | "dirs" | "walk" | "chdir")
+                | ("os", "env" | "setenv" | "unsetenv" | "environ" | "expand_vars" | "exit" | "exec")
+                | ("sys", "env" | "environ" | "expand_vars" | "setcalldepth" | "setrecursionlimit")
+                | ("time", "sleep" | "utc_now" | "from_epoch" | "from_epoch_ms" | "stopwatch")
+                | ("re", "groups")
+                | ("iter", "counter" | "repeat" | "zip" | "enumerate" | "take" | "skip"
+                    | "chain" | "flatten" | "all" | "any" | "count")
+        )
     }
     // Closures and class methods use NRT's ABI-aware indirect-call shim
     // (`call_native_typed`), which selects XMM-capable C signatures from the

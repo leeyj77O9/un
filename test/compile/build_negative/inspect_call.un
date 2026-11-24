@@ -1,0 +1,12 @@
+use io
+use inspect
+
+class Box
+    value = 1
+
+fn main() -> none
+    b = Box()
+    inspect.setattr(b, "value", 2)
+    io.write(b.value)
+
+main()

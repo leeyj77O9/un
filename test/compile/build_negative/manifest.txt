@@ -13,3 +13,4 @@ dynamic_any_alias.un|not allowed in un build (fully typed mode)
 dynamic_any_field.un|not allowed in un build (fully typed mode)
 dynamic_variadic.un|not allowed in un build (fully typed mode)
 dynamic_untyped_lambda.un|requires a type annotation in un build (fully typed mode)
+inspect_call.un|this program uses a feature that requires the VM runtime
