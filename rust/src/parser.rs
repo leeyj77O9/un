@@ -1288,6 +1288,11 @@ impl Parser {
             TokenType::LBrack => self.parse_list(),
             TokenType::Func => self.parse_lambda(),
             TokenType::Match => self.parse_match(),
+            TokenType::Colon => Err(LangError::new(
+                token.start,
+                token.length,
+                "expected an expression; ':' is only valid as a type annotation or match-pattern label",
+            )),
             _ => Err(LangError::new(
                 token.start,
                 token.length,
