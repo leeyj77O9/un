@@ -1777,6 +1777,16 @@ fn resolve_semantic(analysis: &Analysis, site: &UseSite) -> u32 {
     {
         return def.kind.semantic_token();
     }
+    // Bare builtin calls (`len(...)`, `type(...)`, ...) have no local
+    // definition. Like member calls, colour any use followed by `(` as a
+    // function so semantic tokens do not override the TextMate call colour.
+    let mut cursor = site.end;
+    while cursor < analysis.source.code.len() && analysis.source.code[cursor].is_whitespace() {
+        cursor += 1;
+    }
+    if cursor < analysis.source.code.len() && analysis.source.code[cursor] == '(' {
+        return DefKind::Function.semantic_token();
+    }
     if site.member {
         return DefKind::Property.semantic_token();
     }
@@ -4169,6 +4179,30 @@ mod tests {
             DefKind::TypeParameter.semantic_token(),
             DefKind::TypeAlias.semantic_token()
         );
+    }
+
+    #[test]
+    fn bare_builtin_calls_are_function_tokens() {
+        let analysis = analyze("io.write(type(1), len([1]))", "main.un");
+        let call_token = |name: &str| {
+            analysis
+                .uses
+                .iter()
+                .find(|site| site.name == name)
+                .map(|site| resolve_semantic(&analysis, site))
+                .unwrap_or_else(|| panic!("missing call site: {name}"))
+        };
+        assert_eq!(call_token("type"), SemanticToken::Function as u32);
+        assert_eq!(call_token("len"), SemanticToken::Function as u32);
+        assert_eq!(call_token("write"), SemanticToken::Function as u32);
+
+        let analysis = analyze("a = 1\nio.write(a)", "main.un");
+        let site = analysis
+            .uses
+            .iter()
+            .find(|site| site.name == "a")
+            .expect("missing variable use");
+        assert_eq!(resolve_semantic(&analysis, site), SemanticToken::Variable as u32);
     }
 
     #[test]
