@@ -62,7 +62,7 @@ rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path ru
 # WASM 산출물 (un-playground용)
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --target wasm32-unknown-unknown --manifest-path rust/Cargo.toml -p unvm-playground
 
-# Rust 테스트 (nrt 16 + lib 246 + LSP 21 + playground 8 = 291 passed)
+# Rust 테스트 (nrt 16 + lib 263 + LSP 21 + playground 8 = 308 passed)
 rustup run stable-x86_64-pc-windows-gnu cargo test --release --workspace --manifest-path rust/Cargo.toml
 
 # 전체 테스트 runner ( Positive + Negative + KnownFailures + KnownDivergent 집계 )
@@ -237,8 +237,8 @@ C:\dev\un
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 51 files /
   1638 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
   Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다. (2026-11-23 재측정)
-  그 외 게이트: `cargo test --release --workspace` 291 passed, differential 102 파일 / 0 차이,
-  `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 37/0, exe-diff 65/0.
+  그 외 게이트: `cargo test --release --workspace` 308 passed, differential 102 파일 / 0 차이,
+  `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 38/0, exe-diff 67/0.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).
 - `test/KnownFailures.txt`의 파일은 runner가 KNOWN FAIL로 기록하고 Positive 집계에
@@ -254,8 +254,8 @@ C:\dev\un
   측정은 웜업 + 반복 + 통계(최솟값·중위값·평균·최댓값·표준편차·연산 수)를 사용한다.
   `-Group all`은 6레인(Un VM/Un JIT/Compile Mode/standalone exe/Python/Node)을 측정하고,
   `scripts/bench-report.ps1`이 `bench/report.html`을 생성하며 `-Gate`로 회귀를 검사한다.
-  `BENCHMARK.md`는 측정 시점 커밋을 명시하며(최근 2026-11-24 13:44, `64e4b7e`,
-  Un JIT/Python geomean 4.301x), 결과와 측정 한계는 `docs/guides/BENCHMARK_GUIDE.md`를 참고한다.
+  `BENCHMARK.md`는 측정 시점 커밋을 명시하며(최근 2026-11-24 14:36, `180d3db`,
+  Un JIT/Python geomean 4.424x), 결과와 측정 한계는 `docs/guides/BENCHMARK_GUIDE.md`를 참고한다.
 - 변경 후 최소한 다음을 수행한다.
   1. `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml`
      — 오류 0, 새 경고 0.
