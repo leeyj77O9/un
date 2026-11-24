@@ -2979,7 +2979,12 @@ fn doc_comment(source: &Source, position: usize) -> String {
 /// Compact hover: an optional doc comment followed by a signature code block.
 fn def_hover_markdown(analysis: &Analysis, def: &Def) -> String {
     let mut text = String::new();
-    let doc = doc_comment(&analysis.source, def.start);
+    let mut doc = doc_comment(&analysis.source, def.start);
+    if doc.is_empty() && def.kind == DefKind::Namespace {
+        doc = docs::module(&def.name)
+            .map(str::to_string)
+            .unwrap_or_default();
+    }
     if !doc.is_empty() {
         text.push_str(&doc);
         text.push_str("\n\n");
