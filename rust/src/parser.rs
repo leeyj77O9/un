@@ -268,24 +268,66 @@ impl Parser {
         Ok(annotations)
     }
     fn parse_use_path(&mut self) -> Result<Node, LangError> {
+        // Leading dots make an import explicitly relative to the importing
+        // file. One `.` is one level (`.` = the file's own directory, `..` =
+        // its parent). They are folded into the path text as leading `.`
+        // characters so the existing compiler -> VM -> module::import_file
+        // pipeline keeps working: the VM splits that text on `.` and hands the
+        // resulting (leading-empty) parts to the module resolver, which
+        // interprets the empty prefix as the relative depth. Absolute paths
+        // (`use a.b`) take the unchanged path below and get no `Const::Str`
+        // value, so their behaviour is byte-for-byte identical.
+        let mut depth = 0usize;
+        loop {
+            if self.match_(TokenType::DotDot) {
+                depth += 2;
+            } else if self.match_(TokenType::Dot) {
+                depth += 1;
+            } else {
+                break;
+            }
+        }
+        let mut segments: Vec<String> = Vec::new();
         let mut path = self.parse_identifier()?;
+        segments.push(self.get_text(path.start, path.length));
         while self.match_(TokenType::Dot) {
             if self.current().typ == TokenType::Asterisk {
                 let star = self.next();
+                let start = path.start;
+                let length = len(n(&path), t(&star));
+                let inner = if depth > 0 {
+                    Self::relative_use_path(path, depth, &segments)
+                } else {
+                    path
+                };
                 return Ok(Node::with_children(
-                    path.start,
-                    len(n(&path), t(&star)),
+                    start,
+                    length,
                     NodeKind::Unary,
                     Some(TokenType::Wildcard),
-                    vec![path],
+                    vec![inner],
                 ));
             }
             let member = self.parse_identifier()?;
+            segments.push(self.get_text(member.start, member.length));
             let start = path.start;
             let length = len(n(&path), n(&member));
             path = Node::with_children(start, length, NodeKind::Property, None, vec![path, member]);
         }
+        if depth > 0 {
+            path = Self::relative_use_path(path, depth, &segments);
+        }
         Ok(path)
+    }
+    /// Stamps the relative depth onto a `use` path node. The compiler reads
+    /// `self.text(path_node)` and pushes the result as the `Op::Use` name, so a
+    /// `Const::Str` value here is the only channel that reaches the resolver
+    /// without touching the compiler or VM. Source spans of the identifier
+    /// children stay untouched (typeck/LSP keep reading the plain module name).
+    fn relative_use_path(node: Node, depth: usize, segments: &[String]) -> Node {
+        let mut text = ".".repeat(depth);
+        text.push_str(&segments.join("."));
+        node.with_value(Const::Str(text))
     }
     fn parse_use_imports(&mut self) -> Result<Node, LangError> {
         let mut imports: Vec<Node> = Vec::new();

@@ -258,7 +258,7 @@ pub extern "C" fn unvm_run_embedded(bytes: *const u8, len: usize) -> i32 {
             return 1;
         }
     };
-    match vm.run() {
+    let code = match vm.run() {
         Outcome::Value(_) => {
             world::flush_stdout();
             0
@@ -287,7 +287,13 @@ pub extern "C" fn unvm_run_embedded(bytes: *const u8, len: usize) -> i32 {
             print!("{}\n", panic_display(&o));
             1
         }
-    }
+    };
+    // An embed host may call this entry point repeatedly in one process. The
+    // vendored Cranelift backend leaks JIT code memory on Drop, so free it at
+    // the run boundary just like the CLI (main.rs) and playground do.
+    // Flush above guarantees no in-flight JIT frame remains here.
+    crate::jit_cache::clear();
+    code
 }
 
 #[no_mangle]

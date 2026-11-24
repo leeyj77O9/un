@@ -4988,7 +4988,9 @@ fn list_member_sig(elem: &Ty, name: &str) -> Option<(Vec<Ty>, Vec<String>, usize
         "hpop" => mk(vec![], 0, e.clone()),
         "pop" => mk(vec![("index".into(), int.clone())], 0, e.clone()),
         "map" => mk(vec![("type".into(), Ty::Any)], 1, Ty::list(Ty::Any)),
-        "resize" => mk(vec![("size".into(), int.clone())], 1, Ty::None_),
+        // C# `Resize([Self] List self)` is a no-arg capacity helper; Rust `Vec`
+        // manages capacity itself, so the native dispatch is a no-op.
+        "resize" => mk(vec![], 0, Ty::None_),
         _ => None,
     }
 }

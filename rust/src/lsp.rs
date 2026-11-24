@@ -414,6 +414,10 @@ struct ModuleUse {
     alias: Option<String>,
     imports: Vec<(String, Option<String>)>,
     wildcard: bool,
+    /// Number of leading `.` characters (parser folds `..` into two dots).
+    /// `0` is an absolute import; `1` is the importing file's own directory,
+    /// `2` its parent, and so on — see `module.rs::relative_base`.
+    depth: usize,
     path_start: usize,
     path_end: usize,
     segments: Vec<(usize, usize)>,
@@ -515,7 +519,33 @@ fn module_of(receiver: &str, aliases: &[(String, String)]) -> Option<String> {
     native_catalog().modules.get(receiver).map(|_| receiver.to_string())
 }
 
+/// Counts the leading `.` of a `use` path. The parser keeps identifier spans
+/// unchanged for relative imports (the dots are folded into a `Const::Str`
+/// value), so they have to be read back from the source text. Returns the
+/// depth and the start of the dot run, so the whole path can be highlighted.
+fn use_path_depth(source: &Source, first_segment: usize) -> (usize, usize) {
+    let code = &source.code;
+    let mut cursor = first_segment.min(code.len());
+    let mut run_start = cursor;
+    let mut depth = 0;
+    loop {
+        let mut probe = cursor;
+        while probe > 0 && code[probe - 1].is_whitespace() {
+            probe -= 1;
+        }
+        if probe == 0 || code[probe - 1] != '.' {
+            break;
+        }
+        depth += 1;
+        cursor = probe - 1;
+        run_start = cursor;
+    }
+    (depth, run_start)
+}
+
 /// Collects `a` / `b` / `c` (with their spans) from a `use a.b.c` path node.
+/// Leading dots are *not* part of the AST, so `module_use_from_node` records
+/// their count separately via `use_path_depth`.
 fn collect_use_path(
     node: &Node,
     source: &Source,
@@ -555,7 +585,8 @@ fn module_use_from_node(node: &Node, source: &Source) -> Option<ModuleUse> {
     if parts.is_empty() || segments.is_empty() {
         return None;
     }
-    let path_start = segments[0].0;
+    let (depth, dots_start) = use_path_depth(source, segments[0].0);
+    let path_start = dots_start;
     let path_end = segments[segments.len() - 1].1;
     let mut alias = None;
     let mut imports = Vec::new();
@@ -595,6 +626,7 @@ fn module_use_from_node(node: &Node, source: &Source) -> Option<ModuleUse> {
         alias,
         imports,
         wildcard,
+        depth,
         path_start,
         path_end,
         segments,
@@ -1460,15 +1492,18 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
             let rest = rest.trim();
             let path = word(rest);
             if !path.is_empty() {
+                // The fallback text scanner sees the dots (the AST does not).
+                // Strip them from `parts`/`segments` just like parse_use_path
+                // and keep their count for the module resolver.
+                let depth = path.chars().take_while(|ch| *ch == '.').count();
                 let path_start = line_start + indent_chars + "use ".len();
                 let path_end = path_start + path.chars().count();
                 namespace_spans.push((path_start, path_end));
-                let root = path.split('.').next().unwrap_or(path).to_string();
                 let mut segments = Vec::new();
-                let mut cursor = path_start;
+                let mut cursor = path_start + depth;
                 let mut parts = Vec::new();
                 for part in path.split('.') {
-                    if part == "*" {
+                    if part.is_empty() || part == "*" {
                         continue;
                     }
                     let width = part.chars().count();
@@ -1476,6 +1511,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
                     parts.push(part.to_string());
                     cursor += width + 1;
                 }
+                let root = parts.first().cloned().unwrap_or_default();
                 let alias = rest.split_once(" as ").map(|(_, alias)| alias.trim().to_string());
                 if let Some(alias) = &alias {
                     let alias_start =
@@ -1490,6 +1526,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
                     alias,
                     imports: Vec::new(),
                     wildcard: path.contains(".*"),
+                    depth,
                     path_start,
                     path_end,
                     segments,
@@ -2068,6 +2105,42 @@ fn resolve_module_root(
     None
 }
 
+/// Base directory of an explicit relative import — the LSP counterpart of
+/// `module.rs::relative_base`. Depth 1 is the importing file's directory,
+/// depth 2 its parent, etc. Reaching the filesystem root keeps that root as
+/// the base. Unlike `resolve_module_root`, there is deliberately no workspace
+/// or current-directory fallback here.
+fn relative_base(doc_uri: &str, depth: usize) -> Option<PathBuf> {
+    if depth == 0 {
+        return None;
+    }
+    let mut base = uri_to_path(doc_uri)?.parent()?.to_path_buf();
+    for _ in 1..depth {
+        if let Some(parent) = base.parent() {
+            base = parent.to_path_buf();
+        } else {
+            break;
+        }
+    }
+    Some(base)
+}
+
+/// Resolves a `use` declaration against the correct base: relative imports
+/// walk up from the importing document, absolute ones keep the original
+/// "source dir -> workspace/CWD" lookup order.
+fn resolve_use_root(
+    doc_uri: &str,
+    decl: &ModuleUse,
+    workspace_roots: &[PathBuf],
+) -> Option<PathBuf> {
+    if decl.depth > 0 {
+        let base = relative_base(doc_uri, decl.depth)?;
+        module_candidate(&base, &decl.parts)
+    } else {
+        resolve_module_root(doc_uri, &decl.parts, workspace_roots)
+    }
+}
+
 /// Concrete `.un` files behind a module root: the file itself, `dir/mod.un`,
 /// or every `.un` file in a directory (sorted, mirroring `module.rs::load`).
 fn module_files(root: &Path) -> Vec<PathBuf> {
@@ -2227,7 +2300,7 @@ impl Server {
             .module_uses
             .iter()
             .filter_map(|decl| {
-                let root = resolve_module_root(uri, &decl.parts, &self.workspace_roots)?;
+                let root = resolve_use_root(uri, decl, &self.workspace_roots)?;
                 let files = module_files(&root);
                 if files.is_empty() {
                     return None;
@@ -2411,6 +2484,11 @@ impl Server {
                 if offset >= start && offset < end {
                     let root = if index + 1 == resolved.decl.parts.len() {
                         resolved.root.clone()
+                    } else if resolved.decl.depth > 0 {
+                        // Intermediate segments of a relative path walk up
+                        // from the importing document, never the workspace.
+                        let base = relative_base(uri, resolved.decl.depth)?;
+                        module_candidate(&base, &resolved.decl.parts[..=index])?
                     } else {
                         resolve_module_root(
                             uri,
@@ -2449,20 +2527,26 @@ impl Server {
         let mut diagnostics = Vec::new();
         for usage in &analysis.module_uses {
             if usage.parts.is_empty()
-                || (usage.parts.len() == 1
+                || (usage.depth == 0
+                    && usage.parts.len() == 1
                     && native_catalog().modules.contains_key(&usage.parts[0]))
             {
                 continue;
             }
-            if resolve_module_root(uri, &usage.parts, &self.workspace_roots).is_some() {
+            if resolve_use_root(uri, usage, &self.workspace_roots).is_some() {
                 continue;
             }
             let length = usage.path_end.saturating_sub(usage.path_start).max(1);
+            let label = if usage.depth > 0 {
+                format!("{}{}", ".".repeat(usage.depth), usage.parts.join("."))
+            } else {
+                usage.parts.join(".")
+            };
             diagnostics.push(diagnostic_json(
                 &analysis.source,
                 usage.path_start,
                 length,
-                &format!("module '{}' not found", usage.parts.join(".")),
+                &format!("module '{label}' not found"),
             ));
         }
         if !diagnostics.is_empty() {
@@ -4221,6 +4305,120 @@ mod tests {
                 .unwrap_or(false)),
             "missing module diagnostic absent: {diagnostics:?}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn relative_use_depth_is_recorded_from_ast_and_fallback() {
+        // FE-01's parser keeps identifier spans and stores the depth in a
+        // Const::Str value. Build that shape directly so the LSP side is
+        // covered even when the parser change is not in this worktree yet.
+        let text = "use .util as u\n";
+        let source = Source::new("main.un", text);
+        let path = Node::new(5, 4, NodeKind::Identifier)
+            .with_value(unvm::ast::Const::Str(".util".to_string()));
+        let alias = Node::new(13, 1, NodeKind::Identifier);
+        let node = Node::with_children(0, 14, NodeKind::Use, None, vec![path, alias]);
+        let usage = module_use_from_node(&node, &source).expect("relative use node");
+        assert_eq!(usage.depth, 1);
+        assert_eq!(usage.parts, vec!["util"]);
+        assert_eq!(usage.binding(), Some("u"));
+        assert_eq!(source.span(usage.path_start, 5 - usage.path_start), ".");
+        let segments: Vec<String> = usage
+            .segments
+            .iter()
+            .map(|&(start, end)| source.span(start, end - start))
+            .collect();
+        assert_eq!(segments, vec!["util"]);
+
+        let analysis = fallback_analysis(
+            "use ..pkg.util as p\nfn broken(\n",
+            "main.un",
+            None,
+        );
+        assert_eq!(analysis.module_uses.len(), 1);
+        let usage = &analysis.module_uses[0];
+        assert_eq!(usage.depth, 2);
+        assert_eq!(usage.parts, vec!["pkg", "util"]);
+        assert_eq!(usage.binding(), Some("p"));
+        assert_eq!(
+            analysis.source.span(usage.path_start, usage.path_end - usage.path_start),
+            "..pkg.util"
+        );
+        let segments: Vec<String> = usage
+            .segments
+            .iter()
+            .map(|&(start, end)| analysis.source.span(start, end - start))
+            .collect();
+        assert_eq!(segments, vec!["pkg", "util"]);
+    }
+
+    #[test]
+    fn relative_uses_resolve_from_document_directory_only() {
+        let root = std::env::temp_dir().join(format!("un-lsp-relative-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sub = root.join("work").join("sub");
+        let pkg = root.join("work").join("pkg");
+        let decoy = root.join("decoy");
+        std::fs::create_dir_all(&sub).expect("temp sub dir");
+        std::fs::create_dir_all(&pkg).expect("temp pkg dir");
+        std::fs::create_dir_all(&decoy).expect("temp decoy dir");
+        let sibling = sub.join("util.un");
+        let parent = pkg.join("util.un");
+        std::fs::write(&sibling, "fn helper(x: int) -> int\n    -> x + 1\n")
+            .expect("sibling module");
+        std::fs::write(&parent, "fn other(x: int) -> int\n    -> x + 2\n")
+            .expect("parent module");
+        std::fs::write(decoy.join("util.un"), "fn decoy() -> int\n    -> 0\n")
+            .expect("decoy module");
+        let main = sub.join("main.un");
+        let text = "use .util as u\nuse ..pkg.util as p\nv = u.helper(1)\nw = p.other(2)\n";
+        std::fs::write(&main, text).expect("temp main file");
+        let main_uri = path_to_uri(&main);
+        let mut server = Server::new();
+        // A decoy workspace root must never win over the explicit dot prefix.
+        server.workspace_roots.push(decoy);
+        server.documents.insert(main_uri.clone(), text.to_string());
+        server.analyze_uri(&main_uri).expect("main analysis");
+
+        let uses = server.resolved_uses(&main_uri).expect("relative uses missing");
+        assert_eq!(uses.len(), 2);
+        assert_eq!(uses[0].decl.depth, 1);
+        assert_eq!(uses[1].decl.depth, 2);
+        assert_eq!(path_key(&uses[0].files[0]), path_key(&sibling));
+        assert_eq!(path_key(&uses[1].files[0]), path_key(&parent));
+
+        let items = server.user_module_completions("u", &main_uri).expect("`.util` completion");
+        let labels: Vec<&str> = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Json::as_str))
+            .collect();
+        assert!(labels.contains(&"helper"), "sibling member missing: {labels:?}");
+        assert!(!labels.contains(&"decoy"), "workspace fallback leaked: {labels:?}");
+        let items = server.user_module_completions("p", &main_uri).expect("`..pkg` completion");
+        let labels: Vec<&str> = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Json::as_str))
+            .collect();
+        assert!(labels.contains(&"other"), "parent member missing: {labels:?}");
+
+        let (target, _, def) = server
+            .module_member_target(&main_uri, "u", "helper")
+            .expect("sibling definition missing");
+        assert_eq!(target, path_to_uri(&sibling));
+        assert_eq!(def.name, "helper");
+        let (target, _, def) = server
+            .module_member_target(&main_uri, "p", "other")
+            .expect("parent definition missing");
+        assert_eq!(target, path_to_uri(&parent));
+        assert_eq!(def.name, "other");
+
+        // Navigating the intermediate `pkg` segment also walks up one level.
+        let (target, _, _, _) = server
+            .use_segment_target(&main_uri, text.find("pkg").expect("pkg segment"))
+            .expect("relative segment definition missing");
+        assert_eq!(target, path_to_uri(&parent));
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

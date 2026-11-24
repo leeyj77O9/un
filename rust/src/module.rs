@@ -28,18 +28,31 @@ pub fn import_file(
     trace: Option<context::Traces>,
     target_scope: &Scope,
 ) -> Result<(), ModuleError> {
+    // The VM splits the `Op::Use` name on `.`. An explicit relative import is
+    // encoded by the parser as leading empty segments: `use .foo` arrives as
+    // ["", "foo"], `use ..pkg` as ["", "", "pkg"]. Absolute paths have no
+    // empty prefix and keep the original "source dir -> working dir" lookup.
+    let depth = parts.iter().take_while(|part| part.is_empty()).count();
+    let name_parts = &parts[depth..];
+
     let mut joined = std::path::PathBuf::new();
-    for part in parts {
+    for part in name_parts {
         joined.push(part);
     }
-    let full = match resolve_module(&joined, source_path) {
+    let resolved = if depth > 0 {
+        resolve_relative_module(&joined, source_path, depth)
+    } else {
+        resolve_module(&joined, source_path)
+    };
+    let full = match resolved {
         Some(p) => p,
         None => {
-
-            let message = std::path::Path::new(&world::path())
-                .join(&joined)
-                .display()
-                .to_string();
+            let searched = if depth > 0 {
+                relative_base(source_path, depth).join(&joined)
+            } else {
+                std::path::Path::new(&world::path()).join(&joined)
+            };
+            let message = searched.display().to_string();
             return Err(ModuleError::Panic(obj::panic(
                 "panic",
                 format!("module '{message}' not found"),
@@ -47,8 +60,8 @@ pub fn import_file(
         }
     };
     let map = load(&full, trace)?;
-    let module_name = parts.join(".");
-    let object_name = parts.last().cloned().unwrap_or_default();
+    let module_name = name_parts.join(".");
+    let object_name = name_parts.last().cloned().unwrap_or_default();
     modules::import_map(&map, &module_name, &object_name, module_alias, imports, target_scope)
         .map_err(ModuleError::Panic)
 }
@@ -181,6 +194,39 @@ fn resolve_module(joined: &std::path::Path, source_path: &str) -> Option<String>
         return Some(full.display().to_string());
     }
     None
+}
+/// Base directory for an explicit relative import. `.` (depth 1) resolves in
+/// the importing file's own directory; every additional level walks one
+/// parent directory (`..` = one parent). Reaching the filesystem root keeps
+/// the root as the base instead of panicking on a missing parent.
+fn relative_base(source_path: &str, depth: usize) -> std::path::PathBuf {
+    let mut base = std::path::Path::new(source_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .to_path_buf();
+    for _ in 1..depth {
+        base = base
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""))
+            .to_path_buf();
+    }
+    base
+}
+/// Resolve an explicit relative import strictly against the directory
+/// selected by `relative_base`. Unlike absolute imports it does not fall back
+/// to the working directory: the leading dots are an explicit request for a
+/// specific location.
+fn resolve_relative_module(
+    joined: &std::path::Path,
+    source_path: &str,
+    depth: usize,
+) -> Option<String> {
+    let candidate = relative_base(source_path, depth).join(joined);
+    if module_exists(&candidate) {
+        Some(candidate.display().to_string())
+    } else {
+        None
+    }
 }
 fn module_exists(p: &std::path::Path) -> bool {
     let text = p.display().to_string();

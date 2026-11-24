@@ -120,8 +120,12 @@ pub enum TirTy {
     ListGen(ObjElem),
     /// A dict whose key/value kinds are carried explicitly.
     DictGen(ObjElem, ObjElem),
-    /// A set whose element kind is carried explicitly.
+    /// A set whose element kind is carried explicitly (NRT tag 15).
     SetGen(ObjElem),
+    /// A tuple whose element kind is carried explicitly (NRT tag 14).
+    /// Tuples are list-backed at construction but carry a distinct handle tag
+    /// so codegen can dispatch through `("tuple", "new" | "get")`.
+    TupleGen(ObjElem),
 }
 
 /// Collapse a TIR type into the element kind used by native collections.
@@ -239,10 +243,22 @@ fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
             }
         }
         Ty::Set(elem) => tir_ty_from_ty(classes, elem).map(|t| TirTy::SetGen(elem_of_tir(t))),
-        // NRT has no tuple tag: a tuple literal is represented by the existing
-        // list object ABI. Element kinds are left opaque so mixed tuples and
-        // homogeneous ones share one representation.
-        Ty::Tuple(_) => Some(TirTy::ListGen(ObjElem::Obj)),
+        // An NRT tuple handle (tag 14) carries its element kind explicitly.
+        // Derive that kind from `Ty::Tuple` so homogeneous tuples (and empty
+        // literals with an annotated tuple type) keep the exact element kind
+        // instead of degrading to an opaque handle.
+        Ty::Tuple(items) => {
+            let mut elem: Option<ObjElem> = None;
+            for item in items.iter() {
+                let next = tir_ty_from_ty(classes, item).map_or(ObjElem::Obj, elem_of_tir);
+                elem = Some(match elem {
+                    None => next,
+                    Some(prev) if prev == next => prev,
+                    _ => ObjElem::Obj,
+                });
+            }
+            Some(TirTy::TupleGen(elem.unwrap_or(ObjElem::Obj)))
+        }
         Ty::Func { .. } => Some(TirTy::Lambda(u32::MAX)),
         // Dynamic values are boxed NObj handles. Reusing `TirTy::Obj` keeps
         // the ABI table single-sourced: object handles are I64 bits in both
@@ -663,7 +679,7 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
                 | TirTy::Bytes
                 | TirTy::ListGen(_)
                 | TirTy::DictGen(_, _)
-                | TirTy::SetGen(_)
+                | TirTy::SetGen(_) | TirTy::TupleGen(_)
         )
     }
     fn expr_ok(e: &TirExpr) -> bool {
@@ -1143,7 +1159,7 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
 pub fn fn_uses_heap(f: &TirFn) -> bool {
     if f.locals
         .iter()
-        .any(|t| matches!(t, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)))
+        .any(|t| matches!(t, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) | TirTy::TupleGen(_)))
     {
         return true;
     }
@@ -1511,12 +1527,6 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     visit(child, checked, source, locals, handles, out);
                 }
             }
-            // ARC-00: tuple/set literals lower to list handles in NRT, so their
-            // `io.write` display differs from the VM's `(..)`/`{..}`. Keep them
-            // on the VM/`--embed` path until dedicated tags are approved.
-            NodeKind::Set => {
-                tirdbg_reject(node); *out = false;
-            }
             NodeKind::Unary => {
                 let Some(op) = node.op else {
                     tirdbg_reject(node); *out = false;
@@ -1717,7 +1727,10 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     visit(child, checked, source, locals, handles, out);
                 }
             }
-            NodeKind::Dict | NodeKind::List => {
+            // ARC-00 approved tuple/set plain-build support; both literal
+            // kinds are lowered by `lower_expr` and dispatched through NRT's
+            // existing `unrt_call_native` bridge.
+            NodeKind::Dict | NodeKind::List | NodeKind::Set | NodeKind::Tuple => {
                 for child in &node.children {
                     visit(child, checked, source, locals, handles, out);
                 }
@@ -2148,6 +2161,7 @@ enum CoreTy {
     ListGen(ObjElem),
     DictGen(ObjElem, ObjElem),
     SetGen(ObjElem),
+    TupleGen(ObjElem),
     None_,
 }
 
@@ -2175,6 +2189,7 @@ impl From<TirTy> for CoreTy {
             TirTy::ListGen(e) => CoreTy::ListGen(e),
             TirTy::DictGen(k, v) => CoreTy::DictGen(k, v),
             TirTy::SetGen(e) => CoreTy::SetGen(e),
+            TirTy::TupleGen(e) => CoreTy::TupleGen(e),
         }
     }
 }
@@ -3099,6 +3114,7 @@ fn tir_ty_of(ty: CoreTy) -> Result<TirTy, String> {
         CoreTy::ListGen(e) => Ok(TirTy::ListGen(e)),
         CoreTy::DictGen(k, v) => Ok(TirTy::DictGen(k, v)),
         CoreTy::SetGen(e) => Ok(TirTy::SetGen(e)),
+        CoreTy::TupleGen(e) => Ok(TirTy::TupleGen(e)),
         CoreTy::None_ => {
             Err("cannot infer a concrete local type in the core".to_string())
         }
@@ -3526,6 +3542,26 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                         elem_cty,
                     ))
                 }
+                CoreTy::TupleGen(elem) | CoreTy::SetGen(elem) => {
+                    let (key, kty) = lower_expr(key_node, ctx)?;
+                    if kty != CoreTy::Int {
+                        return Err("tuple/set index must be an int".to_string());
+                    }
+                    let module = if matches!(tty, CoreTy::TupleGen(_)) { "tuple" } else { "set" };
+                    let ret = tir_of_elem(elem);
+                    Ok((
+                        TirExpr::Located {
+                            span: (node.start, node.length),
+                            inner: Box::new(TirExpr::NativeCallExpr {
+                                module: module.into(),
+                                member: "get".into(),
+                                args: vec![target, key],
+                                ret,
+                            }),
+                        },
+                        CoreTy::from(ret),
+                    ))
+                }
                 _ => {
                     return Err(
                         "only list/dict indexing is supported in the core".to_string()
@@ -3630,41 +3666,11 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             Ok((TirExpr::List(bytes), CoreTy::ListInt))
         }
         NodeKind::Tuple => {
-            // ARC-00: no dedicated tuple tag in NRT yet; VM displays `(..)` while
-            // a list-backed lowering would display `[..]`. Reject in core so the
-            // program stays on the VM/`--embed` path (byte-identical).
-            return Err("tuple literals require the VM runtime; rebuild with `un build --embed`".to_string());
-            #[allow(unreachable_code)]
-            // No dedicated tuple tag in NRT: reuse the list object ABI.
-            let mut elements = Vec::with_capacity(node.children.len());
-            let mut elem_cty: Option<CoreTy> = None;
-            for child in &node.children {
-                let (e, c) = lower_expr(child, ctx)?;
-                elem_cty = Some(match elem_cty {
-                    None => c,
-                    Some(prev) if prev == c => prev,
-                    _ => CoreTy::Obj,
-                });
-                elements.push(e);
-            }
-            match elem_cty {
-                None => Ok((TirExpr::EmptyCollection { ty: TirTy::ListGen(ObjElem::Obj) }, CoreTy::ListGen(ObjElem::Obj))),
-                Some(c) => {
-                    let ret = match c {
-                        CoreTy::Int => CoreTy::ListInt,
-                        CoreTy::Float => CoreTy::ListFloat,
-                        CoreTy::Class(id) => CoreTy::ListClass(id),
-                        CoreTy::Lambda(_) => CoreTy::ListLambda,
-                        other => CoreTy::ListGen(elem_of_core(other)),
-                    };
-                    Ok((TirExpr::List(elements), ret))
-                }
-            }
-        }
-        NodeKind::Set => {
-            // NRT reserves but does not yet expose a Set tag: represent set
-            // literals with the list object ABI. Duplicate elements are not
-            // deduplicated; annotate `set[T]` only for iteration/len use.
+            // NRT tag 14: build a temporary list of boxed elements, then wrap
+            // it with `("tuple", "new")` through the existing native bridge.
+            // The exact element kind comes from the literal (or, for an empty
+            // literal, from the annotated `Ty::Tuple` via
+            // `lower_expr_expected`).
             let mut elements = Vec::with_capacity(node.children.len());
             let mut elem: Option<ObjElem> = None;
             for child in &node.children {
@@ -3677,8 +3683,52 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 });
                 elements.push(e);
             }
-            let elem = elem.ok_or_else(|| "empty set literal cannot be typed in the core".to_string())?;
-            Ok((TirExpr::List(elements), CoreTy::SetGen(elem)))
+            let elem = elem.unwrap_or(ObjElem::Obj);
+            let inner = if elements.is_empty() {
+                TirExpr::EmptyCollection { ty: TirTy::ListGen(elem) }
+            } else {
+                TirExpr::List(elements)
+            };
+            Ok((
+                TirExpr::NativeCallExpr {
+                    module: "tuple".into(),
+                    member: "new".into(),
+                    args: vec![inner],
+                    ret: TirTy::TupleGen(elem),
+                },
+                CoreTy::TupleGen(elem),
+            ))
+        }
+        NodeKind::Set => {
+            // NRT tag 15: dedup and first-occurrence ordering are implemented
+            // by `("set", "new")` in the native runtime.
+            let mut elements = Vec::with_capacity(node.children.len());
+            let mut elem: Option<ObjElem> = None;
+            for child in &node.children {
+                let (e, c) = lower_expr(child, ctx)?;
+                let next = elem_of_core(c);
+                elem = Some(match elem {
+                    None => next,
+                    Some(prev) if prev == next => prev,
+                    _ => ObjElem::Obj,
+                });
+                elements.push(e);
+            }
+            let elem = elem.unwrap_or(ObjElem::Obj);
+            let inner = if elements.is_empty() {
+                TirExpr::EmptyCollection { ty: TirTy::ListGen(elem) }
+            } else {
+                TirExpr::List(elements)
+            };
+            Ok((
+                TirExpr::NativeCallExpr {
+                    module: "set".into(),
+                    member: "new".into(),
+                    args: vec![inner],
+                    ret: TirTy::SetGen(elem),
+                },
+                CoreTy::SetGen(elem),
+            ))
         }
         NodeKind::Property => {
             let receiver = node
@@ -3743,9 +3793,10 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
 }
 
 /// Lower an expression with the binding's declared type available. Typeck
-/// gives `[]` / `{}` the inferred `any` element type but records the annotated
-/// type on the binding; TIR uses that expected type to emit an empty collection
-/// with concrete element kinds instead of rejecting the literal.
+/// gives `[]` / `{}` (and empty tuple/set literals) the inferred `any` element
+/// type but records the annotated type on the binding; TIR uses that expected
+/// type to emit an empty collection with the exact element kind from
+/// `Ty::Tuple` / `Ty::Set` instead of a hardcoded `TirTy::ListInt`.
 fn lower_expr_expected(
     node: &Node,
     ctx: &mut LowerCtx,
@@ -3753,7 +3804,9 @@ fn lower_expr_expected(
 ) -> Result<(TirExpr, CoreTy), String> {
     let is_empty_list = node.kind == NodeKind::List && node.children.is_empty();
     let is_empty_dict = node.kind == NodeKind::Dict && node.children.is_empty();
-    if !is_empty_list && !is_empty_dict {
+    let is_empty_tuple = node.kind == NodeKind::Tuple && node.children.is_empty();
+    let is_empty_set = node.kind == NodeKind::Set && node.children.is_empty();
+    if !is_empty_list && !is_empty_dict && !is_empty_tuple && !is_empty_set {
         return lower_expr(node, ctx);
     }
     let compatible = expected.filter(|ty| {
@@ -3763,6 +3816,10 @@ fn lower_expr_expected(
                 TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)
                     | TirTy::ListLambda | TirTy::ListGen(_)
             )
+        } else if is_empty_tuple {
+            matches!(ty, TirTy::TupleGen(_))
+        } else if is_empty_set {
+            matches!(ty, TirTy::SetGen(_))
         } else {
             matches!(
                 ty,
@@ -3770,7 +3827,18 @@ fn lower_expr_expected(
             )
         }
     });
-    let ty = compatible.unwrap_or(TirTy::Obj);
+    let ty = compatible.unwrap_or_else(|| {
+        // An unannotated empty tuple/set still has a well-defined lowering:
+        // both carry an opaque element kind until a `Ty::Tuple` / `Ty::Set`
+        // annotation supplies the precise one.
+        if is_empty_tuple {
+            TirTy::TupleGen(ObjElem::Obj)
+        } else if is_empty_set {
+            TirTy::SetGen(ObjElem::Obj)
+        } else {
+            TirTy::Obj
+        }
+    });
     if ty == TirTy::Obj {
         return Err("empty list/dict literal needs an annotated list/dict type in the core".to_string());
     }
@@ -4186,7 +4254,7 @@ fn lower_list_method_stmt(node: &Node, ctx: &mut LowerCtx) -> Result<Option<TirS
     let member_node = callee.children.get(1).ok_or_else(|| "call without a member".to_string())?;
     let member = ctx.source.span(member_node.start, member_node.length).to_string();
     match member.as_str() {
-        "add" | "push" | "insert" | "reverse" | "sort" | "clear" => {}
+        "add" | "push" | "insert" | "reverse" | "sort" | "clear" | "resize" => {}
         _ => return Ok(None),
     }
     let head = callee.children.first().ok_or_else(|| "call without a receiver".to_string())?;
@@ -4229,6 +4297,18 @@ fn lower_list_method_stmt(node: &Node, ctx: &mut LowerCtx) -> Result<Option<TirS
                 return Err("'clear' takes no arguments".to_string());
             }
             Ok(Some(TirStmt::ListClear { receiver }))
+        }
+        "resize" => {
+            if !args.is_empty() {
+                return Err("'resize' takes no arguments".to_string());
+            }
+            // C# `Resize` was an internal capacity helper; `Vec` grows itself.
+            // NRT exposes a no-op `("list","resize")` dispatch returning none.
+            Ok(Some(TirStmt::NativeCall {
+                module: "list".into(),
+                member: "resize".into(),
+                args: vec![receiver],
+            }))
         }
         _ => Ok(None),
     }
@@ -4611,7 +4691,8 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         match arg_ty {
             CoreTy::Str | CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_)
             | CoreTy::DictStrInt | CoreTy::DictStrFloat | CoreTy::DictIntInt
-            | CoreTy::ListGen(_) | CoreTy::DictGen(_, _) | CoreTy::SetGen(_) => {}
+            | CoreTy::ListGen(_) | CoreTy::DictGen(_, _) | CoreTy::SetGen(_)
+            | CoreTy::TupleGen(_) => {}
             _ => return Err("len() requires a string or collection in the core".to_string()),
         }
         return Ok((TirExpr::Len(Box::new(arg)), CoreTy::Int));
@@ -4715,7 +4796,7 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 (Some(prev), Some(tty)) if elem_of_tir(prev) == elem_of_tir(tty) => Some(prev),
                 _ => Some(TirTy::Obj),
             });
-            CoreTy::ListGen(elem.map_or(ObjElem::Obj, elem_of_tir))
+            CoreTy::TupleGen(elem.map_or(ObjElem::Obj, elem_of_tir))
         }
         Ty::Set(elem) => match tir_ty_from_ty(ctx.classes, elem) {
             Some(tty) => CoreTy::SetGen(elem_of_tir(tty)),
@@ -4911,6 +4992,14 @@ fn ty_to_tir_simple(ty: &Ty) -> Result<TirTy, String> {
             (other, _) => return Err(format!("dict[{}, ...] field is not supported", other.display())),
         },
         Ty::Set(elem) => TirTy::SetGen(elem_of_tir_field(elem)),
+        Ty::Tuple(items) => {
+            let elem = items.iter().fold(None, |acc, t| match acc {
+                None => Some(elem_of_tir_field(t)),
+                Some(prev) if prev == elem_of_tir_field(t) => Some(prev),
+                _ => Some(ObjElem::Obj),
+            });
+            TirTy::TupleGen(elem.unwrap_or(ObjElem::Obj))
+        }
         Ty::Class(_) => TirTy::Class(u16::MAX),
         // Dynamic fields are boxed NObj handles, like dynamic params/returns.
         Ty::Any | Ty::Union(_) | Ty::Unknown => TirTy::Obj,
@@ -5019,7 +5108,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             match expr_ty(arg, f, program, locals)? {
                 TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)
                 | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt
-                | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
+                | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) | TirTy::TupleGen(_) => {
                     Ok(TirTy::Int)
                 }
                 _ => Err("len() requires a string or collection in the core".to_string()),
@@ -5280,7 +5369,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             }
             let numeric_pair = matches!((a, b), (TirTy::Int, TirTy::Int) | (TirTy::Int, TirTy::Float) | (TirTy::Float, TirTy::Int) | (TirTy::Float, TirTy::Float));
             if numeric_pair
-                || (same_ty(a, b) && !matches!(a, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)))
+                || (same_ty(a, b) && !matches!(a, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::Class(_) | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) | TirTy::TupleGen(_)))
             {
                 return Ok(TirTy::Bool);
             }
@@ -5298,7 +5387,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Bytes => Err("negation of bytes".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
                     | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda
-                    | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
+                    | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) | TirTy::TupleGen(_) => {
                         Err("negation of collection or class instance".to_string())
                     }
                 },
@@ -5310,7 +5399,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
                     TirTy::Bytes => Err("'not' requires a bool or int".to_string()),
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
                     | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda
-                    | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => {
+                    | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) | TirTy::TupleGen(_) => {
                         Err("'not' requires a bool or int".to_string())
                     }
                 },
@@ -5372,6 +5461,7 @@ fn param_name(ty: TirTy) -> &'static str {
         TirTy::ListGen(_) => "list",
         TirTy::DictGen(_, _) => "dict",
         TirTy::SetGen(_) => "set",
+        TirTy::TupleGen(_) => "tuple",
     }
 }
 
@@ -5725,7 +5815,7 @@ mod abi_tests {
             | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat
             | TirTy::DictIntInt | TirTy::Class(_) | TirTy::ErrorObj
             | TirTy::Lambda(_) | TirTy::ListLambda | TirTy::Obj
-            | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) => 3,
+            | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) | TirTy::TupleGen(_) => 3,
         }
     }
 

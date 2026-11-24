@@ -1,6 +1,9 @@
 //! List operations.
 
-use crate::obj::{alloc, cmp_obj, eq_obj, err, obj, obj_mut, unrt_obj_float, unrt_obj_int, NObj};
+use crate::obj::{
+    alloc, cmp_obj, eq_obj, err, obj, obj_mut, seq_len, unrt_obj_float, unrt_obj_int,
+    unrt_obj_none, NObj,
+};
 
 pub(crate) unsafe fn items(p: u64) -> &'static mut Vec<u64> {
     &mut *(obj(p).b as *mut Vec<u64>)
@@ -23,6 +26,8 @@ pub extern "C" fn unrt_len(o: u64) -> u64 {
             3 => obj(o).a,
             6 => crate::strings::str_of(o).chars().count() as i64,
             7 => crate::dict::len(o),
+            // Tuple/Set lengths are mirrored in `b` by `obj::seq_new`.
+            14 | 15 => seq_len(o),
             _ => 0,
         }
     };
@@ -410,6 +415,12 @@ pub(crate) fn dispatch(module: &str, member: &str, args: &[u64]) -> Option<u64> 
             set_slice(*list, *value, *start, *end, *step)
         }
         ("clear", [list]) => clear(*list),
+        // VM `native::members::list_resize` is a no-op capacity hint that
+        // validates the receiver and returns `none` (tag 4). The `size`
+        // argument, if any, is ignored exactly as in the VM.
+        ("resize", [list, ..]) => {
+            if unsafe { obj(*list).tag } == 3 { unrt_obj_none() } else { err("expected 'list' object") }
+        }
         _ => return None,
     };
     Some(out)
@@ -554,6 +565,22 @@ mod tests {
         );
         assert_eq!(got, xs);
         assert_eq!(elems(xs), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn resize_is_a_noop_returning_tag_four_none() {
+        let xs = list_of(&[1, 2, 3]);
+        let got = crate::native::unrt_call_native(
+            b"list\0".as_ptr(), 4, b"resize\0".as_ptr(), 6,
+            [xs, unrt_obj_int(10)].as_ptr(), 2,
+        );
+        assert_eq!(unsafe { obj(got).tag }, 4);
+        assert_eq!(elems(xs), [1, 2, 3]);
+        let bad = crate::native::unrt_call_native(
+            b"list\0".as_ptr(), 4, b"resize\0".as_ptr(), 6,
+            [unrt_obj_int(1)].as_ptr(), 1,
+        );
+        assert_eq!(display(bad), "expected 'list' object");
     }
 
     #[test]

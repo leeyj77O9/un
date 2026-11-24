@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 use crate::runtime::collections;
 use crate::runtime::collections::KeyMap;
@@ -573,6 +573,15 @@ pub unsafe extern "C" fn un_instance_int_set(
 pub fn parents(o: &Obj) -> Vec<Obj> {
     o.borrow().parents.clone()
 }
+/// Borrow one parent without cloning the whole `Vec<Obj>` vector.
+///
+/// The borrow ends before the caller runs any user code, so re-entrant
+/// attribute lookups cannot trip a `RefCell` borrow conflict. Index 0 is the
+/// object itself, matching the convention used by `parents`.
+fn parent_at(o: &Obj, index: usize) -> Option<Obj> {
+    let parents: Ref<'_, [Obj]> = Ref::map(o.borrow(), |d| d.parents.as_slice());
+    parents.get(index).cloned()
+}
 pub fn base_chain(o: &Obj) -> Vec<Obj> {
     let mut seen: Vec<Obj> = Vec::new();
     let mut queue: Vec<Obj> = Vec::new();
@@ -585,8 +594,10 @@ pub fn base_chain(o: &Obj) -> Vec<Obj> {
         }
         seen.push(b.clone());
         queue.push(b.clone());
-        for p in parents(b).iter().skip(1) {
-            push(p, seen, queue);
+        let mut i = 1;
+        while let Some(p) = parent_at(b, i) {
+            push(&p, seen, queue);
+            i += 1;
         }
         if let Some(s) = b.borrow().super_.clone() {
             push(&s, seen, queue);
@@ -595,8 +606,10 @@ pub fn base_chain(o: &Obj) -> Vec<Obj> {
     if let Some(s) = o.borrow().super_.clone() {
         push(&s, &mut seen, &mut queue);
     }
-    for p in parents(o).iter().skip(1) {
-        push(p, &mut seen, &mut queue);
+    let mut i = 1;
+    while let Some(p) = parent_at(o, i) {
+        push(&p, &mut seen, &mut queue);
+        i += 1;
     }
     queue
 }
@@ -799,6 +812,33 @@ pub fn get_attr(o: &Obj, name: &str) -> Obj {
     get_attr_from(o, name, o)
 }
 fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
+    get_attr_from_direct(o, name, receiver, None)
+}
+/// `has(o, name)` when `member(o, name)` was already computed. The precomputed
+/// lookup is used instead of re-scanning `o.members`; the superclass and
+/// parent chains are checked exactly as in `has`.
+fn has_with_direct(o: &Obj, name: &str, direct: Option<&Obj>) -> bool {
+    if direct.is_some() {
+        return true;
+    }
+    if let Some(s) = valid_super(o) {
+        if has(&s, name) {
+            return true;
+        }
+    }
+    let mut i = 1;
+    while let Some(p) = parent_at(o, i) {
+        if has(&p, name) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+/// Same resolution as `get_attr_from`, but accepts an already computed
+/// `member(o, name)` so that the `has` check and the recursive lookup do not
+/// scan the same `(object, name)` pair twice.
+fn get_attr_from_direct(o: &Obj, name: &str, receiver: &Obj, direct: Option<Obj>) -> Obj {
     if let Payload::TObj(t) = payload(o) {
         if let Some(class_name) = t.name() {
             if let Some(class_obj) = world::get_class(&class_name) {
@@ -806,7 +846,7 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
             }
         }
     }
-    let direct = member(o, name);
+    let direct = direct.or_else(|| member(o, name));
     if let Some(m) = &direct {
         if is_property(m) {
             return property_get(m, receiver);
@@ -829,8 +869,9 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
         return bind_self(v, receiver);
     }
     if let Some(s) = valid_super(o) {
-        if has(&s, name) {
-            return bind_self(get_attr_from(&s, name, receiver), receiver);
+        let s_direct = member(&s, name);
+        if has_with_direct(&s, name, s_direct.as_ref()) {
+            return bind_self(get_attr_from_direct(&s, name, receiver, s_direct), receiver);
         }
     }
     if let Some(v) = world::try_get_original_value(&type_name(o), name) {
@@ -839,10 +880,13 @@ fn get_attr_from(o: &Obj, name: &str, receiver: &Obj) -> Obj {
         }
         return bind_self(v, receiver);
     }
-    for p in parents(o).iter().skip(1) {
-        if has(p, name) {
-            return bind_self(get_attr_from(p, name, receiver), receiver);
+    let mut i = 1;
+    while let Some(p) = parent_at(o, i) {
+        let p_direct = member(&p, name);
+        if has_with_direct(&p, name, p_direct.as_ref()) {
+            return bind_self(get_attr_from_direct(&p, name, receiver, p_direct), receiver);
         }
+        i += 1;
     }
     err(format!(
         "'{}' object has no attribute '{}'",
@@ -930,7 +974,14 @@ pub fn has(o: &Obj, name: &str) -> bool {
             return true;
         }
     }
-    parents(o).iter().skip(1).any(|p| has(p, name))
+    let mut i = 1;
+    while let Some(p) = parent_at(o, i) {
+        if has(&p, name) {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 pub fn obj_is(o: &Obj, other: &Obj) -> Obj {
     if let Some(v) = try_method(o, "__is__", &[other.clone()]) {

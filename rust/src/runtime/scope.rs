@@ -5,12 +5,48 @@ use crate::runtime::obj;
 use crate::runtime::obj::Obj;
 use crate::runtime::world;
 pub type Scope = Rc<RefCell<ScopeData>>;
+/// Insertion-ordered symbol names backed by shared `Rc<str>` values.
+///
+/// Preseeding allocates one `Rc<str>` per name and shares it with
+/// `ScopeData::symbols` instead of copying the name into two owned `String`s.
+/// `clone()` deliberately yields `Vec<String>` for compatibility with the VM
+/// pattern matcher (`vm/mod.rs`), which consumes owned names; use
+/// [`Names::shared`] to copy the shared representation itself.
+pub struct Names(Vec<Rc<str>>);
+
+impl Names {
+    fn shared(&self) -> Self {
+        Names(self.0.clone())
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn clone(&self) -> Vec<String> {
+        self.0.iter().map(|name| name.to_string()).collect()
+    }
+}
+
+impl std::ops::Deref for Names {
+    type Target = Vec<Rc<str>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Names {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 pub struct ScopeData {
     pub is_function_scope: bool,
     pub parent: Option<Scope>,
-    pub symbols: HashMap<String, usize>,
+    /// Symbol keys are shared `Rc<str>` values so preseeding and snapshots
+    /// bump a refcount instead of reallocating each name.
+    pub symbols: HashMap<Rc<str>, usize>,
 
-    pub order: Vec<String>,
+    pub order: Names,
     pub slots: Vec<Obj>,
 
     pub slot_scope: Option<Scope>,
@@ -23,7 +59,7 @@ pub fn new(parent: Option<Scope>, is_function_scope: bool) -> Scope {
         is_function_scope,
         parent,
         symbols: HashMap::with_capacity(8),
-        order: Vec::new(),
+        order: Names(Vec::new()),
         slots: Vec::new(),
         slot_scope: None,
         owns_slots: false,
@@ -45,8 +81,11 @@ pub fn preseed_slots(scope: &Scope, names: &[String]) -> bool {
     for name in names {
         let idx = d.slots.len();
         d.slots.push(sentinel.clone());
-        d.order.push(name.clone());
-        d.symbols.insert(name.clone(), idx);
+        // One Rc allocation per name, shared between the insertion order and
+        // the symbol table (previously two owned String allocations).
+        let shared: Rc<str> = Rc::from(name.as_str());
+        d.order.push(shared.clone());
+        d.symbols.insert(shared, idx);
     }
     d.owns_slots = true;
     true
@@ -183,8 +222,9 @@ pub fn set_local(scope: &Scope, key: &str, value: Obj) {
         return;
     }
     let idx = d.slots.len();
-    d.symbols.insert(key.to_owned(), idx);
-    d.order.push(key.to_owned());
+    let shared: Rc<str> = Rc::from(key);
+    d.symbols.insert(shared.clone(), idx);
+    d.order.push(shared);
     d.slots.push(value);
 }
 #[cfg(test)]
@@ -197,8 +237,9 @@ pub(crate) fn declare(scope: &Scope, key: &str, initial: Option<Obj>) {
 fn declare_new(scope: &Scope, key: &str, value: Obj) {
     let mut d = scope.borrow_mut();
     let idx = d.slots.len();
-    d.symbols.insert(key.to_owned(), idx);
-    d.order.push(key.to_owned());
+    let shared: Rc<str> = Rc::from(key);
+    d.symbols.insert(shared.clone(), idx);
+    d.order.push(shared);
     d.slots.push(value);
 }
 pub fn local_symbols(scope: &Scope) -> Vec<(String, Obj)> {
@@ -206,9 +247,9 @@ pub fn local_symbols(scope: &Scope) -> Vec<(String, Obj)> {
     d.order
         .iter()
         .filter_map(|name| {
-            let idx = *d.symbols.get(name)?;
+            let idx = *d.symbols.get(&**name)?;
             match d.slots.get(idx) {
-                Some(value) if !world::is_uninitialized(value) => Some((name.clone(), value.clone())),
+                Some(value) if !world::is_uninitialized(value) => Some((name.to_string(), value.clone())),
                 _ => None,
             }
         })
@@ -232,7 +273,7 @@ pub(crate) fn remove(scope: &Scope, key: &str) -> bool {
     let mut d = scope.borrow_mut();
     let removed = d.symbols.remove(key).is_some();
     if removed {
-        d.order.retain(|name| name != key);
+        d.order.retain(|name| name.as_ref() != key);
     }
     removed
 }
@@ -246,7 +287,7 @@ pub fn snapshot(scope: &Scope) -> Scope {
             d.is_function_scope,
             d.parent.clone(),
             d.symbols.clone(),
-            d.order.clone(),
+            d.order.shared(),
             d.slots.clone(),
             d.slot_scope.clone(),
         )

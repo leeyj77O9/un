@@ -6,10 +6,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub(crate) struct NObj {
-    pub(crate) tag: i64, // 0 Int, 1 Float, 2 Bool, 3 List, 4 None, 5 Error, 6 Str, 7 Dict
+    // 0 Int, 1 Float, 2 Bool, 3 List, 4 None, 5 Error, 6 Str, 7 Dict,
+    // 8 Closure, 9 Instance, 10 Panic, 11 HttpClient, 12 WebSocket, 13 Bytes,
+    // 14 Tup, 15 Set (14/15 reserved by ARC-00 for W-2026-11-24-TUPLETAG).
+    pub(crate) tag: i64,
     pub(crate) a: i64,
     pub(crate) b: i64,
 }
+
+// Tagged sequence objects (Tuple/Set) follow the boxed-payload pattern used by
+// Str and Error: `a` is a `Box::into_raw` pointer to `Vec<u64>` and `b` is the
+// element count. Nothing else in NRT inspects `a`/`b` generically for these
+// tags, so the layout is private to the helpers below.
+pub(crate) const TAG_TUP: i64 = 14;
+pub(crate) const TAG_SET: i64 = 15;
 
 // Cache window for boxed small integers (loop indices, zero fills).
 const SMALL_INTS: i64 = 16384;
@@ -45,6 +55,59 @@ pub(crate) unsafe fn obj(p: u64) -> &'static NObj {
 pub(crate) unsafe fn obj_mut(p: u64) -> &'static mut NObj {
     &mut *(p as *mut NObj)
 }
+
+// ---- Tag 14 (Tuple) / 15 (Set) -------------------------------------------
+// Replicas of the VM's `collections::tup` / `collections::set` value model:
+// elements are opaque boxed handles, stored in first-occurrence order.
+
+/// Boxed element vector of a Tuple/Set handle. Callers must check the tag.
+pub(crate) unsafe fn seq_items(p: u64) -> &'static mut Vec<u64> {
+    &mut *(obj(p).a as *mut Vec<u64>)
+}
+/// Element count mirrored in `b` so callers can avoid dereferencing `a`.
+pub(crate) unsafe fn seq_len(p: u64) -> i64 {
+    obj(p).b
+}
+fn seq_new(tag: i64, items: Vec<u64>) -> u64 {
+    let len = items.len() as i64;
+    let ptr = Box::into_raw(Box::new(items));
+    unsafe { alloc(NObj { tag, a: ptr as i64, b: len }) }
+}
+pub(crate) fn tuple_new(items: Vec<u64>) -> u64 {
+    seq_new(TAG_TUP, items)
+}
+/// Value equality used by `KeyMap` in the VM (`obj::key_eq`, obj.rs:304):
+/// same-type primitives compare by value, numeric types compare across
+/// Int/Float/Bool, Str by content, and unrelated types are *not* equal.
+/// `cmp_obj` alone cannot be used here because its catch-all arm is Equal.
+fn set_key_eq(a: u64, b: u64) -> bool {
+    unsafe {
+        let (x, y) = (obj(a), obj(b));
+        match (x.tag, y.tag) {
+            (0, 0) | (2, 2) => x.a == y.a,
+            (1, 1) => f64::from_bits(x.a as u64) == f64::from_bits(y.a as u64),
+            (0, 1) | (1, 0) | (0, 2) | (2, 0) | (1, 2) | (2, 1) => {
+                cmp_obj(a, b) == std::cmp::Ordering::Equal
+            }
+            (6, 6) => crate::strings::str_of(a) == crate::strings::str_of(b),
+            (t, u) if t == u => eq_obj(a, b),
+            _ => false,
+        }
+    }
+}
+
+/// VM `collections::set` dedups through `KeyMap::try_insert`: the first
+/// occurrence of an equivalent key wins and insertion order is preserved.
+pub(crate) fn set_new(items: Vec<u64>) -> u64 {
+    let mut unique: Vec<u64> = Vec::with_capacity(items.len());
+    for item in items {
+        if !unique.iter().any(|p| set_key_eq(*p, item)) {
+            unique.push(item);
+        }
+    }
+    seq_new(TAG_SET, unique)
+}
+
 pub(crate) fn int_of(p: u64) -> i64 {
     unsafe { if obj(p).tag == 0 { obj(p).a } else { 0 } }
 }
@@ -82,6 +145,15 @@ pub(crate) fn cmp_obj(a: u64, b: u64) -> std::cmp::Ordering {
 pub(crate) fn eq_obj(a: u64, b: u64) -> bool {
     cmp_obj(a, b) == std::cmp::Ordering::Equal
 }
+/// Element stringification shared by tags 14/15. The VM's
+/// `collections::tup_to_str` / `set_to_str` map `obj::display` over the
+/// elements and join with ", " — unlike `list_to_str`, they do **not** quote
+/// Str elements (`("a", 1)` prints as `(a, 1)` in `un run`).
+fn display_seq(p: u64, open: char, close: char) -> String {
+    let parts: Vec<String> = unsafe { seq_items(p) }.iter().map(|v| display(*v)).collect();
+    format!("{}{}{}", open, parts.join(", "), close)
+}
+
 pub(crate) fn display(p: u64) -> String {
     unsafe {
         match obj(p).tag {
@@ -116,6 +188,8 @@ pub(crate) fn display(p: u64) -> String {
             11 => "http_client".into(),
             12 => "web_socket".into(),
             13 => crate::bytes_native::display_bytes(p),
+            14 => display_seq(p, '(', ')'),
+            15 => display_seq(p, '{', '}'),
             _ => "value".into(),
         }
     }
@@ -260,9 +334,98 @@ pub extern "C" fn unrt_make_math_sqrt_neg() -> u64 {
     err("cannot compute sqrt of a negative number")
 }
 
+/// Replica of `collections::tup_get_item`: negative indices wrap once, then
+/// out-of-range is the VM's exact error.
+pub(crate) fn tuple_get(tup: u64, idx: i64) -> u64 {
+    unsafe {
+        if obj(tup).tag != TAG_TUP { return err("tuple get expects a tuple"); }
+        let items = seq_items(tup);
+        let i = if idx < 0 { items.len() as i64 + idx } else { idx };
+        if i >= 0 && (i as usize) < items.len() { items[i as usize] }
+        else { err("tuple index out of range") }
+    }
+}
+
+/// Replica of `collections::set_get_item`: returns the stored key handle or
+/// the VM's `"key {k} not found in set"` error.
+pub(crate) fn set_get(set: u64, key: u64) -> u64 {
+    unsafe {
+        if obj(set).tag != TAG_SET { return err("set get expects a set"); }
+        match seq_items(set).iter().find(|p| set_key_eq(**p, key)) {
+            Some(found) => *found,
+            None => err(&format!("key {} not found in set", display(key))),
+        }
+    }
+}
+
+/// Minimal existing-ABI surface for tuple/set literals. Reached through
+/// `unrt_call_native` — **no new `unrt_*` C symbol** is introduced:
+///
+///   ("tuple", "new", [list])        -> tuple handle (tag 14)
+///   ("tuple", "get", [tuple, int])  -> element handle / error
+///   ("tuple", "len", [tuple])       -> int handle
+///   ("set",   "new", [list])        -> set handle (tag 15, deduped)
+///   ("set",   "get", [set, key])    -> stored key handle / error
+///   ("set",   "len", [set])         -> int handle
+///
+/// `new` takes an ordinary list handle (tag 3) produced by the existing
+/// `unrt_list_from_elems` / `unrt_list_new` + `unrt_list_push` ABI, so CMP-05
+/// can lower a tuple/set literal without any extra extern declaration.
+pub(crate) fn collections_dispatch(module: &str, member: &str, args: &[u64]) -> Option<u64> {
+    let list_elems = |p: u64| -> Option<Vec<u64>> {
+        if unsafe { obj(p).tag } == 3 {
+            Some(unsafe { crate::list::items(p) }.clone())
+        } else {
+            None
+        }
+    };
+    let seq_len_of = |tag: i64, p: u64| -> Option<u64> {
+        if unsafe { obj(p).tag } == tag {
+            Some(unrt_obj_int(unsafe { seq_len(p) }))
+        } else {
+            None
+        }
+    };
+    let as_index = |p: u64| -> Option<i64> {
+        unsafe { if obj(p).tag == 0 { Some(obj(p).a) } else { None } }
+    };
+    match (module, member, args) {
+        ("tuple", "new", [src]) => Some(match list_elems(*src) {
+            Some(items) => tuple_new(items),
+            None => err("tuple new expects a list"),
+        }),
+        ("tuple", "get", [tup, idx]) => Some(match as_index(*idx) {
+            Some(i) if unsafe { obj(*tup).tag } == TAG_TUP => tuple_get(*tup, i),
+            Some(_) => err("tuple get expects a tuple"),
+            None => err("tuple index must be int"),
+        }),
+        ("tuple", "len", [tup]) => Some(match seq_len_of(TAG_TUP, *tup) {
+            Some(n) => n,
+            None => err("tuple len expects a tuple"),
+        }),
+        ("set", "new", [src]) => Some(match list_elems(*src) {
+            Some(items) => set_new(items),
+            None => err("set new expects a list"),
+        }),
+        ("set", "get", [set, key]) => Some(if unsafe { obj(*set).tag } == TAG_SET {
+            set_get(*set, *key)
+        } else {
+            err("set get expects a set")
+        }),
+        ("set", "len", [set]) => Some(match seq_len_of(TAG_SET, *set) {
+            Some(n) => n,
+            None => err("set len expects a set"),
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::fmt_double;
+    use super::{
+        display, fmt_double, obj, set_new, tuple_new, unrt_obj_float, unrt_obj_int, TAG_SET,
+        TAG_TUP,
+    };
 
     fn case(v: f64, expected: &str) {
         assert_eq!(fmt_double(v), expected, "{v}");
@@ -293,5 +456,71 @@ mod tests {
         case(f64::INFINITY, "∞");
         case(f64::NEG_INFINITY, "-∞");
         case(f64::NAN, "NaN");
+    }
+
+    /// Mirrors `collections::tup_to_str` / `set_to_str` and the VM tests at
+    /// `rust/src/runtime/collections/tests.rs:140,248` and
+    /// `rust/src/runtime/iters/tests.rs:310` (Str elements are unquoted).
+    #[test]
+    fn tuple_set_display_matches_vm() {
+        let ints = |v: &[i64]| v.iter().map(|n| unrt_obj_int(*n)).collect::<Vec<_>>();
+        assert_eq!(display(tuple_new(ints(&[1, 2, 3]))), "(1, 2, 3)");
+        assert_eq!(display(set_new(ints(&[1, 2, 3]))), "{1, 2, 3}");
+        assert_eq!(
+            display(tuple_new(vec![crate::strings::str_new("a".into()), unrt_obj_int(1)])),
+            "(a, 1)",
+        );
+        assert_eq!(display(set_new(vec![crate::strings::str_new("a".into())])), "{a}");
+        // KeyMap::try_insert semantics: first occurrence wins, order preserved.
+        assert_eq!(display(set_new(ints(&[3, 1, 3, 2]))), "{3, 1, 2}");
+        // VM `key_eq`: unrelated types stay distinct, numeric types compare
+        // across Int/Float (`obj.rs:304` + `base_binop` fallback).
+        assert_eq!(
+            display(set_new(vec![unrt_obj_int(1), crate::strings::str_new("1".into())])),
+            "{1, 1}",
+        );
+        assert_eq!(display(set_new(vec![unrt_obj_int(1), unrt_obj_float(1.0)])), "{1}");
+        // VM prints a singleton tuple without a trailing comma.
+        assert_eq!(display(tuple_new(vec![])), "()");
+        assert_eq!(display(tuple_new(ints(&[7]))), "(7)");
+        assert_eq!(display(set_new(vec![])), "{}");
+        let inner = tuple_new(ints(&[1, 2]));
+        assert_eq!(display(tuple_new(vec![inner])), "((1, 2))");
+    }
+
+    #[test]
+    fn tuple_set_dispatch_via_existing_abi() {
+        let src = crate::list::list_new(
+            [1, 2, 3].iter().map(|n| unrt_obj_int(*n)).collect::<Vec<_>>(),
+        );
+        let tup = crate::native::unrt_call_native(
+            b"tuple\0".as_ptr(), 5, b"new\0".as_ptr(), 3, [src].as_ptr(), 1,
+        );
+        assert_eq!(unsafe { obj(tup).tag }, TAG_TUP);
+        assert_eq!(display(tup), "(1, 2, 3)");
+        let set = crate::native::unrt_call_native(
+            b"set\0".as_ptr(), 3, b"new\0".as_ptr(), 3, [src].as_ptr(), 1,
+        );
+        assert_eq!(unsafe { obj(set).tag }, TAG_SET);
+        assert_eq!(display(set), "{1, 2, 3}");
+
+        let got = crate::native::unrt_call_native(
+            b"tuple\0".as_ptr(), 5, b"get\0".as_ptr(), 3,
+            [tup, unrt_obj_int(-1)].as_ptr(), 2,
+        );
+        assert_eq!(display(got), "3");
+        let got = crate::native::unrt_call_native(
+            b"tuple\0".as_ptr(), 5, b"len\0".as_ptr(), 3, [tup].as_ptr(), 1,
+        );
+        assert_eq!(display(got), "3");
+        let got = crate::native::unrt_call_native(
+            b"set\0".as_ptr(), 3, b"len\0".as_ptr(), 3, [set].as_ptr(), 1,
+        );
+        assert_eq!(display(got), "3");
+        let got = crate::native::unrt_call_native(
+            b"set\0".as_ptr(), 3, b"get\0".as_ptr(), 3,
+            [set, unrt_obj_int(2)].as_ptr(), 2,
+        );
+        assert_eq!(display(got), "2");
     }
 }

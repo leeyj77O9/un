@@ -124,6 +124,11 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
     if let Some(result) = crate::list::dispatch(m, name, args) {
         return result;
     }
+    // Tuple/Set literal construction and lookup reuse `unrt_call_native` as
+    // well: no new `unrt_*` C symbol (see `obj::collections_dispatch`).
+    if let Some(result) = crate::obj::collections_dispatch(m, name, args) {
+        return result;
+    }
     match (m, name) {
         ("io", "write") => {
             let parts: Vec<String> = args.iter().map(|p| {
