@@ -1,0 +1,17 @@
+#! 빌트인 함수
+# 값의 길이(요소 수)를 반환합니다.
+len(value)
+# 값의 런타임 타입을 반환합니다.
+type(value)
+# 값의 해시 값을 반환합니다.
+hash(value)
+# 값의 표현 문자열을 반환합니다.
+repr(value)
+# 주어진 종료 코드로 프로그램을 종료합니다.
+exit(code?)
+# 예외를 던집니다.
+throw(message, name?)
+# 조건이 참이면 예외를 던집니다.
+throw_if(condition, message, name?)
+# 조건이 거짓이면 예외를 던집니다.
+throw_unless(condition, message, name?)

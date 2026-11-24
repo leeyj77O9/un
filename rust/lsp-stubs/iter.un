@@ -1,0 +1,7 @@
+#! 반복자 생성과 변환
+# 범위 반복자를 만듭니다.
+range(start, stop, step?)
+# 반복자의 각 원소를 변환합니다.
+map(iter, fn)
+# 조건에 맞는 원소만 남깁니다.
+filter(iter, fn)

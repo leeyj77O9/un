@@ -447,76 +447,111 @@ struct Analysis {
     error: Option<LangError>,
 }
 
-/// Hand-written descriptions for native modules, builtins and common
-/// functions. Anything not listed gets a generated fallback so every native
-/// symbol has a description on hover.
+/// Native API documentation loaded from .un stub declarations in
+/// `rust/lsp-stubs/`. Edit those files to change hover docs and signatures.
 mod docs {
-    pub fn module(name: &str) -> Option<&'static str> {
-        match name {
-            "io" => Some("입출력 — 콘솔 출력, 파일 스트림, 읽기/쓰기"),
-            "math" => Some("수학 함수와 상수"),
-            "fs" => Some("파일 시스템 조회·읽기·쓰기"),
-            "os" => Some("운영체제 및 환경 정보"),
-            "sys" => Some("런타임/시스템 정보와 디버그 훅"),
-            "time" => Some("시간, 대기, 타임스탬프"),
-            "random" => Some("난수 생성과 무작위 선택"),
-            "iter" => Some("반복자 생성과 변환"),
-            "bytes" => Some("바이트 시퀀스 생성·변환·조회"),
-            "types" => Some("타입 검사와 캐스팅"),
-            "inspect" => Some("객체 속성과 전역 심볼 검사"),
-            "flow" => Some("제어 흐름 및 동시성 유틸리티"),
-            "atomic" => Some("원자적 카운터/플래그 (협력적 단일 스레드)"),
-            "re" => Some("정규식 매칭"),
-            "codes" => Some("문자와 코드 값 변환"),
-            "http" => Some("HTTP 클라이언트"),
-            "ws" => Some("WebSocket 클라이언트"),
-            "stream" => Some("스트림 처리"),
-            "stopwatch" => Some("경과 시간 측정"),
-            "net" => Some("네트워크 유틸리티"),
-            _ => None,
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+
+    struct StubFn {
+        name: String,
+        label: String,
+        doc: String,
+    }
+
+    struct StubModule {
+        doc: String,
+        functions: Vec<StubFn>,
+    }
+
+    fn parse(text: &str) -> StubModule {
+        let mut doc = String::new();
+        let mut pending: Vec<String> = Vec::new();
+        let mut functions = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(text) = line.strip_prefix("#!") {
+                doc = text.trim().to_string();
+            } else if let Some(text) = line.strip_prefix('#') {
+                pending.push(text.trim().to_string());
+            } else if line.is_empty() {
+                continue;
+            } else {
+                let label = line.to_string();
+                let name = label.split('(').next().unwrap_or("").trim().to_string();
+                if !name.is_empty() {
+                    functions.push(StubFn { name, label, doc: pending.join("\n") });
+                }
+                pending.clear();
+            }
         }
+        StubModule { doc, functions }
+    }
+
+    fn builtins() -> &'static StubModule {
+        static BUILTINS: OnceLock<StubModule> = OnceLock::new();
+        BUILTINS.get_or_init(|| parse(include_str!("../lsp-stubs/builtins.un")))
+    }
+
+    fn module_stub(name: &str) -> Option<&'static StubModule> {
+        static STUBS: OnceLock<HashMap<String, StubModule>> = OnceLock::new();
+        let stubs = STUBS.get_or_init(|| {
+            let mut map = HashMap::new();
+            for (key, text) in [
+                ("io", include_str!("../lsp-stubs/io.un")),
+                ("math", include_str!("../lsp-stubs/math.un")),
+                ("fs", include_str!("../lsp-stubs/fs.un")),
+                ("random", include_str!("../lsp-stubs/random.un")),
+                ("iter", include_str!("../lsp-stubs/iter.un")),
+                ("time", include_str!("../lsp-stubs/time.un")),
+                ("bytes", include_str!("../lsp-stubs/bytes.un")),
+                ("os", include_str!("../lsp-stubs/os.un")),
+                ("sys", include_str!("../lsp-stubs/sys.un")),
+                ("types", include_str!("../lsp-stubs/types.un")),
+                ("inspect", include_str!("../lsp-stubs/inspect.un")),
+                ("flow", include_str!("../lsp-stubs/flow.un")),
+                ("atomic", include_str!("../lsp-stubs/atomic.un")),
+                ("re", include_str!("../lsp-stubs/re.un")),
+                ("codes", include_str!("../lsp-stubs/codes.un")),
+                ("http", include_str!("../lsp-stubs/http.un")),
+                ("ws", include_str!("../lsp-stubs/ws.un")),
+                ("stream", include_str!("../lsp-stubs/stream.un")),
+                ("stopwatch", include_str!("../lsp-stubs/stopwatch.un")),
+                ("net", include_str!("../lsp-stubs/net.un")),
+            ] {
+                map.insert(key.to_string(), parse(text));
+            }
+            map
+        });
+        stubs.get(name)
+    }
+
+    fn stub(module: &str, name: &str) -> Option<&'static StubFn> {
+        let module = if module == "builtins" { builtins() } else { module_stub(module)? };
+        module.functions.iter().find(|function| function.name == name)
+    }
+
+    pub fn module(name: &str) -> Option<&'static str> {
+        module_stub(name)
+            .map(|stub| stub.doc.as_str())
+            .filter(|doc| !doc.is_empty())
     }
 
     pub fn builtin(name: &str) -> Option<&'static str> {
-        match name {
-            "len" => Some("값의 길이(요소 수)를 반환합니다."),
-            "type" => Some("값의 런타임 타입을 반환합니다."),
-            "hash" => Some("값의 해시 값을를 반환합니다."),
-            "repr" => Some("값의 표현 문자열을 반환합니다."),
-            "exit" => Some("주어진 종료 코드로 프로그램을 종료합니다."),
-            "throw" => Some("예외를 던집니다."),
-            "throw_if" => Some("조건이 참이면 예외를 던집니다."),
-            "throw_unless" => Some("조건이 거짓이면 예외를 던집니다."),
-            _ => None,
-        }
+        stub("builtins", name)
+            .map(|function| function.doc.as_str())
+            .filter(|doc| !doc.is_empty())
     }
 
     pub fn function(module: &str, name: &str) -> Option<&'static str> {
-        match (module, name) {
-            ("io", "write") => Some("값을 표준 출력이나 지정 스트림에 씁니다."),
-            ("io", "read") => Some("표준 입력에서 한 줄을 읽습니다."),
-            ("io", "open") => Some("파일 스트림을 엽니다."),
-            ("math", "sqrt") => Some("제곱근을 반환합니다."),
-            ("math", "pow") => Some("거듭제곱을 계산합니다."),
-            ("math", "abs") => Some("절댓값을 반환합니다."),
-            ("math", "clamp") => Some("값을 지정 범위로 제한합니다."),
-            ("fs", "read") => Some("파일 전체를 문자열로 읽습니다."),
-            ("fs", "write") => Some("파일에 문자열을 씁니다."),
-            ("fs", "exists") => Some("경로의 존재 여부를 반환합니다."),
-            ("random", "int") => Some("범위 안의 난수 정수를 반환합니다."),
-            ("random", "choice") => Some("시퀀스에서 무작위 원소를 선택합니다."),
-            ("random", "shuffle") => Some("시퀀스를 제자리에서 섞습니다."),
-            ("iter", "range") => Some("범위 반복자를 만듭니다."),
-            ("iter", "map") => Some("반복자의 각 원소를 변환합니다."),
-            ("iter", "filter") => Some("조건에 맞는 원소만 남깁니다."),
-            ("time", "sleep") => Some("지정한 시간(초) 동안 대기합니다."),
-            ("bytes", "from_hex") => Some("16진수 문자열을 바이트로 변환합니다."),
-            ("bytes", "to_hex") => Some("바이트를 16진수 문자열로 변환합니다."),
-            ("list", "add") => Some("리스트 끝에 값을 추가합니다."),
-            ("str", "split") => Some("구분자를 기준으로 문자열을 나눕니다."),
-            ("dict", "get") => Some("키에 해당하는 값을 반환합니다."),
-            _ => None,
-        }
+        stub(module, name)
+            .map(|function| function.doc.as_str())
+            .filter(|doc| !doc.is_empty())
+    }
+
+    /// Signature declared in a stub file, preferred over registry-derived labels.
+    pub fn signature(module: &str, name: &str) -> Option<&'static str> {
+        stub(module, name).map(|function| function.label.as_str())
     }
 }
 
@@ -3029,7 +3064,9 @@ fn builtin_hover_markdown(
         doc = docs::function(&module, word)
             .map(str::to_string)
             .unwrap_or_else(|| format!("`{module}` 모듈의 네이티브 함수"));
-        if let Some(sigs) = native_catalog().modules.get(&module) {
+        if let Some(sig) = docs::signature(&module, word) {
+            Some(sig.to_string())
+        } else if let Some(sigs) = native_catalog().modules.get(&module) {
             sigs.iter()
                 .find(|sig| sig.name == word)
                 .map(|sig| sig.label.clone())
@@ -3044,7 +3081,9 @@ fn builtin_hover_markdown(
         doc = docs::builtin(word)
             .map(str::to_string)
             .unwrap_or_else(|| "빌트인 함수".to_string());
-        native_catalog().builtins.get(word).cloned()
+        docs::signature("builtins", word)
+            .map(str::to_string)
+            .or_else(|| native_catalog().builtins.get(word).cloned())
     }?;
     Some(hover_json(
         format!("{doc}\n\n```un\n{label}\n```\n"),
