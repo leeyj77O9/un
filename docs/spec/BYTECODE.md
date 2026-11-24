@@ -148,9 +148,12 @@ Proto {
 ```
 
 `patterns`의 항목은 `Wildcard`, `Bind(NameId)`, `Literal(ConstId)`,
-`Tuple(Vec<Pattern>)`, `Variant(EnumNameId, VariantNameId, Box<Pattern>)` 5종이며
-이름/상수 인덱스는 모듈 전역이다. `Variant`는 `Enum.variant(inner)` 패턴을 뜻하고
-`.unbc` 태그 4로 직렬화된다(기존 0–3 태그는 그대로).
+`Tuple(Vec<Pattern>)`, `Variant(EnumNameId, VariantNameId, Box<Pattern>)`,
+`Or(Vec<Pattern>)`, `Class(NameId, Fields)`, `Fields(Vec<(NameId, Pattern)>)`,
+`Type(NameId)` 9종이며 이름/상수 인덱스는 모듈 전역이다. `Variant`는
+`Enum.variant(inner)` 패턴을 뜻하고 `.unbc` 태그 4로 직렬화된다(기존 0–3 태그는 그대로).
+`Type`은 타입 이름(원시 타입·별칭·클래스) 패턴으로, 런타임 `is`와 동일한 타입 검사를
+수행한다. 별칭은 컴파일 시 `Or(Type…)`로 펼쳐진다.
 `ext_type`이 있는 proto는 클래스 메서드이며, JIT에서 receiver를 local slot 0에 바인딩한다.
 
 ## 4. Constant pool / Name table
@@ -208,9 +211,9 @@ proto table   : count u32 + protos
 7. 256-register 제한( locals + max stack depth + 1 ).
 8. pattern 중첩 깊이 ≤ 64 (`MAX_PATTERN_DEPTH`).
 9. pattern tag는 `0` Wildcard, `1` Bind, `2` Literal, `3` Tuple, `4` Variant,
-   `5` Or, `6` Class, `7` Fields만 허용한다. `5`~`7`은 가산 확장이며 `VERSION`은
-   그대로 1이다(기존 0~4 파일 호환). Fields의 name 플래그는 `0` positional,
-   `1` named이고, named는 name 문자열 인덱스를 함께 읽는다.
+   `5` Or, `6` Class, `7` Fields, `8` Type만 허용한다. `5`~`8`은 가산 확장이며
+   `VERSION`은 그대로 1이다(기존 0~4 파일 호환). Fields의 name 플래그는 `0`
+   positional, `1` named이고, named는 name 문자열 인덱스를 함께 읽는다.
 
 손상된 입력은 panic/abort가 아니라 exit 1 + 명확한 오류 메시지로 거부된다.
 `unbc-roundtrip.ps1 -IncludeNegative`가 Positive 51/51, compilable Negative 42 identical(9 compile-rejected skip)을 검증한다.

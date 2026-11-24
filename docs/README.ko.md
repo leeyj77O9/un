@@ -57,6 +57,10 @@ Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(�
 - **함수 타입**: `f: func(int, str) -> int`로 호출 가능한 값을 표기한다. 고차 함수에서
   `f: any`를 대체하는 정식 문법이며 `un build` fully typed mode에서도 동작한다
   (capture 없는 wrapper closure를 NRT에 등록).
+- **타입 패턴**: `match`에서 `int`, `float`, `str`, 클래스명, 타입 별칭(`Id` 등)을
+  그대로 쓰면 `is`와 동일한 **런타임 타입 검사**가 된다. 별칭은 `Or(Type…)`으로 펼쳐지고,
+  같은 이름의 지역 변수가 있으면 그것이 우선한다. `un run`/`un native`/plain `un build`
+  모두 지원.
 - **제네릭**: `fn identity[T](x: T) -> T`, `class Box[T]` — 호출부에서 타입을 추론하며
   명시적 타입 인자 `identity[int](42)`도 쓸 수 있다. `[T: int | float]` 같은 제약을 지정할 수 있다
 - 어노테이션은 현재 가독성과 점진적 검사를 위한 용도이며, 엄격한 런타임 검사는 강화 중이다

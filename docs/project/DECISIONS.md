@@ -1415,3 +1415,25 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   PLAN_CACHE 항목도 제거하고, `module::load`의 before/after diff로 추적한 모듈 등록
   class만 `unregister_class`로 레지스트리에서 제거한다. native 클래스는 보존.
 - D-093 §2의 객체 메모리 유계 누수 계약은 그대로 — 제거 대상은 레지스트리 엔트리뿐이다.
+## D-097 | match의 타입 이름 패턴은 런타임 타입 검사로 동작 | Accepted
+
+- **배경**: Un의 match는 값 패턴만 지원했고, `int ->`나 `Id ->` 같은 식별자 패턴은
+  `Pattern::Bind`로 컴파일되어 **항상 매치**했다(사용자 혼란 + `un check`도 통과).
+  저장소 전체에 이 문법을 의도적으로 쓴 사례는 없어 byte-identical 위험은 낮았다.
+- **결정**:
+  1. `compile_pattern`이 타입명(원시 타입·등록된 클래스·타입 별칭)을 `Pattern::Type`으로
+     컴파일한다. 로컬 변수가 같은 이름이면 섀도잉 규칙에 따라 기존 `Bind` 유지.
+  2. 타입 별칭은 컴파일 시 union 멤버로 펼쳐 `Pattern::Or(Type…)`이 된다
+     (`Id = int | float` → int 또는 float 매치). 별칭은 런타임 값이 없으므로
+     `x is Id` 가드로 우회할 수 없다는 점이 결정 근거였다.
+  3. `.unbc`에 `PATTERN_TYPE = 8`을 가산 추가 — `VERSION`은 1 유지, 구 파일 호환.
+     VM은 `world::class_tobj` + 기존 `is_obj`로 검사(상속·`__is__` 포함).
+  4. Compile Mode(AOT)는 `TirPattern::Type/Or`과 신규 `unrt_type_is` 심볼로 동일
+     검사를 생성한다. NRT 구현은 태그 기반 정확 비교라 클래스 상속·사용자 `__is__`
+     의미는 재현하지 못한다 — 해당 프로그램은 `un build --embed`로 안내.
+  5. `case v is T`(`NodeKind::Typed`)는 현행 유지 — 정적 narrowing 전용, 런타임无검사.
+- **영향 파일**: `compiler.rs`, `bytecode/*`, `vm/mod.rs`, `typeck.rs`, `tir.rs`,
+  `natcode.rs`, `unrt.rs`, `nrt/src/{obj,class}.rs`, `main.rs`, 한영 README,
+  `docs/spec/BYTECODE.md`, `docs/guides/COMPILED_LANGUAGE.md`.
+- **검증**: `int`→100 / `float`→-100.1 / 별칭 int·float 양쪽 / tuple 중첩 `(int,float)`→1,
+  `(float,float)`→3. `un run` ≡ `un native` ≡ plain `un build` byte-identical.

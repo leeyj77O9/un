@@ -57,6 +57,10 @@ Design goals:
 - **Function types**: `f: func(int, str) -> int` annotates a callable value. This is the
   typed alternative to `f: any` for higher-order functions and works in `un build`
   fully typed mode (zero-capture wrapper closures are registered with NRT)
+- **Type patterns**: in a `match`, a bare type name (`int`, `float`, `str`, a class, or a
+  type alias such as `Id`) is a real runtime type check using the same semantics as
+  `is`. Aliases expand to `Or(Type…)`; local variables with the same name still win.
+  Works in `un run`, `un native` and plain `un build`
 - **Generics**: `fn identity[T](x: T) -> T`, `class Box[T]` — type arguments are inferred at call
   sites; explicit `identity[int](42)` is also supported. Bounds such as `[T: int | float]` can be specified.
 - Annotations are currently used for readability and gradual checking; strict runtime enforcement is being strengthened
@@ -424,7 +428,7 @@ Negative 51 checks matched + 0 documented divergences, and Known 0 files
 (re-measured 2026-11-23). Rust tests: `cargo test --release --workspace` reports
 314 passed (nrt 16 + lib 263 + LSP 24 + playground 8). JIT differential: 102 files,
 0 differences. `.unbc` round-trip: Positive 51/51, Negative 42 identical
-(9 compile-rejected skips), Compile cross-check 39/0, exe equality 69/0.
+(9 compile-rejected skips), Compile cross-check 40/0, exe equality 71/0.
 
 Benchmarks measure 6 lanes (Un VM, Un JIT, Compile Mode, standalone exe, CPython,
 Node.js) with warmup and repeated runs; results go to

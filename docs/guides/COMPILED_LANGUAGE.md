@@ -218,6 +218,7 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 | 함수 타입 반환 (`-> func(..) -> ..`) | 거부 — VM이 `-> funcname`을 int로 반환하는 기존 버그 | VM 수정 선행 필요 | `tir.rs::core_rejection_reason`, D-095 후속 |
 | tuple/list 구조분해 (`case (a, b)`) | **지원** — 정확한 길이 일치, 중첩·guard·or-pattern 포함 | 불필요 | `tir.rs::TirPattern::Tuple`, `unrt_match_seq_len/get`, `test/compile/build/tuple_pattern.un` |
 | class/variant pattern (`case Point(x, y)`) | 거부 — VM fallback | 예 | D-096 (별도 type dispatch ABI 범위) |
+| 타입 이름 패턴 (`int ->`, `Id ->`) | **지원** — `unrt_type_is`로 `is`와 동일 검사, 별칭은 Or(Type…)로 펼침 | 클래스 상속·사용자 `__is__`는 `--embed` | D-097, `test/compile/build/type_pattern.un` |
 | 시간 시드 `random` | 거부(byte-identical 불가) | 예 | `tir.rs:609, 702-706` |
 | `bytes` 모듈(12함수) / `fs.read_bytes`/`write_bytes` | 지원 | 불필요 | `nrt/src/bytes_native.rs`, `test/compile/build/bytes_module.un` |
 | 바이트 리터럴 `b"..."` | 거부(TIR core-lowering 게이트) | 예 | `tir.rs::kind_is("Bytes")`; CMP-05 구현 대기 |
