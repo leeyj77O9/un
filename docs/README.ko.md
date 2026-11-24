@@ -54,6 +54,9 @@ Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(�
 
 - 선택적 타입 어노테이션: `x: int`, `a: list[int]`, `dict[str, int]`, `dict[int, int]`, `int | str`
   파라미터와 반환타입 (`fn add(a: int, b: int) -> int`)
+- **함수 타입**: `f: func(int, str) -> int`로 호출 가능한 값을 표기한다. 고차 함수에서
+  `f: any`를 대체하는 정식 문법이며 `un build` fully typed mode에서도 동작한다
+  (capture 없는 wrapper closure를 NRT에 등록).
 - **제네릭**: `fn identity[T](x: T) -> T`, `class Box[T]` — 호출부에서 타입을 추론하며
   명시적 타입 인자 `identity[int](42)`도 쓸 수 있다. `[T: int | float]` 같은 제약을 지정할 수 있다
 - 어노테이션은 현재 가독성과 점진적 검사를 위한 용도이며, 엄격한 런타임 검사는 강화 중이다
@@ -325,10 +328,11 @@ Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일�
   lowering하지 않는다.
 - `un build`는 plain과 `--embed` 양쪽 모두 기본적으로 **fully typed mode**다.
   명시적 `any`/Union 어노테이션과 별칭, variadic·이름 없는 파라미터, 타입 없는 lambda
-  파라미터는 진단과 함께 거부된다. `--allow-dynamic`을 붙이면 이전의 동적 동작으로
-  되돌린다. `un run`은 동적 타입을 유지하고 `un check` / `un native` / `un obj` / LSP /
-  플레이그라운드는 변하지 않는다. 시간 기반 `random`과 단순 대입을 넘어서는 모듈
-  최상위 부수 효과는 여전히 `un build --embed`가 필요하다.
+  파라미터는 진단과 함께 거부된다 — callable 파라미터는 `func(..) -> ..`를 쓸 것.
+  `--allow-dynamic`을 붙이면 이전의 동적 동작으로 되돌린다. `un run`은 동적 타입을
+  유지하고 `un check` / `un native` / `un obj` / LSP / 플레이그라운드는 변하지 않는다.
+  시간 기반 `random`과 단순 대입을 넘어서는 모듈 최상위 부수 효과는 여전히
+  `un build --embed`가 필요하다.
 - `un lsp`는 stdin/stdout으로 LSP 언어 서버를 실행한다. 기본은 lexer/parser
   오류만 보고하며, Compile Mode 타입 진단은 `initializationOptions.compileMode`
   또는 `un/compileMode` 알림으로 opt-in한다. Rust를 쓰지 않는 클라이언트도
@@ -403,7 +407,7 @@ Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDive
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
 포함하지 않는다. 현재 기준은 Positive 51 파일 / 1638 passed / 0 failed / 0 crashed,
 Negative 51 checks 매칭 + 0 documented divergences, Known 0 파일이다. (2026-11-23 재측정)
-Rust 테스트는 `cargo test --release --workspace` 291 passed(nrt 4 + lib 246 + LSP 21 +
+Rust 테스트는 `cargo test --release --workspace` 308 passed(nrt 4 + lib 263 + LSP 21 +
 playground 8)다. JIT differential 102 파일 / 0 차이, `.unbc` 왕복 Positive 51/51 ·
 Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 36/0, exe 동치 검증 42/0이다.
 
@@ -411,7 +415,7 @@ Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 36/0, exe 
 입력·알고리즘·측정 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`, `results.json`, `results.md`에 저장한다.
 `scripts\bench-report.ps1`은 결과를 `bench/report.html`로 변환하고 `-Gate`로 회귀를 검사한다.
-현재 보고서의 Un JIT/Python 기하평균은 **4.301x**이며, 새 워크로드
+현재 보고서의 Un JIT/Python 기하평균은 **4.434x**이며, 새 워크로드
 `dict_str5000`(문자열 키 dict 삽입·조회), `bytes_ops`(bytes 모듈 왕복),
 `slice_ops`(리스트 슬라이스 읽기·할당)이 포함되어 있다.
 

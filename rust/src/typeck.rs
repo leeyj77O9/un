@@ -393,6 +393,14 @@ impl<'a> Checker<'a> {
     }
 
     fn text_of(&self, node: &Node) -> String {
+        // FE-01 carries the complete `func(...) -> ...` spelling in a
+        // `Const::Str` on the annotation node. Prefer it when present so the
+        // resolver sees the whole type even if the node span is narrower.
+        if let Some(Const::Str(value)) = &node.value {
+            if value.trim_start().starts_with("func(") {
+                return value.clone();
+            }
+        }
         self.source.span(node.start, node.length)
     }
 
@@ -441,6 +449,23 @@ impl<'a> Checker<'a> {
     }
 
     fn try_atom_text(&self, text: &str, depth: usize) -> Option<Ty> {
+        // FE-01 hands the whole `func(...) -> ...` spelling to us as one text
+        // atom. Parse it structurally here so implicit aliases
+        // (`F = func(int) -> int`) resolve to a real `Ty::Func` as well.
+        let trimmed = text.trim();
+        if trimmed.starts_with("func(") {
+            let (params_text, ret_text) = split_func_text(trimmed)?;
+            let params: Vec<Ty> = if params_text.trim().is_empty() {
+                Vec::new()
+            } else {
+                split_top_level(params_text, ',')
+                    .iter()
+                    .map(|param| self.try_union_text(param.trim(), depth + 1))
+                    .collect::<Option<Vec<_>>>()?
+            };
+            let ret = self.try_union_text(ret_text, depth + 1)?;
+            return Some(func_ty(params, ret));
+        }
         if let Some(open) = find_top_bracket(text) {
             let head = text[..open].trim();
             if !matches!(head, "list" | "set" | "dict" | "tuple") {
@@ -509,6 +534,29 @@ impl<'a> Checker<'a> {
     }
 
     fn parse_type_atom(&mut self, text: &str, span: (usize, usize), depth: usize) -> Ty {
+        // Handle function types before the generic (`head[...]`) path: a `func`
+        // annotation carries its parameters in parentheses, and the `->` return
+        // separator must not be mistaken for a union or a class annotation arg.
+        if text.trim_start().starts_with("func(") {
+            if let Some((params_text, ret_text)) = split_func_text(text) {
+                let params: Vec<Ty> = if params_text.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    split_top_level(params_text, ',')
+                        .iter()
+                        .map(|param| self.parse_type_text(param.trim(), span, depth + 1))
+                        .collect()
+                };
+                let ret = self.parse_type_text(ret_text, span, depth + 1);
+                return func_ty(params, ret);
+            }
+            self.error_span(
+                span.0,
+                span.1,
+                "malformed function type; expected `func(...) -> Type`",
+            );
+            return Ty::Unknown;
+        }
         if let Some(open) = find_top_bracket(text) {
             let head = text[..open].trim();
             let Some(close) = text.rfind(']') else {
@@ -636,6 +684,11 @@ impl<'a> Checker<'a> {
         let ty = self.parse_type_text(&text, span, 0);
         if let Some(open) = find_top_bracket(&text) {
             let head = text[..open].trim();
+            // `func(int) -> list[int]` has a top-level `[` in the return type;
+            // that bracket is not a class annotation argument list.
+            if head == "func" || head.starts_with("func(") {
+                return ty;
+            }
             if self.classes.contains_key(head) {
                 let close = text.rfind(']').unwrap_or(text.len());
                 let inner = &text[open + 1..close];
@@ -746,17 +799,67 @@ fn const_int_value(node: &Node, source: &Source, env: &Env) -> Option<i128> {
     }
 }
 
+/// Build a `Ty::Func` from already parsed parameter/return types. Parameter
+/// names follow the `arg{i}` convention used for lambdas (`check_lambda`) and
+/// builtin signatures; all parameters written in the annotation are required.
+fn func_ty(params: Vec<Ty>, ret: Ty) -> Ty {
+    let names = (0..params.len()).map(|i| format!("arg{i}")).collect::<Vec<_>>();
+    let required = params.len();
+    Ty::Func {
+        params: params.into(),
+        names: names.into(),
+        ret: Rc::new(ret),
+        required,
+    }
+}
+
+/// Split `func(<params>) -> <ret>` at the parenthesis that closes the parameter
+/// list and the top-level `->`. Parens are tracked so a nested `func(...)` in
+/// either the parameters or the return type does not end the outer list early.
+fn split_func_text(text: &str) -> Option<(&str, &str)> {
+    let rest = text.trim().strip_prefix("func(")?;
+    let mut paren = 1i32;
+    let mut bracket = 0i32;
+    let mut close = None;
+    for (index, ch) in rest.char_indices() {
+        match ch {
+            '(' => paren += 1,
+            ')' => {
+                paren -= 1;
+                if paren == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            _ => {}
+        }
+    }
+    let close = close?;
+    let params = &rest[..close];
+    let after = rest[close + 1..].trim_start();
+    let ret = after.strip_prefix("->")?.trim();
+    if ret.is_empty() || bracket != 0 {
+        return None;
+    }
+    Some((params, ret))
+}
+
 fn split_union(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0i32;
+    let mut paren = 0i32;
     let mut start = 0usize;
     let bytes = text.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
         match bytes[i] {
+            b'(' => paren += 1,
+            b')' => paren -= 1,
             b'[' => depth += 1,
             b']' => depth -= 1,
-            b'|' if depth == 0 => {
+            b'|' if depth == 0 && paren == 0 => {
                 out.push(text[start..i].trim());
                 start = i + 1;
             }
@@ -770,11 +873,14 @@ fn split_union(text: &str) -> Vec<&str> {
 
 fn find_top_bracket(text: &str) -> Option<usize> {
     let mut depth = 0i32;
+    let mut paren = 0i32;
     for (index, ch) in text.char_indices() {
         match ch {
-            '[' if depth == 0 => return Some(index),
-            '[' => depth += 1,
-            ']' => depth -= 1,
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' if paren == 0 && depth == 0 => return Some(index),
+            '[' if paren == 0 => depth += 1,
+            ']' if paren == 0 => depth -= 1,
             _ => {}
         }
     }
@@ -784,12 +890,15 @@ fn find_top_bracket(text: &str) -> Option<usize> {
 fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0i32;
+    let mut paren = 0i32;
     let mut start = 0usize;
     for (index, ch) in s.char_indices() {
         match ch {
+            '(' => paren += 1,
+            ')' => paren -= 1,
             '[' => depth += 1,
             ']' => depth -= 1,
-            c if c == sep && depth == 0 => {
+            c if c == sep && depth == 0 && paren == 0 => {
                 parts.push(s[start..index].trim());
                 start = index + c.len_utf8();
             }
@@ -5325,4 +5434,173 @@ pub fn check_program_with_options(
     opts: CheckOptions,
 ) -> Result<CheckedProgram, Vec<LangError>> {
     Checker::new(source, root, opts).run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build the kind of annotation node FE-01 hands over: an `Identifier`
+    /// carrying the complete `func(...) -> ...` text in a `Const::Str`.
+    fn annotation_node(source: &Source, text: &str) -> Node {
+        Node::new(0, source.code.len(), NodeKind::Identifier)
+            .with_value(Const::Str(text.to_string()))
+    }
+
+    fn checker_for<'a>(source: &'a Source, root: &'a Node) -> Checker<'a> {
+        Checker::new(source, root, CheckOptions::default())
+    }
+
+    #[test]
+    fn func_annotation_parses_into_ty_func() {
+        let text = "func(int, int) -> int";
+        let source = Source::new("func.un", text);
+        let node = annotation_node(&source, text);
+        let root = Node::new(0, 0, NodeKind::Block);
+        let mut checker = checker_for(&source, &root);
+        let ty = checker.parse_annotation_node(&node);
+
+        match &ty {
+            Ty::Func { params, names, ret, required } => {
+                assert_eq!(params.as_ref(), &[Ty::Int, Ty::Int]);
+                assert_eq!(names.as_ref(), &["arg0".to_string(), "arg1".to_string()]);
+                assert_eq!(**ret, Ty::Int);
+                assert_eq!(*required, 2);
+            }
+            other => panic!("expected Ty::Func, got {}", other.display()),
+        }
+        assert_eq!(ty.display(), "fn(int, int) -> int");
+        assert!(checker.errors.is_empty());
+    }
+
+    #[test]
+    fn func_annotation_supports_nested_and_zero_arg_types() {
+        let cases = [
+            ("func() -> int", "fn() -> int"),
+            ("func(list[int]) -> str", "fn(list[int]) -> str"),
+            ("list[func(int, int) -> int]", "list[fn(int, int) -> int]"),
+            ("func(func(int) -> int, int) -> int", "fn(fn(int) -> int, int) -> int"),
+            ("func(int | str) -> none", "fn(int | str) -> none"),
+            ("func(int) -> list[func(int, int) -> int]", "fn(int) -> list[fn(int, int) -> int]"),
+        ];
+        for (text, expected) in cases {
+            let source = Source::new("func.un", text);
+            let node = annotation_node(&source, text);
+            let root = Node::new(0, 0, NodeKind::Block);
+            let mut checker = checker_for(&source, &root);
+            let ty = checker.parse_annotation_node(&node);
+            assert_eq!(ty.display(), expected, "annotation: {text}");
+            assert!(checker.errors.is_empty(), "unexpected errors for {text}");
+        }
+    }
+
+    #[test]
+    fn implicit_func_alias_resolves_through_text_atom() {
+        let text = "func(int) -> str";
+        let source = Source::new("func.un", text);
+        let root = Node::new(0, 0, NodeKind::Block);
+        let checker = checker_for(&source, &root);
+        let ty = checker.try_type_text(text).expect("func type text should resolve");
+        assert_eq!(ty.display(), "fn(int) -> str");
+        match ty {
+            Ty::Func { params, names, ret, required } => {
+                assert_eq!(params.as_ref(), &[Ty::Int]);
+                assert_eq!(names.as_ref(), &["arg0".to_string()]);
+                assert_eq!(*ret, Ty::Str);
+                assert_eq!(required, 1);
+            }
+            other => panic!("expected Ty::Func, got {}", other.display()),
+        }
+    }
+
+    #[test]
+    fn typechecks_function_with_func_typed_parameter() {
+        // Mirrors the AST shape FE-01 produces: the `func(...)` type is a
+        // single Identifier annotation node carrying the full text.
+        let code = "fn apply(f: func(int) -> int, x: int) -> int\n    pass\n";
+        let source = Source::new("apply.un", code);
+        let head = &code[..code.find('\n').unwrap()];
+        let func_text = "func(int) -> int";
+        let func_start = code.find(func_text).unwrap();
+        let ret_start = head.rfind("int").unwrap();
+        let f_start = code.find("f:").unwrap();
+        let x_start = code.find("x:").unwrap();
+        let params_start = code.find('(').unwrap();
+        let params_end = code.find(')').unwrap();
+
+        let ty_node = Node::new(func_start, func_text.len(), NodeKind::Identifier)
+            .with_value(Const::Str(func_text.to_string()));
+        let int_ty = |at: usize| Node::new(at, 3, NodeKind::Identifier);
+        let param = |name_start: usize, ty: Node| {
+            Node::with_children(
+                name_start,
+                ty.start + ty.length - name_start,
+                NodeKind::Parameter,
+                None,
+                vec![Node::with_children(
+                    name_start,
+                    ty.start + ty.length - name_start,
+                    NodeKind::Typed,
+                    None,
+                    vec![Node::new(name_start, 1, NodeKind::Identifier), ty],
+                )],
+            )
+        };
+        let params = Node::with_children(
+            params_start,
+            params_end + 1 - params_start,
+            NodeKind::Tuple,
+            None,
+            vec![
+                param(f_start, ty_node),
+                param(x_start, int_ty(code.find("x: int").unwrap() + 3)),
+            ],
+        );
+        let body = Node::new(code.find("pass").unwrap(), 4, NodeKind::Block);
+        let function = Node::with_children(
+            0,
+            head.len(),
+            NodeKind::Function,
+            None,
+            vec![
+                Node::new(code.find("apply").unwrap(), 5, NodeKind::Identifier),
+                params,
+                body,
+                int_ty(ret_start),
+            ],
+        );
+        let root = Node::with_children(0, code.len(), NodeKind::Block, None, vec![function]);
+
+        let checked = check_program(&source, &root).expect("func-typed parameter should typecheck");
+        let sig = checked.sigs.get("apply").expect("apply signature");
+        assert_eq!(sig.param_names, vec!["f".to_string(), "x".to_string()]);
+        match &sig.params[0] {
+            Ty::Func { params, ret, required, .. } => {
+                assert_eq!(params.as_ref(), &[Ty::Int]);
+                assert_eq!(**ret, Ty::Int);
+                assert_eq!(*required, 1);
+            }
+            other => panic!("expected Ty::Func, got {}", other.display()),
+        }
+        assert_eq!(sig.params[1], Ty::Int);
+        assert_eq!(sig.ret, Ty::Int);
+    }
+
+    #[test]
+    fn type_text_helpers_track_parentheses() {
+        assert_eq!(
+            split_union("func(int | str) -> int | none"),
+            vec!["func(int | str) -> int", "none"]
+        );
+        assert_eq!(
+            split_top_level("func(int, int) -> int, list[int]", ','),
+            vec!["func(int, int) -> int", "list[int]"]
+        );
+        let text = "func(int) -> list[int]";
+        assert_eq!(
+            find_top_bracket(text),
+            Some(text.find("list[").unwrap() + "list".len())
+        );
+        assert_eq!(find_top_bracket("func(list[int], int) -> int"), None);
+    }
 }

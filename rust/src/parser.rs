@@ -1661,7 +1661,33 @@ impl Parser {
         Ok(Node::with_children(value.start, value.length, NodeKind::Parameter, None, vec![value]))
     }
     fn parse_type(&mut self) -> Result<Node, LangError> {
-        let mut typ = if self.match_(TokenType::NoneKw) {
+        // Function type annotation: `func(int, int) -> int`. `func` is a
+        // contextual keyword (an ordinary `Identifier` token), so detect it
+        // here alongside the `(` that disambiguates it from a type alias
+        // named `func`. The whole annotation is folded into one Identifier
+        // node whose value is the exact source text; typeck's text-based
+        // `parse_type_text` then sees the same shape as any other type.
+        // Consuming the inner `->` here is important: otherwise it would be
+        // mistaken for the enclosing `fn ... -> ...` return arrow.
+        let is_func_type = self.current().typ == TokenType::Identifier
+            && self.get_text(self.current().start, self.current().length) == "func"
+            && self.peek_type(1) == Some(TokenType::LParen);
+        let mut typ = if is_func_type {
+            let func = self.next();
+            self.expect(TokenType::LParen, "expected '(' after 'func' in function type")?;
+            if self.current().typ != TokenType::RParen {
+                self.parse_type()?;
+                while self.match_(TokenType::Comma) {
+                    self.parse_type()?;
+                }
+            }
+            self.expect(TokenType::RParen, "expected ')' after function type parameters")?;
+            self.expect(TokenType::Return, "expected '->' after function type parameters")?;
+            let ret = self.parse_type()?;
+            let length = ret.start + ret.length - func.start;
+            Node::new(func.start, length, NodeKind::Identifier)
+                .with_value(Const::Str(self.get_text(func.start, length)))
+        } else if self.match_(TokenType::NoneKw) {
             let tok = self.previous();
             Node::new(tok.start, tok.length, NodeKind::Identifier)
                 .with_value(Const::Str("none".to_string()))
@@ -2143,4 +2169,80 @@ fn decode_bytes_literal(text: &str, token: &Token) -> Result<Vec<u8>, LangError>
         i += 1;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_text(text: &str) -> Node {
+        let mut source = Source::new("test.un", text);
+        let tokens = lex(&mut source).expect("lex");
+        parse(tokens, Rc::new(source)).expect("parse")
+    }
+
+    /// Collect the exact source text of every type annotation node that
+    /// mentions a function type. Function types are ordinary Identifier
+    /// nodes carrying the whole annotation as a `Const::Str` value.
+    fn func_type_texts(node: &Node, out: &mut Vec<String>) {
+        if let Some(Const::Str(text)) = &node.value {
+            if text.contains("func(") {
+                out.push(text.clone());
+            }
+        }
+        for child in &node.children {
+            func_type_texts(child, out);
+        }
+    }
+
+    #[test]
+    fn parses_func_type_parameter_and_return_arrow() {
+        let root = parse_text("fn apply(f: func(int) -> int, x: int) -> int\n    -> f(x)\n");
+        let mut texts = Vec::new();
+        func_type_texts(&root, &mut texts);
+        assert_eq!(texts, vec!["func(int) -> int".to_string()]);
+    }
+
+    #[test]
+    fn parses_zero_argument_func_type() {
+        let root = parse_text("fn apply(f: func() -> int) -> int\n    -> f()\n");
+        let mut texts = Vec::new();
+        func_type_texts(&root, &mut texts);
+        assert_eq!(texts, vec!["func() -> int".to_string()]);
+    }
+
+    #[test]
+    fn parses_func_type_as_generic_argument_and_union() {
+        let root = parse_text(
+            "fn a(xs: list[func(int) -> int]) -> int\n    -> 0\n\
+             fn b(f: func(int) -> int | str) -> int\n    -> 0\n",
+        );
+        let mut texts = Vec::new();
+        func_type_texts(&root, &mut texts);
+        assert_eq!(
+            texts,
+            vec![
+                "list[func(int) -> int]".to_string(),
+                "func(int) -> int | str".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_nested_func_type() {
+        let root = parse_text(
+            "fn apply(f: func(func(int) -> int) -> int) -> int\n    -> f\n",
+        );
+        let mut texts = Vec::new();
+        func_type_texts(&root, &mut texts);
+        assert_eq!(texts, vec!["func(func(int) -> int) -> int".to_string()]);
+    }
+
+    #[test]
+    fn parses_func_type_as_function_return_type() {
+        let root = parse_text("fn make() -> func(int) -> int\n    -> f\n");
+        let mut texts = Vec::new();
+        func_type_texts(&root, &mut texts);
+        assert_eq!(texts, vec!["func(int) -> int".to_string()]);
+    }
 }

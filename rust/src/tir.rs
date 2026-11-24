@@ -1004,6 +1004,11 @@ fn same_ty(a: TirTy, b: TirTy) -> bool {
     match (a, b) {
         (TirTy::Class(_), TirTy::Class(_)) => true,
         (TirTy::ListClass(_), TirTy::ListClass(_)) => true,
+        // A concrete `__lambda_N` closure value is assignable to an opaque
+        // `func(..) -> ..` slot (`TirTy::Lambda(u32::MAX)`): both are NRT
+        // closure handles dispatched through `unrt_call_obj`. The index only
+        // selects the native entry point, it is not part of the value's ABI.
+        (TirTy::Lambda(_), TirTy::Lambda(_)) => true,
         (TirTy::Obj, _) | (_, TirTy::Obj) if tir_is_ref(a) && tir_is_ref(b) => true,
         _ => a == b,
     }
@@ -1053,6 +1058,16 @@ pub fn fn_uses_dynamic(f: &TirFn) -> bool {
     f.params.iter().any(|t| *t == TirTy::Obj)
         || f.locals.iter().any(|t| *t == TirTy::Obj)
         || f.ret == Some(TirTy::Obj)
+        // An annotated `func(..) -> ..` slot lowers to the opaque
+        // `TirTy::Lambda(u32::MAX)`. Calling through it needs `unrt_call_obj`
+        // and `wrap_as_obj`, which only exist in Obj mode; real lambdas carry
+        // a concrete index and keep their precise codegen. Vm mode must leave
+        // these functions to the interpreter, exactly like `any` handles.
+        || f.params
+            .iter()
+            .chain(f.locals.iter())
+            .any(|t| matches!(t, TirTy::Lambda(u32::MAX)))
+        || f.ret == Some(TirTy::Lambda(u32::MAX))
 }
 
 /// True when a native-module call needs the `unrt_call_native` bridge, which
@@ -1656,6 +1671,16 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             NodeKind::Identifier => {
                 let name = source.span(node.start, node.length);
                 if !locals.contains_key(&name) {
+                    // A bare top-level function name is a first-class function
+                    // value: `lower_expr` synthesizes a zero-capture wrapper
+                    // lambda for it. Allow it when the name resolves to a
+                    // core-eligible function; non-core functions stay on the VM
+                    // path.
+                    if checked.sigs.contains_key(name.as_str())
+                        && checked.functions.iter().any(|f| f.sig.name == name && is_core_fn(f))
+                    {
+                        return;
+                    }
                     tirdbg_reject(node); *out = false;
                     return;
                 }
@@ -4306,6 +4331,49 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             if let Some(&g) = ctx.globals.get(&name) {
                 return Ok((TirExpr::GlobalGet(g), CoreTy::Int));
             }
+            // A bare top-level function name is a first-class function value.
+            // Synthesize a zero-capture wrapper lambda that forwards to the
+            // target function: NRT auto-registers `__lambda_N` from main.rs,
+            // and `unrt_call_obj` dispatches the resulting closure object.
+            if let Some(idx) = ctx.checked.functions.iter().position(|f| f.sig.name == name) {
+                let target = &ctx.checked.functions[idx];
+                let target_tir_i = *ctx.tir_index.get(&idx)
+                    .ok_or_else(|| format!("function '{name}' is not core-eligible"))?;
+                let mut params = Vec::with_capacity(target.sig.params.len());
+                for (p, ty) in target.sig.param_names.iter().zip(&target.sig.params) {
+                    params.push(tir_ty_from_ty(ctx.classes, ty)
+                        .ok_or_else(|| format!("parameter '{p}' of '{name}' is not core-typed"))?);
+                }
+                let ret = tir_ty_from_ty(ctx.classes, &target.sig.ret)
+                    .ok_or_else(|| format!("return type of '{name}' is not core-typed"))?;
+                let n = params.len();
+                let body = vec![TirStmt::Return(Some(TirExpr::Call(
+                    target_tir_i as u32,
+                    (0..n).map(|i| TirExpr::Local(i as u16)).collect(),
+                )))];
+                let absolute_index = ctx.lambda_base + ctx.lambdas.len() as u32;
+                ctx.lambdas.push(TirFn {
+                    name: format!("__lambda_{absolute_index}"),
+                    proto_span: (node.start, node.length),
+                    index: absolute_index as usize,
+                    params: params.clone(),
+                    defaults: vec![None; n],
+                    ret: Some(ret),
+                    locals: params.clone(),
+                    body,
+                });
+                let kinds = params.iter().copied().map(abi_kind).collect();
+                let ret_kind = abi_kind(ret);
+                return Ok((
+                    TirExpr::MakeClosure {
+                        func_index: absolute_index,
+                        captures: vec![],
+                        kinds,
+                        ret_kind,
+                    },
+                    CoreTy::Lambda(absolute_index),
+                ));
+            }
             Err(format!("unknown variable '{name}'"))
         }
         NodeKind::Unary => lower_unary(node, ctx),
@@ -5143,18 +5211,40 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
     if let Some(slot) = slot_of(ctx, &name) {
         let local_ty = ctx.locals.get(slot as usize).copied();
         let lambda_info = ctx.lambda_vars.get(&slot).cloned();
-        if lambda_info.is_none() && local_ty == Some(TirTy::Obj) {
-            // Calling a value whose static type is `any`: NRT checks the tag
-            // and returns an error for non-callable values at runtime.
+        if lambda_info.is_none()
+            && matches!(local_ty, Some(TirTy::Obj) | Some(TirTy::Lambda(_)))
+        {
+            // Calling a value whose static type is `any` *or* a function type:
+            // both dispatch through the NRT `unrt_call_obj` bridge, which checks
+            // the runtime tag and rejects non-callable values. The earlier `Obj`
+            // fallback is kept for the Vm bail path (`any` locals and unresolved
+            // callees) and for callees without a declared `Ty::Func`; a declared
+            // `func(..) -> R` maps its return to R so Obj-mode codegen unboxes R
+            // directly instead of returning an opaque handle.
             let args_node = args_tuple_for_lambda
                 .filter(|n| n.kind == NodeKind::Tuple)
                 .ok_or_else(|| "call arguments must be positional".to_string())?;
             let args = lower_arg_list(args_node, ctx)?;
+            let (ret, core_ret) = ctx.checked.functions
+                .iter()
+                .find(|f| f.sig.name == ctx.current_instance)
+                .and_then(|f| f.local_types.get(&name))
+                .and_then(|ty| match ty {
+                    Ty::Func { ret: fr, .. } => tir_ty_from_ty(ctx.classes, fr),
+                    _ => None,
+                })
+                .map(|ret| (ret, match ret {
+                    TirTy::Int => CoreTy::Int,
+                    TirTy::Float => CoreTy::Float,
+                    TirTy::Bool => CoreTy::Bool,
+                    _ => CoreTy::Obj,
+                }))
+                .unwrap_or((TirTy::Obj, CoreTy::Obj));
             return Ok((TirExpr::CallObj {
                 callee: Box::new(TirExpr::Local(slot)),
                 args,
-                ret: TirTy::Obj,
-            }, CoreTy::Obj));
+                ret,
+            }, core_ret));
         }
         if let Some((_func_index, _captures)) = lambda_info {
             let args_node = args_tuple_for_lambda
@@ -6472,5 +6562,121 @@ mod abi_tests {
         assert!(nrt_supported(&program_with_native_stmt("fs", "read_bytes")));
         assert!(nrt_supported(&program_with_native_stmt("fs", "write_bytes")));
         assert!(nrt_supported(&program_with_native_stmt("io", "print")));
+    }
+}
+
+#[cfg(test)]
+mod lower_call_tests {
+    use super::*;
+
+    /// FNTYPE-01: `Ty::Func` parameters map to the opaque `TirTy::Lambda` slot
+    /// (no synthesized lambda, hence no `lambda_vars` entry). The indirect call
+    /// must still lower to `CallObj`, exactly like an `any`-typed callee.
+    #[test]
+    fn func_typed_parameter_call_lowers_to_call_obj() {
+        let source = Source::new("fntir.un", "f(1)");
+        let checked = CheckedProgram::default();
+        let classes = ClassTable::new(&checked);
+        let tir_index = HashMap::new();
+        let call_names = HashMap::new();
+        let instance_args = HashMap::new();
+        let mut lambdas = Vec::new();
+        let globals = HashMap::new();
+        let mut wrote_global = false;
+
+        // `f` is slot 0, statically typed as a function value with no lambda
+        // info — precisely the shape a `f: func(int) -> int` parameter produces.
+        let mut ctx = LowerCtx {
+            source: &source,
+            checked: &checked,
+            tir_index: &tir_index,
+            call_names: &call_names,
+            current_instance: String::new(),
+            instance_args: &instance_args,
+            slots: HashMap::from([("f".to_string(), 0u16)]),
+            locals: vec![TirTy::Lambda(u32::MAX)],
+            declared_types: HashMap::new(),
+            classes: &classes,
+            lambda_vars: HashMap::new(),
+            lambdas: &mut lambdas,
+            lambda_base: 0,
+            globals: &globals,
+            wrote_global: &mut wrote_global,
+            pending: Vec::new(),
+        };
+
+        let callee = Node::new(0, 1, NodeKind::Identifier); // `f`
+        let arg = Node::new(2, 1, NodeKind::Integer).with_value(Const::Int(1));
+        let args = Node::with_children(2, 1, NodeKind::Tuple, None, vec![arg]);
+        let call = Node::with_children(0, 3, NodeKind::Call, None, vec![callee, args]);
+
+        let (expr, cty) = lower_call(&call, &mut ctx).expect("typed function call must lower");
+        match expr {
+            TirExpr::CallObj { callee, args, ret } => {
+                assert!(matches!(*callee, TirExpr::Local(0)));
+                assert_eq!(args.len(), 1);
+                assert!(matches!(args[0], TirExpr::Int(1)));
+                assert_eq!(ret, TirTy::Obj, "the `any` codegen path is reused for now");
+            }
+            other => panic!("expected CallObj, got {other:?}"),
+        }
+        assert!(cty == CoreTy::Obj);
+        // The opaque lambda slot must not be registered as a synthesized lambda.
+        assert!(ctx.lambda_vars.is_empty());
+    }
+
+    /// The existing `any` callee path is unchanged (regression guard).
+    #[test]
+    fn any_typed_parameter_call_still_lowers_to_call_obj() {
+        let source = Source::new("fntir.un", "f(1)");
+        let checked = CheckedProgram::default();
+        let classes = ClassTable::new(&checked);
+        let tir_index = HashMap::new();
+        let call_names = HashMap::new();
+        let instance_args = HashMap::new();
+        let mut lambdas = Vec::new();
+        let globals = HashMap::new();
+        let mut wrote_global = false;
+        let mut ctx = LowerCtx {
+            source: &source,
+            checked: &checked,
+            tir_index: &tir_index,
+            call_names: &call_names,
+            current_instance: String::new(),
+            instance_args: &instance_args,
+            slots: HashMap::from([("f".to_string(), 0u16)]),
+            locals: vec![TirTy::Obj],
+            declared_types: HashMap::new(),
+            classes: &classes,
+            lambda_vars: HashMap::new(),
+            lambdas: &mut lambdas,
+            lambda_base: 0,
+            globals: &globals,
+            wrote_global: &mut wrote_global,
+            pending: Vec::new(),
+        };
+
+        let callee = Node::new(0, 1, NodeKind::Identifier);
+        let arg = Node::new(2, 1, NodeKind::Integer).with_value(Const::Int(1));
+        let args = Node::with_children(2, 1, NodeKind::Tuple, None, vec![arg]);
+        let call = Node::with_children(0, 3, NodeKind::Call, None, vec![callee, args]);
+
+        let (expr, cty) = lower_call(&call, &mut ctx).expect("any-typed call must lower");
+        assert!(matches!(expr, TirExpr::CallObj { .. }));
+        assert!(cty == CoreTy::Obj);
+    }
+
+    /// Ties the new function-type syntax to the lowering branch above.
+    #[test]
+    fn ty_func_maps_to_opaque_lambda_slot() {
+        let checked = CheckedProgram::default();
+        let classes = ClassTable::new(&checked);
+        let func_ty = Ty::Func {
+            params: std::rc::Rc::from(vec![Ty::Int]),
+            names: std::rc::Rc::from(vec!["x".to_string()]),
+            ret: std::rc::Rc::new(Ty::Int),
+            required: 1,
+        };
+        assert_eq!(tir_ty_from_ty(&classes, &func_ty), Some(TirTy::Lambda(u32::MAX)));
     }
 }

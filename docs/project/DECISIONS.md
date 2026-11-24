@@ -1358,3 +1358,29 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **근거**: BIG-01 §3, D-093 §4, TD-03, `ARCHITECTURE.md` Resource lifecycle.
 - **검증**: opt-in API 미호출 시 전체 게이트 무변경. 호출 시 전용 fixture로
   심볼 제거·JIT 정리·side effect 재실행을 확인한다.
+## D-095 | callable 값 타입은 `func(..) -> ..` 문법으로 표기 | Accepted
+
+- **배경**: Un에는 함수 객체 자체를 적는 타입 어노테이션이 없어 고차 함수는 `f: any`로
+  선언해야 했다. `Ty::Func { params, ret, .. }`는 typeck 내부에만 존재하고 소스
+  어노테이션으로 만드는 경로가 없었다(`FN-01` 조사).
+- **결정**: `func(int, str) -> int` 형태의 어노테이션 문법을 추가한다.
+  1. `func`는 일반 식별자이므로 lexer/token/AST 변경 없이 `parser.rs::parse_type`만으로
+     소비한다. 생성 AST는 기존 타입 표현과 동일한 `Identifier + Const::Str(원본 텍스트)`.
+  2. `typeck.rs`의 텍스트 파서(`parse_type_atom`/`try_atom_text`)가 `Ty::Func`를 만들고,
+     헬퍼 3개(`split_union`/`find_top_bracket`/`split_top_level`)가 괄호 깊이를 추적한다.
+     `display()`는 기존 `fn(...) -> ...`를 유지한다(진단·mangle 일관성).
+  3. `tir.rs`는 `Ty::Func`를 `TirTy::Lambda(u32::MAX)` opaque 슬롯으로 낮추고,
+     함수 이름을 값으로 참조하면 zero-capture wrapper `__lambda_N`을 합성한다.
+     `main.rs`의 `__lambda_` prefix 스캔이 NRT에 자동 등록하므로 ABI 변경이 없다.
+  4. `un native`(Vm 모드)의 `fn_uses_dynamic`이 opaque `Lambda(u32::MAX)`를 감지해
+     인터프리터로 fallback한다 — 기존 `any` 경로와 동일한 계약.
+- **효과**: `un build` fully typed mode에서 callable 파라미터를 가진 고차 함수를
+  작성할 수 있다. 이는 `any` 탈출구를 대체하는 정식 문법이며, `any` 자체는 여전히
+  fully typed mode에서 거부된다.
+- **영향 파일**: `parser.rs`, `typeck.rs`, `tir.rs`, `README.md` ↔ `docs/README.ko.md`,
+  `docs/guides/COMPILED_LANGUAGE.md`. 신규 fixture `test/compile/func_type.un`,
+  `test/compile/build/higher_order.un`.
+- **근거**: FN-01, FNTYPE-01 설계, Work-ID `W-2026-11-24-FNSYNTAX` / `FNTYPECK` /
+  `FNTIR` / `FNVALUE`.
+- **검증**: `un run` / `un native` / plain `un build` stdout byte-identical
+  (`42|42|42`); workspace 308 passed; compile-check 38/0; exe-diff 67/0.

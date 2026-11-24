@@ -1,0 +1,19 @@
+use io
+use test.assert as assert
+
+fn apply(f: func(int) -> int, x: int) -> int
+    -> f(x)
+
+fn twice(n: int) -> int
+    -> n * 2
+
+fn inc(n: int) -> int
+    -> n + 1
+
+fn compose(f: func(int) -> int, g: func(int) -> int, x: int) -> int
+    -> f(g(x))
+
+assert.assert_eq(apply(twice, 21), 42, "higher-order apply")
+assert.assert_eq(apply(inc, 41), 42, "higher-order inc")
+assert.assert_eq(compose(twice, inc, 20), 42, "nested higher-order")
+assert.summary()

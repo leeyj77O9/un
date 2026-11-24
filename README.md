@@ -54,6 +54,9 @@ Design goals:
 
 - Optional type annotations: `x: int`, `a: list[int]`, `dict[str, int]`, `dict[int, int]`, `int | str`
   parameter types and return types (`fn add(a: int, b: int) -> int`)
+- **Function types**: `f: func(int, str) -> int` annotates a callable value. This is the
+  typed alternative to `f: any` for higher-order functions and works in `un build`
+  fully typed mode (zero-capture wrapper closures are registered with NRT)
 - **Generics**: `fn identity[T](x: T) -> T`, `class Box[T]` — type arguments are inferred at call
   sites; explicit `identity[int](42)` is also supported. Bounds such as `[T: int | float]` can be specified.
 - Annotations are currently used for readability and gradual checking; strict runtime enforcement is being strengthened
@@ -336,11 +339,12 @@ runs in the interpreter with identical semantics.
   lowered.
 - `un build` is **fully typed** by default (both plain and `--embed`): explicit
   `any`/union annotations and aliases, variadic or unnamed parameters, and
-  untyped lambda parameters are rejected with a diagnostic. Use
-  `--allow-dynamic` to restore the previous dynamic behaviour. `un run` stays
-  dynamically typed, and `un check` / `un native` / `un obj` / the LSP / the
-  playground are unchanged. Time-seeded `random` and module-level side effects
-  beyond simple assignments still require `un build --embed`.
+  untyped lambda parameters are rejected with a diagnostic — use
+  `func(..) -> ..` for callable parameters instead. Use `--allow-dynamic` to
+  restore the previous dynamic behaviour. `un run` stays dynamically typed,
+  and `un check` / `un native` / `un obj` / the LSP / the playground are
+  unchanged. Time-seeded `random` and module-level side effects beyond simple
+  assignments still require `un build --embed`.
 - `un lsp` runs a Language Server Protocol server over stdin/stdout. It reports
   lexer/parser diagnostics by default; Compile Mode type diagnostics are opt-in
   via `initializationOptions.compileMode` or the `un/compileMode` notification.
@@ -418,7 +422,7 @@ are documented divergences between implementations and are not counted as failur
 The current baseline is Positive 51 files / 1638 passed / 0 failed / 0 crashed,
 Negative 51 checks matched + 0 documented divergences, and Known 0 files
 (re-measured 2026-11-23). Rust tests: `cargo test --release --workspace` reports
-291 passed (nrt 4 + lib 246 + LSP 21 + playground 8). JIT differential: 102 files,
+308 passed (nrt 4 + lib 263 + LSP 21 + playground 8). JIT differential: 102 files,
 0 differences. `.unbc` round-trip: Positive 51/51, Negative 42 identical
 (9 compile-rejected skips), Compile cross-check 36/0, exe equality 42/0.
 
@@ -426,7 +430,7 @@ Benchmarks measure 6 lanes (Un VM, Un JIT, Compile Mode, standalone exe, CPython
 Node.js) with warmup and repeated runs; results go to
 `bench/results/<timestamp>/results.csv`, `results.json`, and `results.md`.
 `scripts\bench-report.ps1` renders `bench/report.html` and checks regressions with
-`-Gate`. The current report puts Un JIT at a **4.301x geomean over CPython** and
+`-Gate`. The current report puts Un JIT at a **4.434x geomean over CPython** and
 includes three new workloads — `dict_str5000` (string-key dict inserts/lookups),
 `bytes_ops` (bytes module round-trips), and `slice_ops` (list slice read/assign).
 

@@ -1,0 +1,20 @@
+use io
+
+fn apply(f: func(int) -> int, x: int) -> int
+    -> f(x)
+
+fn twice(n: int) -> int
+    -> n * 2
+
+fn inc(n: int) -> int
+    -> n + 1
+
+fn compose(f: func(int) -> int, g: func(int) -> int, x: int) -> int
+    -> f(g(x))
+
+fn main() -> none
+    io.write(apply(twice, 21))
+    io.write(apply(inc, 41))
+    io.write(compose(twice, inc, 20))
+
+main()

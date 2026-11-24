@@ -213,6 +213,7 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 | 기능 | plain `un build` | `--embed` 필요 | 근거 |
 |---|---|---|---|
 | 명시적 `any` / Union 값 | NRT는 지원하지만 `un build` 기본 모드가 **거부**(fully typed mode) | `--allow-dynamic`으로 해제 | `typeck.rs::CheckOptions`, `nrt/dynops.rs::unrt_dyn_bin/un` |
+| 함수 타입 `func(int) -> int` 파라미터 | **지원** — zero-capture wrapper closure를 NRT에 등록해 간접 호출 | 불필요 | `parser.rs::parse_type`, `typeck.rs::parse_type_atom`, `tir.rs::lower_expr`, `test/compile/build/higher_order.un` |
 | 시간 시드 `random` | 거부(byte-identical 불가) | 예 | `tir.rs:609, 702-706` |
 | `bytes` 모듈(12함수) / `fs.read_bytes`/`write_bytes` | 지원 | 불필요 | `nrt/src/bytes_native.rs`, `test/compile/build/bytes_module.un` |
 | 바이트 리터럴 `b"..."` | 거부(TIR core-lowering 게이트) | 예 | `tir.rs::kind_is("Bytes")`; CMP-05 구현 대기 |
