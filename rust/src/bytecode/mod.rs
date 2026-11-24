@@ -75,6 +75,10 @@ pub enum Pattern {
     /// Named/positional attribute destructuring. `None` means positional (use
     /// the instance's declaration order); `Some(idx)` indexes `program.names`.
     Fields(Vec<(Option<usize>, Pattern)>),
+
+    /// A runtime type test (`int`, `float`, a class name, …). The name indexes
+    /// `program.names`; matching uses the same `is` semantics as the operator.
+    Type(usize),
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proto {
@@ -450,6 +454,7 @@ fn validate_pattern(label: &str, pattern: &Pattern, program: &Program, depth: us
             }
             Ok(())
         }
+        Pattern::Type(name) => index_range(label, "pattern type", *name, program.names.len()),
     }
 }
 pub fn stack_effect(op: Op, flags: u16, operand: i32) -> i64 {

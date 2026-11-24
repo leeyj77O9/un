@@ -19,6 +19,9 @@ const PATTERN_VARIANT: u8 = 4;
 const PATTERN_OR: u8 = 5;
 const PATTERN_CLASS: u8 = 6;
 const PATTERN_FIELDS: u8 = 7;
+// Type-name patterns are a purely additive extension: tag 8 is new, so older
+// .unbc images (which never contain it) still round-trip at VERSION 1.
+const PATTERN_TYPE: u8 = 8;
 const EXC_CATCH: u8 = 0;
 const EXC_FINALLY: u8 = 1;
 const EXC_PROPAGATE: u8 = 2;
@@ -205,6 +208,10 @@ fn write_pattern(out: &mut Vec<u8>, pattern: &Pattern) {
                 }
                 write_pattern(out, pat);
             }
+        }
+        Pattern::Type(name) => {
+            out.push(PATTERN_TYPE);
+            out.extend_from_slice(&(*name as u32).to_le_bytes());
         }
     }
 }
@@ -435,6 +442,7 @@ fn read_pattern_depth(reader: &mut Reader, depth: usize) -> Result<Pattern, Stri
             }
             Pattern::Fields(fields)
         }
+        PATTERN_TYPE => Pattern::Type(reader.u32()? as usize),
         other => return Err(format!("unknown pattern tag {other}")),
     })
 }

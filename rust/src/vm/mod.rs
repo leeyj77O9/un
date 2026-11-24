@@ -1563,6 +1563,14 @@ impl VM {
                 }
                 true
             }
+            Pattern::Type(name) => {
+                // Same semantics as the `is` operator: a type name resolves to
+                // its class/type object and `is_obj` handles primitives,
+                // inheritance and a user-defined `__is__`.
+                let rhs = crate::runtime::world::class_tobj(&self.program.names[*name]);
+                let result = is_obj(value, &rhs);
+                matches!(obj::payload(&result), Payload::Bool(true))
+            }
         }
     }
 

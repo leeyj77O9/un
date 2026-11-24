@@ -3047,7 +3047,7 @@ impl<'a> Checker<'a> {
     fn check_match(&mut self, node: &'a Node, env: &mut Env) {
         let scrutinee = node.children.first();
         let scrut_ty = scrutinee.map(|s| self.check_expr(s, env)).unwrap_or(Ty::Any);
-        self.check_match_exhaustive(node, &scrut_ty);
+        self.check_match_exhaustive(node, &scrut_ty, env);
         let base = env.clone();
         let mut arm_envs: Vec<Env> = Vec::new();
         let mut any_arm = false;
@@ -3081,10 +3081,63 @@ impl<'a> Checker<'a> {
         *env = merged;
     }
 
+    /// Static type denoted by a bare type-name pattern. `Unknown` means the
+    /// name is known as a runtime type but has no precise static counterpart
+    /// (`tuple`, `func`, `iter`); those still avoid a binding declaration.
+    fn type_name_pattern_ty(&self, name: &str) -> Option<Ty> {
+        Some(match name {
+            "int" => Ty::Int,
+            "float" => Ty::Float,
+            "bool" => Ty::Bool,
+            "str" => Ty::Str,
+            "bytes" => Ty::Bytes,
+            "none" => Ty::None_,
+            "any" => Ty::Any,
+            "list" => Ty::list(Ty::Any),
+            "set" => Ty::Set(Rc::new(Ty::Any)),
+            "dict" => Ty::dict(Ty::Any, Ty::Any),
+            "tuple" | "func" | "iter" => Ty::Unknown,
+            other => {
+                if let Some(ty) = self.aliases.get(other) {
+                    ty.clone()
+                } else if self.classes.contains_key(other) {
+                    Ty::Class(Rc::from(other))
+                } else {
+                    return None;
+                }
+            }
+        })
+    }
+
+    /// A bare identifier pattern is a type test when it names a known type and
+    /// is not shadowed by a local binding.
+    fn pattern_type_ty(&self, pattern: &Node, env: &Env) -> Option<Ty> {
+        if pattern.kind != NodeKind::Identifier {
+            return None;
+        }
+        let name = self.text_of(pattern);
+        if env.lookup(&name).is_some() {
+            return None;
+        }
+        self.type_name_pattern_ty(&name)
+    }
+
+    fn push_type_coverage(ty: Ty, typed: &mut Vec<Ty>) {
+        match ty {
+            Ty::Union(members) => {
+                for member in members.iter() {
+                    Self::push_type_coverage(member.clone(), typed);
+                }
+            }
+            other => typed.push(other),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn collect_pattern_coverage(
         &mut self,
         pattern: &'a Node,
+        env: &Env,
         has_wildcard: &mut bool,
         has_bool_true: &mut bool,
         has_bool_false: &mut bool,
@@ -3095,6 +3148,7 @@ impl<'a> Checker<'a> {
             for alt in &pattern.children {
                 self.collect_pattern_coverage(
                     alt,
+                    env,
                     has_wildcard,
                     has_bool_true,
                     has_bool_false,
@@ -3105,7 +3159,14 @@ impl<'a> Checker<'a> {
             return;
         }
         match pattern.kind {
-            NodeKind::Wildcard | NodeKind::Identifier => *has_wildcard = true,
+            NodeKind::Wildcard => *has_wildcard = true,
+            NodeKind::Identifier => {
+                if let Some(ty) = self.pattern_type_ty(pattern, env) {
+                    Self::push_type_coverage(ty, typed);
+                } else {
+                    *has_wildcard = true;
+                }
+            }
             NodeKind::Boolean => match pattern.value.as_ref() {
                 Some(Const::Bool(true)) => *has_bool_true = true,
                 Some(Const::Bool(false)) => *has_bool_false = true,
@@ -3119,13 +3180,14 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_match_exhaustive(&mut self, node: &'a Node, scrut_ty: &Ty) {
+    fn check_match_exhaustive(&mut self, node: &'a Node, scrut_ty: &Ty, env: &Env) {
         let mut has_wildcard = false;
         let mut has_bool_true = false;
         let mut has_bool_false = false;
         let mut has_none = false;
-        // A binding pattern (`x` / `x: T`) matches every value of its type, so
-        // it can discharge a type-level coverage obligation just like `_`.
+        // A binding pattern (`x` / `x: T`) matches every value of its type,
+        // while a type-name pattern (`int`, an alias, a class) covers only its
+        // own type; both land in `typed` as type-level coverage.
         let mut typed: Vec<Ty> = Vec::new();
         for child in &node.children {
             if child.kind != NodeKind::Case {
@@ -3139,6 +3201,7 @@ impl<'a> Checker<'a> {
             }
             self.collect_pattern_coverage(
                 pattern,
+                env,
                 &mut has_wildcard,
                 &mut has_bool_true,
                 &mut has_bool_false,
@@ -3311,7 +3374,13 @@ impl<'a> Checker<'a> {
             NodeKind::Wildcard => {
             }
             NodeKind::Identifier => {
-                env.declare(&self.text_of(pattern), scrut.clone());
+                if self.pattern_type_ty(pattern, env).is_some() {
+                    // A type-name pattern is a runtime test: an arm that cannot
+                    // match the static scrutinee is dead, not a type error.
+                    // It does not introduce a binding named after the type.
+                } else {
+                    env.declare(&self.text_of(pattern), scrut.clone());
+                }
             }
             NodeKind::Tuple => {
                 let elems: Vec<Ty> = match scrut {
@@ -3636,7 +3705,7 @@ impl<'a> Checker<'a> {
             NodeKind::Match => {
                 let scrutinee = node.children.first();
                 let scrut_ty = scrutinee.map(|s| self.check_expr(s, env)).unwrap_or(Ty::Any);
-                self.check_match_exhaustive(node, &scrut_ty);
+                self.check_match_exhaustive(node, &scrut_ty, env);
                 let mut arm_types = Vec::new();
                 let base = env.clone();
                 for child in &node.children {

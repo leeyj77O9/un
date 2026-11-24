@@ -1072,6 +1072,13 @@ fn build_cmd(args: &[String]) {
         print!("{}{}", diagnostic.display(&source), nl());
         exit(1);
     }
+    // Type-name patterns need the VM's runtime `is` test. TIR rejects them and
+    // falls back, but a plain executable has no VM: fail with an explicit hint.
+    if let Some(pattern) = unvm::compiler::find_type_pattern_node(&root, &source) {
+        let diagnostic = LangError::new(pattern.start, pattern.length, pattern.message());
+        print!("{}{}", diagnostic.display(&source), nl());
+        exit(1);
+    }
     let checked = match typeck::check_program_with_options(
         &source,
         &root,

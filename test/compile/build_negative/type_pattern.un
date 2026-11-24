@@ -1,0 +1,9 @@
+use io
+
+fn f(v: int | float) -> int
+    -> match v { int -> 100, float -> -100, _ -> 0 }
+
+fn main() -> none
+    io.write(f(1))
+
+main()

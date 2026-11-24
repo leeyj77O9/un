@@ -1605,6 +1605,7 @@ fn pattern_core_ok(
     node: &Node,
     source: &Source,
     locals: &HashMap<String, ()>,
+    checked: &CheckedProgram,
     out: &mut bool,
 ) -> bool {
     if !*out {
@@ -1619,7 +1620,13 @@ fn pattern_core_ok(
         | NodeKind::None => {}
         NodeKind::Identifier => {
             let name = source.span(node.start, node.length);
-            if !locals.contains_key(&name) {
+            // A type-name pattern needs a runtime `is` test, which TIR does
+            // not represent. Keep the enclosing function on the VM path even
+            // though the bind collector also saw this identifier.
+            let is_type_name = crate::compiler::is_primitive_type_name(name.as_str())
+                || checked.aliases.contains_key(name.as_str())
+                || checked.classes.contains_key(name.as_str());
+            if is_type_name || !locals.contains_key(&name) {
                 tirdbg_reject(node);
                 *out = false;
                 return false;
@@ -1632,7 +1639,7 @@ fn pattern_core_ok(
                 *out = false;
                 return false;
             };
-            return pattern_core_ok(name, source, locals, out);
+            return pattern_core_ok(name, source, locals, checked, out);
         }
         // `Guard[pattern, condition]`: only the pattern is a pattern node; the
         // condition is a normal expression visited by the `Case` arm below.
@@ -1642,7 +1649,7 @@ fn pattern_core_ok(
                 *out = false;
                 return false;
             };
-            return pattern_core_ok(pattern, source, locals, out);
+            return pattern_core_ok(pattern, source, locals, checked, out);
         }
         NodeKind::OrPattern => {
             if node.children.is_empty() {
@@ -1651,7 +1658,7 @@ fn pattern_core_ok(
                 return false;
             }
             for alt in &node.children {
-                if !pattern_core_ok(alt, source, locals, out) {
+                if !pattern_core_ok(alt, source, locals, checked, out) {
                     return false;
                 }
             }
@@ -1666,7 +1673,7 @@ fn pattern_core_ok(
                     *out = false;
                     return false;
                 }
-                if !pattern_core_ok(item, source, locals, out) {
+                if !pattern_core_ok(item, source, locals, checked, out) {
                     return false;
                 }
             }
@@ -2043,7 +2050,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     tirdbg_reject(node); *out = false;
                     return;
                 };
-                if !pattern_core_ok(head, source, locals, out) {
+                if !pattern_core_ok(head, source, locals, checked, out) {
                     return;
                 }
                 if head.kind == NodeKind::Guard {

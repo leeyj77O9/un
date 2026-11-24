@@ -1,0 +1,17 @@
+use io
+use test.assert as assert
+
+type Id = int | float
+
+fn scalar(v: Id) -> int
+    -> match v { int -> 100, float -> -100, Id -> 1010, _ -> 0 }
+
+fn pair(p: tuple[int | float, int | float]) -> int
+    -> match p { (int, float) -> 1, (int, int) -> 2, (float, float) -> 3, _ -> 0 }
+
+assert.assert_eq(scalar(7), 100, "int arm")
+assert.assert_eq(scalar(0.01), -100, "float arm")
+assert.assert_eq(pair((1.1, 0.1)), 3, "tuple float/float")
+assert.assert_eq(pair((1, 2)), 2, "tuple int/int")
+assert.assert_eq(pair((1, 0.1)), 1, "tuple int/float")
+assert.summary()

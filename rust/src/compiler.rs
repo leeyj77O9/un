@@ -4,7 +4,7 @@ use crate::bytecode::{Constant, ExcEntry, ExcKind, Param, Pattern, Program, Prot
 use crate::error::Panic;
 use crate::source::Source;
 use crate::token::TokenType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[derive(Debug, Default)]
 pub struct Group {
     pub breaks: Vec<usize>,
@@ -23,6 +23,192 @@ struct ProtoSlotState {
     names: Vec<String>,
     count: usize,
 }
+
+/// Type names that a bare identifier pattern is allowed to test at runtime.
+/// Custom classes and type aliases are added on top of this fixed set.
+pub const TYPE_PATTERN_PRIMITIVES: &[&str] = &[
+    "int", "float", "str", "bool", "bytes", "none", "any", "list", "dict", "set", "tuple",
+    "func", "iter",
+];
+pub fn is_primitive_type_name(name: &str) -> bool {
+    TYPE_PATTERN_PRIMITIVES.contains(&name)
+}
+
+/// Resolved alias table and the set of declared class names, gathered from a
+/// (possibly optimized) AST. The compiler uses these to tell a type test from
+/// an ordinary binding pattern; `un build` uses the same query to reject the
+/// feature explicitly.
+type AliasTable = HashMap<String, Vec<String>>;
+type ClassNames = HashSet<String>;
+
+fn node_text(source: &Source, node: &Node) -> String {
+    if let Some(Const::Str(text)) = node.value.as_ref() {
+        return text.clone();
+    }
+    source.span(node.start, node.length)
+}
+
+fn plausible_type_text(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty()
+        && text.split('|').all(|alt| {
+            let head = alt.trim().split('[').next().unwrap_or("").trim();
+            !head.is_empty()
+                && head
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
+fn resolve_alias(
+    name: &str,
+    raw: &HashMap<String, String>,
+    classes: &ClassNames,
+    resolved: &mut AliasTable,
+    depth: usize,
+) -> Vec<String> {
+    if let Some(members) = resolved.get(name) {
+        return members.clone();
+    }
+    if depth > 16 {
+        return Vec::new();
+    }
+    let Some(text) = raw.get(name) else {
+        return Vec::new();
+    };
+    let mut members: Vec<String> = Vec::new();
+    for alt in text.split('|') {
+        let head = alt.trim().split('[').next().unwrap_or("").trim();
+        let leaves = if is_primitive_type_name(head) || classes.contains(head) {
+            vec![head.to_string()]
+        } else if raw.contains_key(head) {
+            resolve_alias(head, raw, classes, resolved, depth + 1)
+        } else {
+            Vec::new()
+        };
+        for leaf in leaves {
+            if !members.contains(&leaf) {
+                members.push(leaf);
+            }
+        }
+    }
+    resolved.insert(name.to_string(), members.clone());
+    members
+}
+
+fn collect_type_names(root: &Node, source: &Source) -> (AliasTable, ClassNames) {
+    fn visit(
+        node: &Node,
+        source: &Source,
+        raw: &mut HashMap<String, String>,
+        classes: &mut ClassNames,
+    ) {
+        if node.kind == NodeKind::Class {
+            if let Some(name) = node.children.first() {
+                classes.insert(node_text(source, name));
+            }
+        }
+        if node.kind == NodeKind::TypeAlias && node.children.len() >= 2 {
+            raw.insert(
+                node_text(source, &node.children[0]),
+                node_text(source, &node.children[1]),
+            );
+        } else if node.kind == NodeKind::Assign
+            && node.children.len() >= 2
+            && node.children[0].kind == NodeKind::Identifier
+        {
+            // Legacy implicit alias: `Id = int | float`. Only keep assignments
+            // whose right-hand side reads like a union of type names so normal
+            // variable declarations are never mistaken for aliases.
+            let text = node_text(source, &node.children[1]);
+            if plausible_type_text(&text) {
+                raw.insert(node_text(source, &node.children[0]), text);
+            }
+        }
+        for child in &node.children {
+            visit(child, source, raw, classes);
+        }
+    }
+    let mut raw: HashMap<String, String> = HashMap::new();
+    let mut classes: ClassNames = HashSet::new();
+    visit(root, source, &mut raw, &mut classes);
+    let mut resolved: AliasTable = HashMap::new();
+    for name in raw.keys() {
+        resolve_alias(name, &raw, &classes, &mut resolved, 0);
+    }
+    (resolved, classes)
+}
+
+fn is_type_pattern_name(name: &str, aliases: &AliasTable, classes: &ClassNames) -> bool {
+    is_primitive_type_name(name) || classes.contains(name) || aliases.contains_key(name)
+}
+
+/// The span of the first bare identifier in a pattern that denotes a type
+/// rather than a binding. Used by `un build` to turn a silent TIR fallback
+/// into an explicit diagnostic.
+fn type_pattern_span(node: &Node, source: &Source, aliases: &AliasTable, classes: &ClassNames) -> Option<(usize, usize)> {
+    match node.kind {
+        NodeKind::Identifier => {
+            let name = node_text(source, node);
+            is_type_pattern_name(&name, aliases, classes).then_some((node.start, node.length))
+        }
+        // `x: T` / `x is T` stays a runtime binding in phase 1: only the
+        // declared name is a pattern, the annotation is a static type.
+        NodeKind::Typed | NodeKind::Guard => node
+            .children
+            .first()
+            .and_then(|child| type_pattern_span(child, source, aliases, classes)),
+        NodeKind::Pair => node
+            .children
+            .get(1)
+            .and_then(|child| type_pattern_span(child, source, aliases, classes)),
+        NodeKind::OrPattern | NodeKind::Tuple | NodeKind::List => node
+            .children
+            .iter()
+            .find_map(|child| type_pattern_span(child, source, aliases, classes)),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypePattern {
+    pub start: usize,
+    pub length: usize,
+}
+impl TypePattern {
+    pub fn message(&self) -> &'static str {
+        "type-name patterns are not supported in plain build; rebuild with `un build --embed`"
+    }
+}
+
+/// Find the first type-name pattern in the AST (if any). `un run` and
+/// `un build --embed` never call this; only the plain build driver does.
+pub fn find_type_pattern_node(root: &Node, source: &Source) -> Option<TypePattern> {
+    fn visit(node: &Node, source: &Source, aliases: &AliasTable, classes: &ClassNames) -> Option<(usize, usize)> {
+        if node.kind == NodeKind::Match {
+            for case in node.children.iter().skip(1) {
+                if case.kind == NodeKind::Case {
+                    if let Some(head) = case.children.first() {
+                        let pattern = if head.kind == NodeKind::Guard {
+                            head.children.first().unwrap_or(head)
+                        } else {
+                            head
+                        };
+                        if let Some(span) = type_pattern_span(pattern, source, aliases, classes) {
+                            return Some(span);
+                        }
+                    }
+                }
+            }
+        }
+        node.children
+            .iter()
+            .find_map(|child| visit(child, source, aliases, classes))
+    }
+    let (aliases, classes) = collect_type_names(root, source);
+    visit(root, source, &aliases, &classes).map(|(start, length)| TypePattern { start, length })
+}
+
 pub struct Compiler<'a> {
     pub source: &'a Source,
     pub program: Program,
@@ -37,9 +223,12 @@ pub struct Compiler<'a> {
 
     slot_stack: Vec<SlotScope>,
     proto_slot_stack: Vec<ProtoSlotState>,
+    type_aliases: AliasTable,
+    class_names: ClassNames,
 }
 pub fn compile(source: &Source, ast: &Node) -> Result<Program, Panic> {
     let mut c = Compiler::new(source);
+    c.collect_type_names(ast);
     c.code_block(ast, false, true)?;
     c.emit_classes_init(ast)?;
     c.finish()
@@ -186,7 +375,15 @@ impl<'a> Compiler<'a> {
             raises: false,
             slot_stack: Vec::new(),
             proto_slot_stack: vec![ProtoSlotState::default()],
+            type_aliases: HashMap::new(),
+            class_names: HashSet::new(),
         }
+    }
+
+    fn collect_type_names(&mut self, ast: &Node) {
+        let (aliases, classes) = collect_type_names(ast, self.source);
+        self.type_aliases = aliases;
+        self.class_names = classes;
     }
 
     pub fn finish(self) -> Result<Program, Panic> {
@@ -1146,13 +1343,42 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Compile a bare identifier pattern. A local slot always wins (shadowing
+    /// keeps the old binding behaviour); otherwise a known type name becomes a
+    /// runtime type test and an alias is expanded into an or-pattern.
+    fn compile_name_pattern(&mut self, pattern: &Node) -> Result<Pattern, Panic> {
+        let name = self.text(pattern);
+        if self.slot_lookup(&name).is_some() {
+            return Ok(Pattern::Bind(push_name(&mut self.program, &name)));
+        }
+        self.compile_type_name(&name, 0)
+    }
+
+    fn compile_type_name(&mut self, name: &str, depth: usize) -> Result<Pattern, Panic> {
+        if depth > 16 {
+            return Ok(Pattern::Bind(push_name(&mut self.program, name)));
+        }
+        if is_primitive_type_name(name) || self.class_names.contains(name) {
+            return Ok(Pattern::Type(push_name(&mut self.program, name)));
+        }
+        let members = self.type_aliases.get(name).cloned().unwrap_or_default();
+        if !members.is_empty() {
+            let mut alternatives = Vec::with_capacity(members.len());
+            for member in members {
+                alternatives.push(self.compile_type_name(&member, depth + 1)?);
+            }
+            if alternatives.len() == 1 {
+                return Ok(alternatives.remove(0));
+            }
+            return Ok(Pattern::Or(alternatives));
+        }
+        Ok(Pattern::Bind(push_name(&mut self.program, name)))
+    }
+
     fn compile_pattern(&mut self, pattern: &Node) -> Result<Pattern, Panic> {
         let compiled = match pattern.kind {
             NodeKind::Wildcard => Pattern::Wildcard,
-            NodeKind::Identifier => {
-                let name = self.text(pattern);
-                Pattern::Bind(push_name(&mut self.program, &name))
-            }
+            NodeKind::Identifier => self.compile_name_pattern(pattern)?,
 
             // `x: T` and `x is T` both narrow the binding; runtime ignores T.
             NodeKind::Typed => {
