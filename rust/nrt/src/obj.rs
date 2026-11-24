@@ -290,6 +290,52 @@ pub extern "C" fn unrt_obj_is_err(p: u64) -> i64 {
     // Panics (tag 10) are uncatchable, matching the VM's `obj::is_err`.
     if unsafe { obj(p).tag == 5 } { 1 } else { 0 }
 }
+
+/// ARC-00: one new ABI symbol for bare type-name patterns (`Pattern::Type`).
+/// Mirrors the VM's `is_obj` for the runtime types NRT can represent: scalar
+/// tags map to their primitive type names, `any`/`obj` accept every value, and
+/// tag-9 instances match their registered class name. Inheritance chains and a
+/// custom `__is__` have no NRT representation; programs depending on those
+/// should stay on the `un build --embed` path.
+#[no_mangle]
+pub extern "C" fn unrt_type_is(value: u64, name_ptr: *const u8, name_len: usize) -> i64 {
+    if value == 0 {
+        return 0;
+    }
+    let name = if name_ptr.is_null() || name_len == 0 {
+        ""
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+        std::str::from_utf8(bytes).unwrap_or("")
+    };
+    if name == "any" || name == "obj" {
+        return 1;
+    }
+    let tag = unsafe { obj(value).tag };
+    let matched = match name {
+        "int" => tag == 0,
+        "float" => tag == 1,
+        "bool" => tag == 2,
+        "list" => tag == 3,
+        "none" => tag == 4,
+        "str" => tag == 6,
+        "dict" => tag == 7,
+        "func" => tag == 8,
+        "bytes" => tag == 13,
+        "tuple" => tag == 14,
+        "set" => tag == 15,
+        // NRT has no first-class iterator object.
+        "iter" => false,
+        _ => {
+            if tag == 9 {
+                crate::class::class_name(unsafe { obj(value).a as usize }) == Some(name)
+            } else {
+                false
+            }
+        }
+    };
+    if matched { 1 } else { 0 }
+}
 #[no_mangle]
 pub extern "C" fn unrt_take_error() -> u64 {
     crate::trace::nrt_clear_trace();

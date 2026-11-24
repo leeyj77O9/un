@@ -515,6 +515,30 @@ pub extern "C" fn unrt_match_seq_get(value: u64, idx: i64) -> u64 {
     to_raw(items[i as usize].clone())
 }
 
+/// ARC-00: runtime `is` test for bare type-name patterns. Uses the same
+/// `Types::accepts` path as the VM's `is_obj`, so inheritance and a custom
+/// `__is__` follow the interpreter when this bridge is linked into an embed
+/// executable. Plain builds use the `libnrt.a` implementation instead.
+#[no_mangle]
+pub extern "C" fn unrt_type_is(value: u64, name_ptr: *const u8, name_len: usize) -> i64 {
+    let Some(value) = borrow_obj(value) else {
+        return 0;
+    };
+    if name_ptr.is_null() {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+    let Ok(name) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
+    let rhs = crate::runtime::world::class_tobj(name);
+    let crate::runtime::obj::Payload::TObj(t) = crate::runtime::obj::payload(&rhs) else {
+        return 0;
+    };
+    let types = crate::runtime::obj::types_of(&value);
+    if t.accepts(&types) { 1 } else { 0 }
+}
+
 #[no_mangle]
 pub extern "C" fn unrt_list_from_ints(ptr: *const i64, len: i64) -> u64 {
     if ptr.is_null() || len < 0 {

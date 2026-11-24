@@ -505,6 +505,13 @@ pub enum TirPattern {
     /// Nested tuple/list destructuring. Items are matched left to right, with
     /// an exact length check first (matching `vm::match_pattern`).
     Tuple(Vec<TirPattern>),
+    /// Runtime type test, equivalent to the VM's `Pattern::Type`: the boxed
+    /// value is checked against a registered type name (primitive, `any`,
+    /// `obj` or a class) through the `unrt_type_is` ABI.
+    Type { name: String },
+    /// Union of type tests (a type alias expanded to its member types). Each
+    /// alternative is tried left to right, mirroring `Pattern::Or`.
+    Or(Vec<TirPattern>),
 }
 
 impl TirPattern {
@@ -512,7 +519,9 @@ impl TirPattern {
     fn literals(&self) -> Vec<&TirExpr> {
         match self {
             TirPattern::Literal(e) => vec![e],
-            TirPattern::Tuple(items) => items.iter().flat_map(TirPattern::literals).collect(),
+            TirPattern::Tuple(items) | TirPattern::Or(items) => {
+                items.iter().flat_map(TirPattern::literals).collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -521,7 +530,9 @@ impl TirPattern {
     fn bind_slots(&self) -> Vec<u16> {
         match self {
             TirPattern::Bind(slot) => vec![*slot],
-            TirPattern::Tuple(items) => items.iter().flat_map(TirPattern::bind_slots).collect(),
+            TirPattern::Tuple(items) | TirPattern::Or(items) => {
+                items.iter().flat_map(TirPattern::bind_slots).collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -529,7 +540,9 @@ impl TirPattern {
     fn literals_ok(&self, pred: &dyn Fn(&TirExpr) -> bool) -> bool {
         match self {
             TirPattern::Literal(e) => pred(e),
-            TirPattern::Tuple(items) => items.iter().all(|p| p.literals_ok(pred)),
+            TirPattern::Tuple(items) | TirPattern::Or(items) => {
+                items.iter().all(|p| p.literals_ok(pred))
+            }
             _ => true,
         }
     }
@@ -561,6 +574,9 @@ pub enum TirExpr {
     Str(String),
     Local(u16),
     Promote(Box<TirExpr>),
+    /// Box a scalar into a dynamic object handle. Used by `match` results whose
+    /// arms return different numeric types (the VM keeps the original tag).
+    BoxObj(Box<TirExpr>),
     Select {
         cond: Box<TirExpr>,
         then_expr: Box<TirExpr>,
@@ -781,9 +797,9 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
         match e {
             TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_)
             | TirExpr::Local(_) | TirExpr::NoneValue => true,
-            TirExpr::Promote(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a) | TirExpr::CastFloat(a)
-            | TirExpr::Len(a) | TirExpr::ListPop(a) | TirExpr::ListPopAt(a, _)
-            | TirExpr::ListContains(a, _) | TirExpr::ListIndexOf(a, _)
+            TirExpr::Promote(a) | TirExpr::BoxObj(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a)
+            | TirExpr::CastFloat(a) | TirExpr::Len(a) | TirExpr::ListPop(a)
+            | TirExpr::ListPopAt(a, _) | TirExpr::ListContains(a, _) | TirExpr::ListIndexOf(a, _)
             | TirExpr::DictKeys(a) | TirExpr::DictValues(a) => expr_ok(a),
             TirExpr::ListRemove(a, b) => expr_ok(a) && expr_ok(b),
             TirExpr::Select { cond, then_expr, else_expr } => {
@@ -1124,9 +1140,10 @@ pub fn fn_uses_native_call(f: &TirFn) -> bool {
 fn expr_uses_native(e: &TirExpr) -> bool {
     match e {
         TirExpr::NativeCallExpr { .. } => true,
-        TirExpr::Promote(x) | TirExpr::Un(_, x) | TirExpr::Len(x) | TirExpr::ListPop(x)
-        | TirExpr::CastInt(x) | TirExpr::CastFloat(x) | TirExpr::DictGet(_, x)
-        | TirExpr::ListGet(_, x) | TirExpr::MemberGet { receiver: x, .. }
+        TirExpr::Promote(x) | TirExpr::BoxObj(x) | TirExpr::Un(_, x) | TirExpr::Len(x)
+        | TirExpr::ListPop(x) | TirExpr::CastInt(x) | TirExpr::CastFloat(x)
+        | TirExpr::DictGet(_, x) | TirExpr::ListGet(_, x)
+        | TirExpr::MemberGet { receiver: x, .. }
         | TirExpr::DictKeys(x) | TirExpr::DictValues(x)
         | TirExpr::Located { inner: x, .. } => expr_uses_native(x),
         TirExpr::Select { cond, then_expr, else_expr } => {
@@ -1270,7 +1287,9 @@ fn stmt_uses_classes(s: &TirStmt) -> bool {
 fn expr_uses_classes(e: &TirExpr) -> bool {
     match e {
         TirExpr::ClassNew { .. } | TirExpr::MemberGet { .. } | TirExpr::MethodCall { .. } => true,
-        TirExpr::Promote(inner) | TirExpr::Un(_, inner) => expr_uses_classes(inner),
+        TirExpr::Promote(inner) | TirExpr::BoxObj(inner) | TirExpr::Un(_, inner) => {
+            expr_uses_classes(inner)
+        }
         TirExpr::Located { inner, .. } => expr_uses_classes(inner),
         TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) | TirExpr::NoneValue => false,
         TirExpr::CallObj { callee, args, .. } => expr_uses_classes(callee) || args.iter().any(expr_uses_classes),
@@ -1315,6 +1334,46 @@ pub fn fn_uses_heap(f: &TirFn) -> bool {
         return true;
     }
     f.body.iter().any(stmt_uses_heap)
+}
+
+/// True when a function contains a type-name pattern. Vm-mode JIT has no
+/// `unrt_type_is` import (TIR values are raw scalars there), so such functions
+/// stay on the interpreter path; Obj-mode plain builds emit the native test.
+pub fn fn_uses_type_pattern(f: &TirFn) -> bool {
+    f.body.iter().any(stmt_has_type_pattern)
+}
+
+fn pattern_has_type_pattern(p: &TirPattern) -> bool {
+    match p {
+        TirPattern::Type { .. } => true,
+        TirPattern::Tuple(items) | TirPattern::Or(items) => {
+            items.iter().any(pattern_has_type_pattern)
+        }
+        _ => false,
+    }
+}
+
+fn stmt_has_type_pattern(s: &TirStmt) -> bool {
+    match s {
+        TirStmt::Match { arms, .. } => arms.iter().any(|arm| {
+            pattern_has_type_pattern(&arm.pattern) || arm.body.iter().any(stmt_has_type_pattern)
+        }),
+        TirStmt::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_has_type_pattern)
+                || else_body.iter().any(stmt_has_type_pattern)
+        }
+        TirStmt::While { body, .. } | TirStmt::ForRange { body, .. } | TirStmt::ForEach { body, .. } => {
+            body.iter().any(stmt_has_type_pattern)
+        }
+        TirStmt::Try { body, catch_body, finally_body, .. } => {
+            body.iter().any(stmt_has_type_pattern)
+                || catch_body.iter().any(stmt_has_type_pattern)
+                || finally_body
+                    .as_ref()
+                    .is_some_and(|b| b.iter().any(stmt_has_type_pattern))
+        }
+        _ => false,
+    }
 }
 
 fn stmt_uses_heap(s: &TirStmt) -> bool {
@@ -1364,6 +1423,8 @@ fn expr_uses_heap(e: &TirExpr) -> bool {
     match e {
         TirExpr::List(_) | TirExpr::Dict(_) | TirExpr::DictGet(_, _) | TirExpr::ListGet(_, _)
         | TirExpr::ClassNew { .. } | TirExpr::MemberGet { .. } | TirExpr::MethodCall { .. } => true,
+        // Boxing allocates an object handle; Vm-mode TIR has no such ABI.
+        TirExpr::BoxObj(_) => true,
         TirExpr::Promote(inner)
         | TirExpr::Un(_, inner) => expr_uses_heap(inner),
         TirExpr::Located { inner, .. } => expr_uses_heap(inner),
@@ -1455,7 +1516,7 @@ fn expr_uses_str(e: &TirExpr) -> bool {
         TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) => false,
         TirExpr::CallObj { callee, args, .. } => expr_uses_str(callee) || args.iter().any(expr_uses_str),
         TirExpr::ListRepeat { .. } => false,
-        TirExpr::Promote(inner) => expr_uses_str(inner),
+        TirExpr::Promote(inner) | TirExpr::BoxObj(inner) => expr_uses_str(inner),
         TirExpr::Math(_, _) => false,
         TirExpr::CastInt(inner) | TirExpr::CastFloat(inner) => {
             expr_uses_str(inner)
@@ -1620,13 +1681,13 @@ fn pattern_core_ok(
         | NodeKind::None => {}
         NodeKind::Identifier => {
             let name = source.span(node.start, node.length);
-            // A type-name pattern needs a runtime `is` test, which TIR does
-            // not represent. Keep the enclosing function on the VM path even
-            // though the bind collector also saw this identifier.
+            // Type-name patterns are now lowered to `TirPattern::Type`/`Or`
+            // and tested through the `unrt_type_is` ABI in Obj mode. A plain
+            // name is still only legal when the binder collector saw it.
             let is_type_name = crate::compiler::is_primitive_type_name(name.as_str())
                 || checked.aliases.contains_key(name.as_str())
                 || checked.classes.contains_key(name.as_str());
-            if is_type_name || !locals.contains_key(&name) {
+            if !is_type_name && !locals.contains_key(&name) {
                 tirdbg_reject(node);
                 *out = false;
                 return false;
@@ -2189,7 +2250,9 @@ impl TirProgram {
     pub fn pad_default_args(&mut self) {
         fn pad_expr(e: &mut TirExpr, program: &[TirFn], class_names: &[String]) {
             match e {
-                TirExpr::Located { inner, .. } => pad_expr(inner, program, class_names),
+                TirExpr::Located { inner, .. } | TirExpr::BoxObj(inner) => {
+                    pad_expr(inner, program, class_names)
+                }
                 TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) | TirExpr::NoneValue => {}
                 TirExpr::CallObj { callee, args, .. } => {
                     pad_expr(callee, program, class_names);
@@ -2711,8 +2774,8 @@ fn expr_uses_local(e: &TirExpr) -> bool {
             items.iter().any(expr_uses_local)
         }
         TirExpr::Dict(entries) => entries.iter().any(|(k, v)| expr_uses_local(k) || expr_uses_local(v)),
-        TirExpr::Promote(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a) | TirExpr::CastFloat(a)
-        | TirExpr::Len(a) | TirExpr::ListPop(a) | TirExpr::ListContains(a, _)
+        TirExpr::Promote(a) | TirExpr::BoxObj(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a)
+        | TirExpr::CastFloat(a) | TirExpr::Len(a) | TirExpr::ListPop(a) | TirExpr::ListContains(a, _)
         | TirExpr::ListIndexOf(a, _) | TirExpr::MemberGet { receiver: a, .. }
         | TirExpr::DictKeys(a) | TirExpr::DictValues(a) => expr_uses_local(a),
         TirExpr::ListPopAt(a, b) | TirExpr::ListGet(a, b) | TirExpr::DictGet(a, b)
@@ -3824,6 +3887,12 @@ fn scrut_ty_of_node(node: &Node, ctx: &LowerCtx) -> Option<Ty> {
     }
 }
 
+/// True when a bare identifier pattern is a runtime type test rather than a
+/// binding: a known type name that is not shadowed by an outer local.
+fn is_type_pattern_ident(name: &str, ctx: &LowerCtx, outer: &HashMap<String, u16>) -> bool {
+    !outer.contains_key(name) && !pattern_type_names(name, ctx, 0).is_empty()
+}
+
 /// Static types of names bound by a pattern, derived from the scrutinee type
 /// rather than typeck's local table (which does not record match bindings).
 /// Used to type the arm-local slots of nested destructuring.
@@ -3833,11 +3902,15 @@ fn pattern_bind_types(
     ty: TirTy,
     precise: Option<&Ty>,
     ctx: &LowerCtx,
+    outer: &HashMap<String, u16>,
     out: &mut HashMap<String, TirTy>,
 ) {
     match node.kind {
         NodeKind::Identifier => {
             let name = source.span(node.start, node.length).to_string();
+            if is_type_pattern_ident(&name, ctx, outer) {
+                return;
+            }
             let bound = precise
                 .and_then(|t| tir_ty_from_ty(ctx.classes, t))
                 .unwrap_or(ty);
@@ -3845,7 +3918,7 @@ fn pattern_bind_types(
         }
         NodeKind::Typed | NodeKind::Guard => {
             if let Some(first) = node.children.first() {
-                pattern_bind_types(first, source, ty, precise, ctx, out);
+                pattern_bind_types(first, source, ty, precise, ctx, outer, out);
             }
         }
         NodeKind::Tuple | NodeKind::List => {
@@ -3860,12 +3933,12 @@ fn pattern_bind_types(
                 _ => (0..node.children.len()).map(|_| None).collect(),
             };
             for (child, item_ty) in node.children.iter().zip(precise_items) {
-                pattern_bind_types(child, source, elem, item_ty.as_ref(), ctx, out);
+                pattern_bind_types(child, source, elem, item_ty.as_ref(), ctx, outer, out);
             }
         }
         NodeKind::OrPattern => {
             for child in &node.children {
-                pattern_bind_types(child, source, ty, precise, ctx, out);
+                pattern_bind_types(child, source, ty, precise, ctx, outer, out);
             }
         }
         _ => {}
@@ -3874,23 +3947,27 @@ fn pattern_bind_types(
 
 /// Collect binding names declared by a match pattern node. Used to allocate
 /// distinct slots for each or-pattern alternative and to map body references
-/// onto the committed slots of the winning alternative.
-fn pattern_bind_names(node: &Node, source: &Source, out: &mut Vec<String>) {
+/// onto the committed slots of the winning alternative. Type-name patterns do
+/// not bind, so they are skipped here (and in `pattern_bind_types`).
+fn pattern_bind_names(node: &Node, ctx: &LowerCtx, outer: &HashMap<String, u16>, out: &mut Vec<String>) {
     match node.kind {
         NodeKind::Identifier => {
-            let name = source.span(node.start, node.length).to_string();
+            let name = ctx.source.span(node.start, node.length).to_string();
+            if is_type_pattern_ident(&name, ctx, outer) {
+                return;
+            }
             if !out.contains(&name) {
                 out.push(name);
             }
         }
         NodeKind::Typed | NodeKind::Guard => {
             if let Some(first) = node.children.first() {
-                pattern_bind_names(first, source, out);
+                pattern_bind_names(first, ctx, outer, out);
             }
         }
         NodeKind::OrPattern | NodeKind::Tuple | NodeKind::List => {
             for child in &node.children {
-                pattern_bind_names(child, source, out);
+                pattern_bind_names(child, ctx, outer, out);
             }
         }
         _ => {}
@@ -3908,11 +3985,86 @@ fn flatten_or_alternatives<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
     }
 }
 
+/// Runtime type name denoted by a static `Ty`, mirroring typeck's
+/// `type_name_pattern_ty` in reverse. Returns `None` for types with no runtime
+/// `is` counterpart (generics, tuple element details, ...).
+fn ty_pattern_name(ty: &Ty) -> Option<String> {
+    let name = match ty {
+        Ty::Int => "int",
+        Ty::Float => "float",
+        Ty::Bool => "bool",
+        Ty::Str => "str",
+        Ty::Bytes => "bytes",
+        Ty::None_ => "none",
+        Ty::Any => "any",
+        Ty::List(_) => "list",
+        Ty::Dict(_, _) => "dict",
+        Ty::Set(_) => "set",
+        Ty::Tuple(_) => "tuple",
+        Ty::Func { .. } => "func",
+        Ty::Class(name) => return Some(name.to_string()),
+        _ => return None,
+    };
+    Some(name.to_string())
+}
+
+/// Type names a bare identifier pattern tests at runtime: a primitive/class
+/// name resolves to itself; a type alias is expanded into its union members
+/// (the same set the bytecode compiler folds into `Pattern::Or`). An empty
+/// result means the name is an ordinary binding.
+fn pattern_type_names(name: &str, ctx: &LowerCtx, depth: usize) -> Vec<String> {
+    if depth > 16 {
+        return Vec::new();
+    }
+    if crate::compiler::is_primitive_type_name(name) || ctx.checked.classes.contains_key(name) {
+        return vec![name.to_string()];
+    }
+    let Some(alias) = ctx.checked.aliases.get(name) else {
+        return Vec::new();
+    };
+    fn collect(ty: &Ty, ctx: &LowerCtx, depth: usize, out: &mut Vec<String>) {
+        let push = |out: &mut Vec<String>, name: String| {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        };
+        match ty {
+            Ty::Union(items) => {
+                for item in items.iter() {
+                    collect(item, ctx, depth, out);
+                }
+            }
+            Ty::Class(class) => push(out, class.to_string()),
+            other => {
+                if let Some(name) = ty_pattern_name(other) {
+                    if ctx.checked.aliases.contains_key(name.as_str()) && depth < 16 {
+                        for member in pattern_type_names(&name, ctx, depth + 1) {
+                            push(out, member);
+                        }
+                    } else {
+                        push(out, name);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    collect(alias, ctx, depth, &mut out);
+    out
+}
+
 /// Lower one pattern, recursively for tuple/list destructuring. Bind names have
 /// already been declared in the current slot scope by `lower_match_expr` (per
 /// alternative); `value_ty` is the native type of the value being matched at
-/// this level, used to type nested literal comparisons.
-fn lower_match_pattern(node: &Node, ctx: &mut LowerCtx, value_ty: TirTy) -> Result<TirPattern, String> {
+/// this level, used to type nested literal comparisons. `outer_slots` is the
+/// scope before this alternative's own binds were declared, so a local with a
+/// type-like name still shadows the type test (matching the VM compiler).
+fn lower_match_pattern(
+    node: &Node,
+    ctx: &mut LowerCtx,
+    value_ty: TirTy,
+    outer_slots: &HashMap<String, u16>,
+) -> Result<TirPattern, String> {
     match node.kind {
         NodeKind::Wildcard => Ok(TirPattern::Wildcard),
         NodeKind::Identifier | NodeKind::Typed => {
@@ -3925,6 +4077,20 @@ fn lower_match_pattern(node: &Node, ctx: &mut LowerCtx, value_ty: TirTy) -> Resu
                 return Err("match bind pattern must be a plain variable".to_string());
             }
             let name = ctx.source.span(name_node.start, name_node.length).to_string();
+            // A local with a type-like name wins (the VM compiler gives slot
+            // lookup priority too). Only bare identifiers can be type tests;
+            // `x: T` and `x is T` stay ordinary bindings.
+            if node.kind == NodeKind::Identifier && !outer_slots.contains_key(&name) {
+                let names = pattern_type_names(&name, ctx, 0);
+                if names.len() == 1 {
+                    return Ok(TirPattern::Type { name: names[0].clone() });
+                }
+                if !names.is_empty() {
+                    return Ok(TirPattern::Or(
+                        names.into_iter().map(|n| TirPattern::Type { name: n }).collect(),
+                    ));
+                }
+            }
             let slot = slot_of(ctx, &name)
                 .ok_or_else(|| format!("unresolved match binding '{name}'"))?;
             Ok(TirPattern::Bind(slot))
@@ -3944,7 +4110,7 @@ fn lower_match_pattern(node: &Node, ctx: &mut LowerCtx, value_ty: TirTy) -> Resu
                         item.kind
                     ));
                 }
-                items.push(lower_match_pattern(item, ctx, elem_ty)?);
+                items.push(lower_match_pattern(item, ctx, elem_ty, outer_slots)?);
             }
             Ok(TirPattern::Tuple(items))
         }
@@ -3982,6 +4148,9 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
     ctx.pending.push(TirStmt::Let(result_slot, TirExpr::Int(0)));
 
     let mut arms: Vec<TirMatchArm> = Vec::new();
+    // Per-arm flag: the result expression is a scalar that needs boxing when
+    // the arms disagree on their numeric type (`int | float`).
+    let mut arm_result_numeric: Vec<bool> = Vec::new();
     let mut result_cty: Option<CoreTy> = None;
     let mut result_ty = TirTy::Int;
 
@@ -4013,10 +4182,10 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
         // Bindings visible to the body/guard are those declared by every
         // alternative, mirroring typeck's `merge_arms`.
         let mut common: Vec<String> = Vec::new();
-        pattern_bind_names(alternatives[0], ctx.source, &mut common);
+        pattern_bind_names(alternatives[0], ctx, &ctx.slots, &mut common);
         for alt in alternatives.iter().skip(1) {
             let mut names = Vec::new();
-            pattern_bind_names(alt, ctx.source, &mut names);
+            pattern_bind_names(alt, ctx, &ctx.slots, &mut names);
             common.retain(|name| names.contains(name));
         }
 
@@ -4028,7 +4197,7 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
             let mut first_types: HashMap<String, TirTy> = HashMap::new();
             pattern_bind_types(
                 alternatives[0], ctx.source, scrut_ty, precise_scrut_ty.as_ref(), ctx,
-                &mut first_types,
+                &ctx.slots, &mut first_types,
             );
             for name in &common {
                 let ty = first_types.get(name).copied().unwrap_or(scrut_ty);
@@ -4053,11 +4222,11 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
             // binds; only the winner's copies reach the committed slots.
             let saved_slots = ctx.slots.clone();
             let mut alt_binds = Vec::new();
-            pattern_bind_names(alt, ctx.source, &mut alt_binds);
+            pattern_bind_names(alt, ctx, &saved_slots, &mut alt_binds);
             let mut alt_types: HashMap<String, TirTy> = HashMap::new();
             pattern_bind_types(
                 alt, ctx.source, scrut_ty, precise_scrut_ty.as_ref(), ctx,
-                &mut alt_types,
+                &saved_slots, &mut alt_types,
             );
             let mut alt_slots: HashMap<String, u16> = HashMap::new();
             for name in &alt_binds {
@@ -4073,7 +4242,7 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
                 alt_slots.insert(name.clone(), slot);
             }
 
-            let pattern = lower_match_pattern(alt, ctx, scrut_ty)?;
+            let pattern = lower_match_pattern(alt, ctx, scrut_ty, &saved_slots)?;
 
             // A guard is evaluated in the alternative's slot scope, after the
             // pattern assigned its bind slots. Nested matches in guards would
@@ -4114,6 +4283,15 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
                         .unwrap_or(TirTy::Int);
                     ctx.locals[result_slot as usize] = result_ty;
                 }
+                // A numeric union (`int | float`) is the common case for a
+                // match with type arms. Keep the original tag by boxing each
+                // arm's value into a dynamic handle, just like the VM does.
+                Some(CoreTy::Int | CoreTy::Float) if matches!(body_cty, CoreTy::Int | CoreTy::Float) && result_cty != Some(body_cty) => {
+                    result_cty = Some(CoreTy::Obj);
+                    result_ty = TirTy::Obj;
+                    ctx.locals[result_slot as usize] = TirTy::Obj;
+                }
+                Some(CoreTy::Obj) if matches!(body_cty, CoreTy::Int | CoreTy::Float) => {}
                 Some(prev) if prev != body_cty => {
                     return Err("match arms must all have the same type".to_string());
                 }
@@ -4134,21 +4312,40 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
             body_out.push(TirStmt::Set(result_slot, body_expr));
             ctx.slots = saved_slots;
             arms.push(TirMatchArm { pattern, guard, body: body_out });
+            arm_result_numeric.push(matches!(body_cty, CoreTy::Int | CoreTy::Float));
         }
     }
 
     if arms.is_empty() {
         return Err("match without arms".to_string());
     }
-    // Only scalar result types have a `Let`-initializer with a matching
-    // `expr_ty`; other result types stay on the VM path.
-    if !matches!(result_ty, TirTy::Int | TirTy::Float | TirTy::Bool | TirTy::Str) {
+    if result_ty == TirTy::Obj {
+        // Keep each arm's original numeric tag: box the scalar instead of
+        // widening Int to Float (which would change `is int` and formatting).
+        for (arm, numeric) in arms.iter_mut().zip(&arm_result_numeric) {
+            if *numeric {
+                for stmt in &mut arm.body {
+                    if let TirStmt::Set(slot, expr) = stmt {
+                        if *slot == result_slot {
+                            let inner = std::mem::replace(expr, TirExpr::Int(0));
+                            *expr = TirExpr::BoxObj(Box::new(inner));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Only scalar results (and boxed dynamic handles) have a `Let` initializer
+    // with a matching `expr_ty`; other result types stay on the VM path.
+    if !matches!(result_ty, TirTy::Int | TirTy::Float | TirTy::Bool | TirTy::Str | TirTy::Obj) {
         return Err("match arm result type is not supported in this native mode".to_string());
     }
     let init = match result_ty {
         TirTy::Float => TirExpr::Float(0.0),
         TirTy::Bool => TirExpr::Bool(false),
         TirTy::Str => TirExpr::Str(String::new()),
+        TirTy::Obj => TirExpr::BoxObj(Box::new(TirExpr::Int(0))),
         _ => TirExpr::Int(0),
     };
     ctx.pending[result_let_at] = TirStmt::Let(result_slot, init);
@@ -5878,6 +6075,10 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
         TirExpr::CallObj { ret, .. } => Ok(*ret),
         TirExpr::GlobalGet(_) => Ok(TirTy::Int),
         TirExpr::NoneValue => Ok(TirTy::Str),
+        TirExpr::BoxObj(inner) => {
+            let _ = expr_ty(inner, f, program, locals)?;
+            Ok(TirTy::Obj)
+        }
         TirExpr::Int(_) => Ok(TirTy::Int),
         TirExpr::Float(_) => Ok(TirTy::Float),
         TirExpr::EmptyCollection { ty } => Ok(*ty),

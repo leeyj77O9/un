@@ -212,6 +212,9 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
             || heap
             || native_call
             || crate::tir::fn_uses_dynamic(f)
+            // Vm-mode TIR values are raw scalars, so there is no boxed handle
+            // for `unrt_type_is`. Keep the function on the interpreter path.
+            || crate::tir::fn_uses_type_pattern(f)
         {
             // Both Str-only and heap-using functions are expected to run in the
             // interpreter in Vm mode; a bail stub is enough, no user-facing
@@ -640,6 +643,8 @@ struct FnEmit<'a> {
     /// and a boxed element handle (0 for out of range / wrong type).
     unrt_match_seq_len: Option<cranelift_module::FuncId>,
     unrt_match_seq_get: Option<cranelift_module::FuncId>,
+    /// Runtime `is` test used by type-name patterns (`Pattern::Type` in the VM).
+    unrt_type_is: Option<cranelift_module::FuncId>,
     unrt_list_from_ints: Option<cranelift_module::FuncId>,
     unrt_list_from_floats: Option<cranelift_module::FuncId>,
     unrt_list_from_elems: Option<cranelift_module::FuncId>,
@@ -835,6 +840,19 @@ fn emit_internal<M: Module>(
     };
     let unrt_match_seq_get = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_match_seq_get", vec![types::I64, types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
+    // ARC-00: one new ABI symbol for bare type-name patterns. The native side
+    // checks a boxed handle against a registered type name using the same
+    // semantics as the VM's `is_obj` (primitives, `any`/`obj`, class names).
+    let unrt_type_is = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_type_is",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
     } else {
         None
     };
@@ -1267,6 +1285,7 @@ fn emit_internal<M: Module>(
         unrt_list_get_int,
         unrt_match_seq_len,
         unrt_match_seq_get,
+        unrt_type_is,
         unrt_list_from_ints,
         unrt_list_from_floats,
         unrt_list_from_elems,
@@ -1676,7 +1695,56 @@ fn emit_match_pattern<M: Module>(
             }
             builder.ins().jump(success_blk, &[]);
         }
+        TirPattern::Type { name } => {
+            let handle = wrap_as_obj(value, value_ty, emitter, builder, module);
+            let gv = embed_str_bytes(emitter, module, builder, name.as_bytes());
+            let nptr = builder.ins().symbol_value(types::I64, gv);
+            let nlen = builder.ins().iconst(types::I64, name.len() as i64);
+            let id = emitter.unrt_type_is.expect("unrt import required for type patterns");
+            let type_ref = module.declare_func_in_func(id, builder.func);
+            let call = builder.ins().call(type_ref, &[handle, nptr, nlen]);
+            let ok = builder.inst_results(call)[0];
+            builder.ins().brif(ok, success_blk, &[], fail_blk, &[]);
+        }
+        TirPattern::Or(alternatives) => {
+            emit_match_pattern_or(
+                alternatives, 0, value, value_ty, success_blk, fail_blk,
+                emitter, builder, module, f,
+            );
+        }
     }
+}
+
+/// Try each alternative of an alias-expanded pattern left to right. Bind slots
+/// in type alternatives are empty, so no winner commit is needed here (the arm
+/// machinery handles real or-pattern binds before reaching TIR).
+fn emit_match_pattern_or<M: Module>(
+    alternatives: &[TirPattern],
+    index: usize,
+    value: cranelift_codegen::ir::Value,
+    value_ty: TirTy,
+    success_blk: Block,
+    fail_blk: Block,
+    emitter: &mut FnEmit<'_>,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    f: &TirFn,
+) {
+    if index >= alternatives.len() {
+        builder.ins().jump(fail_blk, &[]);
+        return;
+    }
+    let next_blk = builder.create_block();
+    emit_match_pattern(
+        &alternatives[index], value, value_ty, success_blk, next_blk,
+        emitter, builder, module, f,
+    );
+    builder.switch_to_block(next_blk);
+    emitter.terminated = false;
+    emit_match_pattern_or(
+        alternatives, index + 1, value, value_ty, success_blk, fail_blk,
+        emitter, builder, module, f,
+    );
 }
 
 fn emit_match_arms<M: Module>(
@@ -2326,8 +2394,8 @@ fn expr_preserves_list_len(e: &TirExpr) -> bool {
         TirExpr::ListPop(_) | TirExpr::ListPopAt(_, _) => false,
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_)
         | TirExpr::Local(_) | TirExpr::NoneValue | TirExpr::GlobalGet(_) => true,
-        TirExpr::Promote(x) | TirExpr::CastInt(x) | TirExpr::CastFloat(x) | TirExpr::Un(_, x)
-        | TirExpr::Len(x) | TirExpr::MemberGet { receiver: x, .. }
+        TirExpr::Promote(x) | TirExpr::BoxObj(x) | TirExpr::CastInt(x) | TirExpr::CastFloat(x)
+        | TirExpr::Un(_, x) | TirExpr::Len(x) | TirExpr::MemberGet { receiver: x, .. }
         | TirExpr::DictKeys(x) | TirExpr::DictValues(x)
         | TirExpr::Located { inner: x, .. } => expr_preserves_list_len(x),
         TirExpr::ListContains(a, b) | TirExpr::ListIndexOf(a, b) => {
@@ -2936,6 +3004,10 @@ fn emit_expr<M: Module>(
             let result = emit_expr(inner, emitter, builder, module, f);
             emitter.current_span = prev;
             result
+        }
+        TirExpr::BoxObj(inner) => {
+            let (v, ty) = emit_expr(inner, emitter, builder, module, f);
+            (wrap_as_obj(v, ty, emitter, builder, module), TirTy::Obj)
         }
         TirExpr::MakeClosure { func_index, captures, .. } => {
             let index = builder.ins().iconst(types::I64, *func_index as i64);

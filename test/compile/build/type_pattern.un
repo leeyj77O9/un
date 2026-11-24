@@ -1,0 +1,16 @@
+use io
+
+fn main() -> none
+    a = match 0.01 { int -> 100, float -> -100, _ -> 0 }
+    io.write(a)
+    b = match 7 { int -> 100, float -> -100, _ -> 0 }
+    io.write(b)
+    c = match (1.1, 0.1) {
+        (int, float) -> 1,
+        (int, int) -> 2,
+        (float, float) -> 3,
+        _ -> 0
+    }
+    io.write(c)
+
+main()

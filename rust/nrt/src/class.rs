@@ -164,6 +164,12 @@ pub extern "C" fn nrt_register_class(name_ptr: *const u8, name_len: usize) -> i6
     id as i64
 }
 
+/// Registered name of a class instance's class id (tag-9 `a` field).
+/// Used by type-name patterns to compare a receiver against a class name.
+pub(crate) fn class_name(id: usize) -> Option<&'static str> {
+    classes().and_then(|cs| cs.get(id)).map(|c| c.name.as_str())
+}
+
 #[no_mangle]
 pub extern "C" fn nrt_register_field(class_id: i64, name_ptr: *const u8, name_len: usize) {
     if let Some(class) = CLASSES.lock().unwrap().get_mut(class_id as usize) {
