@@ -77,8 +77,24 @@ pub fn load(full_path: &str, trace: Option<context::Traces>) -> Result<Vec<(Stri
             format!("circular import detected: '{full_path}'"),
         )));
     }
+    // Track classes by before/after diff, never by "everything registered
+    // while loading": native classes and classes present at program start
+    // must survive an opt-in unload. A nested import records its own classes
+    // in its own cache entry; the outer diff sees them too, which is safe
+    // because unloading either module is opt-in and JIT entries are already
+    // released on that path (D-093 §3).
+    let classes_before: std::collections::HashSet<String> =
+        world::registered_class_names().into_iter().collect();
     let result = load_inner(full_path, trace);
     world::loading_remove(&cache_key);
+    let class_names = if result.is_ok() {
+        world::registered_class_names()
+            .into_iter()
+            .filter(|name| !classes_before.contains(name))
+            .collect()
+    } else {
+        Vec::new()
+    };
     if let Ok((exports, program_ids)) = &result {
         let mut ids = program_ids.iter().copied();
         world::module_cache_set(
@@ -87,6 +103,7 @@ pub fn load(full_path: &str, trace: Option<context::Traces>) -> Result<Vec<(Stri
                 exports: exports.clone(),
                 program_id: ids.next().unwrap_or(0),
                 extra_program_ids: ids.collect(),
+                class_names,
             },
         );
     }

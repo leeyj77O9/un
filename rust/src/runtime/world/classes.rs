@@ -123,3 +123,54 @@ pub fn class_tobj(name: &str) -> Obj {
             .clone()
     })
 }
+
+/// Names present in at least one of the five class/layout registries.
+///
+/// The module loader takes a snapshot of this set immediately before a fresh
+/// import and records only the names that appear afterwards. Native classes
+/// (registered by `native::init` / `runtime::modules::init_classes`) and any
+/// class already present at program start are in the "before" snapshot, so an
+/// opt-in module unload can never remove them.
+pub fn registered_class_names() -> Vec<String> {
+    WORLD.with(|w| {
+        let w = w.borrow();
+        let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        names.extend(w.classes.keys().cloned());
+        names.extend(w.classes_tobj.keys().cloned());
+        names.extend(w.original_classes.keys().cloned());
+        names.extend(w.original_base_types.keys().cloned());
+        names.extend(w.class_layouts.keys().cloned());
+        names.into_iter().collect()
+    })
+}
+
+/// Drop one class name from every class/layout registry.
+///
+/// Returns how many of the five registries held the name (0..=5). This is
+/// registry cleanup only: `Obj`s reachable from caller scopes or closure
+/// cycles are left to natural `Rc` drop (D-093 §2 bounded leak), and
+/// `world::reset()` stays the full state teardown. Callers must only pass
+/// names they observed as *new* during their own module load — passing a
+/// builtin/native name would break later lookups of that type.
+pub fn unregister_class(name: &str) -> usize {
+    WORLD.with(|w| {
+        let mut w = w.borrow_mut();
+        let mut removed = 0;
+        if w.classes.remove(name).is_some() {
+            removed += 1;
+        }
+        if w.classes_tobj.remove(name).is_some() {
+            removed += 1;
+        }
+        if w.original_classes.remove(name).is_some() {
+            removed += 1;
+        }
+        if w.original_base_types.remove(name).is_some() {
+            removed += 1;
+        }
+        if w.class_layouts.remove(name).is_some() {
+            removed += 1;
+        }
+        removed
+    })
+}

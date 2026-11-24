@@ -1,0 +1,19 @@
+use io
+use test.assert as assert
+
+fn pair_sum(p: tuple[int, int]) -> int
+    -> match p { (a, b) -> a + b, _ -> -1 }
+
+fn nested_sum(p: tuple[int, tuple[int, int]]) -> int
+    -> match p { (a, (b, c)) -> a + b + c, _ -> -1 }
+
+fn guarded(p: tuple[int, int]) -> str
+    -> match p { (a, b) if a > b -> 'gt', (a, b) if a < b -> 'lt', _ -> 'eq' }
+
+assert.assert_eq(pair_sum((2, 3)), 5, "tuple bind")
+assert.assert_eq(pair_sum((9, 9)), 18, "tuple second arm")
+assert.assert_eq(nested_sum((1, (2, 3))), 6, "nested tuple")
+assert.assert_eq(guarded((3, 1)), "gt", "tuple guard gt")
+assert.assert_eq(guarded((1, 3)), "lt", "tuple guard lt")
+assert.assert_eq(guarded((2, 2)), "eq", "tuple guard fallback")
+assert.summary()

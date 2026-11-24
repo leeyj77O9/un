@@ -60,6 +60,37 @@ pub extern "C" fn unrt_list_get(list: u64, idx: i64) -> u64 {
         }
     }
 }
+/// ARC-00: sequence probes for nested pattern matching. Mirrors the VM's
+/// `obj::unpack_items` (lists and tuples are both sequences); invalid inputs
+/// report failure through -1 / 0 instead of raising a native error, so a
+/// pattern miss stays an ordinary non-match.
+#[no_mangle]
+pub extern "C" fn unrt_match_seq_len(value: u64) -> i64 {
+    unsafe {
+        match obj(value).tag {
+            3 => obj(value).a,
+            14 => crate::obj::seq_len(value),
+            _ => -1,
+        }
+    }
+}
+#[no_mangle]
+pub extern "C" fn unrt_match_seq_get(value: u64, idx: i64) -> u64 {
+    unsafe {
+        match obj(value).tag {
+            3 => {
+                let v = items(value);
+                index(v, idx).map_or(0, |i| v[i])
+            }
+            14 => {
+                let v = crate::obj::seq_items(value);
+                index(v, idx).map_or(0, |i| v[i])
+            }
+            _ => 0,
+        }
+    }
+}
+
 /// Fused read for statically typed `list[int]`: returns the raw i64 and skips
 /// the box/unbox FFI round trip. Out-of-range writes a pending error, which the
 /// runtime reports at exit just like the boxed path.

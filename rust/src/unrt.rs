@@ -481,6 +481,40 @@ pub extern "C" fn unrt_list_get(list: u64, idx: i64) -> u64 {
     }
 }
 
+/// ARC-00: sequence probes for native (no-VM) nested pattern matching.
+/// `unrt_match_seq_len` mirrors `obj::unpack_items`: both lists and tuples are
+/// sequences, everything else reports -1. `unrt_match_seq_get` returns a boxed
+/// element handle, or 0 (never a valid handle) for a wrong type or bad index;
+/// failure is a non-match, not a native error.
+#[no_mangle]
+pub extern "C" fn unrt_match_seq_len(value: u64) -> i64 {
+    let Some(value) = borrow_obj(value) else {
+        return -1;
+    };
+    match crate::runtime::obj::payload(&value) {
+        crate::runtime::obj::Payload::List(items) => items.borrow().len() as i64,
+        crate::runtime::obj::Payload::Tup(items, _) => items.len() as i64,
+        _ => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn unrt_match_seq_get(value: u64, idx: i64) -> u64 {
+    let Some(value) = borrow_obj(value) else {
+        return 0;
+    };
+    let items: Vec<crate::runtime::obj::Obj> = match crate::runtime::obj::payload(&value) {
+        crate::runtime::obj::Payload::List(items) => items.borrow().clone(),
+        crate::runtime::obj::Payload::Tup(items, _) => items.to_vec(),
+        _ => return 0,
+    };
+    let i = if idx < 0 { items.len() as i64 + idx } else { idx };
+    if i < 0 || i >= items.len() as i64 {
+        return 0;
+    }
+    to_raw(items[i as usize].clone())
+}
+
 #[no_mangle]
 pub extern "C" fn unrt_list_from_ints(ptr: *const i64, len: i64) -> u64 {
     if ptr.is_null() || len < 0 {

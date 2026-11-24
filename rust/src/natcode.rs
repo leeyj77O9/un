@@ -2,7 +2,7 @@
 use crate::jit_cache::{self, ArgKind, JitEntry, TAG_BAIL, TAG_BOOL, TAG_FLOAT, TAG_INT, TAG_NONE};
 use crate::bytecode::Program;
 use crate::objify::EmitOutcome;
-use crate::tir::{abi_kind, elem_of_tir, tir_is_ref, tir_of_elem, TirBinOp, TirCmp, TirExpr, TirFn, TirMatchArm, TirPattern, TirProgram, TirStmt, TirTy, TirUnOp};
+use crate::tir::{abi_kind, elem_of_tir, seq_elem_tir, tir_is_ref, tir_of_elem, TirBinOp, TirCmp, TirExpr, TirFn, TirMatchArm, TirPattern, TirProgram, TirStmt, TirTy, TirUnOp};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{types, Block, AbiParam, InstBuilder, MemFlagsData, UserFuncName};
@@ -636,6 +636,10 @@ struct FnEmit<'a> {
     unrt_list_len: Option<cranelift_module::FuncId>,
     unrt_list_get: Option<cranelift_module::FuncId>,
     unrt_list_get_int: Option<cranelift_module::FuncId>,
+    /// Sequence-pattern probes: length of a list/tuple (-1 for other values)
+    /// and a boxed element handle (0 for out of range / wrong type).
+    unrt_match_seq_len: Option<cranelift_module::FuncId>,
+    unrt_match_seq_get: Option<cranelift_module::FuncId>,
     unrt_list_from_ints: Option<cranelift_module::FuncId>,
     unrt_list_from_floats: Option<cranelift_module::FuncId>,
     unrt_list_from_elems: Option<cranelift_module::FuncId>,
@@ -817,6 +821,20 @@ fn emit_internal<M: Module>(
     };
     let unrt_list_get_int = if mode == NativeMode::Obj {
         Some(declare_import(module, "unrt_list_get_int", vec![types::I64, types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
+    // ARC-00: new ABI symbols for nested tuple/list pattern decomposition.
+    // They report failure through sentinel values instead of error objects, so
+    // a non-match never raises as a native error (VM `match_pattern` returns
+    // false in the same situations).
+    let unrt_match_seq_len = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_match_seq_len", vec![types::I64], Some(types::I64))?)
+    } else {
+        None
+    };
+    let unrt_match_seq_get = if mode == NativeMode::Obj {
+        Some(declare_import(module, "unrt_match_seq_get", vec![types::I64, types::I64], Some(types::I64))?)
     } else {
         None
     };
@@ -1247,6 +1265,8 @@ fn emit_internal<M: Module>(
         unrt_list_len,
         unrt_list_get,
         unrt_list_get_int,
+        unrt_match_seq_len,
+        unrt_match_seq_get,
         unrt_list_from_ints,
         unrt_list_from_floats,
         unrt_list_from_elems,
@@ -1555,6 +1575,110 @@ fn emit_no_match_case<M: Module>(
     emitter.terminated = true;
 }
 
+/// Emit one pattern test. On success control reaches `success_blk` (bind slots
+/// have been written); on failure it reaches `fail_blk`, the arm's shared
+/// landing pad. Sequence patterns use the two `unrt_match_seq_*` probes so a
+/// non-sequence / length mismatch / short element is an ordinary non-match,
+/// never a native error. Nested items are checked left to right and all bind
+/// writes happen only after the corresponding item succeeded.
+fn emit_match_pattern<M: Module>(
+    pattern: &TirPattern,
+    value: cranelift_codegen::ir::Value,
+    value_ty: TirTy,
+    success_blk: Block,
+    fail_blk: Block,
+    emitter: &mut FnEmit<'_>,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    f: &TirFn,
+) {
+    match pattern {
+        TirPattern::Wildcard => {
+            builder.ins().jump(success_blk, &[]);
+        }
+        TirPattern::Bind(slot) => {
+            // Bind slots for nested patterns are typed from typeck's element
+            // type, which may differ from the dynamically probed value type.
+            let declared = emitter.local_tys[*slot as usize];
+            let stored = coerce_value(value, value_ty, declared, emitter, builder, module);
+            builder.def_var(emitter.vars[*slot as usize], stored);
+            builder.ins().jump(success_blk, &[]);
+        }
+        TirPattern::Literal(lit) => {
+            let (lit_value, lit_ty) = emit_expr(lit, emitter, builder, module, f);
+            let (cond, _) = emit_cmp(
+                TirCmp::Eq,
+                value,
+                value_ty,
+                lit_value,
+                lit_ty,
+                emitter,
+                builder,
+                module,
+            );
+            builder.ins().brif(cond, success_blk, &[], fail_blk, &[]);
+        }
+        TirPattern::Tuple(items) => {
+            // An empty tuple pattern never matches: VM `Pattern::Tuple`
+            // rejects an empty unpack before comparing lengths.
+            if items.is_empty() {
+                builder.ins().jump(fail_blk, &[]);
+                return;
+            }
+            let handle = wrap_as_obj(value, value_ty, emitter, builder, module);
+            let len_id = emitter.unrt_match_seq_len.expect("unrt import required for patterns");
+            let len_ref = module.declare_func_in_func(len_id, builder.func);
+            let len_call = builder.ins().call(len_ref, &[handle]);
+            let len = builder.inst_results(len_call)[0];
+            let expected = builder.ins().iconst(types::I64, items.len() as i64);
+            let equal = builder.ins().icmp(IntCC::Equal, len, expected);
+            let body_blk = builder.create_block();
+            builder.ins().brif(equal, body_blk, &[], fail_blk, &[]);
+
+            builder.switch_to_block(body_blk);
+            emitter.terminated = false;
+            let get_id = emitter.unrt_match_seq_get.expect("unrt import required for patterns");
+            let get_ref = module.declare_func_in_func(get_id, builder.func);
+            let elem_ty = seq_elem_tir(value_ty);
+            for (index, item) in items.iter().enumerate() {
+                let idx = builder.ins().iconst(types::I64, index as i64);
+                let get_call = builder.ins().call(get_ref, &[handle, idx]);
+                let raw = builder.inst_results(get_call)[0];
+                let zero = builder.ins().iconst(types::I64, 0);
+                let got = builder.ins().icmp(IntCC::NotEqual, raw, zero);
+                let item_blk = builder.create_block();
+                builder.ins().brif(got, item_blk, &[], fail_blk, &[]);
+                builder.switch_to_block(item_blk);
+                emitter.terminated = false;
+
+                if index == 0 {
+                    // `vm::match_pattern` rejects a sequence whose first item
+                    // is an error object before testing any element.
+                    let err_id = emitter.unrt_obj_is_err.expect("unrt import required for patterns");
+                    let err_ref = module.declare_func_in_func(err_id, builder.func);
+                    let err_call = builder.ins().call(err_ref, &[raw]);
+                    let is_err = builder.inst_results(err_call)[0];
+                    let no_err = builder.ins().icmp(IntCC::Equal, is_err, zero);
+                    let clean_blk = builder.create_block();
+                    builder.ins().brif(no_err, clean_blk, &[], fail_blk, &[]);
+                    builder.switch_to_block(clean_blk);
+                    emitter.terminated = false;
+                }
+
+                let elem_value = unbox_obj(raw, elem_ty, emitter, builder, module);
+                let next_blk = builder.create_block();
+                emit_match_pattern(
+                    item, elem_value, elem_ty, next_blk, fail_blk,
+                    emitter, builder, module, f,
+                );
+                builder.switch_to_block(next_blk);
+                emitter.terminated = false;
+            }
+            builder.ins().jump(success_blk, &[]);
+        }
+    }
+}
+
 fn emit_match_arms<M: Module>(
     arms: &[TirMatchArm],
     index: usize,
@@ -1580,31 +1704,12 @@ fn emit_match_arms<M: Module>(
     // pattern-miss landing pad, matching `compiler.rs::code_match`.
     let guard_blk = arm.guard.as_ref().map(|_| builder.create_block());
     let success_blk = guard_blk.unwrap_or(body_blk);
-    match &arm.pattern {
-        TirPattern::Wildcard => {
-            builder.ins().jump(success_blk, &[]);
-        }
-        TirPattern::Bind(slot) => {
-            // Assign the bind slot on success, before a guard can read it.
-            let var = emitter.vars[*slot as usize];
-            builder.def_var(var, scrut_value);
-            builder.ins().jump(success_blk, &[]);
-        }
-        TirPattern::Literal(lit) => {
-            let (lit_value, lit_ty) = emit_expr(lit, emitter, builder, module, f);
-            let (cond, _) = emit_cmp(
-                TirCmp::Eq,
-                scrut_value,
-                scrut_ty,
-                lit_value,
-                lit_ty,
-                emitter,
-                builder,
-                module,
-            );
-            builder.ins().brif(cond, success_blk, &[], fail_blk, &[]);
-        }
-    }
+    // Bind slots are written before a guard reads them, exactly as in
+    // `compiler.rs::code_match`.
+    emit_match_pattern(
+        &arm.pattern, scrut_value, scrut_ty, success_blk, fail_blk,
+        emitter, builder, module, f,
+    );
     if let (Some(guard_blk), Some(guard)) = (guard_blk, arm.guard.as_ref()) {
         builder.switch_to_block(guard_blk);
         emitter.terminated = false;

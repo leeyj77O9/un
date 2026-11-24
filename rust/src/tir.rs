@@ -186,6 +186,21 @@ pub(crate) fn tir_of_elem(elem: ObjElem) -> TirTy {
     }
 }
 
+/// Element type of a sequence scrutinee in a nested pattern. Unlike
+/// `elem_of_tir` (which intentionally treats tuple/set elements as opaque in
+/// ordinary indexing code), this follows the static element kind so pattern
+/// binds and nested literal comparisons get the right native representation.
+pub(crate) fn seq_elem_tir(ty: TirTy) -> TirTy {
+    match ty {
+        TirTy::ListInt => TirTy::Int,
+        TirTy::ListFloat => TirTy::Float,
+        TirTy::ListClass(id) => TirTy::Class(id),
+        TirTy::ListLambda => TirTy::Lambda(u32::MAX),
+        TirTy::ListGen(elem) | TirTy::TupleGen(elem) | TirTy::SetGen(elem) => tir_of_elem(elem),
+        _ => TirTy::Obj,
+    }
+}
+
 /// NRT C ABI scalar kind for a TIR type.
 ///
 /// The values are part of the standalone runtime ABI and must not change:
@@ -477,8 +492,9 @@ pub enum TirCmp {
 /// Or-patterns are flattened by the lowering step into several arms, each
 /// carrying one of these leaf patterns; per-alternative bind slots are copied
 /// into the body-visible slots by a `TirStmt::Set` at the head of the winning
-/// arm's body (the "winner commit"). Tuple/list destructuring and
-/// class/variant patterns still stay on the interpreter path.
+/// arm's body (the "winner commit"). `Tuple` is a nested sequence pattern:
+/// VM `Pattern::Tuple` accepts both a tuple and a list and requires an exact
+/// length match. Class/variant patterns still stay on the interpreter path.
 #[derive(Clone, Debug)]
 pub enum TirPattern {
     Wildcard,
@@ -486,6 +502,37 @@ pub enum TirPattern {
     Bind(u16),
     /// Constant to compare against (Int/Float/Bool/Str/None).
     Literal(TirExpr),
+    /// Nested tuple/list destructuring. Items are matched left to right, with
+    /// an exact length check first (matching `vm::match_pattern`).
+    Tuple(Vec<TirPattern>),
+}
+
+impl TirPattern {
+    /// All literal leaves, used by the Obj/heap/class/Str mode gates.
+    fn literals(&self) -> Vec<&TirExpr> {
+        match self {
+            TirPattern::Literal(e) => vec![e],
+            TirPattern::Tuple(items) => items.iter().flat_map(TirPattern::literals).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Bind slots in declaration (left-to-right, outermost-first) order.
+    fn bind_slots(&self) -> Vec<u16> {
+        match self {
+            TirPattern::Bind(slot) => vec![*slot],
+            TirPattern::Tuple(items) => items.iter().flat_map(TirPattern::bind_slots).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn literals_ok(&self, pred: &dyn Fn(&TirExpr) -> bool) -> bool {
+        match self {
+            TirPattern::Literal(e) => pred(e),
+            TirPattern::Tuple(items) => items.iter().all(|p| p.literals_ok(pred)),
+            _ => true,
+        }
+    }
 }
 
 /// One `match` arm. A guard runs *after* the pattern (including its bind slot)
@@ -805,10 +852,7 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             TirStmt::Match { arms, result_ty, .. } => {
                 ty_ok(*result_ty)
                     && arms.iter().all(|arm| {
-                        let pattern_ok = match &arm.pattern {
-                            TirPattern::Wildcard | TirPattern::Bind(_) => true,
-                            TirPattern::Literal(e) => expr_ok(e),
-                        };
+                        let pattern_ok = arm.pattern.literals_ok(&expr_ok);
                         pattern_ok
                             && arm.guard.as_ref().map_or(true, expr_ok)
                             && arm.body.iter().all(stmt_ok)
@@ -1154,7 +1198,7 @@ fn stmt_uses_native(s: &TirStmt) -> bool {
         | TirStmt::ListClear { .. } | TirStmt::DictClear { .. }
         | TirStmt::Break | TirStmt::Skip | TirStmt::Return(None) => false,
         TirStmt::Match { arms, .. } => arms.iter().any(|arm| {
-            matches!(&arm.pattern, TirPattern::Literal(e) if expr_uses_native(e))
+            arm.pattern.literals().iter().any(|e| expr_uses_native(e))
                 || arm.guard.as_ref().is_some_and(expr_uses_native)
                 || arm.body.iter().any(stmt_uses_native)
         }),
@@ -1215,7 +1259,7 @@ fn stmt_uses_classes(s: &TirStmt) -> bool {
             expr_uses_classes(list) || expr_uses_classes(value)
         }
         TirStmt::Match { arms, .. } => arms.iter().any(|arm| {
-            matches!(&arm.pattern, TirPattern::Literal(e) if expr_uses_classes(e))
+            arm.pattern.literals().iter().any(|e| expr_uses_classes(e))
                 || arm.guard.as_ref().is_some_and(expr_uses_classes)
                 || arm.body.iter().any(stmt_uses_classes)
         }),
@@ -1308,7 +1352,7 @@ fn stmt_uses_heap(s: &TirStmt) -> bool {
         TirStmt::Return(None) => false,
         TirStmt::Return(Some(e)) => expr_uses_heap(e),
         TirStmt::Match { arms, .. } => arms.iter().any(|arm| {
-            matches!(&arm.pattern, TirPattern::Literal(e) if expr_uses_heap(e))
+            arm.pattern.literals().iter().any(|e| expr_uses_heap(e))
                 || arm.guard.as_ref().is_some_and(expr_uses_heap)
                 || arm.body.iter().any(stmt_uses_heap)
         }),
@@ -1392,7 +1436,7 @@ fn stmt_uses_str(s: &TirStmt) -> bool {
             expr_uses_str(list) || expr_uses_str(value)
         }
         TirStmt::Match { arms, .. } => arms.iter().any(|arm| {
-            matches!(&arm.pattern, TirPattern::Literal(e) if expr_uses_str(e))
+            arm.pattern.literals().iter().any(|e| expr_uses_str(e))
                 || arm.guard.as_ref().is_some_and(expr_uses_str)
                 || arm.body.iter().any(stmt_uses_str)
         }),
@@ -1608,6 +1652,21 @@ fn pattern_core_ok(
             }
             for alt in &node.children {
                 if !pattern_core_ok(alt, source, locals, out) {
+                    return false;
+                }
+            }
+        }
+        // Tuple/list destructuring: every item must be a representable leaf or
+        // a nested sequence. Named fields (`Pair`) and spread items use the VM
+        // `Fields` path and stay on the interpreter.
+        NodeKind::Tuple | NodeKind::List => {
+            for item in &node.children {
+                if item.kind == NodeKind::Pair || item.kind == NodeKind::Spread {
+                    tirdbg_reject(item);
+                    *out = false;
+                    return false;
+                }
+                if !pattern_core_ok(item, source, locals, out) {
                     return false;
                 }
             }
@@ -3716,6 +3775,96 @@ fn lower_slice_bound(node: Option<&Node>, ctx: &mut LowerCtx) -> Result<Option<T
     Ok(Some(expr))
 }
 
+/// Best-effort static `Ty` of a match scrutinee expression. `TirTy` collapses
+/// nested tuples into a generic element kind, so precise `Ty` information is
+/// needed to type bindings of nested tuple patterns (typeck does not record
+/// pattern bindings in `FnCheck.locals`).
+fn scrut_ty_of_node(node: &Node, ctx: &LowerCtx) -> Option<Ty> {
+    match node.kind {
+        NodeKind::Identifier => {
+            let name = ctx.source.span(node.start, node.length).to_string();
+            let f = ctx.checked.functions.iter().find(|f| f.sig.name == ctx.current_instance)?;
+            if let Some(i) = f.sig.param_names.iter().position(|n| n == &name) {
+                return f.sig.params.get(i).cloned();
+            }
+            f.local_types.get(&name).cloned().or_else(|| {
+                f.locals.iter().find(|(n, _)| n == &name).map(|(_, t)| t.clone())
+            })
+        }
+        NodeKind::Integer => Some(Ty::Int),
+        NodeKind::Float => Some(Ty::Float),
+        NodeKind::String => Some(Ty::Str),
+        NodeKind::Boolean => Some(Ty::Bool),
+        NodeKind::None => Some(Ty::None_),
+        NodeKind::Tuple => Some(Ty::Tuple(
+            node.children.iter()
+                .map(|c| scrut_ty_of_node(c, ctx).unwrap_or(Ty::Any))
+                .collect(),
+        )),
+        NodeKind::List => {
+            let mut elem: Option<Ty> = None;
+            for child in &node.children {
+                let t = scrut_ty_of_node(child, ctx).unwrap_or(Ty::Any);
+                elem = Some(match elem {
+                    None => t,
+                    Some(prev) if prev == t => prev,
+                    _ => Ty::Any,
+                });
+            }
+            Some(Ty::List(std::rc::Rc::new(elem.unwrap_or(Ty::Any))))
+        }
+        _ => None,
+    }
+}
+
+/// Static types of names bound by a pattern, derived from the scrutinee type
+/// rather than typeck's local table (which does not record match bindings).
+/// Used to type the arm-local slots of nested destructuring.
+fn pattern_bind_types(
+    node: &Node,
+    source: &Source,
+    ty: TirTy,
+    precise: Option<&Ty>,
+    ctx: &LowerCtx,
+    out: &mut HashMap<String, TirTy>,
+) {
+    match node.kind {
+        NodeKind::Identifier => {
+            let name = source.span(node.start, node.length).to_string();
+            let bound = precise
+                .and_then(|t| tir_ty_from_ty(ctx.classes, t))
+                .unwrap_or(ty);
+            out.entry(name).or_insert(bound);
+        }
+        NodeKind::Typed | NodeKind::Guard => {
+            if let Some(first) = node.children.first() {
+                pattern_bind_types(first, source, ty, precise, ctx, out);
+            }
+        }
+        NodeKind::Tuple | NodeKind::List => {
+            let elem = seq_elem_tir(ty);
+            let precise_items: Vec<Option<Ty>> = match precise {
+                Some(Ty::Tuple(items)) if items.len() == node.children.len() => {
+                    items.iter().cloned().map(Some).collect()
+                }
+                Some(Ty::List(item)) => {
+                    (0..node.children.len()).map(|_| Some((**item).clone())).collect()
+                }
+                _ => (0..node.children.len()).map(|_| None).collect(),
+            };
+            for (child, item_ty) in node.children.iter().zip(precise_items) {
+                pattern_bind_types(child, source, elem, item_ty.as_ref(), ctx, out);
+            }
+        }
+        NodeKind::OrPattern => {
+            for child in &node.children {
+                pattern_bind_types(child, source, ty, precise, ctx, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Collect binding names declared by a match pattern node. Used to allocate
 /// distinct slots for each or-pattern alternative and to map body references
 /// onto the committed slots of the winning alternative.
@@ -3752,9 +3901,11 @@ fn flatten_or_alternatives<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
     }
 }
 
-/// Lower one leaf pattern. Bind names have already been declared in the
-/// current slot scope by `lower_match_expr` (per alternative).
-fn lower_match_pattern(node: &Node, ctx: &mut LowerCtx) -> Result<TirPattern, String> {
+/// Lower one pattern, recursively for tuple/list destructuring. Bind names have
+/// already been declared in the current slot scope by `lower_match_expr` (per
+/// alternative); `value_ty` is the native type of the value being matched at
+/// this level, used to type nested literal comparisons.
+fn lower_match_pattern(node: &Node, ctx: &mut LowerCtx, value_ty: TirTy) -> Result<TirPattern, String> {
     match node.kind {
         NodeKind::Wildcard => Ok(TirPattern::Wildcard),
         NodeKind::Identifier | NodeKind::Typed => {
@@ -3775,6 +3926,20 @@ fn lower_match_pattern(node: &Node, ctx: &mut LowerCtx) -> Result<TirPattern, St
         | NodeKind::None => {
             let (lit, _) = lower_expr(node, ctx)?;
             Ok(TirPattern::Literal(lit))
+        }
+        NodeKind::Tuple | NodeKind::List => {
+            let elem_ty = seq_elem_tir(value_ty);
+            let mut items = Vec::with_capacity(node.children.len());
+            for item in &node.children {
+                if matches!(item.kind, NodeKind::Pair | NodeKind::Spread) {
+                    return Err(format!(
+                        "match pattern kind {:?} requires `un build --embed`",
+                        item.kind
+                    ));
+                }
+                items.push(lower_match_pattern(item, ctx, elem_ty)?);
+            }
+            Ok(TirPattern::Tuple(items))
         }
         _ => Err(format!(
             "match pattern kind {:?} requires `un build --embed`",
@@ -3797,6 +3962,7 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
     let scrut_node = node.children.first().ok_or("match without scrutinee")?;
     let (scrut_expr, scrut_cty) = lower_expr(scrut_node, ctx)?;
     let scrut_ty = tir_ty_of(scrut_cty).unwrap_or(TirTy::Obj);
+    let precise_scrut_ty = scrut_ty_of_node(scrut_node, ctx);
     let scrut_slot = declare(ctx, &format!("$match_scrut_{}", node.start), scrut_ty);
     ctx.pending.push(TirStmt::Let(scrut_slot, scrut_expr));
 
@@ -3852,10 +4018,25 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
         // of the `Match`, so validation sees them in declaration order.
         let mut committed: HashMap<String, u16> = HashMap::new();
         if is_or {
+            let mut first_types: HashMap<String, TirTy> = HashMap::new();
+            pattern_bind_types(
+                alternatives[0], ctx.source, scrut_ty, precise_scrut_ty.as_ref(), ctx,
+                &mut first_types,
+            );
             for name in &common {
-                let slot = declare(ctx, name, scrut_ty);
+                let ty = first_types.get(name).copied().unwrap_or(scrut_ty);
+                let slot = declare(ctx, name, ty);
                 committed.insert(name.clone(), slot);
-                ctx.pending.push(TirStmt::Let(slot, TirExpr::Local(scrut_slot)));
+                // Initial value only has to type-check: nested binds need not
+                // have the scrutinee's type (e.g. `x` in `(1, x)` is an Int).
+                let init = match ty {
+                    TirTy::Float => TirExpr::Float(0.0),
+                    TirTy::Bool => TirExpr::Bool(false),
+                    TirTy::Str => TirExpr::Str(String::new()),
+                    _ if tir_is_ref(ty) => TirExpr::Local(scrut_slot),
+                    _ => TirExpr::Int(0),
+                };
+                ctx.pending.push(TirStmt::Let(slot, init));
             }
         }
 
@@ -3866,20 +4047,26 @@ fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy)
             let saved_slots = ctx.slots.clone();
             let mut alt_binds = Vec::new();
             pattern_bind_names(alt, ctx.source, &mut alt_binds);
+            let mut alt_types: HashMap<String, TirTy> = HashMap::new();
+            pattern_bind_types(
+                alt, ctx.source, scrut_ty, precise_scrut_ty.as_ref(), ctx,
+                &mut alt_types,
+            );
             let mut alt_slots: HashMap<String, u16> = HashMap::new();
             for name in &alt_binds {
+                let ty = alt_types.get(name).copied().unwrap_or(scrut_ty);
                 let slot = if is_or {
                     let temp_name = format!("$or{}_{}_{}", node.start, alt_index, name);
-                    let slot = declare(ctx, &temp_name, scrut_ty);
+                    let slot = declare(ctx, &temp_name, ty);
                     ctx.slots.insert(name.clone(), slot);
                     slot
                 } else {
-                    declare(ctx, name, scrut_ty)
+                    declare(ctx, name, ty)
                 };
                 alt_slots.insert(name.clone(), slot);
             }
 
-            let pattern = lower_match_pattern(alt, ctx)?;
+            let pattern = lower_match_pattern(alt, ctx, scrut_ty)?;
 
             // A guard is evaluated in the alternative's slot scope, after the
             // pattern assigned its bind slots. Nested matches in guards would
@@ -5616,7 +5803,7 @@ fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> 
             // (in arm order) rather than by a `Let` in the arm body. The type
             // is a placeholder; `validate_stmt` restores it from `TirFn`.
             for arm in arms {
-                if let TirPattern::Bind(slot) = arm.pattern {
+                for slot in arm.pattern.bind_slots() {
                     if (slot as usize) != locals.len() {
                         return Err(format!(
                             "local slot {} does not follow the declaration order (expected {})",
@@ -6425,13 +6612,13 @@ fn validate_stmt(
             }
             TirStmt::Match { arms, .. } => {
                 for arm in arms {
-                    if let TirPattern::Bind(bind_slot) = arm.pattern {
+                    for bind_slot in arm.pattern.bind_slots() {
                         let ty = f.locals.get(bind_slot as usize).copied()
                             .ok_or_else(|| format!("local slot {} out of range", bind_slot))?;
                         locals[bind_slot as usize] = ty;
                         *slot += 1;
                     }
-                    if let TirPattern::Literal(e) = &arm.pattern {
+                    for e in arm.pattern.literals() {
                         let _ = expr_ty(e, f, program, locals)?;
                     }
                     if let Some(guard) = &arm.guard {

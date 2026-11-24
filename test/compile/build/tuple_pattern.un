@@ -1,0 +1,16 @@
+use io
+
+fn classify(p: tuple[int, str]) -> str
+    -> match p { (1, 'a') -> 'one-a', (n, s) if n > 2 -> 'big', (_, _) -> 'other', _ -> 'none' }
+
+fn nested(p: tuple[int, tuple[int, int]]) -> int
+    -> match p { (a, (b, c)) -> a + b + c, _ -> -1 }
+
+fn main() -> none
+    io.write(classify((1, 'a')))
+    io.write(classify((5, 'x')))
+    io.write(classify((2, 'z')))
+    io.write(nested((1, (2, 3))))
+    io.write(nested((9, (9, 9))))
+
+main()

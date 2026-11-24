@@ -1700,6 +1700,27 @@ thread_local! {
 
 const PLAN_CACHE_LIMIT: usize = 64;
 
+/// Drop the cached program/plan entry for `program_id` together with its FIFO
+/// ordering marker. Returns 1 when an entry was present, otherwise 0.
+///
+/// Opt-in module unload uses this so a dead program's translated plan (and the
+/// `Rc<Program>` it retains) does not outlive the JIT/TIR entries released by
+/// `jit_cache::clear_program`. Must not be called while a VM is running that
+/// program: `plan_for` hands out shared `Rc<Plan>`s to live VMs.
+pub fn clear_plan_cache(program_id: u64) -> usize {
+    PLAN_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let removed = usize::from(cache.0.remove(&program_id).is_some());
+        cache.1.retain(|id| *id != program_id);
+        removed
+    })
+}
+
+#[cfg(test)]
+pub fn plan_cache_contains(program_id: u64) -> bool {
+    PLAN_CACHE.with(|cache| cache.borrow().0.contains_key(&program_id))
+}
+
 fn seed_class_layouts(plan: &Plan, program: &Rc<Program>) {
     #[inline]
     fn proto_name(program: &Rc<Program>, proto: &crate::bytecode::Proto, slot: usize) -> Option<String> {
