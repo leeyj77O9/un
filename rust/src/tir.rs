@@ -466,6 +466,23 @@ pub enum TirCmp {
     Ne,
 }
 
+/// Minimal pattern form for `match` in the standalone (no-VM) build.
+///
+/// The bytecode `Pattern` enum is index-based and depends on VM tables, so TIR
+/// carries its own lightweight representation. Only the three forms that need
+/// no runtime scope object are represented here: wildcard (always matches),
+/// bind (copies the scrutinee local into an arm-local slot) and literal
+/// (compares via `TirExpr::Cmp(Eq, ..)`). Guards, or-patterns, tuple/list
+/// destructuring and class/variant patterns stay on the interpreter path.
+#[derive(Clone, Debug)]
+pub enum TirPattern {
+    Wildcard,
+    /// Arm-local slot that receives the scrutinee value.
+    Bind(u16),
+    /// Constant to compare against (Int/Float/Bool/Str/None).
+    Literal(TirExpr),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TirUnOp {
     Neg,
@@ -622,6 +639,19 @@ pub enum TirStmt {
         end: Option<TirExpr>,
         step: Option<TirExpr>,
     },
+    /// Straight-line `match` lowering (wildcard / bind / literal patterns).
+    /// `scrutinee` is evaluated once (bound to a local by the lowering step)
+    /// and reused for every arm. Each arm writes its value to `result` (a
+    /// local declared by the lowering step); the match expression then reads
+    /// that local. `span` is the source range of the whole `match`, used for
+    /// the no-match error site.
+    Match {
+        scrutinee: u16,
+        arms: Vec<(TirPattern, Vec<TirStmt>)>,
+        result: u16,
+        result_ty: TirTy,
+        span: (usize, usize),
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -753,6 +783,16 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
                     && start.as_ref().map_or(true, |e| expr_ok(e))
                     && end.as_ref().map_or(true, |e| expr_ok(e))
                     && step.as_ref().map_or(true, |e| expr_ok(e))
+            }
+            TirStmt::Match { arms, result_ty, .. } => {
+                ty_ok(*result_ty)
+                    && arms.iter().all(|(pattern, body)| {
+                        let pattern_ok = match pattern {
+                            TirPattern::Wildcard | TirPattern::Bind(_) => true,
+                            TirPattern::Literal(e) => expr_ok(e),
+                        };
+                        pattern_ok && body.iter().all(stmt_ok)
+                    })
             }
         }
     }
@@ -1078,6 +1118,10 @@ fn stmt_uses_native(s: &TirStmt) -> bool {
         TirStmt::ListReverse { .. } | TirStmt::ListSort { .. }
         | TirStmt::ListClear { .. } | TirStmt::DictClear { .. }
         | TirStmt::Break | TirStmt::Skip | TirStmt::Return(None) => false,
+        TirStmt::Match { arms, .. } => arms.iter().any(|(pattern, body)| {
+            matches!(pattern, TirPattern::Literal(e) if expr_uses_native(e))
+                || body.iter().any(stmt_uses_native)
+        }),
     }
 }
 
@@ -1134,6 +1178,10 @@ fn stmt_uses_classes(s: &TirStmt) -> bool {
         TirStmt::SetSlice { list, value, .. } => {
             expr_uses_classes(list) || expr_uses_classes(value)
         }
+        TirStmt::Match { arms, .. } => arms.iter().any(|(pattern, body)| {
+            matches!(pattern, TirPattern::Literal(e) if expr_uses_classes(e))
+                || body.iter().any(stmt_uses_classes)
+        }),
         TirStmt::Break | TirStmt::Skip => false,
     }
 }
@@ -1222,6 +1270,10 @@ fn stmt_uses_heap(s: &TirStmt) -> bool {
         TirStmt::Throw(_) => true,
         TirStmt::Return(None) => false,
         TirStmt::Return(Some(e)) => expr_uses_heap(e),
+        TirStmt::Match { arms, .. } => arms.iter().any(|(pattern, body)| {
+            matches!(pattern, TirPattern::Literal(e) if expr_uses_heap(e))
+                || body.iter().any(stmt_uses_heap)
+        }),
         TirStmt::Break | TirStmt::Skip => false,
     }
 }
@@ -1301,6 +1353,10 @@ fn stmt_uses_str(s: &TirStmt) -> bool {
         TirStmt::SetSlice { list, value, .. } => {
             expr_uses_str(list) || expr_uses_str(value)
         }
+        TirStmt::Match { arms, .. } => arms.iter().any(|(pattern, body)| {
+            matches!(pattern, TirPattern::Literal(e) if expr_uses_str(e))
+                || body.iter().any(stmt_uses_str)
+        }),
         TirStmt::Break | TirStmt::Skip => false,
     }
 }
@@ -1793,10 +1849,51 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     visit(child, checked, source, locals, handles, out);
                 }
             }
-            NodeKind::Match | NodeKind::Case
-            | NodeKind::Use | NodeKind::Using | NodeKind::Defer
+            // ARC-00/MATCHAOT: only literal / bind / wildcard patterns are
+            // representable in TIR. Guards and or-patterns are rejected by the
+            // `kind_is` check at the top of `visit`; tuple/list destructuring
+            // and class/variant patterns are rejected here.
+            NodeKind::Match => {
+                for child in &node.children {
+                    visit(child, checked, source, locals, handles, out);
+                }
+            }
+            NodeKind::Case => {
+                let Some(head) = node.children.first() else {
+                    tirdbg_reject(node); *out = false;
+                    return;
+                };
+                match head.kind {
+                    NodeKind::Wildcard
+                    | NodeKind::Integer | NodeKind::Float | NodeKind::String
+                    | NodeKind::Boolean | NodeKind::None => {}
+                    NodeKind::Identifier => {
+                        let name = source.span(head.start, head.length);
+                        if !locals.contains_key(&name) {
+                            tirdbg_reject(head); *out = false;
+                            return;
+                        }
+                    }
+                    // `Typed` is a bind with a static-only annotation (`x: T`).
+                    NodeKind::Typed => {}
+                    _ => {
+                        tirdbg_reject(head); *out = false;
+                        return;
+                    }
+                }
+                if let Some(body) = node.children.get(1) {
+                    if body.kind == NodeKind::Block {
+                        // Multi-statement arm bodies have no TIR value form.
+                        tirdbg_reject(body); *out = false;
+                        return;
+                    }
+                    visit(body, checked, source, locals, handles, out);
+                }
+            }
+            NodeKind::Wildcard => {}
+            NodeKind::Use | NodeKind::Using | NodeKind::Defer
             | NodeKind::Function | NodeKind::Class | NodeKind::Enum | NodeKind::Tagged
-            | NodeKind::Accessor | NodeKind::Wildcard => {
+            | NodeKind::Accessor => {
                 tirdbg_reject(node); *out = false;
             }
             _ => {
@@ -1842,6 +1939,18 @@ fn collect_binding_names(node: &Node, source: &Source, out: &mut HashMap<String,
                     let name = source.span(first.start, first.length).to_string();
                     out.insert(name, ());
                 }
+            }
+            for child in &node.children {
+                collect_binding_names(child, source, out);
+            }
+            return;
+        }
+        NodeKind::Case => {
+            // `children[0]` is the pattern; a bind/`Typed` head declares a name
+            // that is visible only inside this arm but still needs to pass the
+            // identifier gate in `body_is_core`.
+            if let Some(head) = node.children.first() {
+                collect_binding_target(head, source, out);
             }
             for child in &node.children {
                 collect_binding_names(child, source, out);
@@ -2023,6 +2132,12 @@ impl TirProgram {
                     for st in body.iter_mut().chain(catch_body.iter_mut()) { pad_stmt(st, program, class_names); }
                     if let Some(fb) = finally_body { for st in fb { pad_stmt(st, program, class_names); } }
                 }
+                TirStmt::Match { arms, .. } => {
+                    for (pattern, body) in arms {
+                        if let TirPattern::Literal(e) = pattern { pad_expr(e, program, class_names); }
+                        for st in body { pad_stmt(st, program, class_names); }
+                    }
+                }
                 TirStmt::Return(None) | TirStmt::Break | TirStmt::Skip => {}
             }
         }
@@ -2129,6 +2244,7 @@ impl TirProgram {
                 lambda_base,
                 globals: &globals,
                 wrote_global: &mut false,
+                pending: Vec::new(),
             };
             for child in &root.children {
                 if child.kind == NodeKind::Assign {
@@ -2243,6 +2359,10 @@ struct LowerCtx<'a> {
     globals: &'a std::collections::HashMap<String, u16>,
     /// Set when a function writes a global (VM uses StoreLocal semantics).
     wrote_global: &'a mut bool,
+    /// Statements hoisted by expression lowering (currently only `match`,
+    /// which needs to bind its scrutinee/result locals before the expression
+    /// that consumes the value). Flushed by `lower_block`.
+    pending: Vec<TirStmt>,
 }
 
 fn lower_function<'a>(
@@ -2280,6 +2400,7 @@ fn lower_function<'a>(
         lambda_base,
         globals,
         wrote_global,
+        pending: Vec::new(),
     };
     for (i, (name, ty)) in fcheck.sig.param_names.iter().zip(&fcheck.sig.params).enumerate() {
         let tty = tir_ty_from_ty(classes, ty)
@@ -2314,6 +2435,12 @@ fn lower_function<'a>(
             let Some(expr_node) = inner.children.get(1) else { continue };
             let (lowered, _) = lower_expr(expr_node, &mut ctx)
                 .map_err(|e| format!("parameter '{}' default: {e}", fcheck.sig.param_names[i]))?;
+            if !ctx.pending.is_empty() {
+                return Err(format!(
+                    "parameter '{}' default uses an expression that needs hoisted statements",
+                    fcheck.sig.param_names[i]
+                ));
+            }
             // Defaults are cloned into call sites, so they cannot refer to
             // parameters of the callee (those slots mean something else at the
             // call site). Such functions stay on the VM path.
@@ -2464,9 +2591,28 @@ fn core_ty_of(ty: &Ty) -> Option<CoreTy> {
     }
 }
 
+/// Move statements hoisted by expression lowering into `out` at `at`.
+fn flush_pending_at(ctx: &mut LowerCtx, out: &mut Vec<TirStmt>, at: usize) {
+    if ctx.pending.is_empty() {
+        return;
+    }
+    let pending = std::mem::take(&mut ctx.pending);
+    out.splice(at..at, pending);
+}
+
+/// Append hoisted statements to the end of `out` (used when no further
+/// statements will be emitted for the current construct).
+fn flush_pending(ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) {
+    if !ctx.pending.is_empty() {
+        out.append(&mut ctx.pending);
+    }
+}
+
 fn lower_block(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<(), String> {
     for child in &node.children {
+        let at = out.len();
         lower_stmt(child, ctx, out)?;
+        flush_pending_at(ctx, out, at);
     }
     Ok(())
 }
@@ -2479,6 +2625,12 @@ fn lower_stmt(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result
         NodeKind::IfCase | NodeKind::Branch => Err("internal: unexpected branch node".to_string()),
         NodeKind::While => lower_while(node, ctx, out),
         NodeKind::For => lower_for(node, ctx, out),
+        NodeKind::Match => {
+            // Standalone `match`; the value (if any) is discarded. Expression
+            // positions are handled by `lower_expr`.
+            let _ = lower_match_expr(node, ctx)?;
+            Ok(())
+        }
         NodeKind::Return => lower_return(node, ctx, out),
         NodeKind::Break => {
             out.push(TirStmt::Break);
@@ -2747,6 +2899,7 @@ fn synthesize_lambda(
         lambda_base: ctx.lambda_base,
         globals: ctx.globals,
         wrote_global: ctx.wrote_global,
+        pending: Vec::new(),
     };
     for (name, parent_slot) in captures.iter().zip(&capture_slots) {
         let tty = ctx.locals.get(*parent_slot as usize).copied().unwrap_or(TirTy::Int);
@@ -3175,6 +3328,9 @@ fn lower_if(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<(
     }
     for (cond, body) in arms.into_iter().rev() {
         let (cond_expr, cond_ty) = lower_expr(cond, ctx)?;
+        // A `match` in a condition hoists statements; emit them before any
+        // nested branch bodies are lowered into their own buffers.
+        flush_pending(ctx, out);
         if cond_ty != CoreTy::Bool {
             return Err("condition must be a bool".to_string());
         }
@@ -3200,6 +3356,7 @@ fn lower_while(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resul
         .get(1)
         .ok_or_else(|| "while without body".to_string())?;
     let (cond_expr, cond_ty) = lower_expr(cond, ctx)?;
+    flush_pending(ctx, out);
     if cond_ty != CoreTy::Bool {
         return Err("condition must be a bool".to_string());
     }
@@ -3261,6 +3418,7 @@ fn lower_for(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
             CoreTy::ListClass(id) => TirTy::Class(id),
             _ => return Err("for ... in requires a core list".to_string()),
         };
+        flush_pending(ctx, out);
         let var = declare(ctx, &name, elem_ty);
         let mut body_out = Vec::new();
         lower_block(body, ctx, &mut body_out)?;
@@ -3272,6 +3430,7 @@ fn lower_for(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
         return Ok(());
     }
     let (start, end, step) = parse_range_call(iter, ctx)?;
+    flush_pending(ctx, out);
     let var = declare(ctx, &name, TirTy::Int);
     let mut body_out = Vec::new();
     lower_block(body, ctx, &mut body_out)?;
@@ -3428,8 +3587,126 @@ fn lower_slice_bound(node: Option<&Node>, ctx: &mut LowerCtx) -> Result<Option<T
     Ok(Some(expr))
 }
 
+/// Lower a `match` expression. Only literal / bind / wildcard patterns are
+/// accepted; the scrutinee and result are bound to fresh locals so the value
+/// can be consumed by any expression context. The generated statements are
+/// staged in `ctx.pending` and flushed by the enclosing `lower_block`.
+fn lower_match_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), String> {
+    let scrut_node = node.children.first().ok_or("match without scrutinee")?;
+    let (scrut_expr, scrut_cty) = lower_expr(scrut_node, ctx)?;
+    let scrut_ty = tir_ty_of(scrut_cty).unwrap_or(TirTy::Obj);
+    let scrut_slot = declare(ctx, &format!("$match_scrut_{}", node.start), scrut_ty);
+    ctx.pending.push(TirStmt::Let(scrut_slot, scrut_expr));
+
+    let result_slot = declare(ctx, &format!("$match_result_{}", node.start), TirTy::Int);
+    let mut arms: Vec<(TirPattern, Vec<TirStmt>)> = Vec::new();
+    let mut result_cty: Option<CoreTy> = None;
+    let mut result_ty = TirTy::Int;
+
+    for case in node.children.iter().skip(1) {
+        if case.kind != NodeKind::Case {
+            continue;
+        }
+        let head = case.children.first().ok_or("match case without pattern")?;
+        let body_node = case.children.get(1).ok_or("match case without body")?;
+        if body_node.kind == NodeKind::Block {
+            return Err("block bodies in match arms are not supported in the core".to_string());
+        }
+
+        // Arm-local names must not leak into later arms or the enclosing scope.
+        let saved_slots = ctx.slots.clone();
+        let pattern = match head.kind {
+            NodeKind::Wildcard => TirPattern::Wildcard,
+            NodeKind::Identifier | NodeKind::Typed => {
+                let name_node = if head.kind == NodeKind::Typed {
+                    head.children.first().ok_or("typed pattern without a name")?
+                } else {
+                    head
+                };
+                if name_node.kind != NodeKind::Identifier {
+                    return Err("match bind pattern must be a plain variable".to_string());
+                }
+                let name = ctx.source.span(name_node.start, name_node.length).to_string();
+                let bind_slot = declare(ctx, &name, scrut_ty);
+                TirPattern::Bind(bind_slot)
+            }
+            NodeKind::Integer | NodeKind::Float | NodeKind::String | NodeKind::Boolean
+            | NodeKind::None => {
+                let (lit, _) = lower_expr(head, ctx)?;
+                TirPattern::Literal(lit)
+            }
+            NodeKind::Guard => {
+                return Err("guarded match arms require `un build --embed`".to_string());
+            }
+            NodeKind::OrPattern => {
+                return Err("or-patterns require `un build --embed`".to_string());
+            }
+            _ => {
+                return Err(format!(
+                    "match pattern kind {:?} requires `un build --embed`",
+                    head.kind
+                ));
+            }
+        };
+
+        // A nested `match` in the arm body hoists its own statements. Keep
+        // them inside this arm (before the result assignment) instead of
+        // letting them leak into the enclosing block.
+        let nested_mark = ctx.pending.len();
+        let (body_expr, body_cty) = lower_expr(body_node, ctx)?;
+        let nested: Vec<TirStmt> = ctx.pending.drain(nested_mark..).collect();
+        match result_cty {
+            None => {
+                result_cty = Some(body_cty);
+                result_ty = infer_simple_ty(&body_expr, &ctx.locals)
+                    .or_else(|| tir_ty_of(body_cty).ok())
+                    .unwrap_or(TirTy::Int);
+                ctx.locals[result_slot as usize] = result_ty;
+            }
+            Some(prev) if prev != body_cty => {
+                return Err("match arms must all have the same type".to_string());
+            }
+            Some(_) => {}
+        }
+
+        let mut body_out = nested;
+        if let TirPattern::Bind(bind_slot) = pattern {
+            body_out.insert(0, TirStmt::Let(bind_slot, TirExpr::Local(scrut_slot)));
+        }
+        body_out.push(TirStmt::Set(result_slot, body_expr));
+        ctx.slots = saved_slots;
+        arms.push((pattern, body_out));
+    }
+
+    if arms.is_empty() {
+        return Err("match without arms".to_string());
+    }
+    // Only scalar result types have a `Let`-initializer with a matching
+    // `expr_ty`; other result types stay on the VM path.
+    if !matches!(result_ty, TirTy::Int | TirTy::Float | TirTy::Bool | TirTy::Str) {
+        return Err("match arm result type is not supported in this native mode".to_string());
+    }
+    let init = match result_ty {
+        TirTy::Float => TirExpr::Float(0.0),
+        TirTy::Bool => TirExpr::Bool(false),
+        TirTy::Str => TirExpr::Str(String::new()),
+        _ => TirExpr::Int(0),
+    };
+    ctx.pending.push(TirStmt::Let(result_slot, init));
+    ctx.pending.push(TirStmt::Match {
+        scrutinee: scrut_slot,
+        arms,
+        result: result_slot,
+        result_ty,
+        span: (node.start, node.length),
+    });
+
+    Ok((TirExpr::Local(result_slot), result_cty.unwrap()))
+}
+
 fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), String> {
     match node.kind {
+        NodeKind::Match => lower_match_expr(node, ctx),
         NodeKind::Integer => match node.value {
             Some(Const::Int(v)) => Ok((TirExpr::Int(v), CoreTy::Int)),
             _ => Err("bad integer literal".to_string()),
@@ -4984,6 +5261,13 @@ fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> 
         }
         TirStmt::Throw(_) => {}
         TirStmt::ListClear { .. } | TirStmt::DictClear { .. } | TirStmt::SetSlice { .. } => {}
+        TirStmt::Match { arms, .. } => {
+            for (_, body) in arms {
+                for s in body {
+                    collect_decls(s, locals)?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -5772,6 +6056,14 @@ fn validate_stmt(
                     }
                 }
             }
+            TirStmt::Match { arms, .. } => {
+                for (pattern, body) in arms {
+                    if let TirPattern::Literal(e) = pattern {
+                        let _ = expr_ty(e, f, program, locals)?;
+                    }
+                    validate_stmt(body, f, program, locals, slot, loop_depth)?;
+                }
+            }
             TirStmt::Break | TirStmt::Skip => {
                 if loop_depth == 0 {
                     return Err("break/skip outside a loop".to_string());
@@ -5808,6 +6100,9 @@ fn stmt_terminates(stmt: &TirStmt) -> bool {
         TirStmt::If { then_body, else_body, .. } => {
             body_terminates(then_body) && body_terminates(else_body)
         }
+        // The implicit no-match arm always throws, so a match terminates when
+        // every explicit arm terminates.
+        TirStmt::Match { arms, .. } => arms.iter().all(|(_, body)| body_terminates(body)),
         _ => false,
     }
 }

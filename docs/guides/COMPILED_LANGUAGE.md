@@ -267,7 +267,7 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 ## 부록 B. `확인 필요` 항목 모음
 
 1. 분석 보고 원본 `docs/project/COMPILER_LANGUAGE_GAPS.md` 부재 — ROADMAP 인용만 확인됨.
-2. `go`/`wait`의 plain build 현재 동작(LANG2 미착수 가능).
+2. `go`/`wait`는 plain build에서 빌드 시 거부된다 (LANG2 완료, 2026-11-24 — 안 B).
 3. 언어/ABI 버전 정책의 존재 여부(3.2는 전부 제안).
 4. Cranelift 디버그 심볼/DWARF 출력 지원 여부.
 5. Windows/GNU·wasm32 외 크로스 컴파일 타깃 지원 여부.

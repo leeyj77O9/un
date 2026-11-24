@@ -2,7 +2,7 @@
 use crate::jit_cache::{self, ArgKind, JitEntry, TAG_BAIL, TAG_BOOL, TAG_FLOAT, TAG_INT, TAG_NONE};
 use crate::bytecode::Program;
 use crate::objify::EmitOutcome;
-use crate::tir::{abi_kind, elem_of_tir, tir_is_ref, tir_of_elem, TirBinOp, TirCmp, TirExpr, TirFn, TirProgram, TirStmt, TirTy, TirUnOp};
+use crate::tir::{abi_kind, elem_of_tir, tir_is_ref, tir_of_elem, TirBinOp, TirCmp, TirExpr, TirFn, TirPattern, TirProgram, TirStmt, TirTy, TirUnOp};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{types, Block, AbiParam, InstBuilder, MemFlagsData, UserFuncName};
@@ -1513,6 +1513,110 @@ fn emit_slice_bound<M: Module>(
     }
 }
 
+/// Emit the implicit "no match case" failure. The message and error path are
+/// the same as the VM's `Op::Unsupported` for `match`, so `un run` and a plain
+/// `un build` print byte-identical output. The existing `unrt_write_error` /
+/// `unrt_dump_uncaught` pair is reused; no new unrt symbol is introduced.
+fn emit_no_match_case<M: Module>(
+    span: (usize, usize),
+    emitter: &mut FnEmit<'_>,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    f: &TirFn,
+) {
+    if emitter.mode == NativeMode::Vm {
+        // The NRT error bridge is not registered in Vm mode; let the VM
+        // reproduce the error (and re-run the function) instead of panicking.
+        builder.ins().jump(emitter.bail_blk, &[]);
+        emitter.terminated = true;
+        return;
+    }
+    let prev = emitter.current_span;
+    emitter.current_span = Some(span);
+    let msg = TirExpr::Str("no match case".to_string());
+    let (value, ty) = emit_expr(&msg, emitter, builder, module, f);
+    let obj = wrap_as_obj(value, ty, emitter, builder, module);
+    emit_set_error_site(emitter, builder, module);
+    emitter.current_span = prev;
+    let wid = emitter.unrt_write_error.expect("unrt import required");
+    let wref = module.declare_func_in_func(wid, builder.func);
+    let _ = builder.ins().call(wref, &[obj]);
+    match emitter.active_handlers.last().copied() {
+        Some(handler) => {
+            builder.ins().jump(handler, &[]);
+        }
+        None => {
+            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+            let d_ref = module.declare_func_in_func(d_id, builder.func);
+            let _ = builder.ins().call(d_ref, &[]);
+            builder.ins().trap(TrapCode::unwrap_user(3));
+        }
+    }
+    emitter.terminated = true;
+}
+
+fn emit_match_arms<M: Module>(
+    arms: &[(TirPattern, Vec<TirStmt>)],
+    index: usize,
+    merge_blk: Block,
+    scrut_value: cranelift_codegen::ir::Value,
+    scrut_ty: TirTy,
+    span: (usize, usize),
+    emitter: &mut FnEmit<'_>,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    f: &TirFn,
+) {
+    if index >= arms.len() {
+        emit_no_match_case(span, emitter, builder, module, f);
+        return;
+    }
+    let (pattern, body) = &arms[index];
+    let body_blk = builder.create_block();
+    let fail_blk = builder.create_block();
+    match pattern {
+        TirPattern::Wildcard | TirPattern::Bind(_) => {
+            builder.ins().jump(body_blk, &[]);
+        }
+        TirPattern::Literal(lit) => {
+            let (lit_value, lit_ty) = emit_expr(lit, emitter, builder, module, f);
+            let (cond, _) = emit_cmp(
+                TirCmp::Eq,
+                scrut_value,
+                scrut_ty,
+                lit_value,
+                lit_ty,
+                emitter,
+                builder,
+                module,
+            );
+            builder.ins().brif(cond, body_blk, &[], fail_blk, &[]);
+        }
+    }
+    builder.switch_to_block(body_blk);
+    emitter.terminated = false;
+    let body_terminated = emit_block(body, emitter, builder, module, f);
+    if !body_terminated {
+        builder.ins().jump(merge_blk, &[]);
+    }
+    builder.seal_block(body_blk);
+
+    builder.switch_to_block(fail_blk);
+    emit_match_arms(
+        arms,
+        index + 1,
+        merge_blk,
+        scrut_value,
+        scrut_ty,
+        span,
+        emitter,
+        builder,
+        module,
+        f,
+    );
+    builder.seal_block(fail_blk);
+}
+
 fn emit_stmt<M: Module>(
     stmt: &TirStmt,
     emitter: &mut FnEmit,
@@ -1566,6 +1670,21 @@ fn emit_stmt<M: Module>(
                 emitter.terminated = true;
                 return true;
             }
+            emitter.terminated = false;
+            builder.seal_block(merge_blk);
+            false
+        }
+        TirStmt::Match { scrutinee, arms, result, result_ty, span } => {
+            let _ = (result, result_ty); // arm bodies assign through TIR `Set`s
+            let merge_blk = builder.create_block();
+            let scrut_var = emitter.vars[*scrutinee as usize];
+            let scrut_ty = emitter.local_tys[*scrutinee as usize];
+            let scrut_value = builder.use_var(scrut_var);
+            emit_match_arms(
+                arms, 0, merge_blk, scrut_value, scrut_ty, *span,
+                emitter, builder, module, f,
+            );
+            builder.switch_to_block(merge_blk);
             emitter.terminated = false;
             builder.seal_block(merge_blk);
             false
@@ -2158,6 +2277,9 @@ fn body_preserves_list_len(body: &[TirStmt]) -> bool {
                 && body_preserves_list_len(catch_body)
                 && finally_body.as_ref().map_or(true, |b| body_preserves_list_len(b))
         }
+        TirStmt::Match { arms, .. } => arms
+            .iter()
+            .all(|(_, body)| body_preserves_list_len(body)),
     })
 }
 

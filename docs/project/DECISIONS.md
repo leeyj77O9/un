@@ -1334,3 +1334,27 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   `test/unit/runtime/async.un`의 lambda escape, `vendor/cranelift-jit/src/memory/system.rs`.
 - **검증**: 전체 게이트(Positive 51/1638, differential 102/0, roundtrip 51/51+42,
   compile-check 37/0, exe-diff 63/0, strict canary 5종)와 embed 반복 실행 회귀.
+## D-094 | 모듈 unload는 opt-in으로 허용하되 객체 메모리는 유계 누수 유지 | Accepted
+
+- **배경**: D-093 §4는 "모듈 unload/hot-reload는 미설계, 필요하면 별도 결정"이라고 명시했다.
+  BIG-01 분석(2026-11-24)에서 `world::reset()`은 이미 WORLD 전체를 교체하지만 JIT 엔트리와
+  class registry는 모듈 단위로 정리할 수 없는 것이 확인됐다.
+- **결정**: 다음 계약으로 opt-in unload API를 허용한다.
+  1. **기본 경로는 변경 없다.** CLI 1회 실행 / embed / playground는 지금과 동일하게
+     `native::init`의 `world::reset()`과 프로세스 종료에 의존한다.
+  2. **unload의 의미는 "심볼·레지스트리·JIT 정리"로 한정**한다. 캐시 엔트리, caller scope의
+     alias, module이 등록한 class/layout, 해당 program의 JIT/TIR 엔트리와 PLAN_CACHE 항목을
+     제거한다. `TD-22`/`TD-09`의 의도적 순환 때문에 **closure/scope가 소유한 객체 메모리는
+     회수하지 못하며 유계 누수로 남는다** — D-093 §2와 충돌하지 않는다.
+  3. **모듈→program_id 추적을 신설**한다(`module.rs`의 load 결과와 `bytecode::Program.id`를
+     캐시 값에 함께 저장). `jit_cache::clear_program(id)` 호출 후에는 해당 JIT 엔트리를
+     재진입하지 않는 것이 호출자 계약이다(D-093 §3).
+  4. **reload는 top-level side effect를 다시 실행한다.** 이는 opt-in 호출자의 책임이며,
+     `un run`과 byte-identical을 게이트로 요구하지 않는다(호출자가 의도적으로 상태를 초기화).
+  5. **공개 API로 노출하려면 별도 승인**이 필요하다. `unrt_*` C ABI로 내보내는 경우
+     NRT-06 + CMP-05 + ARC-00 승인을 다시 받는다.
+- **영향 파일(구현 시)**: `runtime/world/modules.rs`, `runtime/world/mod.rs`, `module.rs`,
+  `jit_cache.rs`(JIT-04), `runtime/world/classes.rs`(RT-03). 게이트는 미호출 시 무변경.
+- **근거**: BIG-01 §3, D-093 §4, TD-03, `ARCHITECTURE.md` Resource lifecycle.
+- **검증**: opt-in API 미호출 시 전체 게이트 무변경. 호출 시 전용 fixture로
+  심볼 제거·JIT 정리·side effect 재실행을 확인한다.

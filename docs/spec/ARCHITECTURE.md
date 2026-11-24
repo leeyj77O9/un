@@ -181,9 +181,11 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
     silently degrades JIT to interpreter speed (the name-checked intrinsic
     still bails correctly — speed, not correctness; TD-51).
   - Wholesale native memory is only ever reclaimed at process exit. Any
-    future hot-reload/module-unload story must keep the arena/id namespace
-    coherent across `clear()` boundaries; today nothing unloads a module
-    at runtime (D-093).
+    hot-reload/module-unload story must keep the arena/id namespace coherent
+    across `clear()` boundaries. **D-094 permits an opt-in unload** that clears
+    cache entries, caller aliases, class/layout registrations and the module's
+    JIT/PLAN entries; object memory held by intentional cycles stays bounded-
+    leaked (D-093 §2). The default path still unloads nothing at runtime.
   - **Execution-boundary cleanup contract (D-093)**: `jit_cache::clear()` is
     called at exactly four boundaries — CLI success (`main.rs`), CLI error
     (`report()`), every playground run, and `unvm_run_embedded()` exit
