@@ -12,6 +12,9 @@ fn inc(n: int) -> int
 fn compose(f: func(int) -> int, g: func(int) -> int, x: int) -> int
     -> f(g(x))
 
+class Holder
+    op: func(int) -> int
+
 fn main() -> none
     io.write(apply(twice, 21))
     io.write(apply(inc, 41))
@@ -20,5 +23,8 @@ fn main() -> none
     io.write(f(20))
     f = inc
     io.write(f(41))
+    h = Holder()
+    h.op = twice
+    io.write(h.op(21))
 
 main()

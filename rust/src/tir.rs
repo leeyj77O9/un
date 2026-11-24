@@ -1481,6 +1481,12 @@ pub fn core_rejection_reason(fcheck: &FnCheck) -> Option<String> {
         // Set literals lower to the list ABI (no dedicated NRT tag).
         Ty::Set(_) => {}
         Ty::Class(_) | Ty::Generic { .. } | Ty::Tuple(_) => {}
+        // A function returning a callable is fine: `Lambda(u32::MAX)` is an
+        // NRT closure handle (I64 in the ABI), and a concrete `__lambda_N`
+        // value is assignable to it via `same_ty`.
+        // Returning a function value is not core-supported: the VM returns an
+        // int for `-> funcname` (pre-existing LoadName/scope behaviour), so
+        // allowing it here would break byte-identical run/native/exe output.
         other => return Some(format!("'{}' returns non-core type '{other}'", sig.name)),
     }
     if let Some((name, ty)) = locals.iter().find(|(_, ty)| !is_core_ty(ty)) {
@@ -3365,7 +3371,11 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
             } else {
                 let target_ty = class_member_ty(ctx, &field_ty)?;
                 match (target_ty, v_ty) {
-                    (CoreTy::Float, CoreTy::Int) => {}                    (t, v) if t == v => {}
+                    (CoreTy::Float, CoreTy::Int) => {}
+                    (t, v) if t == v => {}
+                    // A concrete `__lambda_N` and an opaque `func(..)` field slot
+                    // are the same NRT closure handle; only the entry index differs.
+                    (CoreTy::Lambda(_), CoreTy::Lambda(_)) => {}
                         _ => {
                             return Err(format!(
                                 "cannot assign value to class field '{}'",
@@ -3687,6 +3697,8 @@ fn class_member_ty(ctx: &LowerCtx, ty: &Ty) -> Result<CoreTy, String> {
             Ok(CoreTy::Class(id))
         }
         Ty::Any | Ty::Union(_) | Ty::Unknown => Ok(CoreTy::Obj),
+        // A `func(..)` field is an NRT closure handle, same ABI as `Obj`.
+        Ty::Func { .. } => Ok(CoreTy::Lambda(u32::MAX)),
         other => Err(format!("field of type '{}' is not supported in the core", other.display())),
     }
 }
@@ -5143,6 +5155,26 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             }
         }
         let args = lower_arg_list(args_tuple, ctx)?;
+        // A `func(..) -> ..` field called as `obj.f(..)` is an indirect call
+        // through the closure handle stored in that field, not a method call.
+        if let Some(field_ty) = ctx.classes.field(id, &member).cloned() {
+            if let Ty::Func { ret: field_ret, .. } = &field_ty {
+                let callee = TirExpr::MemberGet {
+                    receiver: Box::new(recv),
+                    member: member.into_boxed_str(),
+                    ret: TirTy::Lambda(u32::MAX),
+                };
+                let call_ret = class_member_ty(ctx, field_ret)?;
+                return Ok((
+                    TirExpr::CallObj {
+                        callee: Box::new(callee),
+                        args,
+                        ret: tir_ty_of(call_ret).unwrap_or(TirTy::Obj),
+                    },
+                    call_ret,
+                ));
+            }
+        }
         let Some(method_ty) = ctx.classes.method(id, &member).cloned() else {
             return Err(format!(
                 "class '{}' has no method '{}'",
@@ -5640,6 +5672,7 @@ fn ty_to_tir_simple(ty: &Ty) -> Result<TirTy, String> {
         Ty::Class(_) => TirTy::Class(u16::MAX),
         // Dynamic fields are boxed NObj handles, like dynamic params/returns.
         Ty::Any | Ty::Union(_) | Ty::Unknown => TirTy::Obj,
+        Ty::Func { .. } => TirTy::Lambda(u32::MAX),
         other => return Err(format!("field of type '{}' is not supported in the core", other.display())),
     })
 }

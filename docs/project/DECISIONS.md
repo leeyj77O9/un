@@ -1384,3 +1384,12 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   `FNTIR` / `FNVALUE`.
 - **검증**: `un run` / `un native` / plain `un build` stdout byte-identical
   (`42|42|42`); workspace 308 passed; compile-check 38/0; exe-diff 67/0.
+### D-095 후속 (2026-11-24)
+
+- **클래스 필드**: `class Holder / op: func(int) -> int` 형태의 필드 선언·대입·호출
+  (`h.op = twice`, `h.op(21)`)을 plain build에서 지원한다. `class_member_ty` /
+  `ty_to_tir_simple`가 `Ty::Func`를 `Lambda(u32::MAX)`로 매핑하고, `lower_call`의
+  Property 경로에서 메서드 대신 `CallObj(MemberGet)`를 emit한다. VM과 byte-identical.
+- **반환 타입은 계속 거부**: `fn maker() -> func(int) -> int`는 plain build가 거부한다.
+  VM이 `-> twice`를 int로 반환하는 기존 버그(`any` 반환에서도 동일)가 있어, native/exe만
+  func을 반환하면 byte-identical 계약이 깨진다. `update` 시점에 VM 수정이 선행돼야 한다.
