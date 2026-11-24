@@ -44,7 +44,7 @@ fn field(p: u64) -> i64 {
     unsafe { obj(p).a }
 }
 
-fn type_name(p: u64) -> &'static str {
+pub(crate) fn type_name(p: u64) -> &'static str {
     match tag(p) {
         0 => "int",
         1 => "float",

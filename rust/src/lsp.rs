@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{self, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -404,6 +405,30 @@ struct UseSite {
     member: bool,
 }
 
+/// A `use a.b [as x]` declaration, with the byte spans of every path segment.
+/// Kept in addition to `use_aliases` so the LSP can resolve user modules the
+/// same way `module.rs::resolve_module` does, without touching the runtime.
+#[derive(Clone, Debug)]
+struct ModuleUse {
+    parts: Vec<String>,
+    alias: Option<String>,
+    imports: Vec<(String, Option<String>)>,
+    wildcard: bool,
+    path_start: usize,
+    path_end: usize,
+    segments: Vec<(usize, usize)>,
+}
+
+impl ModuleUse {
+    /// Name the module is bound to in the importing scope. `use test.assert`
+    /// binds `assert` (the last segment), matching `module::import_map`.
+    fn binding(&self) -> Option<&str> {
+        self.alias
+            .as_deref()
+            .or_else(|| self.parts.last().map(String::as_str))
+    }
+}
+
 struct Analysis {
     source: Source,
     root: Option<Node>,
@@ -413,6 +438,7 @@ struct Analysis {
     type_spans: Vec<(usize, usize)>,
     namespace_spans: Vec<(usize, usize)>,
     use_aliases: Vec<(String, String)>,
+    module_uses: Vec<ModuleUse>,
     var_class_hints: HashMap<String, String>,
     error: Option<LangError>,
 }
@@ -489,6 +515,92 @@ fn module_of(receiver: &str, aliases: &[(String, String)]) -> Option<String> {
     native_catalog().modules.get(receiver).map(|_| receiver.to_string())
 }
 
+/// Collects `a` / `b` / `c` (with their spans) from a `use a.b.c` path node.
+fn collect_use_path(
+    node: &Node,
+    source: &Source,
+    parts: &mut Vec<String>,
+    segments: &mut Vec<(usize, usize)>,
+) {
+    match node.kind {
+        NodeKind::Identifier => {
+            parts.push(source.span(node.start, node.length));
+            segments.push((node.start, node.start + node.length));
+        }
+        NodeKind::Property => {
+            for child in &node.children {
+                collect_use_path(child, source, parts, segments);
+            }
+        }
+        NodeKind::Unary => {
+            // `use a.b.*` stores the wildcard as a Unary around the path.
+            if let Some(child) = node.children.first() {
+                collect_use_path(child, source, parts, segments);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extracts a full `use` declaration from the AST, including every path
+/// segment so go-to-definition can navigate `use a.b` piece by piece.
+fn module_use_from_node(node: &Node, source: &Source) -> Option<ModuleUse> {
+    if node.kind != NodeKind::Use {
+        return None;
+    }
+    let path = node.children.first()?;
+    let mut parts = Vec::new();
+    let mut segments = Vec::new();
+    collect_use_path(path, source, &mut parts, &mut segments);
+    if parts.is_empty() || segments.is_empty() {
+        return None;
+    }
+    let path_start = segments[0].0;
+    let path_end = segments[segments.len() - 1].1;
+    let mut alias = None;
+    let mut imports = Vec::new();
+    let mut wildcard = path.kind == NodeKind::Unary;
+    for child in node.children.iter().skip(1) {
+        match child.kind {
+            NodeKind::Tuple => {
+                for entry in &child.children {
+                    match entry.kind {
+                        NodeKind::Unary => wildcard = true,
+                        NodeKind::Pair => {
+                            let name = entry
+                                .children
+                                .first()
+                                .map(|node| source.span(node.start, node.length))
+                                .unwrap_or_default();
+                            let rename = entry
+                                .children
+                                .get(1)
+                                .map(|node| source.span(node.start, node.length));
+                            imports.push((name, rename));
+                        }
+                        NodeKind::Identifier => {
+                            imports.push((source.span(entry.start, entry.length), None));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            NodeKind::Unary => wildcard = true,
+            NodeKind::Identifier => alias = Some(source.span(child.start, child.length)),
+            _ => {}
+        }
+    }
+    Some(ModuleUse {
+        parts,
+        alias,
+        imports,
+        wildcard,
+        path_start,
+        path_end,
+        segments,
+    })
+}
+
 struct Walker<'a> {
     source: &'a Source,
     defs: Vec<Def>,
@@ -496,6 +608,7 @@ struct Walker<'a> {
     type_spans: Vec<(usize, usize)>,
     namespace_spans: Vec<(usize, usize)>,
     use_aliases: Vec<(String, String)>,
+    module_uses: Vec<ModuleUse>,
     var_class_hints: HashMap<String, String>,
     skip: HashSet<(usize, usize)>,
     next_scope: usize,
@@ -510,6 +623,7 @@ impl<'a> Walker<'a> {
             type_spans: Vec::new(),
             namespace_spans: Vec::new(),
             use_aliases: Vec::new(),
+            module_uses: Vec::new(),
             var_class_hints: HashMap::new(),
             skip: HashSet::new(),
             next_scope: 0,
@@ -1027,6 +1141,9 @@ impl<'a> Walker<'a> {
                 }
             }
             NodeKind::Use => {
+                if let Some(usage) = module_use_from_node(node, self.source) {
+                    self.module_uses.push(usage);
+                }
                 if let Some(path) = node.children.first() {
                     self.walk_namespace_path(path, scope, true);
                     let module_text = self.source.span(path.start, path.length);
@@ -1207,6 +1324,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
     let mut type_spans: Vec<(usize, usize)> = Vec::new();
     let mut namespace_spans: Vec<(usize, usize)> = Vec::new();
     let mut use_aliases: Vec<(String, String)> = Vec::new();
+    let mut module_uses: Vec<ModuleUse> = Vec::new();
     let mut var_class_hints: HashMap<String, String> = HashMap::new();
     let mut stack: Vec<Frame> = Vec::new();
     let mut scope: usize = 0;
@@ -1343,17 +1461,39 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
             let path = word(rest);
             if !path.is_empty() {
                 let path_start = line_start + indent_chars + "use ".len();
-                namespace_spans.push((path_start, path_start + path.chars().count()));
+                let path_end = path_start + path.chars().count();
+                namespace_spans.push((path_start, path_end));
                 let root = path.split('.').next().unwrap_or(path).to_string();
-                if let Some((_alias_prefix, alias)) = rest.split_once(" as ") {
-                    let alias = alias.trim();
+                let mut segments = Vec::new();
+                let mut cursor = path_start;
+                let mut parts = Vec::new();
+                for part in path.split('.') {
+                    if part == "*" {
+                        continue;
+                    }
+                    let width = part.chars().count();
+                    segments.push((cursor, cursor + width));
+                    parts.push(part.to_string());
+                    cursor += width + 1;
+                }
+                let alias = rest.split_once(" as ").map(|(_, alias)| alias.trim().to_string());
+                if let Some(alias) = &alias {
                     let alias_start =
                         raw.find(" as ").map(|offset| line_start + offset + 4).unwrap_or(line_start);
                     namespace_spans.push((alias_start, alias_start + alias.chars().count()));
-                    use_aliases.push((alias.to_string(), root.clone()));
+                    use_aliases.push((alias.clone(), root.clone()));
                 } else {
                     use_aliases.push((root.clone(), root.clone()));
                 }
+                module_uses.push(ModuleUse {
+                    parts,
+                    alias,
+                    imports: Vec::new(),
+                    wildcard: path.contains(".*"),
+                    path_start,
+                    path_end,
+                    segments,
+                });
             }
             i += 1;
             continue;
@@ -1455,6 +1595,7 @@ fn fallback_analysis(text: &str, name: &str, error: Option<LangError>) -> Analys
         type_spans,
         namespace_spans,
         use_aliases,
+        module_uses,
         var_class_hints,
         error,
     }
@@ -1479,6 +1620,7 @@ fn analyze(text: &str, name: &str) -> Analysis {
             let type_spans = walker.type_spans;
             let namespace_spans = walker.namespace_spans;
             let use_aliases = walker.use_aliases;
+            let module_uses = walker.module_uses;
             let var_class_hints = walker.var_class_hints;
             Analysis {
                 source,
@@ -1489,6 +1631,7 @@ fn analyze(text: &str, name: &str) -> Analysis {
                 type_spans,
                 namespace_spans,
                 use_aliases,
+                module_uses,
                 var_class_hints,
                 error: None,
             }
@@ -1742,6 +1885,19 @@ fn span_range_json(source: &Source, start: usize, end: usize) -> Json {
     ])
 }
 
+fn hover_json(value: String, source: &Source, start: usize, end: usize) -> Json {
+    Json::obj(vec![
+        (
+            "contents",
+            Json::obj(vec![
+                ("kind", Json::from("markdown")),
+                ("value", Json::from(value)),
+            ]),
+        ),
+        ("range", span_range_json(source, start, end)),
+    ])
+}
+
 fn word_range_at(source: &Source, offset: usize) -> Option<(usize, usize)> {
     let code = &source.code;
     let is_word = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
@@ -1801,11 +1957,193 @@ fn write_message(out: &mut dyn Write, message: &Json) {
     let _ = out.flush();
 }
 
+/// `file:///C:/dev/un/x.un` -> `C:\dev\un\x.un`. Non-file URIs (untitled
+/// buffers) have no local path and return `None`.
+fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    let raw = uri.strip_prefix("file://")?;
+    let mut decoded = String::new();
+    let chars: Vec<char> = raw.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '%' && index + 2 < chars.len() {
+            if let (Some(high), Some(low)) =
+                (chars[index + 1].to_digit(16), chars[index + 2].to_digit(16))
+            {
+                if let Some(ch) = char::from_u32(high * 16 + low) {
+                    decoded.push(ch);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        decoded.push(chars[index]);
+        index += 1;
+    }
+    if cfg!(windows) {
+        Some(PathBuf::from(decoded.trim_start_matches('/').replace('/', "\\")))
+    } else {
+        Some(PathBuf::from(decoded))
+    }
+}
+
+fn path_to_uri(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let with_leading_slash = if text.starts_with('/') {
+        text
+    } else {
+        format!("/{text}")
+    };
+    let mut uri = String::from("file://");
+    for ch in with_leading_slash.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '/' | ':' | '-' | '_' | '.' | '~') {
+            uri.push(ch);
+        } else {
+            for byte in ch.to_string().bytes() {
+                uri.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    uri
+}
+
+fn path_key(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+/// `module.rs::module_exists`: a `.un` path must be a file; otherwise try the
+/// same path with `.un` appended, or a directory.
+fn module_candidate(base: &Path, parts: &[String]) -> Option<PathBuf> {
+    if parts.is_empty() {
+        return None;
+    }
+    let mut joined = PathBuf::new();
+    for part in parts {
+        joined.push(part);
+    }
+    let candidate = base.join(joined);
+    let text = candidate.to_string_lossy();
+    let file = if text.ends_with(".un") {
+        PathBuf::from(text.as_ref())
+    } else {
+        PathBuf::from(format!("{text}.un"))
+    };
+    if file.is_file() || candidate.is_dir() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Same lookup order as `module.rs::resolve_module`: the importing file's
+/// directory first, then the workspace/current directory (the LSP equivalent
+/// of `World::path()`).
+fn resolve_module_root(
+    doc_uri: &str,
+    parts: &[String],
+    workspace_roots: &[PathBuf],
+) -> Option<PathBuf> {
+    if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    if let Some(path) = uri_to_path(doc_uri) {
+        if let Some(dir) = path.parent() {
+            if let Some(found) = module_candidate(dir, parts) {
+                return Some(found);
+            }
+        }
+    }
+    for root in workspace_roots {
+        if let Some(found) = module_candidate(root, parts) {
+            return Some(found);
+        }
+    }
+    if let Ok(current) = std::env::current_dir() {
+        if let Some(found) = module_candidate(&current, parts) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Concrete `.un` files behind a module root: the file itself, `dir/mod.un`,
+/// or every `.un` file in a directory (sorted, mirroring `module.rs::load`).
+fn module_files(root: &Path) -> Vec<PathBuf> {
+    let text = root.to_string_lossy();
+    if text.ends_with(".un") {
+        return if root.is_file() {
+            vec![root.to_path_buf()]
+        } else {
+            Vec::new()
+        };
+    }
+    let with_extension = PathBuf::from(format!("{text}.un"));
+    if with_extension.is_file() {
+        return vec![with_extension];
+    }
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let mod_file = root.join("mod.un");
+    if mod_file.is_file() {
+        return vec![mod_file];
+    }
+    let mut files: Vec<PathBuf> = match std::fs::read_dir(root) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file() && path.extension().map(|ext| ext == "un").unwrap_or(false)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    files.sort();
+    files
+}
+
+#[derive(Clone)]
+struct ResolvedModuleUse {
+    decl: ModuleUse,
+    root: PathBuf,
+    files: Vec<PathBuf>,
+}
+
+/// Character immediately preceding a word, when it is a `.` member access —
+/// e.g. `x` for a cursor on `member` in `x.member`.
+fn member_receiver_before(source: &Source, word_start: usize) -> Option<String> {
+    let code = &source.code;
+    let mut cursor = word_start.checked_sub(1)?;
+    while cursor > 0 && code[cursor].is_whitespace() {
+        cursor -= 1;
+    }
+    if code[cursor] != '.' {
+        return None;
+    }
+    let end = cursor;
+    while cursor > 0 && is_ident_char(code[cursor - 1]) {
+        cursor -= 1;
+    }
+    if cursor == end {
+        return None;
+    }
+    Some(code[cursor..end].iter().collect())
+}
+
 struct Server {
     documents: HashMap<String, String>,
     /// Last analysis per document, keyed by the exact text it was built from.
     /// Editing triggers a rebuild; every other request reuses it.
     analyses: HashMap<String, (String, std::rc::Rc<Analysis>)>,
+    /// `use` resolution for the last analysis of each document (same text key).
+    module_indexes: HashMap<String, (String, Rc<Vec<ResolvedModuleUse>>)>,
+    /// Parsed user module files, keyed by canonical path. Open documents take
+    /// precedence so unsaved edits are reflected immediately.
+    module_file_cache: HashMap<String, (String, Rc<Analysis>)>,
+    /// Workspace roots from `initialize` — the second stop in module lookup.
+    workspace_roots: Vec<PathBuf>,
     compile_mode: bool,
     semantic_highlighting: bool,
     inlay_hints: bool,
@@ -1824,6 +2162,24 @@ fn json_bool(params: &Json, key: &str, default: bool) -> bool {
 }
 
 impl Server {
+    fn new() -> Self {
+        Server {
+            documents: HashMap::new(),
+            analyses: HashMap::new(),
+            module_indexes: HashMap::new(),
+            module_file_cache: HashMap::new(),
+            workspace_roots: Vec::new(),
+            compile_mode: false,
+            semantic_highlighting: true,
+            inlay_hints: true,
+            inlay_param_types: true,
+            inlay_return_types: true,
+            inlay_variable_types: true,
+            shutdown: false,
+            exit_code: None,
+        }
+    }
+
     fn apply_options(&mut self, params: &Json) {
         self.semantic_highlighting = json_bool(params, "semanticHighlighting", true);
         self.inlay_hints = json_bool(params, "inlayHints", true);
@@ -1836,14 +2192,243 @@ impl Server {
 impl Server {
     fn analyze_uri(&mut self, uri: &str) -> Option<std::rc::Rc<Analysis>> {
         let text = self.documents.get(uri)?.clone();
-        if let Some((cached_text, analysis)) = self.analyses.get(uri) {
-            if cached_text == &text {
-                return Some(analysis.clone());
+        let cached = self
+            .analyses
+            .get(uri)
+            .filter(|(cached_text, _)| cached_text == &text)
+            .map(|(_, analysis)| analysis.clone());
+        if let Some(analysis) = cached {
+            let fresh = self
+                .module_indexes
+                .get(uri)
+                .map(|(cached_text, _)| cached_text != &text)
+                .unwrap_or(true);
+            if fresh {
+                let modules = Rc::new(self.resolve_document_modules(uri, &analysis));
+                self.module_indexes.insert(uri.to_owned(), (text, modules));
+            }
+            return Some(analysis);
+        }
+        let analysis = Rc::new(analyze(&text, uri));
+        let modules = Rc::new(self.resolve_document_modules(uri, &analysis));
+        self.analyses.insert(uri.to_owned(), (text.clone(), analysis.clone()));
+        self.module_indexes.insert(uri.to_owned(), (text, modules));
+        Some(analysis)
+    }
+
+    fn resolved_uses(&self, uri: &str) -> Option<Rc<Vec<ResolvedModuleUse>>> {
+        self.module_indexes.get(uri).map(|(_, uses)| uses.clone())
+    }
+
+    /// Resolves every `use` of a document against the same roots the runtime
+    /// uses, and records the `.un` files that back it.
+    fn resolve_document_modules(&self, uri: &str, analysis: &Analysis) -> Vec<ResolvedModuleUse> {
+        analysis
+            .module_uses
+            .iter()
+            .filter_map(|decl| {
+                let root = resolve_module_root(uri, &decl.parts, &self.workspace_roots)?;
+                let files = module_files(&root);
+                if files.is_empty() {
+                    return None;
+                }
+                Some(ResolvedModuleUse {
+                    decl: decl.clone(),
+                    root,
+                    files,
+                })
+            })
+            .collect()
+    }
+
+    /// Loads (and caches) a module file. An open editor document with the same
+    /// path wins over the on-disk copy so unsaved edits show up immediately.
+    fn load_module_analysis(&mut self, path: &Path) -> Option<(Rc<Analysis>, PathBuf)> {
+        let key = path_key(path);
+        let uri = path_to_uri(path);
+        if let Some(text) = self.documents.get(&uri).cloned() {
+            return Some((Rc::new(analyze(&text, &key)), path.to_path_buf()));
+        }
+        if let Some((_, analysis)) = self.module_file_cache.get(&key) {
+            return Some((analysis.clone(), path.to_path_buf()));
+        }
+        let text = std::fs::read_to_string(path).ok()?;
+        let analysis = Rc::new(analyze(&text, &key));
+        self.module_file_cache.insert(key, (text, analysis.clone()));
+        Some((analysis, path.to_path_buf()))
+    }
+
+    fn invalidate_module_cache(&mut self, uri: &str) {
+        if let Some(path) = uri_to_path(uri) {
+            self.module_file_cache.remove(&path_key(&path));
+        }
+    }
+
+    fn find_resolved_use<'a>(
+        uses: &'a [ResolvedModuleUse],
+        receiver: &str,
+    ) -> Option<&'a ResolvedModuleUse> {
+        uses.iter()
+            .find(|resolved| resolved.decl.binding() == Some(receiver))
+    }
+
+    /// Completion items for `alias.|` after `use a.b [as alias]`.
+    fn user_module_completions(&mut self, receiver: &str, uri: &str) -> Option<Vec<Json>> {
+        let uses = self.resolved_uses(uri)?;
+        let usage = Self::find_resolved_use(&uses, receiver)?;
+        let mut items = Vec::new();
+        let mut seen = HashSet::new();
+        for file in &usage.files {
+            let Some((analysis, _)) = self.load_module_analysis(file) else {
+                continue;
+            };
+            for def in &analysis.defs {
+                if def.scope != 0 || !seen.insert(def.name.clone()) {
+                    continue;
+                }
+                if !matches!(
+                    def.kind,
+                    DefKind::Function
+                        | DefKind::Extension
+                        | DefKind::Class
+                        | DefKind::Enum
+                        | DefKind::EnumMember
+                        | DefKind::Variable
+                        | DefKind::Property
+                        | DefKind::TypeAlias
+                ) {
+                    continue;
+                }
+                let detail = match def.kind {
+                    DefKind::Function | DefKind::Extension => {
+                        signature_from_callee(&analysis, &def.name, def.name_start)
+                            .map(|(label, _)| label)
+                    }
+                    _ => None,
+                };
+                items.push(completion_item_with_detail(
+                    &def.name,
+                    def.kind.completion_kind(),
+                    detail,
+                ));
             }
         }
-        let analysis = std::rc::Rc::new(analyze(&text, uri));
-        self.analyses.insert(uri.to_owned(), (text, analysis.clone()));
-        Some(analysis)
+        if items.is_empty() {
+            None
+        } else {
+            Some(items)
+        }
+    }
+
+    /// Bare completions contributed by `use m { a as b }` / `use m.*`.
+    fn user_module_import_completions(&mut self, uri: &str) -> Vec<Json> {
+        let Some(uses) = self.resolved_uses(uri) else {
+            return Vec::new();
+        };
+        let mut items = Vec::new();
+        let mut seen = HashSet::new();
+        for usage in uses.iter() {
+            if usage.decl.imports.is_empty() && !usage.decl.wildcard {
+                continue;
+            }
+            for file in &usage.files {
+                let Some((analysis, _)) = self.load_module_analysis(file) else {
+                    continue;
+                };
+                let mut selected: Vec<(String, String)> = usage
+                    .decl
+                    .imports
+                    .iter()
+                    .filter(|(name, _)| name != "*")
+                    .map(|(name, rename)| {
+                        (name.clone(), rename.clone().unwrap_or_else(|| name.clone()))
+                    })
+                    .collect();
+                if usage.decl.wildcard {
+                    for def in &analysis.defs {
+                        if def.scope == 0 {
+                            selected.push((def.name.clone(), def.name.clone()));
+                        }
+                    }
+                }
+                for (name, label) in selected {
+                    if !seen.insert(label.clone()) {
+                        continue;
+                    }
+                    let detail = analysis
+                        .defs
+                        .iter()
+                        .find(|def| def.scope == 0 && def.name == name)
+                        .and_then(|def| match def.kind {
+                            DefKind::Function | DefKind::Extension => {
+                                signature_from_callee(&analysis, name.as_str(), def.name_start)
+                                    .map(|(label, _)| label)
+                            }
+                            _ => None,
+                        });
+                    items.push(completion_item_with_detail(&label, 5.0, detail));
+                }
+            }
+        }
+        items
+    }
+
+    /// Target of `alias.member`: the member's definition in the module file.
+    fn module_member_target(
+        &mut self,
+        uri: &str,
+        alias: &str,
+        member: &str,
+    ) -> Option<(String, Rc<Analysis>, Def)> {
+        let uses = self.resolved_uses(uri)?;
+        let usage = Self::find_resolved_use(&uses, alias)?;
+        for file in &usage.files {
+            let Some((analysis, path)) = self.load_module_analysis(file) else {
+                continue;
+            };
+            if let Some(def) = analysis
+                .defs
+                .iter()
+                .find(|def| def.scope == 0 && def.name == member)
+                .cloned()
+            {
+                return Some((path_to_uri(&path), analysis, def));
+            }
+        }
+        None
+    }
+
+    /// Target of a segment inside a `use a.b` path.
+    fn use_segment_target(
+        &mut self,
+        uri: &str,
+        offset: usize,
+    ) -> Option<(String, Rc<Analysis>, usize, usize)> {
+        let uses = self.resolved_uses(uri)?;
+        let mut best: Option<(String, Rc<Analysis>, usize, usize, usize)> = None;
+        for resolved in uses.iter() {
+            for (index, &(start, end)) in resolved.decl.segments.iter().enumerate() {
+                if offset >= start && offset < end {
+                    let root = if index + 1 == resolved.decl.parts.len() {
+                        resolved.root.clone()
+                    } else {
+                        resolve_module_root(
+                            uri,
+                            &resolved.decl.parts[..=index],
+                            &self.workspace_roots,
+                        )?
+                    };
+                    let files = module_files(&root);
+                    let file = files.first()?;
+                    let (analysis, path) = self.load_module_analysis(file)?;
+                    let width = end - start;
+                    if best.as_ref().map(|entry| width > entry.4).unwrap_or(true) {
+                        best = Some((path_to_uri(&path), analysis, 0, 0, width));
+                    }
+                }
+            }
+        }
+        best.map(|(uri, analysis, start, end, _)| (uri, analysis, start, end))
     }
 
     fn diagnostics_for(&mut self, uri: &str) -> Vec<Json> {
@@ -1858,6 +2443,30 @@ impl Server {
                 error.length,
                 &error.message,
             )];
+        }
+        // Native modules live in the registry, not on disk; user module paths
+        // must resolve with the same lookup rules the runtime applies.
+        let mut diagnostics = Vec::new();
+        for usage in &analysis.module_uses {
+            if usage.parts.is_empty()
+                || (usage.parts.len() == 1
+                    && native_catalog().modules.contains_key(&usage.parts[0]))
+            {
+                continue;
+            }
+            if resolve_module_root(uri, &usage.parts, &self.workspace_roots).is_some() {
+                continue;
+            }
+            let length = usage.path_end.saturating_sub(usage.path_start).max(1);
+            diagnostics.push(diagnostic_json(
+                &analysis.source,
+                usage.path_start,
+                length,
+                &format!("module '{}' not found", usage.parts.join(".")),
+            ));
+        }
+        if !diagnostics.is_empty() {
+            return diagnostics;
         }
         if !self.compile_mode {
             return Vec::new();
@@ -2679,6 +3288,26 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                 .get("compileMode")
                 .and_then(Json::as_bool)
                 .unwrap_or(false);
+            // Module paths are resolved relative to the workspace (the LSP
+            // counterpart of `World::path()` for the CLI).
+            server.workspace_roots = params
+                .get("workspaceFolders")
+                .and_then(Json::as_arr)
+                .into_iter()
+                .flatten()
+                .filter_map(|folder| folder.get("uri").and_then(Json::as_str))
+                .filter_map(uri_to_path)
+                .collect();
+            if let Some(root) = params
+                .get("rootUri")
+                .and_then(Json::as_str)
+                .and_then(uri_to_path)
+            {
+                if !server.workspace_roots.contains(&root) {
+                    server.workspace_roots.push(root);
+                }
+            }
+            server.module_indexes.clear();
             server.apply_options(&options);
             let result = Json::obj(vec![
                 (
@@ -2777,6 +3406,7 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                     .and_then(Json::as_str)
                     .unwrap_or("")
                     .to_string();
+                server.invalidate_module_cache(&uri);
                 server.documents.insert(uri.clone(), text);
                 server.publish_diagnostics(out, &uri);
             }
@@ -2792,6 +3422,7 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                     .and_then(Json::as_str)
                     .unwrap_or("")
                     .to_string();
+                server.invalidate_module_cache(&uri);
                 server.documents.insert(uri.clone(), text);
                 server.publish_diagnostics(out, &uri);
             }
@@ -2835,7 +3466,10 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
             // trigger reason — `self.|` should offer members even on manual
             // Ctrl+Space or after typing more word characters.
             if let Some((analysis, receiver, offset)) = member_completions {
-                if let Some(module) = module_of(&receiver, &analysis.use_aliases) {
+                if let Some(user_items) = server.user_module_completions(&receiver, &uri) {
+                    items = user_items;
+                    handled_as_member = true;
+                } else if let Some(module) = module_of(&receiver, &analysis.use_aliases) {
                     items = namespace_member_completions(&module);
                     handled_as_member = true;
                 } else if let Some((start, end, name)) =
@@ -2856,8 +3490,22 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                 for (label, snippet, detail) in KEYWORD_SNIPPETS {
                     items.push(snippet_completion_item(label, snippet, detail));
                 }
-                for module in &native_catalog().module_names {
-                    items.push(completion_item(module, 9.0)); // Module
+                let mut module_names: HashSet<String> = native_catalog()
+                    .module_names
+                    .iter()
+                    .cloned()
+                    .collect();
+                for name in &native_catalog().module_names {
+                    items.push(completion_item(name, 9.0)); // Module
+                }
+                if let Some(uses) = server.resolved_uses(&uri) {
+                    for usage in uses.iter() {
+                        if let Some(name) = usage.decl.binding() {
+                            if module_names.insert(name.to_string()) {
+                                items.push(completion_item(name, 9.0)); // User module
+                            }
+                        }
+                    }
                 }
                 if let Some(analysis) = server.analyze_uri(&uri) {
                     let inferred = infer_types(&analysis);
@@ -2881,6 +3529,21 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                                 detail,
                             ));
                         }
+                    }
+                }
+                let existing: HashSet<String> = items
+                    .iter()
+                    .filter_map(|item| item.get("label").and_then(Json::as_str))
+                    .map(str::to_string)
+                    .collect();
+                for item in server.user_module_import_completions(&uri) {
+                    let duplicate = item
+                        .get("label")
+                        .and_then(Json::as_str)
+                        .map(|label| existing.contains(label))
+                        .unwrap_or(false);
+                    if !duplicate {
+                        items.push(item);
                     }
                 }
             }
@@ -2953,29 +3616,54 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                     return;
                 }
             };
-            let locations = server
-                .analyze_uri(&uri)
-                .and_then(|analysis| {
-                    let offset = position_to_offset(&analysis.source, line, character);
-                    let (start, end) = word_range_at(&analysis.source, offset)?;
+            let mut locations: Vec<Json> = Vec::new();
+            if let Some(analysis) = server.analyze_uri(&uri) {
+                let offset = position_to_offset(&analysis.source, line, character);
+                if let Some((start, end)) = word_range_at(&analysis.source, offset) {
                     let word = analysis.source.span(start, end - start);
-                    let locations: Vec<Json> = analysis
-                        .defs
-                        .iter()
-                        .filter(|def| def.name == word)
-                        .map(|def| {
-                            Json::obj(vec![
+                    // `use a.b`: jump to the module file backing this segment.
+                    if let Some((target, target_analysis, a, b)) =
+                        server.use_segment_target(&uri, offset)
+                    {
+                        locations.push(Json::obj(vec![
+                            ("uri", Json::from(target)),
+                            ("range", span_range_json(&target_analysis.source, a, b)),
+                        ]));
+                    }
+                    // `x.member`: jump to the member's declaration in the module.
+                    if locations.is_empty() {
+                        if let Some(receiver) = member_receiver_before(&analysis.source, start) {
+                            if let Some((target, target_analysis, def)) =
+                                server.module_member_target(&uri, &receiver, &word)
+                            {
+                                locations.push(Json::obj(vec![
+                                    ("uri", Json::from(target)),
+                                    (
+                                        "range",
+                                        span_range_json(
+                                            &target_analysis.source,
+                                            def.name_start,
+                                            def.name_end,
+                                        ),
+                                    ),
+                                ]));
+                            }
+                        }
+                    }
+                    // Preserve the original same-document behaviour as fallback.
+                    if locations.is_empty() {
+                        for def in analysis.defs.iter().filter(|def| def.name == word) {
+                            locations.push(Json::obj(vec![
                                 ("uri", Json::from(uri.as_str())),
                                 (
                                     "range",
                                     span_range_json(&analysis.source, def.name_start, def.name_end),
                                 ),
-                            ])
-                        })
-                        .collect();
-                    Some(locations)
-                })
-                .unwrap_or_default();
+                            ]));
+                        }
+                    }
+                }
+            }
             respond(out, id, Json::Arr(locations));
         }
         (Some(id), "textDocument/hover") => {
@@ -2986,31 +3674,53 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                     return;
                 }
             };
-            let hover = server.analyze_uri(&uri).and_then(|analysis| {
+            let mut hover = None;
+            if let Some(analysis) = server.analyze_uri(&uri) {
                 let offset = position_to_offset(&analysis.source, line, character);
-                let (start, end) = word_range_at(&analysis.source, offset)?;
-                let word = analysis.source.span(start, end - start);
-                analysis
-                    .defs
-                    .iter()
-                    .find(|def| def.name == word)
-                    .map(|def| {
-                        let declaration = analysis.source.get_line_text(def.start).trim().to_string();
-                        Json::obj(vec![
-                            (
-                                "contents",
-                                Json::obj(vec![
-                                    ("kind", Json::from("markdown")),
-                                    (
-                                        "value",
-                                        Json::from(format!("```un\n{declaration}\n```")),
-                                    ),
-                                ]),
-                            ),
-                            ("range", span_range_json(&analysis.source, start, end)),
-                        ])
-                    })
-            });
+                if let Some((start, end)) = word_range_at(&analysis.source, offset) {
+                    let word = analysis.source.span(start, end - start);
+                    if let Some((target, _, _, _)) = server.use_segment_target(&uri, offset) {
+                        hover = Some(hover_json(
+                            format!("module `{word}`\n\n`{target}`"),
+                            &analysis.source,
+                            start,
+                            end,
+                        ));
+                    }
+                    if hover.is_none() {
+                        if let Some(receiver) = member_receiver_before(&analysis.source, start) {
+                            if let Some((target, target_analysis, def)) =
+                                server.module_member_target(&uri, &receiver, &word)
+                            {
+                                let declaration =
+                                    target_analysis.source.get_line_text(def.start).trim().to_string();
+                                hover = Some(hover_json(
+                                    format!("```un\n{declaration}\n```\n\n_defined in `{target}`_"),
+                                    &analysis.source,
+                                    start,
+                                    end,
+                                ));
+                            }
+                        }
+                    }
+                    if hover.is_none() {
+                        hover = analysis
+                            .defs
+                            .iter()
+                            .find(|def| def.name == word)
+                            .map(|def| {
+                                let declaration =
+                                    analysis.source.get_line_text(def.start).trim().to_string();
+                                hover_json(
+                                    format!("```un\n{declaration}\n```"),
+                                    &analysis.source,
+                                    start,
+                                    end,
+                                )
+                            });
+                    }
+                }
+            }
             respond(out, id, hover.unwrap_or(Json::Null));
         }
         (Some(id), "textDocument/documentSymbol") => {
@@ -3155,18 +3865,7 @@ fn take_message(buffer: &mut Vec<u8>) -> Option<String> {
 }
 
 pub fn run() -> i32 {
-    let mut server = Server {
-        documents: HashMap::new(),
-        analyses: HashMap::new(),
-        compile_mode: false,
-        semantic_highlighting: true,
-        inlay_hints: true,
-        inlay_param_types: true,
-        inlay_return_types: true,
-        inlay_variable_types: true,
-        shutdown: false,
-        exit_code: None,
-    };
+    let mut server = Server::new();
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let mut stdout = io::stdout();
@@ -3411,5 +4110,117 @@ mod tests {
         for (label, _, _) in KEYWORD_SNIPPETS {
             assert!(*label != "return", "`return` snippet is invalid Un syntax");
         }
+    }
+
+    #[test]
+    fn use_declarations_keep_full_paths_and_bindings() {
+        let analysis = analyze(
+            "use test.assert as a\nuse io\nuse test.fixtures.m.*\n",
+            "main.un",
+        );
+        assert!(analysis.error.is_none(), "parse failed: {:?}", analysis.error);
+        assert_eq!(analysis.module_uses.len(), 3);
+        let first = &analysis.module_uses[0];
+        assert_eq!(first.parts, vec!["test", "assert"]);
+        assert_eq!(first.binding(), Some("a"));
+        let text: Vec<String> = first
+            .segments
+            .iter()
+            .map(|&(start, end)| analysis.source.span(start, end - start))
+            .collect();
+        assert_eq!(text, vec!["test", "assert"]);
+        let second = &analysis.module_uses[1];
+        assert_eq!(second.parts, vec!["io"]);
+        assert_eq!(second.binding(), Some("io"));
+        let third = &analysis.module_uses[2];
+        assert_eq!(third.parts, vec!["test", "fixtures", "m"]);
+        assert!(third.wildcard, "wildcard import flag missing");
+    }
+
+    #[test]
+    fn fallback_keeps_module_use_data() {
+        let analysis = fallback_analysis(
+            "use pkg.util as u\nfn broken(\n",
+            "main.un",
+            None,
+        );
+        assert_eq!(analysis.module_uses.len(), 1);
+        assert_eq!(analysis.module_uses[0].parts, vec!["pkg", "util"]);
+        assert_eq!(analysis.module_uses[0].binding(), Some("u"));
+    }
+
+    #[test]
+    fn user_modules_resolve_for_completion_and_navigation() {
+        let root = std::env::temp_dir().join(format!("un-lsp-mod-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let package = root.join("pkg");
+        std::fs::create_dir_all(&package).expect("temp module dir");
+        let module = package.join("util.un");
+        std::fs::write(
+            &module,
+            "fn helper(x: int) -> int\n    -> x + 1\nvalue = 42\n",
+        )
+        .expect("temp module file");
+        let main = root.join("main.un");
+        std::fs::write(&main, "use pkg.util as u\nv = u.helper(1)\n").expect("temp main file");
+        let main_uri = path_to_uri(&main);
+        let mut server = Server::new();
+        server.workspace_roots.push(root.clone());
+        server
+            .documents
+            .insert(main_uri.clone(), std::fs::read_to_string(&main).expect("read main"));
+
+        let analysis = server.analyze_uri(&main_uri).expect("main analysis");
+        assert!(analysis.error.is_none(), "parse failed: {:?}", analysis.error);
+        assert_eq!(server.resolved_uses(&main_uri).map(|uses| uses.len()), Some(1));
+
+        let items = server
+            .user_module_completions("u", &main_uri)
+            .expect("user module members missing");
+        let labels: Vec<&str> = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Json::as_str))
+            .collect();
+        assert!(labels.contains(&"helper"), "fn not completed: {labels:?}");
+        assert!(labels.contains(&"value"), "variable not completed: {labels:?}");
+
+        let (target, target_analysis, def) = server
+            .module_member_target(&main_uri, "u", "helper")
+            .expect("cross-file member definition missing");
+        assert_eq!(target, path_to_uri(&module));
+        assert_eq!(def.name, "helper");
+        assert!(target_analysis.source.get_line_text(def.start).contains("fn helper"));
+
+        // `pkg` (a directory module) resolves to its only `.un` file.
+        let (target, _, _, _) = server
+            .use_segment_target(&main_uri, 4)
+            .expect("use path definition missing");
+        assert_eq!(target, path_to_uri(&module));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_user_module_is_diagnosed() {
+        let root = std::env::temp_dir().join(format!("un-lsp-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp dir");
+        let main = root.join("main.un");
+        let text = "use nowhere.to_be_found as missing\n";
+        std::fs::write(&main, text).expect("temp main file");
+        let main_uri = path_to_uri(&main);
+        let mut server = Server::new();
+        server.workspace_roots.push(root.clone());
+        server.documents.insert(main_uri.clone(), text.to_string());
+        let diagnostics = server.diagnostics_for(&main_uri);
+        assert!(
+            diagnostics.iter().any(|item| item
+                .get("message")
+                .and_then(Json::as_str)
+                .map(|message| message.contains("module 'nowhere.to_be_found' not found"))
+                .unwrap_or(false)),
+            "missing module diagnostic absent: {diagnostics:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

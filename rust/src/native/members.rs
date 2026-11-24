@@ -905,10 +905,21 @@ fn list_members(closure: &Context) -> Vec<(String, Obj)> {
             ),
         ),
         (
+            "clear".to_owned(),
+            native(closure, "clear", Vec::new(), list_clear),
+        ),
+        (
             "resize".to_owned(),
             native(closure, "resize", Vec::new(), list_resize),
         ),
     ]
+}
+fn list_clear(scope: &Scope) -> Obj {
+    let Some((_receiver, list)) = list_self(scope) else {
+        return obj::err("expected 'list' object");
+    };
+    list.borrow_mut().clear();
+    obj::none()
 }
 fn list_self(scope: &Scope) -> Option<(Obj, Rc<RefCell<Vec<Obj>>>)> {
     let receiver = scope::get(scope, "self");

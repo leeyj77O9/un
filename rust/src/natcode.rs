@@ -1431,6 +1431,88 @@ fn emit_block<M: Module>(
     false
 }
 
+/// Call the existing `unrt_call_native` bridge with already-boxed handle
+/// arguments. Used by slice read/write TIR, which reuses NRT's
+/// `("list", "slice" | "set_slice")` dispatch instead of adding new `unrt_*`
+/// C ABI symbols.
+fn emit_native_dispatch<M: Module>(
+    module_name: &str,
+    member: &str,
+    args: &[cranelift_codegen::ir::Value],
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    f: &TirFn,
+) -> cranelift_codegen::ir::Value {
+    if emitter.mode == NativeMode::Obj && emitter.needs_frame {
+        if let Some(push) = emitter.nrt_push_frame {
+            let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
+            let np = builder.ins().symbol_value(types::I64, gv);
+            let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
+            let (start, len) = emitter.current_span.unwrap_or((0, 0));
+            let s = builder.ins().iconst(types::I64, start as i64);
+            let l = builder.ins().iconst(types::I64, len as i64);
+            let pr = module.declare_func_in_func(push, builder.func);
+            let _ = builder.ins().call(pr, &[np, nl, s, l]);
+        }
+    }
+    let slot = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+        (8 * args.len()).max(8) as u32,
+        8,
+    ));
+    for (i, v) in args.iter().enumerate() {
+        let addr = builder.ins().stack_addr(types::I64, slot, 8 * i as i32);
+        builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), *v, addr, 0);
+    }
+    let sp = builder.ins().stack_addr(types::I64, slot, 0);
+    let mod_gv = embed_str_bytes(emitter, module, builder, module_name.as_bytes());
+    let member_gv = embed_str_bytes(emitter, module, builder, member.as_bytes());
+    let mod_ptr = builder.ins().symbol_value(types::I64, mod_gv);
+    let mod_len = builder.ins().iconst(types::I64, module_name.as_bytes().len() as i64);
+    let member_ptr = builder.ins().symbol_value(types::I64, member_gv);
+    let member_len = builder.ins().iconst(types::I64, member.as_bytes().len() as i64);
+    let argc = builder.ins().iconst(types::I64, args.len() as i64);
+    let id = emitter
+        .unrt_call_native
+        .expect("unrt import required for native dispatch");
+    let call_ref = module.declare_func_in_func(id, builder.func);
+    let res = builder.ins().call(call_ref, &[mod_ptr, mod_len, member_ptr, member_len, sp, argc]);
+    let raw = builder.inst_results(res)[0];
+    emit_error_gate(emitter, builder, module, raw);
+    if emitter.mode == NativeMode::Obj && emitter.needs_frame {
+        if let Some(pop) = emitter.nrt_pop_frame {
+            let pr = module.declare_func_in_func(pop, builder.func);
+            let _ = builder.ins().call(pr, &[]);
+        }
+    }
+    raw
+}
+
+/// Box a slice bound: `None` is passed as the none handle (tag 4), which NRT's
+/// `list.slice` / `list.set_slice` treat as an omitted bound.
+fn emit_slice_bound<M: Module>(
+    bound: Option<&TirExpr>,
+    emitter: &mut FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    f: &TirFn,
+) -> cranelift_codegen::ir::Value {
+    match bound {
+        None => {
+            let id = emitter.unrt_none.expect("unrt import required for slice bounds");
+            let r = module.declare_func_in_func(id, builder.func);
+            let call = builder.ins().call(r, &[]);
+            builder.inst_results(call)[0]
+        }
+        Some(expr) => {
+            let (v, ty) = emit_expr(expr, emitter, builder, module, f);
+            debug_assert_eq!(ty, TirTy::Int);
+            wrap_as_obj(v, ty, emitter, builder, module)
+        }
+    }
+}
+
 fn emit_stmt<M: Module>(
     stmt: &TirStmt,
     emitter: &mut FnEmit,
@@ -1846,6 +1928,20 @@ fn emit_stmt<M: Module>(
             emit_self_return_gate(emitter, builder, module, raw, dict_v);
             false
         }
+        TirStmt::SetSlice { list, value, start, end, step } => {
+            let (list_v, _) = emit_expr(list, emitter, builder, module, f);
+            let (value_v, value_ty) = emit_expr(value, emitter, builder, module, f);
+            let value_v = wrap_as_obj(value_v, value_ty, emitter, builder, module);
+            let args = [
+                list_v,
+                value_v,
+                emit_slice_bound(start.as_ref(), emitter, builder, module, f),
+                emit_slice_bound(end.as_ref(), emitter, builder, module, f),
+                emit_slice_bound(step.as_ref(), emitter, builder, module, f),
+            ];
+            let _ = emit_native_dispatch("list", "set_slice", &args, emitter, builder, module, f);
+            false
+        }
         TirStmt::MemberSet { receiver, member, value } => {
             let (recv, _) = emit_expr(receiver, emitter, builder, module, f);
             let (v, v_ty) = emit_expr(value, emitter, builder, module, f);
@@ -2010,6 +2106,13 @@ fn expr_preserves_list_len(e: &TirExpr) -> bool {
         TirExpr::ListRepeat { value, len, .. } => {
             expr_preserves_list_len(value) && expr_preserves_list_len(len)
         }
+        TirExpr::Slice { list, start, end, step } => {
+            expr_preserves_list_len(list)
+                && start.as_ref().is_none_or(|e| expr_preserves_list_len(e))
+                && end.as_ref().is_none_or(|e| expr_preserves_list_len(e))
+                && step.as_ref().is_none_or(|e| expr_preserves_list_len(e))
+        }
+        TirExpr::EmptyCollection { .. } => true,
         // A call may mutate any list reachable from its arguments (or a
         // captured/global one), so never assume it preserves list length.
         TirExpr::NativeCallExpr { .. } | TirExpr::ClassNew { .. }
@@ -2023,7 +2126,9 @@ fn expr_preserves_list_len(e: &TirExpr) -> bool {
 fn body_preserves_list_len(body: &[TirStmt]) -> bool {
     body.iter().all(|s| match s {
         // The only statements that grow or shrink a list.
-        TirStmt::ListAdd { .. } | TirStmt::ListInsert { .. } | TirStmt::ListClear { .. } => false,
+        // Slice assignment can splice and change length.
+        TirStmt::ListAdd { .. } | TirStmt::ListInsert { .. } | TirStmt::ListClear { .. }
+        | TirStmt::SetSlice { .. } => false,
         TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e) | TirStmt::Throw(e)
         | TirStmt::Return(Some(e)) => expr_preserves_list_len(e),
         // Indexed writes, member writes and reordering keep the length intact.
@@ -2664,6 +2769,41 @@ fn emit_expr<M: Module>(
             (obj, TirTy::Str)
         }
         TirExpr::Float(v) => (builder.ins().f64const(*v), TirTy::Float),
+        TirExpr::EmptyCollection { ty } => {
+            // NRT rejects a null pointer even for zero-length collections, so
+            // reserve a real (unused) stack slot and pass its address.
+            let slot = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                16,
+                8,
+            ));
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            let zero = builder.ins().iconst(types::I64, 0);
+            let fid = match ty {
+                TirTy::ListInt => emitter.unrt_list_from_ints,
+                TirTy::ListFloat => emitter.unrt_list_from_floats,
+                TirTy::ListClass(_) | TirTy::ListLambda | TirTy::ListGen(_)
+                | TirTy::SetGen(_) | TirTy::Obj => emitter.unrt_list_from_elems,
+                TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt
+                | TirTy::DictGen(_, _) => emitter.unrt_dict_from_pairs,
+                _ => panic!("empty collection has a non-collection type"),
+            }
+            .expect("unrt import required for empty collections");
+            let call_ref = module.declare_func_in_func(fid, builder.func);
+            let res = builder.ins().call(call_ref, &[ptr, zero]);
+            (builder.inst_results(res)[0], *ty)
+        }
+        TirExpr::Slice { list, start, end, step } => {
+            let (list_v, list_ty) = emit_expr(list, emitter, builder, module, f);
+            let args = [
+                list_v,
+                emit_slice_bound(start.as_deref(), emitter, builder, module, f),
+                emit_slice_bound(end.as_deref(), emitter, builder, module, f),
+                emit_slice_bound(step.as_deref(), emitter, builder, module, f),
+            ];
+            let raw = emit_native_dispatch("list", "slice", &args, emitter, builder, module, f);
+            (raw, list_ty)
+        }
         TirExpr::List(elements) => {
             if elements.is_empty() {
                 panic!("empty list literal rejected by validator");

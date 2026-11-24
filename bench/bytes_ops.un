@@ -1,0 +1,41 @@
+use io
+use iter
+use bytes
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# bytes 모듈 - from_hex / to_hex / concat / slice / get 반복
+# NRT bytes 구현의 기본 연산 경로를 VM/JIT 양 레인에서 측정한다.
+# 실행: un.exe run bench/bytes_ops.un  (프로젝트 루트에서)
+# ============================================================
+
+HEX = "48656c6c6f2c20556e2100ff"   # 12바이트: Hello, Un!\x00\xff
+N = 2000
+
+fn bytes_work(n)
+    total = 0
+    for i in iter.range(0, n)
+        b = bytes.from_hex(HEX)              # 12 bytes
+        h = bytes.to_hex(b)                 # 24자리 hex 문자열
+        c = bytes.concat(b, b)              # 24 bytes
+        s = bytes.slice(c, 1, len(c) - 1)   # 22 bytes
+        v = bytes.get(s, i % len(s))        # 0..21 인덱스 접근
+        total += v
+    -> total
+
+# ---------- 검증 ----------
+# s = (b+b)[1:23], s[0] = b[1] = 0x65 = 101
+# 2000회 반복: s의 22바이트 주기 90회 + 앞 20바이트 = 162948
+assert.assert_eq(len(HEX), 24, "hex input length")
+assert.assert_eq(bytes.to_hex(bytes.from_hex(HEX)), HEX, "hex roundtrip")
+assert.assert_eq(bytes.len(bytes.from_hex(HEX)), 12, "from_hex byte length")
+assert.assert_eq(bytes.len(bytes.slice(bytes.concat(bytes.from_hex(HEX), bytes.from_hex(HEX)), 1, 23)), 22, "slice byte length")
+assert.assert_eq(bytes_work(1), 101, "bytes_work(1) reads s[0]")
+assert.assert_eq(bytes_work(N), 162948, "bytes ops sum")
+
+# ---------- 측정 ----------
+# 한 번의 bytes_work = 2000회 x (from_hex + to_hex + concat + slice + get) = 10000회 연산
+bench.measure("bytes_ops", fn(n) -> bytes_work(N), N * 5, 7, 2)
+
+assert.summary()

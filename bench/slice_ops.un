@@ -1,0 +1,42 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 리스트 슬라이스 - 읽기 xs[2:8] + 할당 xs[3:6] = [...] 반복
+# TIR/codegen 통합 후Compile Mode/exe 레인까지 확장 예정.
+# 현재는 VM(UV_JIT=0) / JIT 레인에서 측정한다.
+# 실행: un.exe run bench/slice_ops.un  (프로젝트 루트에서)
+# ============================================================
+
+N = 2000
+
+fn slice_work(n)
+    xs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    total = 0
+    for i in iter.range(0, n)
+        # 읽기: xs[2:8] = [2, 3, 4, 5, 6, 7] (할당 구간 [3:6) 바깥이라 매 회 동일)
+        part = xs[2:8]
+        total += part[0] + part[len(part) - 1]   # 2 + 7 = 9
+        # 할당: 길이 3을 길이 3으로 교체 (리스트 크기 유지)
+        xs[3:6] = [i, i + 1, i + 2]
+        total += xs[3] + xs[5]                   # i + (i + 2) = 2i + 2
+    -> total
+
+# ---------- 검증 ----------
+# 회당 total 증가분 = 9 + 2i + 2 = 2i + 11
+# slice_work(1) = 11
+# slice_work(2000) = 2*(0+..+1999) + 11*2000 = 3998000 + 22000 = 4020000
+ys = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+ys[3:6] = [10, 20, 30]
+assert.assert_eq(ys, [0, 1, 2, 10, 20, 30, 6, 7, 8, 9], "slice assignment")
+assert.assert_eq(ys[2:8], [2, 10, 20, 30, 6, 7], "slice read")
+assert.assert_eq(slice_work(1), 11, "slice_work(1)")
+assert.assert_eq(slice_work(N), 4020000, "slice ops sum")
+
+# ---------- 측정 ----------
+# 한 번의 slice_work = 2000회 x (슬라이스 읽기 + 슬라이스 할당) = 4000회 연산
+bench.measure("slice_ops", fn(n) -> slice_work(N), N * 2, 7, 2)
+
+assert.summary()

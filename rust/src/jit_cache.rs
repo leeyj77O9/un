@@ -199,6 +199,14 @@ pub fn jit_debug() -> bool {
     *JIT_DEBUG.get_or_init(|| std::env::var_os("UV_JIT_DEBUG").is_some())
 }
 
+/// Process-wide snapshot of `UV_JIT_DEBUG_IF`, read once with the same
+/// `OnceLock` pattern as `jit_debug()` / `jit_config()`. Guards the expensive
+/// per-instruction return-flow trace prints in the JIT analysis passes.
+pub fn jit_debug_if() -> bool {
+    static JIT_DEBUG_IF: OnceLock<bool> = OnceLock::new();
+    *JIT_DEBUG_IF.get_or_init(|| std::env::var_os("UV_JIT_DEBUG_IF").is_some())
+}
+
 static JIT_LAZY_ATTEMPTED: LazyLock<Mutex<HashSet<u64>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 

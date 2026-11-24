@@ -119,6 +119,11 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
     if let Some(result) = crate::net_native::dispatch(m, name, args) {
         return result;
     }
+    // List slice/clear reuse the existing `unrt_call_native` ABI; no new C ABI
+    // symbol is introduced (ARC-00 approval is required for new `unrt_*` names).
+    if let Some(result) = crate::list::dispatch(m, name, args) {
+        return result;
+    }
     match (m, name) {
         ("io", "write") => {
             let parts: Vec<String> = args.iter().map(|p| {

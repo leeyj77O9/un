@@ -64,7 +64,9 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 $rustup = Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe"
 $cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
-$Exe = Join-Path $Root "rust\target\release\un.exe"
+# 기본 바이너리는 기존 경로. UN_BENCH_EXE를 지정하면 복사본 바이너리를 쓴다
+# (여러 세션이 같은 un.exe를 rebuild/run 하는 경쟁을 피하기 위한 옵션).
+$Exe = if ($env:UN_BENCH_EXE) { $env:UN_BENCH_EXE } else { Join-Path $Root "rust\target\release\un.exe" }
 $Toolchain = "stable-x86_64-pc-windows-gnu"
 $Manifest = Join-Path $Root "rust\Cargo.toml"
 $Culture = [System.Globalization.CultureInfo]::InvariantCulture
@@ -287,6 +289,13 @@ $Pairs = @(
     [pscustomobject]@{ label = "enum10000";     un = "bench/enum.un";           node = "bench/node/enum.mjs";          python = "bench/python/enum_bench.py" }
     [pscustomobject]@{ label = "modimport2000"; un = "bench/modimport.un";      node = "bench/node/modimport.mjs";     python = "bench/python/modimport.py" }
     [pscustomobject]@{ label = "nanbox20000";   un = "bench/nanbox.un";         node = "bench/node/nanbox.mjs";        python = "bench/python/nanbox.py" }
+    # ---- BENCH-10/W-2026-11-24-BENCHKEY: 기존 벤치가 놓친 Un 전용 경로 ----
+    # 문자열 키 dict(정수 키 dict5000의 bucket fast path와 대비),
+    # NRT bytes 연산, 리스트 슬라이스 읽기/할당. VM/JIT 레인만 측정한다
+    # (node/python 트리플렛 없음, Compile/exe 레인은 TIR/codegen 통합 후).
+    [pscustomobject]@{ label = "dict_str5000"; un = "bench/dict_str_key.un"; vmOnly = $true }
+    [pscustomobject]@{ label = "bytes_ops";    un = "bench/bytes_ops.un";    vmOnly = $true }
+    [pscustomobject]@{ label = "slice_ops";    un = "bench/slice_ops.un";    vmOnly = $true }
 )
 
 # ---------- 옵션: 벤치마크 필터 ----------
@@ -420,8 +429,9 @@ foreach ($p in $Pairs) {
         $row.unvmSamples = Get-Samples $r.text
         foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.unvm = $b } }
     }
-    if ($eachMode -contains "unnative") {
+    if ($eachMode -contains "unnative" -and -not $p.vmOnly) {
         # Compile Mode (un native): separate column, never overwrites unjit.
+        # vmOnly 워크로드는 VM/JIT 레인 전용 (아직 TIR/codegen 미지원).
         $r = Invoke-UnNative $(if ($p.native) { $p.native } else { $p.un })
         $row.compileCode = $r.code; $row.compileValid = Get-Validation $r.text
         if ($r.code -ne 0) {
@@ -457,7 +467,8 @@ foreach ($p in $Pairs) {
         $row.unjitSamples = Get-Samples $r.text
         foreach ($line in ($r.text -split "`n")) { $b = Parse-BenchLine $line; if ($b) { $row.unjit = $b } }
     }
-    if ($eachMode -contains "python") {
+    if ($eachMode -contains "python" -and $p.python) {
+        # 새 Un 전용 워크로드에는 python 트리플렛이 없다 — 해당 행은 건너뛴다.
         $r = Invoke-Python $p.python $PythonExe
         $row.pyCode = $r.code; $row.pyValid = Get-Validation $r.text
         if ($r.code -ne 0) { Write-Host "[BAD]  PY  $($p.python) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }
@@ -468,7 +479,8 @@ foreach ($p in $Pairs) {
             $m = Parse-MemLine $line; if ($m) { $row.memPython = $m }
         }
     }
-    if ($eachMode -contains "node") {
+    if ($eachMode -contains "node" -and $p.node) {
+        # 새 Un 전용 워크로드에는 node 트리플렛이 없다 — 해당 행은 건너뛴다.
         $r = Invoke-Node $p.node
         $row.nodeCode = $r.code; $row.nodeValid = Get-Validation $r.text
         if ($r.code -ne 0) { Write-Host "[BAD]  NODE $($p.node) exit=$($r.code)" -ForegroundColor Red; $Failures += 1 }

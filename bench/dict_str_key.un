@@ -1,0 +1,49 @@
+use io
+use iter
+use bench.harness as bench
+use test.assert as assert
+
+# ============================================================
+# 문자열 키 dict - 5000개 키 삽입 후 5000개 키 조회
+# 기존 dict5000은 정수 키라 NRT/VM의 bucket fast path만 측정한다.
+# 이 워크로드는 문자열 키 해시/비교 경로(linear scan -> bucket 개선)를 고정한다.
+# 실행: un.exe run bench/dict_str_key.un  (프로젝트 루트에서)
+# ============================================================
+
+N = 5000
+
+fn make_keys(n)
+    keys = []
+    for i in iter.range(0, n)
+        # 같은 접두사를 공유하게 해서 문자열 해시/비교 비용이 드러나도록 한다.
+        keys.add(`key:{i}`)
+    -> keys
+
+# 키 리스트는 측정 밖에서 한 번만 만든다. 측정 구간은 dict 연산만이다.
+keys = make_keys(N)
+
+# 값은 키 길이 ("key:" 접두사 4자 + 숫자 자릿수):
+#   key:0..key:9       (10개)  길이 5 → 50
+#   key:10..key:99     (90개)  길이 6 → 540
+#   key:100..key:999   (900개) 길이 7 → 6300
+#   key:1000..key:4999 (4000개) 길이 8 → 32000
+#   합 = 38890
+fn str_key_dict_work(n)
+    d = {}
+    for i in iter.range(0, n)
+        k = keys[i]
+        d[k] = len(k)
+    total = 0
+    for i in iter.range(0, n)
+        total += d[keys[i]]
+    -> total
+
+# ---------- 검증 ----------
+assert.assert_eq(str_key_dict_work(10), 50, "small string-key dict work")
+assert.assert_eq(str_key_dict_work(N), 38890, "string-key dict insert and lookup sum")
+
+# ---------- 측정 ----------
+# 한 번의 str_key_dict_work = 5000삽입 + 5000조회 = 10000회 dict 연산
+bench.measure("dict_str5000", fn(n) -> str_key_dict_work(N), N * 2, 7, 2)
+
+assert.summary()

@@ -136,39 +136,43 @@ pub fn get(scope: &Scope, key: &str) -> Obj {
     }
 }
 pub fn get_opt(scope: &Scope, key: &str) -> Option<Obj> {
+    // Check the slot in place and clone only initialized values; an
+    // uninitialized slot is treated as absent and the search continues upward.
     let parent = {
         let d = scope.borrow();
         if let Some(&idx) = d.symbols.get(key) {
-            let v = d.slots[idx].clone();
-            if world::is_uninitialized(&v) {
-                let parent = d.parent.clone();
-                return parent.and_then(|p| get_opt(&p, key));
+            let value = &d.slots[idx];
+            if !world::is_uninitialized(value) {
+                return Some(value.clone());
             }
-            return Some(v);
         }
         d.parent.clone()
     };
     parent.and_then(|p| get_opt(&p, key))
 }
 pub fn set(scope: &Scope, key: &str, value: Obj) {
-    let (slot, parent) = {
-        let d = scope.borrow();
-        match d.symbols.get(key) {
-            Some(&idx) => (Some(idx), None),
-            None => (None, d.parent.clone()),
-        }
-    };
-    if let Some(idx) = slot {
-        scope.borrow_mut().slots[idx] = value;
-        return;
-    }
-    if let Some(p) = parent {
-        if contains_key(&p, key) {
-            set(&p, key, value);
+    // Walk the parent chain once to find the scope that declares `key`, then
+    // write directly there. Previously this called `contains_key` (a second
+    // walk) followed by a recursive `set` (a third walk). If no scope declares
+    // the key, declare it in the original scope as before.
+    let mut current = scope.clone();
+    loop {
+        let (idx, parent) = {
+            let d = current.borrow();
+            (d.symbols.get(key).copied(), d.parent.clone())
+        };
+        if let Some(idx) = idx {
+            current.borrow_mut().slots[idx] = value;
             return;
         }
+        match parent {
+            Some(p) => current = p,
+            None => {
+                declare_new(scope, key, value);
+                return;
+            }
+        }
     }
-    declare_new(scope, key, value);
 }
 pub fn set_local(scope: &Scope, key: &str, value: Obj) {
     // One RefCell borrow instead of a read borrow followed by a write borrow.

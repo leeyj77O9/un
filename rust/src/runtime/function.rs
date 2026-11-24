@@ -720,8 +720,8 @@ pub fn field_ref(owner: &Obj, prop: &Obj) -> Obj {
     )
 }
 pub fn field_cell(o: &Obj) -> Option<FieldCell> {
-    match obj::payload(o) {
-        Payload::FieldRef(f) => Some(f),
+    match &*obj::payload_ref(o) {
+        Payload::FieldRef(f) => Some(f.clone()),
         _ => None,
     }
 }

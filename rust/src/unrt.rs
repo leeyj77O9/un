@@ -863,6 +863,88 @@ pub extern "C" fn unrt_str_concat(a: u64, b: u64) -> u64 {
     }
 }
 
+/// VM-side counterpart of NRT's `list.slice` / `list.set_slice` / `list.clear`
+/// dispatch. The 3 bound arguments are boxed handles (tag 4 `none` = omitted).
+fn list_dispatch(module: &str, member: &str, args: &[crate::runtime::obj::Obj]) -> Option<u64> {
+    if module != "list" {
+        return None;
+    }
+    use crate::runtime::obj::{self, Obj, Payload};
+    let none_if_omitted = |o: &Obj| {
+        if obj::is_none(o) { None } else { Some(o.clone()) }
+    };
+    match (member, args) {
+        ("slice", [list, start, end, step]) => {
+            let out = obj::slice(
+                list,
+                none_if_omitted(start),
+                none_if_omitted(end),
+                none_if_omitted(step),
+            );
+            Some(to_raw(out))
+        }
+        ("set_slice", [list, value, start, end, step]) => {
+            let start = none_if_omitted(start);
+            let end = none_if_omitted(end);
+            let step = none_if_omitted(step);
+            let out = match obj::payload(list) {
+                Payload::List(v) => v,
+                _ => return Some(to_raw(obj::err("slice assignment only supports list"))),
+            };
+            let count = out.borrow().len() as i64;
+            let (a, mut b, st) = match crate::runtime::collections::slice_indices(count, &start, &end, &step) {
+                Ok(v) => v,
+                Err(e) => return Some(to_raw(e)),
+            };
+            // Snapshot before mutation: `xs[1:3] = xs` must be safe.
+            let converted = obj::to_list(value);
+            let rhs = match obj::payload(&converted) {
+                Payload::List(v) => v.borrow().clone(),
+                _ => return Some(to_raw(obj::err("slice assignment value must be list"))),
+            };
+            if st != 1 {
+                let positions = crate::runtime::collections::slice_positions(count, a, b, st);
+                if positions.len() != rhs.len() {
+                    return Some(to_raw(obj::err(&format!(
+                        "attempt to assign sequence of size {} to extended slice of size {}",
+                        rhs.len(),
+                        positions.len()
+                    ))));
+                }
+                for (index, item) in positions.into_iter().zip(rhs) {
+                    let r = crate::runtime::collections::list_set_item(&out, &obj::int(index as i64), &item);
+                    if obj::is_err(&r) { return Some(to_raw(r)); }
+                }
+                return Some(to_raw(list.clone()));
+            }
+            if b < a { b = a; }
+            let slice_len = b - a;
+            let common = slice_len.min(rhs.len() as i64);
+            for i in 0..common {
+                let r = crate::runtime::collections::list_set_item(&out, &obj::int(a + i), &rhs[i as usize]);
+                if obj::is_err(&r) { return Some(to_raw(r)); }
+            }
+            for i in common..rhs.len() as i64 {
+                let r = crate::runtime::collections::list_insert(&out, &rhs[i as usize], &obj::int(a + i));
+                if let Err(e) = r { return Some(to_raw(e)); }
+            }
+            for _ in rhs.len() as i64..slice_len {
+                let r = crate::runtime::collections::list_remove_at(&out, &obj::int(a + rhs.len() as i64));
+                if let Err(e) = r { return Some(to_raw(e)); }
+            }
+            Some(to_raw(list.clone()))
+        }
+        ("clear", [list]) => match obj::payload(list) {
+            Payload::List(v) => {
+                v.borrow_mut().clear();
+                Some(to_raw(list.clone()))
+            }
+            _ => Some(to_raw(obj::err("unrt: clear target is not a list"))),
+        },
+        _ => None,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn unrt_call_native(
     module: *const u8,
@@ -880,6 +962,17 @@ pub extern "C" fn unrt_call_native(
     ) else {
         return to_raw(crate::runtime::obj::err("unrt: invalid utf-8 module or member name"));
     };
+    let values: Vec<crate::runtime::obj::Obj> = (0..argc)
+        .map(|i| {
+            borrow_obj(unsafe { *args.add(i) }).unwrap_or_else(crate::runtime::obj::none)
+        })
+        .collect();
+    // Slice/clear are not registered as VM native members. Handle them here
+    // with the same runtime helpers the interpreter uses so `--embed` stays
+    // byte-identical with `un run`.
+    if let Some(out) = list_dispatch(module, member, &values) {
+        return out;
+    }
     let Some(members) = crate::runtime::world::native_members(module) else {
         return to_raw(crate::runtime::obj::err(format!(
             "unrt: native module '{module}' not registered"
@@ -890,11 +983,6 @@ pub extern "C" fn unrt_call_native(
             "unrt: native '{module}.{member}' not found"
         )));
     };
-    let values: Vec<crate::runtime::obj::Obj> = (0..argc)
-        .map(|i| {
-            borrow_obj(unsafe { *args.add(i) }).unwrap_or_else(crate::runtime::obj::none)
-        })
-        .collect();
     let result = crate::runtime::obj::call_args(
         callable,
         &crate::runtime::function::Args::positional(values),

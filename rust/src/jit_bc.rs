@@ -609,7 +609,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         let result = match result {
             Ok(v) => v,
             Err(payload) => {
-                if std::env::var_os("UV_JIT_DEBUG").is_some() {
+                if crate::jit_cache::jit_debug() {
                     let panic_msg = if let Some(s) = payload.downcast_ref::<&str>() {
                         s.to_string()
                     } else if let Some(s) = payload.downcast_ref::<String>() {
@@ -624,7 +624,7 @@ fn register_eligible_inner(program: &Program, program_id: u64) {
         };
         if result.is_none() {
             let name = program.names.get(program.protos[idx].name).cloned().unwrap_or_else(|| "?".into());
-            if std::env::var_os("UV_JIT_DEBUG").is_some() {
+            if crate::jit_cache::jit_debug() {
                 eprintln!("JITREJECT proto[{idx}] {name} (JIT codegen failed, fallback stub)");
             }
             failed.push((idx, name));
@@ -3226,7 +3226,11 @@ pub fn analyze_return_kinds(program: &Program) -> HashMap<usize, u8> {
 /// the whole program instead of once per candidate proto.
 fn analyze_return_kinds_with_plan(program: &Program, plan: &crate::vm::Plan) -> HashMap<usize, u8> {
     let n = program.protos.len();
-    let mut tags: HashMap<usize, u8> = (0..n).map(|i| (i, 0)).collect();
+    // Proto indices are dense (0..n), so the fixed-point state is a Vec<u8>.
+    // The old code cloned the whole HashMap once per proto per iteration; here
+    // only the current proto's tag is copied into a scalar before the update.
+    // The HashMap boundary stays at the return so callers are unaffected.
+    let mut tags: Vec<u8> = vec![0; n];
     let plan = &plan.protos;
 
     let callee_lookup: HashMap<String, usize> = {
@@ -3245,12 +3249,12 @@ fn analyze_return_kinds_with_plan(program: &Program, plan: &crate::vm::Plan) -> 
     for _outer in 0..8 {
         let mut changed = false;
         for proto_index in 0..n {
-            let cur_tags = tags.clone();
-            if let Some(cur) = analyze_one_proto(program, plan, proto_index, &callee_lookup, &cur_tags) {
-                let union = cur | tags[&proto_index];
-                if union != tags[&proto_index] {
-                    tags.insert(proto_index, union);
-                        changed = true;
+            let old = tags[proto_index];
+            if let Some(cur) = analyze_one_proto(program, plan, proto_index, &callee_lookup, &tags) {
+                let union = cur | old;
+                if union != old {
+                    tags[proto_index] = union;
+                    changed = true;
                 }
             }
         }
@@ -3259,13 +3263,13 @@ fn analyze_return_kinds_with_plan(program: &Program, plan: &crate::vm::Plan) -> 
         }
     }
     for proto_index in 0..n {
-        let cur_tags = tags.clone();
-        if let Some(cur) = analyze_one_proto(program, plan, proto_index, &callee_lookup, &cur_tags) {
-            let union = cur | tags[&proto_index];
-            tags.insert(proto_index, union);
+        let old = tags[proto_index];
+        if let Some(cur) = analyze_one_proto(program, plan, proto_index, &callee_lookup, &tags) {
+            tags[proto_index] = old | cur;
         }
     }
-    if std::env::var_os("UV_JIT_DEBUG").is_some() && std::env::var_os("UV_JIT_DEBUG_IF").is_some() {
+    let tags: HashMap<usize, u8> = tags.into_iter().enumerate().collect();
+    if crate::jit_cache::jit_debug() && crate::jit_cache::jit_debug_if() {
         for (i, t) in &tags {
             eprintln!("JITDBG retkinds proto={i} kinds={t:#x}");
         }
@@ -3387,7 +3391,7 @@ fn analyze_one_proto(
     plan: &[crate::vm::ProtoPlan],
     proto_index: usize,
     callee_lookup: &HashMap<String, usize>,
-    tags: &HashMap<usize, u8>,
+    tags: &[u8],
 ) -> Option<u8> {
     let proto = &program.protos[proto_index];
     let p = &plan[proto_index];
@@ -3470,7 +3474,7 @@ fn analyze_one_proto(
                         } else {
                             kinds |= RET_INT;
                         }
-                        if std::env::var_os("UV_JIT_DEBUG_IF").is_some() {
+                        if crate::jit_cache::jit_debug_if() {
                             eprintln!("JITDBG ret arm proto={proto_index} r={r} reg_list={} param_regs={} kinds={kinds:#x}", reg_list[r], param_regs[r]);
                         }
                         gchanged = true;
@@ -3575,7 +3579,7 @@ fn analyze_one_proto(
                 Op::Call => {
                     let a = ins.a as usize;
                     if let Some(callee) = reg_call[ins.b as usize] {
-                        let tag = tags.get(&callee).copied().unwrap_or(0);
+                        let tag = tags.get(callee).copied().unwrap_or(0);
                         let want = (tag & RET_INTLIST) != 0;
                         if reg_list[a] != want {
                             reg_list[a] = want;
@@ -3624,7 +3628,7 @@ fn analyze_one_proto(
                     }
                     if let Some(&callee) = callee_lookup.get(&name) {
                         reg_call[ins.a as usize] = Some(callee);
-                        let tag = tags.get(&callee).copied().unwrap_or(0);
+                        let tag = tags.get(callee).copied().unwrap_or(0);
                         let want_f = (tag & RET_FLOAT) != 0
                             && (tag & (RET_INT | RET_BOOL | RET_INTLIST)) == 0;
                         if reg_float[ins.a as usize] != want_f {
@@ -3786,10 +3790,10 @@ fn analyze_one_proto(
     if claims_intlist {
         kinds |= RET_INTLIST;
     }
-    if std::env::var_os("UV_JIT_DEBUG").is_some() && std::env::var_os("UV_JIT_DEBUG_IF").is_some() {
+    if crate::jit_cache::jit_debug() && crate::jit_cache::jit_debug_if() {
         eprintln!("JITDBG analyze_one proto={proto_index} kinds={kinds:#x}");
     }
-    if std::env::var_os("UV_JIT_DEBUG_IF").is_some() {
+    if crate::jit_cache::jit_debug_if() {
         eprintln!("JITDBG analyze_one-full proto={proto_index} kinds={kinds:#x}");
     }
     Some(kinds)
@@ -4124,12 +4128,17 @@ fn emit_fn_in_module(
         f64_vars.push(builder.declare_var(types::F64));
     }
 
+    // Walk the per-proto name pool once and consult `param_pos` (already a
+    // name -> param-position HashMap) for an O(1) lookup. The previous form
+    // scanned all of `proto.names` for every parameter (O(params * names)).
+    // Iterating names also preserves the original handling of duplicate names
+    // in `proto.names`: every matching local slot is recorded.
     let param_mask_by_d: HashMap<usize, usize> = {
         let mut m = HashMap::new();
-        for (name, pos) in param_pos.iter() {
-            for (local_idx, &global_idx) in proto.names.iter().enumerate() {
-                if program.names.get(global_idx).is_some_and(|n| n == name) {
-                    m.insert(local_idx, *pos);
+        for (local_idx, &global_idx) in proto.names.iter().enumerate() {
+            if let Some(name) = program.names.get(global_idx) {
+                if let Some(&pos) = param_pos.get(name.as_str()) {
+                    m.insert(local_idx, pos);
                 }
             }
         }

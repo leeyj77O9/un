@@ -253,9 +253,11 @@ impl VM {
         let cur_proto = &program.protos[self.proto_idx];
         let code = &proto_plan.code;
         let depths = &proto_plan.depths;
+        let names = &program.names;
         let scratch_base = proto_plan.scratch_base;
         loop {
-            let Some(&ins) = code.get(self.ip) else {
+            let ip = self.ip;
+            let Some(&ins) = code.get(ip) else {
                 let final_depth = depths[code.len()] as usize;
                 let value = if final_depth > 0 {
                     self.regs[scratch_base + final_depth - 1].clone()
@@ -264,13 +266,17 @@ impl VM {
                 };
                 return Outcome::Value(value);
             };
-            let depth_before = depths[self.ip] as usize;
-            match self.step(&ins, depth_before, scratch_base, cur_proto) {
+            // `code.get(ip)` succeeded, so ip < code.len() < depths.len().
+            let depth_before = depths[ip] as usize;
+            match self.step(&ins, depth_before, scratch_base, cur_proto, names) {
                 Ok(advance) => {
                     if advance {
                         self.ip += 1;
                     }
-                    let depth = depths.get(self.ip).copied().unwrap_or(depth_before as u8) as usize;
+                    // `advance` increments from an in-bounds ip and every
+                    // non-advancing path sets a validated jump/handler target, so
+                    // self.ip <= code.len() == depths.len() - 1 here.
+                    let depth = depths[self.ip] as usize;
                     if depth > 0 {
                         let slot = scratch_base + depth - 1;
                         if let Some(top) = self.regs.get(slot) {
@@ -362,6 +368,12 @@ impl VM {
         self.program.name(self.proto(), index).to_string()
     }
 
+    /// Borrow a name from the program local in `run_inner`. The returned `&str`
+    /// never borrows `self`, so callers can still mutate registers while it is live.
+    fn name_ref<'a>(names: &'a [String], proto: &Proto, index: usize) -> &'a str {
+        &names[proto.names[index]]
+    }
+
     fn error(&self, message: impl Into<String>, span: (usize, usize)) -> Outcome {
         Outcome::Error(
             LangError::new(span.0, span.1, message).with_source(context::source(&self.ctx)),
@@ -414,6 +426,7 @@ impl VM {
         depth: usize,
         scratch_base: usize,
         cur_proto: &Proto,
+        names: &[String],
     ) -> Result<bool, Outcome> {
         let src = |k: usize| scratch_base + k;
         let ip = self.ip;
@@ -431,14 +444,14 @@ impl VM {
                 self.regs[src(depth)] = materialize(&c);
             }
             Op::LoadName => {
-                let name = self.name(ins.d as usize);
+                let name = Self::name_ref(names, cur_proto, ins.d as usize);
                 let scope = context::scope(&self.ctx);
-                if let Some(v) = scope::get_opt(&scope, &name) {
+                if let Some(v) = scope::get_opt(&scope, name) {
                     self.regs[src(depth)] = deref_field(v);
-                } else if let Some(v) = world::try_get_global(&name) {
+                } else if let Some(v) = world::try_get_global(name) {
                     self.regs[src(depth)] = v;
-                } else if world::get_class(&name).is_some() {
-                    self.regs[src(depth)] = world::class_tobj(&name);
+                } else if world::get_class(name).is_some() {
+                    self.regs[src(depth)] = world::class_tobj(name);
                 } else {
                     return Err(self.error(format!("undefined variable '{name}'"), span()));
                 }
@@ -446,11 +459,11 @@ impl VM {
             Op::StoreName => {
                 let scope_set = ins.flags & FLAG_SCOPE_SET != 0;
                 let value = self.regs[src(depth - 1)].clone();
-                let name = self.name(ins.d as usize);
+                let name = Self::name_ref(names, cur_proto, ins.d as usize);
                 let local_only = ins.flags & FLAG_LOCAL_ONLY != 0;
                 let scope = context::scope(&self.ctx);
                 if !local_only {
-                    if let Some(current) = scope::get_opt(&scope, &name) {
+                    if let Some(current) = scope::get_opt(&scope, name) {
                         if function::is_field_ref(&current) {
                             function::field_set(&current, &value);
                             return Ok(true);
@@ -458,11 +471,11 @@ impl VM {
                     }
                 }
                 if scope_set {
-                    scope::set(&scope, &name, value);
+                    scope::set(&scope, name, value);
                 } else if local_only || scope::is_function_scope(&scope) {
-                    scope::set_local(&scope, &name, value);
+                    scope::set_local(&scope, name, value);
                 } else {
-                    scope::set(&scope, &name, value);
+                    scope::set(&scope, name, value);
                 }
             }
             Op::LoadLocal => {
@@ -478,17 +491,17 @@ impl VM {
                 }
                 let scope = context::scope(&self.ctx);
                 let name_idx = cur_proto.locals.get(slot).copied().unwrap_or(0);
-                let name = self.name(name_idx);
-                if let Some(v) = scope::get_opt(&scope, &name) {
+                let name = Self::name_ref(names, cur_proto, name_idx);
+                if let Some(v) = scope::get_opt(&scope, name) {
                     self.regs[src(depth)] = deref_field(v);
                     return Ok(true);
                 }
-                if let Some(v) = world::try_get_global(&name) {
+                if let Some(v) = world::try_get_global(name) {
                     self.regs[src(depth)] = v;
                     return Ok(true);
                 }
-                if world::get_class(&name).is_some() {
-                    self.regs[src(depth)] = world::class_tobj(&name);
+                if world::get_class(name).is_some() {
+                    self.regs[src(depth)] = world::class_tobj(name);
                     return Ok(true);
                 }
                 return Err(self.error(format!("undefined variable '{name}'"), span()));
@@ -671,13 +684,13 @@ impl VM {
 
                 let load = |slot: usize| -> Obj {
                     let name_idx = cur_proto.locals.get(slot).copied().unwrap_or(0);
-                    let name = self.name(name_idx);
-                    if let Some(v) = scope::get_opt(&scope, &name) {
+                    let name = Self::name_ref(names, cur_proto, name_idx);
+                    if let Some(v) = scope::get_opt(&scope, name) {
                         deref_field(v)
-                    } else if let Some(v) = world::try_get_global(&name) {
+                    } else if let Some(v) = world::try_get_global(name) {
                         v
-                    } else if world::get_class(&name).is_some() {
-                        world::class_tobj(&name)
+                    } else if world::get_class(name).is_some() {
+                        world::class_tobj(name)
                     } else {
                         world::none_obj()
                     }
@@ -803,14 +816,14 @@ impl VM {
             }
             Op::GetAttr => {
                 let target = self.regs[ins.b as usize].clone();
-                let name = self.name(ins.d as usize);
-                self.regs[ins.a as usize] = obj::get_attr(&target, &name);
+                let name = Self::name_ref(names, cur_proto, ins.d as usize);
+                self.regs[ins.a as usize] = obj::get_attr(&target, name);
             }
             Op::SetAttr => {
                 let target = self.regs[ins.b as usize].clone();
                 let value = self.regs[ins.c as usize].clone();
-                let name = self.name(ins.d as usize);
-                let outcome = obj::set_attr(&target, &name, &value);
+                let name = Self::name_ref(names, cur_proto, ins.d as usize);
+                let outcome = obj::set_attr(&target, name, &value);
                 if obj::is_err(&outcome) {
                     return Err(self.error(err_message(&outcome), span()));
                 }
@@ -960,7 +973,9 @@ impl VM {
                 context::push_frame(
                     &self.ctx,
                     Frame {
-                        name: source.span(span().0, span().1),
+                        // Defer the source-text allocation to the error path;
+                        // start/length retain the span needed to rebuild it.
+                        name: String::new(),
                         source,
                         start: span().0,
                         length: span().1,
@@ -974,6 +989,7 @@ impl VM {
                     _ => false,
                 };
                 if crosses_error {
+                    materialize_frame_names(&self.ctx);
                     if let Ok(frame) = &popped {
                         let name = self
                             .program
@@ -1847,6 +1863,18 @@ fn catch_internal<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 
 fn internal_error_message(payload: &(dyn std::any::Any + Send + 'static)) -> String {
     format!("internal error (please report): {}", panic_payload_message(payload))
+}
+
+/// Fill deferred `Frame.name` values from their retained spans. Called only on
+/// error paths so the per-call `Source::span` allocation is avoided on success.
+fn materialize_frame_names(ctx: &Context) {
+    let frames = context::frames(ctx);
+    for frame in frames.borrow_mut().iter_mut() {
+        if frame.name.is_empty() {
+            let name = frame.source.span(frame.start, frame.length);
+            frame.name = name;
+        }
+    }
 }
 
 fn deref_field(v: Obj) -> Obj {

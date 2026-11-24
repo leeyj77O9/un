@@ -239,6 +239,10 @@ fn tir_ty_from_ty<'a>(classes: &'a ClassTable, ty: &'a Ty) -> Option<TirTy> {
             }
         }
         Ty::Set(elem) => tir_ty_from_ty(classes, elem).map(|t| TirTy::SetGen(elem_of_tir(t))),
+        // NRT has no tuple tag: a tuple literal is represented by the existing
+        // list object ABI. Element kinds are left opaque so mixed tuples and
+        // homogeneous ones share one representation.
+        Ty::Tuple(_) => Some(TirTy::ListGen(ObjElem::Obj)),
         Ty::Func { .. } => Some(TirTy::Lambda(u32::MAX)),
         // Dynamic values are boxed NObj handles. Reusing `TirTy::Obj` keeps
         // the ABI table single-sourced: object handles are I64 bits in both
@@ -506,6 +510,19 @@ pub enum TirExpr {
     GlobalGet(u16),
     /// The `none` value (boxed by NRT as a proper object handle).
     NoneValue,
+    /// A slice read `xs[a:b:c]`. Omitted bounds stay `None` and are passed to
+    /// NRT as the boxed none handle (tag 4), matching the VM's `Option<Obj>`.
+    Slice {
+        list: Box<TirExpr>,
+        start: Option<Box<TirExpr>>,
+        end: Option<Box<TirExpr>>,
+        step: Option<Box<TirExpr>>,
+    },
+    /// An empty list/dict literal whose element kinds come from the declared
+    /// type (expected-type propagation from `bind_annotated` in typeck).
+    EmptyCollection {
+        ty: TirTy,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -579,6 +596,15 @@ pub enum TirStmt {
         module: String,
         member: String,
         args: Vec<TirExpr>,
+    },
+    /// Slice assignment `xs[a:b:c] = value`. Bounds use the same boxed-handle
+    /// convention as `TirExpr::Slice`.
+    SetSlice {
+        list: TirExpr,
+        value: TirExpr,
+        start: Option<TirExpr>,
+        end: Option<TirExpr>,
+        step: Option<TirExpr>,
     },
 }
 
@@ -665,9 +691,15 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             }
             TirExpr::ClassNew { args, .. } | TirExpr::MethodCall { args, .. } => args.iter().all(expr_ok),
             TirExpr::MemberGet { receiver, .. } => expr_ok(receiver),
-            TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) => true,
+            TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) | TirExpr::EmptyCollection { .. } => true,
             TirExpr::CallObj { callee, args, .. } => expr_ok(callee) && args.iter().all(expr_ok),
             TirExpr::Located { inner, .. } => expr_ok(inner),
+            TirExpr::Slice { list, start, end, step } => {
+                expr_ok(list)
+                    && start.as_ref().map_or(true, |e| expr_ok(e))
+                    && end.as_ref().map_or(true, |e| expr_ok(e))
+                    && step.as_ref().map_or(true, |e| expr_ok(e))
+            }
         }
     }
     fn stmt_ok(s: &TirStmt) -> bool {
@@ -698,6 +730,13 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             TirStmt::NativeCall { module, member, args } => {
                 native_call_ok(module.as_str(), member.as_str(), None)
                     && args.iter().all(expr_ok)
+            }
+            TirStmt::SetSlice { list, value, start, end, step } => {
+                expr_ok(list)
+                    && expr_ok(value)
+                    && start.as_ref().map_or(true, |e| expr_ok(e))
+                    && end.as_ref().map_or(true, |e| expr_ok(e))
+                    && step.as_ref().map_or(true, |e| expr_ok(e))
             }
         }
     }
@@ -949,6 +988,13 @@ fn expr_uses_native(e: &TirExpr) -> bool {
         }
         TirExpr::Dict(items) => items.iter().any(|(k, v)| expr_uses_native(k) || expr_uses_native(v)),
         TirExpr::ListRepeat { value, len, .. } => expr_uses_native(value) || expr_uses_native(len),
+        TirExpr::Slice { list, start, end, step } => {
+            expr_uses_native(list)
+                || start.as_ref().is_some_and(|e| expr_uses_native(e))
+                || end.as_ref().is_some_and(|e| expr_uses_native(e))
+                || step.as_ref().is_some_and(|e| expr_uses_native(e))
+        }
+        TirExpr::EmptyCollection { .. } => false,
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_)
         | TirExpr::Local(_) | TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_)
         | TirExpr::NoneValue => false,
@@ -984,6 +1030,13 @@ fn stmt_uses_native(s: &TirStmt) -> bool {
                 || finally_body.as_ref().is_some_and(|b| b.iter().any(stmt_uses_native))
         }
         TirStmt::Return(Some(e)) => expr_uses_native(e),
+        TirStmt::SetSlice { list, value, start, end, step } => {
+            expr_uses_native(list)
+                || expr_uses_native(value)
+                || start.as_ref().is_some_and(|e| expr_uses_native(e))
+                || end.as_ref().is_some_and(|e| expr_uses_native(e))
+                || step.as_ref().is_some_and(|e| expr_uses_native(e))
+        }
         TirStmt::ListReverse { .. } | TirStmt::ListSort { .. }
         | TirStmt::ListClear { .. } | TirStmt::DictClear { .. }
         | TirStmt::Break | TirStmt::Skip | TirStmt::Return(None) => false,
@@ -1040,6 +1093,9 @@ fn stmt_uses_classes(s: &TirStmt) -> bool {
         TirStmt::Throw(e) => expr_uses_classes(e),
         TirStmt::Return(None) => false,
         TirStmt::Return(Some(e)) => expr_uses_classes(e),
+        TirStmt::SetSlice { list, value, .. } => {
+            expr_uses_classes(list) || expr_uses_classes(value)
+        }
         TirStmt::Break | TirStmt::Skip => false,
     }
 }
@@ -1073,6 +1129,13 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
         TirExpr::ListContains(receiver, _) | TirExpr::ListIndexOf(receiver, _)
         | TirExpr::DictKeys(receiver) | TirExpr::DictValues(receiver)
         | TirExpr::ListRemove(receiver, _) => expr_uses_classes(receiver),
+        TirExpr::Slice { list, start, end, step } => {
+            expr_uses_classes(list)
+                || start.as_ref().is_some_and(|e| expr_uses_classes(e))
+                || end.as_ref().is_some_and(|e| expr_uses_classes(e))
+                || step.as_ref().is_some_and(|e| expr_uses_classes(e))
+        }
+        TirExpr::EmptyCollection { .. } => false,
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_) | TirExpr::Local(_) => false,
     }
 }
@@ -1114,6 +1177,9 @@ fn stmt_uses_heap(s: &TirStmt) -> bool {
         }
         TirStmt::MemberSet { receiver, value, .. } => expr_uses_heap(receiver) || expr_uses_heap(value),
         TirStmt::NativeCall { args, .. } => args.iter().any(expr_uses_heap),
+        TirStmt::SetSlice { list, value, .. } => {
+            expr_uses_heap(list) || expr_uses_heap(value)
+        }
         TirStmt::Try { .. } => true,
         TirStmt::Throw(_) => true,
         TirStmt::Return(None) => false,
@@ -1153,6 +1219,7 @@ fn expr_uses_heap(e: &TirExpr) -> bool {
         | TirExpr::DictKeys(_)
         | TirExpr::DictValues(_) => true,
         TirExpr::ListRepeat { .. } => true,
+        TirExpr::Slice { .. } | TirExpr::EmptyCollection { .. } => true,
     }
 }
 
@@ -1193,6 +1260,9 @@ fn stmt_uses_str(s: &TirStmt) -> bool {
         TirStmt::Throw(e) => expr_uses_str(e),
         TirStmt::Return(None) => false,
         TirStmt::Return(Some(e)) => expr_uses_str(e),
+        TirStmt::SetSlice { list, value, .. } => {
+            expr_uses_str(list) || expr_uses_str(value)
+        }
         TirStmt::Break | TirStmt::Skip => false,
     }
 }
@@ -1230,6 +1300,13 @@ fn expr_uses_str(e: &TirExpr) -> bool {
         | TirExpr::ListRemove(_, _)
         | TirExpr::DictKeys(_)
         | TirExpr::DictValues(_) => false,
+        TirExpr::Slice { list, start, end, step } => {
+            expr_uses_str(list)
+                || start.as_ref().is_some_and(|e| expr_uses_str(e))
+                || end.as_ref().is_some_and(|e| expr_uses_str(e))
+                || step.as_ref().is_some_and(|e| expr_uses_str(e))
+        }
+        TirExpr::EmptyCollection { .. } => false,
     }
 }
 
@@ -1253,6 +1330,8 @@ pub fn core_rejection_reason(fcheck: &FnCheck) -> Option<String> {
         Ty::Int | Ty::Float | Ty::Bool | Ty::None_ | Ty::Str => {}
         // Dynamic returns are tagged NObj handles; NRT boxes/unboxes them.
         Ty::Any | Ty::Unknown | Ty::Union(_) => {}
+        // Bytes values are opaque NObj handles in NRT (nrt/src/bytes_native.rs).
+        Ty::Bytes => {}
         Ty::List(elem) => {
             if !matches!(elem.as_ref(), Ty::Int | Ty::Float | Ty::Class(_)) {
                 return Some(format!("'{}' returns non-core 'list[{}]'", sig.name, elem.display()));
@@ -1266,7 +1345,9 @@ pub fn core_rejection_reason(fcheck: &FnCheck) -> Option<String> {
                 return Some(format!("'{}' returns a non-core dict", sig.name));
             }
         }
-        Ty::Class(_) | Ty::Generic { .. } => {}
+        // Set literals lower to the list ABI (no dedicated NRT tag).
+        Ty::Set(_) => {}
+        Ty::Class(_) | Ty::Generic { .. } | Ty::Tuple(_) => {}
         other => return Some(format!("'{}' returns non-core type '{other}'", sig.name)),
     }
     if let Some((name, ty)) = locals.iter().find(|(_, ty)| !is_core_ty(ty)) {
@@ -1296,11 +1377,12 @@ fn is_core_ty(ty: &Ty) -> bool {
             matches!(key.as_ref(), Ty::Str | Ty::Int) && is_core_elem(value)
         }
         Ty::Set(elem) => is_core_elem(elem),
+        // Tuples lower to the existing list object ABI (no dedicated NRT tag).
+        Ty::Tuple(items) => items.iter().all(is_core_elem),
         Ty::Func { .. } => true,
         // A type variable is resolved into a concrete instance before lowering;
         // keep the original declaration eligible for name-based lookups.
         Ty::Generic { .. } => true,
-        _ => false,
     }
 }
 
@@ -1365,10 +1447,18 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
         }
         // FE-01 syntax has no TIR lowering yet: keep those functions on the
         // interpreter path until VM-02/natcode gain matching representations.
-        if kind_is(node, "Bytes")
-            || kind_is(node, "TypeAlias")
+        if kind_is(node, "TypeAlias")
             || kind_is(node, "Guard")
             || kind_is(node, "OrPattern")
+        {
+            tirdbg_reject(node);
+            *out = false;
+            return;
+        }
+        // Tuple *literals* lower to the list ABI, but tuple destructuring has
+        // no TIR form yet: keep those functions on the VM path.
+        if node.kind == NodeKind::Assign
+            && node.children.first().is_some_and(|c| c.kind == NodeKind::Tuple)
         {
             tirdbg_reject(node);
             *out = false;
@@ -1406,8 +1496,27 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     visit(child, checked, source, locals, handles, out);
                 }
             }
-            NodeKind::Typed => {}
+            NodeKind::Typed | NodeKind::Null => {}
             NodeKind::Integer | NodeKind::Float | NodeKind::Boolean | NodeKind::None | NodeKind::String => {}
+            // Interpolation pieces are either string literals or expressions;
+            // both are handled by the normal visitor.
+            NodeKind::FString | NodeKind::Ternary | NodeKind::Slice => {
+                for child in &node.children {
+                    visit(child, checked, source, locals, handles, out);
+                }
+            }
+            NodeKind::Bytes => {
+                // `b"..."` materialises a list[int] of byte values in the VM.
+                for child in &node.children {
+                    visit(child, checked, source, locals, handles, out);
+                }
+            }
+            // ARC-00: tuple/set literals lower to list handles in NRT, so their
+            // `io.write` display differs from the VM's `(..)`/`{..}`. Keep them
+            // on the VM/`--embed` path until dedicated tags are approved.
+            NodeKind::Set => {
+                tirdbg_reject(node); *out = false;
+            }
             NodeKind::Unary => {
                 let Some(op) = node.op else {
                     tirdbg_reject(node); *out = false;
@@ -1608,20 +1717,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     visit(child, checked, source, locals, handles, out);
                 }
             }
-            NodeKind::Dict => {
-                if node.children.is_empty() {
-                    tirdbg_reject(node); *out = false;
-                    return;
-                }
-                for child in &node.children {
-                    visit(child, checked, source, locals, handles, out);
-                }
-            }
-            NodeKind::List => {
-                if node.children.is_empty() {
-                    tirdbg_reject(node); *out = false;
-                    return;
-                }
+            NodeKind::Dict | NodeKind::List => {
                 for child in &node.children {
                     visit(child, checked, source, locals, handles, out);
                 }
@@ -1662,8 +1758,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     visit(child, checked, source, locals, handles, out);
                 }
             }
-            NodeKind::Slice | NodeKind::Tuple | NodeKind::Set
-            | NodeKind::FString | NodeKind::Match | NodeKind::Case
+            NodeKind::Match | NodeKind::Case
             | NodeKind::Use | NodeKind::Using | NodeKind::Defer
             | NodeKind::Function | NodeKind::Class | NodeKind::Enum | NodeKind::Tagged
             | NodeKind::Accessor | NodeKind::Wildcard => {
@@ -1826,6 +1921,13 @@ impl TirProgram {
                 TirExpr::NativeCallExpr { args, .. } => {
                     for a in args { pad_expr(a, program, class_names); }
                 }
+                TirExpr::Slice { list, start, end, step } => {
+                    pad_expr(list, program, class_names);
+                    if let Some(s) = start { pad_expr(s, program, class_names); }
+                    if let Some(e) = end { pad_expr(e, program, class_names); }
+                    if let Some(s) = step { pad_expr(s, program, class_names); }
+                }
+                TirExpr::EmptyCollection { .. } => {}
                 TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_)
                 | TirExpr::Local(_) => {}
             }
@@ -1874,6 +1976,13 @@ impl TirProgram {
                 | TirStmt::ListClear { receiver } | TirStmt::DictClear { receiver } => pad_expr(receiver, program, class_names),
                 TirStmt::NativeCall { args, .. } => {
                     for a in args { pad_expr(a, program, class_names); }
+                }
+                TirStmt::SetSlice { list, value, start, end, step } => {
+                    pad_expr(list, program, class_names);
+                    pad_expr(value, program, class_names);
+                    if let Some(s) = start { pad_expr(s, program, class_names); }
+                    if let Some(e) = end { pad_expr(e, program, class_names); }
+                    if let Some(s) = step { pad_expr(s, program, class_names); }
                 }
                 TirStmt::Try { body, catch_body, finally_body, .. } => {
                     for st in body.iter_mut().chain(catch_body.iter_mut()) { pad_stmt(st, program, class_names); }
@@ -1978,6 +2087,7 @@ impl TirProgram {
                 instance_args: &expanded.instance_args,
                 slots: HashMap::new(),
                 locals: Vec::new(),
+                declared_types: HashMap::new(),
                 classes: &classes,
                 lambda_vars: HashMap::new(),
                 lambdas: &mut lambdas,
@@ -2081,6 +2191,10 @@ struct LowerCtx<'a> {
     instance_args: &'a HashMap<String, (String, Vec<Ty>)>,
     slots: HashMap<String, u16>,
     locals: Vec<TirTy>,
+    /// Typechecker-declared types by name. Used for expected-type propagation
+    /// into empty list/dict literals (typeck records `list[Any]` there but the
+    /// annotated binding is `list[int]` / `dict[str, int]` / ...).
+    declared_types: HashMap<String, TirTy>,
     classes: &'a ClassTable,
     /// Local slot -> (synthesized lambda function index, captured local slots).
     lambda_vars: HashMap<u16, (u32, Vec<u16>)>,
@@ -2118,6 +2232,11 @@ fn lower_function<'a>(
         instance_args,
         slots: HashMap::new(),
         locals: Vec::new(),
+        declared_types: fcheck
+            .local_types
+            .iter()
+            .filter_map(|(name, ty)| tir_ty_from_ty(classes, ty).map(|t| (name.clone(), t)))
+            .collect(),
         classes,
         lambda_vars: HashMap::new(),
         lambdas,
@@ -2132,6 +2251,7 @@ fn lower_function<'a>(
             return Err("more than 255 parameters".to_string());
         }
         ctx.slots.insert(name.clone(), i as u16);
+        ctx.declared_types.insert(name.clone(), tty);
         ctx.locals.push(tty);
     }
     let body_node = node
@@ -2175,7 +2295,8 @@ fn lower_function<'a>(
         Ty::Bool => Some(TirTy::Bool),
         Ty::None_ => None,
         Ty::Str => Some(TirTy::Str),
-        Ty::List(_) | Ty::Class(_) | Ty::Dict(_, _) | Ty::Any | Ty::Union(_) | Ty::Unknown => {
+        Ty::List(_) | Ty::Class(_) | Ty::Dict(_, _) | Ty::Tuple(_) | Ty::Set(_) | Ty::Bytes
+        | Ty::Any | Ty::Union(_) | Ty::Unknown => {
             Some(
                 tir_ty_from_ty(classes, &fcheck.sig.ret)
                     .ok_or_else(|| format!("return type '{}' is not core-supported", fcheck.sig.ret.display()))?,
@@ -2254,6 +2375,13 @@ fn expr_uses_local(e: &TirExpr) -> bool {
         TirExpr::Located { inner, .. } => expr_uses_local(inner),
         TirExpr::MakeClosure { captures, .. } => captures.iter().any(|s| expr_uses_local(&TirExpr::Local(*s))),
         TirExpr::CallObj { callee, args, .. } => expr_uses_local(callee) || args.iter().any(expr_uses_local),
+        TirExpr::Slice { list, start, end, step } => {
+            expr_uses_local(list)
+                || start.as_ref().is_some_and(|e| expr_uses_local(e))
+                || end.as_ref().is_some_and(|e| expr_uses_local(e))
+                || step.as_ref().is_some_and(|e| expr_uses_local(e))
+        }
+        TirExpr::EmptyCollection { .. } => false,
     }
 }
 
@@ -2575,6 +2703,7 @@ fn synthesize_lambda(
         instance_args: ctx.instance_args,
         slots: HashMap::new(),
         locals: Vec::new(),
+        declared_types: HashMap::new(),
         classes: ctx.classes,
         lambda_vars: HashMap::new(),
         lambdas: ctx.lambdas,
@@ -2730,7 +2859,8 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
                 }
                 return Ok(());
             }
-            let (expr, ty) = lower_expr(value, ctx)?;
+            let expected = slot_of(ctx, &name).and_then(|s| ctx.locals.get(s as usize).copied());
+            let (expr, ty) = lower_expr_expected(value, ctx, expected)?;
             if let Some(slot) = slot_of(ctx, &name) {
                 ctx.lambda_vars.remove(&slot);
                 out.push(TirStmt::Set(slot, expr));
@@ -2750,7 +2880,8 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
                 return Err("typed assignment target must be a plain variable in the core".to_string());
             }
             let name = ctx.source.span(name_node.start, name_node.length).to_string();
-            let (expr, ty) = lower_expr(value, ctx)?;
+            let expected = ctx.declared_types.get(&name).copied();
+            let (expr, ty) = lower_expr_expected(value, ctx, expected)?;
             if let Some(slot) = slot_of(ctx, &name) {
                 out.push(TirStmt::Set(slot, expr));
             } else {
@@ -2758,6 +2889,41 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
                 let slot = declare(ctx, &name, tty);
                 out.push(TirStmt::Let(slot, expr));
             }
+            Ok(())
+        }
+        NodeKind::Slice => {
+            // `xs[a:b:c] = value` — bounds use the same `Option<Obj>` convention
+            // as slice reads (omitted bounds become NRT's none handle).
+            let collection = target
+                .children
+                .first()
+                .ok_or_else(|| "slice assignment without a target".to_string())?;
+            let (list, list_ty) = lower_expr(collection, ctx)?;
+            if !matches!(
+                list_ty,
+                CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_)
+                    | CoreTy::ListLambda | CoreTy::ListGen(_) | CoreTy::Obj
+            ) {
+                return Err("slice assignment requires a list".to_string());
+            }
+            let start = lower_slice_bound(target.children.get(1), ctx)?;
+            let end = lower_slice_bound(target.children.get(2), ctx)?;
+            let step = lower_slice_bound(target.children.get(3), ctx)?;
+            let (value_expr, value_ty) = lower_expr(value, ctx)?;
+            if !matches!(
+                value_ty,
+                CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_)
+                    | CoreTy::ListLambda | CoreTy::ListGen(_) | CoreTy::Str | CoreTy::Obj
+            ) {
+                return Err("slice assignment value must be a list or string".to_string());
+            }
+            out.push(TirStmt::SetSlice {
+                list,
+                value: value_expr,
+                start,
+                end,
+                step,
+            });
             Ok(())
         }
         NodeKind::Index => {
@@ -3211,6 +3377,19 @@ fn class_member_ty(ctx: &LowerCtx, ty: &Ty) -> Result<CoreTy, String> {
     }
 }
 
+/// A slice bound is either an int expression or `None` (an omitted bound).
+fn lower_slice_bound(node: Option<&Node>, ctx: &mut LowerCtx) -> Result<Option<TirExpr>, String> {
+    let Some(node) = node else { return Ok(None) };
+    if node.kind == NodeKind::Null {
+        return Ok(None);
+    }
+    let (expr, ty) = lower_expr(node, ctx)?;
+    if ty != CoreTy::Int {
+        return Err("slice bounds must be ints".to_string());
+    }
+    Ok(Some(expr))
+}
+
 fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), String> {
     match node.kind {
         NodeKind::Integer => match node.value {
@@ -3384,6 +3563,123 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             };
             Ok((TirExpr::List(elements), ret))
         }
+        NodeKind::Slice => {
+            let target_node = node
+                .children
+                .first()
+                .ok_or_else(|| "slice without a target".to_string())?;
+            let (list, list_ty) = lower_expr(target_node, ctx)?;
+            if !matches!(
+                list_ty,
+                CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_)
+                    | CoreTy::ListLambda | CoreTy::ListGen(_) | CoreTy::Obj
+            ) {
+                return Err("slicing requires a list".to_string());
+            }
+            let start = lower_slice_bound(node.children.get(1), ctx)?;
+            let end = lower_slice_bound(node.children.get(2), ctx)?;
+            let step = lower_slice_bound(node.children.get(3), ctx)?;
+            Ok((
+                TirExpr::Located {
+                    span: (node.start, node.length),
+                    inner: Box::new(TirExpr::Slice {
+                        list: Box::new(list),
+                        start: start.map(Box::new),
+                        end: end.map(Box::new),
+                        step: step.map(Box::new),
+                    }),
+                },
+                list_ty,
+            ))
+        }
+        NodeKind::FString => {
+            // The VM emits `ToStr` for each interpolation, then `FString` joins
+            // the pieces. TIR already lowers Str `+` to `unrt_str_concat`, so a
+            // left fold over the pieces produces the same string. Interpolations
+            // must be statically Str; other types have no ToStr ABI in NRT.
+            let mut pieces = Vec::with_capacity(node.children.len());
+            for child in &node.children {
+                let (piece, ty) = lower_expr(child, ctx)?;
+                if ty != CoreTy::Str {
+                    return Err("f-string interpolation requires a str expression in the core".to_string());
+                }
+                pieces.push(piece);
+            }
+            if pieces.is_empty() {
+                return Ok((TirExpr::Str(String::new()), CoreTy::Str));
+            }
+            let mut iter = pieces.into_iter();
+            let mut acc = iter.next().unwrap();
+            for piece in iter {
+                acc = TirExpr::Bin(TirBinOp::Add, Box::new(acc), Box::new(piece));
+            }
+            Ok((acc, CoreTy::Str))
+        }
+        NodeKind::Bytes => {
+            // VM materialises `b"..."` as a list[int] of byte values.
+            let mut bytes = Vec::with_capacity(node.children.len());
+            for child in &node.children {
+                match child.value {
+                    Some(Const::Int(v)) => bytes.push(TirExpr::Int(v)),
+                    _ => return Err("byte literal element must be an integer".to_string()),
+                }
+            }
+            if bytes.is_empty() {
+                return Ok((TirExpr::EmptyCollection { ty: TirTy::ListInt }, CoreTy::ListInt));
+            }
+            Ok((TirExpr::List(bytes), CoreTy::ListInt))
+        }
+        NodeKind::Tuple => {
+            // ARC-00: no dedicated tuple tag in NRT yet; VM displays `(..)` while
+            // a list-backed lowering would display `[..]`. Reject in core so the
+            // program stays on the VM/`--embed` path (byte-identical).
+            return Err("tuple literals require the VM runtime; rebuild with `un build --embed`".to_string());
+            #[allow(unreachable_code)]
+            // No dedicated tuple tag in NRT: reuse the list object ABI.
+            let mut elements = Vec::with_capacity(node.children.len());
+            let mut elem_cty: Option<CoreTy> = None;
+            for child in &node.children {
+                let (e, c) = lower_expr(child, ctx)?;
+                elem_cty = Some(match elem_cty {
+                    None => c,
+                    Some(prev) if prev == c => prev,
+                    _ => CoreTy::Obj,
+                });
+                elements.push(e);
+            }
+            match elem_cty {
+                None => Ok((TirExpr::EmptyCollection { ty: TirTy::ListGen(ObjElem::Obj) }, CoreTy::ListGen(ObjElem::Obj))),
+                Some(c) => {
+                    let ret = match c {
+                        CoreTy::Int => CoreTy::ListInt,
+                        CoreTy::Float => CoreTy::ListFloat,
+                        CoreTy::Class(id) => CoreTy::ListClass(id),
+                        CoreTy::Lambda(_) => CoreTy::ListLambda,
+                        other => CoreTy::ListGen(elem_of_core(other)),
+                    };
+                    Ok((TirExpr::List(elements), ret))
+                }
+            }
+        }
+        NodeKind::Set => {
+            // NRT reserves but does not yet expose a Set tag: represent set
+            // literals with the list object ABI. Duplicate elements are not
+            // deduplicated; annotate `set[T]` only for iteration/len use.
+            let mut elements = Vec::with_capacity(node.children.len());
+            let mut elem: Option<ObjElem> = None;
+            for child in &node.children {
+                let (e, c) = lower_expr(child, ctx)?;
+                let next = elem_of_core(c);
+                elem = Some(match elem {
+                    None => next,
+                    Some(prev) if prev == next => prev,
+                    _ => ObjElem::Obj,
+                });
+                elements.push(e);
+            }
+            let elem = elem.ok_or_else(|| "empty set literal cannot be typed in the core".to_string())?;
+            Ok((TirExpr::List(elements), CoreTy::SetGen(elem)))
+        }
         NodeKind::Property => {
             let receiver = node
                 .children
@@ -3444,6 +3740,41 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             node.kind
         )),
     }
+}
+
+/// Lower an expression with the binding's declared type available. Typeck
+/// gives `[]` / `{}` the inferred `any` element type but records the annotated
+/// type on the binding; TIR uses that expected type to emit an empty collection
+/// with concrete element kinds instead of rejecting the literal.
+fn lower_expr_expected(
+    node: &Node,
+    ctx: &mut LowerCtx,
+    expected: Option<TirTy>,
+) -> Result<(TirExpr, CoreTy), String> {
+    let is_empty_list = node.kind == NodeKind::List && node.children.is_empty();
+    let is_empty_dict = node.kind == NodeKind::Dict && node.children.is_empty();
+    if !is_empty_list && !is_empty_dict {
+        return lower_expr(node, ctx);
+    }
+    let compatible = expected.filter(|ty| {
+        if is_empty_list {
+            matches!(
+                ty,
+                TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)
+                    | TirTy::ListLambda | TirTy::ListGen(_)
+            )
+        } else {
+            matches!(
+                ty,
+                TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt | TirTy::DictGen(_, _)
+            )
+        }
+    });
+    let ty = compatible.unwrap_or(TirTy::Obj);
+    if ty == TirTy::Obj {
+        return Err("empty list/dict literal needs an annotated list/dict type in the core".to_string());
+    }
+    Ok((TirExpr::EmptyCollection { ty }, CoreTy::from(ty)))
 }
 
 fn lower_unary(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), String> {
@@ -3855,7 +4186,7 @@ fn lower_list_method_stmt(node: &Node, ctx: &mut LowerCtx) -> Result<Option<TirS
     let member_node = callee.children.get(1).ok_or_else(|| "call without a member".to_string())?;
     let member = ctx.source.span(member_node.start, member_node.length).to_string();
     match member.as_str() {
-        "add" | "push" | "insert" | "reverse" | "sort" => {}
+        "add" | "push" | "insert" | "reverse" | "sort" | "clear" => {}
         _ => return Ok(None),
     }
     let head = callee.children.first().ok_or_else(|| "call without a receiver".to_string())?;
@@ -3892,6 +4223,12 @@ fn lower_list_method_stmt(node: &Node, ctx: &mut LowerCtx) -> Result<Option<TirS
             let item = iter.next().unwrap();
             let index = iter.next().unwrap();
             Ok(Some(TirStmt::ListInsert { receiver, arg: item, index }))
+        }
+        "clear" => {
+            if !args.is_empty() {
+                return Err("'clear' takes no arguments".to_string());
+            }
+            Ok(Some(TirStmt::ListClear { receiver }))
         }
         _ => Ok(None),
     }
@@ -4371,6 +4708,19 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             CoreTy::Class(id)
         }
         Ty::Any | Ty::Union(_) | Ty::Unknown => CoreTy::Obj,
+        Ty::Bytes => CoreTy::Obj,
+        Ty::Tuple(items) => {
+            let elem = items.iter().fold(None, |acc, t| match (acc, tir_ty_from_ty(ctx.classes, t)) {
+                (None, Some(tty)) => Some(tty),
+                (Some(prev), Some(tty)) if elem_of_tir(prev) == elem_of_tir(tty) => Some(prev),
+                _ => Some(TirTy::Obj),
+            });
+            CoreTy::ListGen(elem.map_or(ObjElem::Obj, elem_of_tir))
+        }
+        Ty::Set(elem) => match tir_ty_from_ty(ctx.classes, elem) {
+            Some(tty) => CoreTy::SetGen(elem_of_tir(tty)),
+            None => CoreTy::SetGen(ObjElem::Obj),
+        },
         other => {
             return Err(format!(
                 "'{name}' returns '{}' which is not core-supported",
@@ -4530,7 +4880,7 @@ fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> 
             }
         }
         TirStmt::Throw(_) => {}
-        TirStmt::ListClear { .. } | TirStmt::DictClear { .. } => {}
+        TirStmt::ListClear { .. } | TirStmt::DictClear { .. } | TirStmt::SetSlice { .. } => {}
     }
     Ok(())
 }
@@ -4577,6 +4927,19 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
         TirExpr::NoneValue => Ok(TirTy::Str),
         TirExpr::Int(_) => Ok(TirTy::Int),
         TirExpr::Float(_) => Ok(TirTy::Float),
+        TirExpr::EmptyCollection { ty } => Ok(*ty),
+        TirExpr::Slice { list, start, end, step } => {
+            for bound in [start, end, step].into_iter().flatten() {
+                if expr_ty(bound, f, program, locals)? != TirTy::Int {
+                    return Err("slice bounds must be ints".to_string());
+                }
+            }
+            match expr_ty(list, f, program, locals)? {
+                ty @ (TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)
+                | TirTy::ListLambda | TirTy::ListGen(_) | TirTy::Obj) => Ok(ty),
+                _ => Err("slicing requires a list".to_string()),
+            }
+        }
         TirExpr::Math(_, args) => {
             for arg in args {
                 let _ = expr_ty(arg, f, program, locals)?;
@@ -5220,6 +5583,29 @@ fn validate_stmt(
                 match expr_ty(receiver, f, program, locals)? {
                     TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::ListGen(_) => {}
                     _ => return Err("list.clear requires a list receiver".to_string()),
+                }
+            }
+            TirStmt::SetSlice { list, value, start, end, step } => {
+                let list_ty = expr_ty(list, f, program, locals)?;
+                if !matches!(
+                    list_ty,
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)
+                        | TirTy::ListLambda | TirTy::ListGen(_) | TirTy::Obj
+                ) {
+                    return Err("slice assignment requires a list".to_string());
+                }
+                for bound in [start, end, step].into_iter().flatten() {
+                    if expr_ty(bound, f, program, locals)? != TirTy::Int {
+                        return Err("slice bounds must be ints".to_string());
+                    }
+                }
+                let value_ty = expr_ty(value, f, program, locals)?;
+                if !matches!(
+                    value_ty,
+                    TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)
+                        | TirTy::ListLambda | TirTy::ListGen(_) | TirTy::Str | TirTy::Obj
+                ) {
+                    return Err("slice assignment value must be a list or string".to_string());
                 }
             }
             TirStmt::DictClear { receiver } => {

@@ -4981,6 +4981,7 @@ fn list_member_sig(elem: &Ty, name: &str) -> Option<(Vec<Ty>, Vec<String>, usize
         "order" => mk(vec![("fn".into(), Ty::Any)], 1, Ty::None_),
         "sort" => mk(vec![], 0, Ty::None_),
         "reverse" => mk(vec![], 0, Ty::None_),
+        "clear" => mk(vec![], 0, Ty::None_),
         "binary_search" => mk(vec![("obj".into(), e.clone())], 1, int.clone()),
         "lower_bound" => mk(vec![("obj".into(), e.clone())], 1, int.clone()),
         "upper_bound" => mk(vec![("obj".into(), e.clone())], 1, int.clone()),
