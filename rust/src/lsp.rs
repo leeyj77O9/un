@@ -3013,7 +3013,7 @@ fn builtin_hover_markdown(
     end: usize,
 ) -> Option<Json> {
     let _ = native_catalog(); // ensure the registry is initialised
-    let mut doc = String::new();
+    let doc: String;
     let label = if let Some(receiver) = member_receiver_before(&analysis.source, start) {
         let module = analysis
             .use_aliases
@@ -3991,6 +3991,17 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                                     end,
                                 )
                             });
+                    }
+                    if hover.is_none() && native_catalog().module_names.contains(&word) {
+                        let doc = docs::module(&word)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| format!("`{word}` 모듈"));
+                        hover = Some(hover_json(
+                            format!("{doc}\n\n`{word}`"),
+                            &analysis.source,
+                            start,
+                            end,
+                        ));
                     }
                     if hover.is_none() {
                         hover = builtin_hover_markdown(&analysis, &word, start, end);
