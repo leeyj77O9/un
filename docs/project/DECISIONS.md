@@ -1393,3 +1393,25 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **반환 타입은 계속 거부**: `fn maker() -> func(int) -> int`는 plain build가 거부한다.
   VM이 `-> twice`를 int로 반환하는 기존 버그(`any` 반환에서도 동일)가 있어, native/exe만
   func을 반환하면 byte-identical 계약이 깨진다. `update` 시점에 VM 수정이 선행돼야 한다.
+## D-096 | tuple/list 구조분해는 plain build에서 지원, class/variant는 보류 | Accepted
+
+- **배경**: match AOT는 literal/bind/wildcard → guard → or-pattern까지 구현했으나 중첩
+  구조분해(`case (a, b)`, `case Point(x, y)`)는 VM fallback이었다(W-2026-11-24-NESTEDPAT).
+- **결정**:
+  1. **tuple/list 구조분해를 지원**한다. `TirPattern::Tuple(Vec<TirPattern>)`을 추가하고
+     VM의 `compile_pattern`/`match_pattern`과 동일하게 "정확한 길이 일치 + 좌→우 검사 +
+     실패 시 binding 미기록"을 구현한다. 중첩 tuple/list, guard, or-pattern(winner commit)도
+     그대로 동작한다.
+  2. 새 `unrt_match_seq_len(u64) -> i64` / `unrt_match_seq_get(u64, i64) -> u64` 심볼을
+     NRT에 추가한다(ARC-00 승인). 실패는 sentinel(-1/0)로 보고해 non-match가 에러로
+     번역되지 않게 한다. 기존 `emit_cmp(Eq)`, `fail_blk`, `no match case` 경로는 재사용.
+  3. **class/variant pattern은 VM fallback 유지** — 새 type dispatch ABI가 별도 범위.
+     named field/spread도 보류.
+- **검증**: `un run` / `un native` / plain `un build` byte-identical. 신규 fixture
+  `test/compile/tuple_pattern.un`, `test/compile/build/tuple_pattern.un`.
+
+### D-094 후속 (2026-11-24, W-2026-11-24-UNLOADCLEAN)
+- opt-in unload가 `jit_cache::clear_program` 외에 `vm::clear_plan_cache(program_id)`로
+  PLAN_CACHE 항목도 제거하고, `module::load`의 before/after diff로 추적한 모듈 등록
+  class만 `unregister_class`로 레지스트리에서 제거한다. native 클래스는 보존.
+- D-093 §2의 객체 메모리 유계 누수 계약은 그대로 — 제거 대상은 레지스트리 엔트리뿐이다.

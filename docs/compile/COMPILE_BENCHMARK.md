@@ -22,10 +22,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-bench.ps1
 
 ## 측정 결과 (median of 7, ms — 2026-11-19/20 원측정, 역사적 수치)
 
-현재 전체 벤치마크는 저장소 루트 `BENCHMARK.md`를 참조한다. 2026-11-24 14:36 +09:00에
+현재 전체 벤치마크는 저장소 루트 `BENCHMARK.md`를 참조한다. 2026-11-24 18:56 +09:00에
 `scripts/bench.ps1 -Group all -Report`로 재생성(commit 180d3db)되었고, 6개 레인
 (Un VM / Un JIT / Compile Mode / standalone exe / Python / Node)을 비교한다.
-Un JIT 대비 Python geomean은 **4.424x**다.
+Un JIT 대비 Python geomean은 **4.306x**다.
 
 | 모드 | median | 비고 |
 |---|---|---|
