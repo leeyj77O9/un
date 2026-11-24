@@ -113,6 +113,12 @@ fn iso_time(time: std::time::SystemTime) -> String {
 }
 
 fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
+    if let Some(result) = crate::bytes_native::dispatch(m, name, args) {
+        return result;
+    }
+    if let Some(result) = crate::net_native::dispatch(m, name, args) {
+        return result;
+    }
     match (m, name) {
         ("io", "write") => {
             let parts: Vec<String> = args.iter().map(|p| {

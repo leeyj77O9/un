@@ -3043,7 +3043,9 @@ fn emit_expr<M: Module>(
                     (narrowed, TirTy::Bool)
                 }
                 TirTy::Str => (raw, TirTy::Str),
-                _ => unreachable!("bridged native call result must be Int, Float, Bool or Str"),
+                TirTy::Bytes => (raw, TirTy::Bytes),
+                TirTy::Obj | TirTy::Class(_) => (raw, TirTy::Obj),
+                _ => unreachable!("unsupported bridged native call result"),
             }
         }
         TirExpr::Len(arg) => {

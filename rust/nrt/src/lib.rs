@@ -6,6 +6,7 @@
 //! plain machine code.
 
 mod abi;
+mod bytes_native;
 mod class;
 mod closure;
 mod dict;
@@ -14,6 +15,8 @@ mod globals;
 mod list;
 mod math_native;
 mod native;
+mod net;
+mod net_native;
 mod obj;
 mod regex;
 mod trace;

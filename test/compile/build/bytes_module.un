@@ -1,0 +1,17 @@
+use io
+use bytes
+
+fn main() -> none
+    b = bytes.from_hex('0102ff')
+    io.write(b)
+    io.write(bytes.to_hex(b))
+    io.write(bytes.len(b))
+    io.write(bytes.get(b, -1))
+    io.write(bytes.slice(b, 1))
+    io.write(bytes.concat(b, b))
+    io.write(bytes.eq(b, b))
+    io.write(bytes.is_bytes(b))
+    io.write(bytes.from_str('AB'))
+    io.write(bytes.from_list([65, 66]))
+
+main()

@@ -1,0 +1,9 @@
+use io
+use ws
+
+fn main() -> none
+    io.write(ws.connect(1))
+    io.write(ws.connect(true))
+    io.write(ws.connect('not-a-uri'))
+
+main()

@@ -230,6 +230,64 @@ pub struct CheckOptions {
     pub forbid_dynamic: bool,
 }
 
+/// Signature of a synthetic method on a native handle class (`http_client`,
+/// `web_socket`). These classes are not declared in Un source; the native
+/// dispatch table owns their implementations.
+fn native_method(params: &[Ty], names: &[&str], ret: Ty) -> Ty {
+    Ty::Func {
+        params: Rc::from(params),
+        names: Rc::from(names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>()),
+        ret: Rc::new(ret),
+        required: params.len(),
+    }
+}
+
+fn native_handle_classes() -> HashMap<String, ClassInfo> {
+    let mut out = HashMap::new();
+    let str_ = Ty::Str;
+    let int = Ty::Int;
+    let bool_ = Ty::Bool;
+    let none = Ty::None_;
+    let mut http = ClassInfo::default();
+    http.methods.insert(
+        "set_header".into(),
+        native_method(&[str_.clone(), str_.clone()], &["key", "value"], none.clone()),
+    );
+    http.methods
+        .insert("clear_headers".into(), native_method(&[], &[], none.clone()));
+    for name in ["get", "delete"] {
+        http.methods
+            .insert(name.into(), native_method(&[str_.clone()], &["url"], str_.clone()));
+    }
+    for name in ["post", "put", "patch"] {
+        http.methods.insert(
+            name.into(),
+            native_method(&[str_.clone(), str_.clone()], &["url", "body"], str_.clone()),
+        );
+    }
+    http.methods
+        .insert("head".into(), native_method(&[str_.clone()], &["url"], int.clone()));
+    http.methods.insert(
+        "options".into(),
+        native_method(&[str_.clone()], &["url"], Ty::list(Ty::Str)),
+    );
+    out.insert("http_client".into(), http);
+
+    let mut ws = ClassInfo::default();
+    ws.methods.insert(
+        "send".into(),
+        native_method(&[str_.clone()], &["text"], none.clone()),
+    );
+    ws.methods
+        .insert("receive".into(), native_method(&[], &[], str_.clone()));
+    ws.methods
+        .insert("close".into(), native_method(&[], &[], none));
+    ws.methods
+        .insert("is_open".into(), native_method(&[], &[], bool_));
+    out.insert("web_socket".into(), ws);
+    out
+}
+
 pub struct Checker<'a> {
     source: &'a Source,
     root: &'a Node,
@@ -287,7 +345,7 @@ impl<'a> Checker<'a> {
             errors: Vec::new(),
             aliases: HashMap::new(),
             functions: Vec::new(),
-            classes: HashMap::new(),
+            classes: native_handle_classes(),
             class_order: Vec::new(),
             globals: HashMap::new(),
             import_names: Vec::new(),
@@ -5179,6 +5237,8 @@ pub(crate) fn native_module_ret_type(module: &str, member: &str) -> Option<Ty> {
         // NAT-07 binary I/O results (fs.read_bytes / bytes.* constructors and
         // transformations). `bytes.len`/`bytes.get` stay int and the writers
         // stay none, matching the runtime signatures.
+        ("http", "connect") => Some(Ty::Class(Rc::from("http_client"))),
+        ("ws", "connect") => Some(Ty::Class(Rc::from("web_socket"))),
         ("fs", "read_bytes") => Some(Ty::Bytes),
         ("fs", "write_bytes") => Some(Ty::None_),
         ("bytes", "from_str") | ("bytes", "from_list") | ("bytes", "from_hex")

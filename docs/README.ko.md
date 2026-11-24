@@ -839,7 +839,7 @@ class Heap
 - 핫 패스 Int 부분집합(loops, 산술, 비트연산, iter.range, FusedIntMulAdd, IntVec/IntDict intrinsic, Int 필드 위주 클래스 메서드, math Float intrinsic)을 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화, UV_JIT=2로 strict canary). Int-Int 전용 `d[k] = v` / `d[k]` IntDict intrinsic과 Bool 반환도 포함.
 - 제네릭 함수/클래스(`fn f[T]`, `class Box[T]`)와 호출부 추론, 명시적 타입 인자(`f[int](42)`), 제약(`[T: int | float]`)
 - 타입 별칭(`type Id = int | str`), 패턴 가드·or-pattern·중첩 구조 분해, `match`/`un check`의 `is` 기반 타입 좁히기
-- 바이트 리터럴(`b"..."`), `bytes` 모듈, `fs.read_bytes`/`fs.write_bytes` 바이너리 파일 I/O(plain build는 NRT 지원 전까지 `--embed` 필요)
+- 바이트 리터럴(`b"..."`), `bytes` 모듈(12함수), `fs.read_bytes`/`fs.write_bytes` 바이너리 파일 I/O(plain build/NRT 지원)
 - 페이로드를 갖는 enum variant(`Test.a(42)`)와 `match` 분해
 - Compile Mode(`un check`/`un native`)와 VM 없는 독립 실행형 `un build`/`un obj` (libnrt.a)
 - LSP 언어 서버(`un lsp`)와 VS Code 확장 `un-language`

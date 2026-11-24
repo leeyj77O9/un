@@ -343,7 +343,21 @@ pub extern "C" fn unrt_method_call(
 ) -> u64 {
     let name = bytes_of(name_ptr, name_len);
     unsafe {
-        if obj(obj_handle).tag != 9 {
+        let tag = obj(obj_handle).tag;
+        if tag == 11 || tag == 12 {
+            // Native opaque handles (`http_client` / `web_socket`) dispatch
+            // through the same table as their module-level constructors.
+            let supplied = std::slice::from_raw_parts(args, argc);
+            let mut call_args = [0u64; 9];
+            call_args[0] = obj_handle;
+            let n = supplied.len().min(8);
+            call_args[1..=n].copy_from_slice(&supplied[..n]);
+            let module = if tag == 11 { "http_client" } else { "web_socket" };
+            let member = std::str::from_utf8(name).unwrap_or("");
+            return crate::net_native::dispatch(module, member, &call_args[..=n])
+                .unwrap_or_else(|| err("unrt_method_call: unknown native method"));
+        }
+        if tag != 9 {
             return err("unrt_method_call: receiver is not a class instance");
         }
     }

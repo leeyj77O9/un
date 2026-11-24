@@ -634,6 +634,7 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
                 | TirTy::Lambda(_)
                 | TirTy::ListLambda
                 | TirTy::Obj
+                | TirTy::Bytes
                 | TirTy::ListGen(_)
                 | TirTy::DictGen(_, _)
                 | TirTy::SetGen(_)
@@ -701,16 +702,11 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
         }
     }
     // Both expression and statement lowering reach native calls, so they must
-    // share one gate. `random` is time-seeded; `bytes` and the binary fs
-    // helpers have no standalone NRT implementation. Statement calls carry no
-    // `ret`, hence the explicit member check for the fs pair.
-    fn native_call_ok(module: &str, member: &str, ret: Option<TirTy>) -> bool {
-        module != "random"
-            && module != "bytes"
-            && module != "flow"
-            && module != "atomic"
-            && ret != Some(TirTy::Bytes)
-            && !matches!((module, member), ("fs", "read_bytes") | ("fs", "write_bytes"))
+    // share one gate. `random` is time-seeded; `flow`/`atomic` have no NRT
+    // implementation. `bytes` and the binary fs helpers are implemented in
+    // `nrt/src/bytes_native.rs`, so they are allowed here.
+    fn native_call_ok(module: &str, _member: &str, _ret: Option<TirTy>) -> bool {
+        module != "random" && module != "flow" && module != "atomic"
     }
     // Closures and class methods use NRT's ABI-aware indirect-call shim
     // (`call_native_typed`), which selects XMM-capable C signatures from the
@@ -1294,6 +1290,7 @@ fn is_core_ty(ty: &Ty) -> bool {
         // The standalone runtime can box/unbox and dispatch on the tag, so
         // these programs no longer need `un build --embed`.
         Ty::Any | Ty::Unknown | Ty::Union(_) => true,
+        Ty::Bytes => true,
         Ty::List(elem) => is_core_elem(elem),
         Ty::Dict(key, value) => {
             matches!(key.as_ref(), Ty::Str | Ty::Int) && is_core_elem(value)
@@ -1346,11 +1343,21 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
     collect_locals(body, &mut locals, source, fcheck);
     for (name, _) in globals { locals.insert(name.clone(), ()); }
 
+    let handles: std::collections::HashSet<String> = fcheck
+        .local_types
+        .iter()
+        .filter(|(_, ty)| {
+            matches!(ty, Ty::Class(c) if c.as_ref() == "http_client" || c.as_ref() == "web_socket")
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+
     fn visit(
         node: &Node,
         checked: &CheckedProgram,
         source: &Source,
         locals: &HashMap<String, ()>,
+        handles: &std::collections::HashSet<String>,
         out: &mut bool,
     ) {
         if !*out {
@@ -1390,13 +1397,13 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             | NodeKind::Skip
             | NodeKind::Assign => {
                 for child in &node.children {
-                    visit(child, checked, source, locals, out);
+                    visit(child, checked, source, locals, handles, out);
                 }
             }
             NodeKind::For => {
                 let skip = node.children.first().is_some_and(|c| c.kind == NodeKind::Wildcard);
                 for child in node.children.iter().skip(if skip { 1 } else { 0 }) {
-                    visit(child, checked, source, locals, out);
+                    visit(child, checked, source, locals, handles, out);
                 }
             }
             NodeKind::Typed => {}
@@ -1417,7 +1424,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     tirdbg_reject(node); *out = false;
                     return;
                 }
-                visit(&node.children[0], checked, source, locals, out);
+                visit(&node.children[0], checked, source, locals, handles, out);
             }
             NodeKind::Binary => {
                 let Some(op) = node.op else {
@@ -1452,7 +1459,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     return;
                 }
                 for child in &node.children {
-                    visit(child, checked, source, locals, out);
+                    visit(child, checked, source, locals, handles, out);
                 }
             }
             NodeKind::Spread | NodeKind::KwSpread => {
@@ -1461,16 +1468,16 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             NodeKind::Call => {
                 if node.children.first().is_some_and(|c| c.kind == NodeKind::Index) {
                     if let Some(callee) = node.children.first() {
-                        visit(callee, checked, source, locals, out);
+                        visit(callee, checked, source, locals, handles, out);
                     }
                     if let Some(args) = node.children.get(1) {
-                        for a in &args.children { visit(a, checked, source, locals, out); }
+                        for a in &args.children { visit(a, checked, source, locals, handles, out); }
                     }
                     return;
                 }
                 if node.children.first().is_some_and(|c| c.kind == NodeKind::Lambda) {
                     if let Some(args) = node.children.get(1) {
-                        for arg in &args.children { visit(arg, checked, source, locals, out); }
+                        for arg in &args.children { visit(arg, checked, source, locals, handles, out); }
                     }
                     return;
                 }
@@ -1480,14 +1487,14 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                         // A local variable may hold a statically resolved lambda.
                         if locals.contains_key(&name) && !checked.sigs.contains_key(name.as_str()) {
                             if let Some(args) = node.children.get(1) {
-                                for arg in &args.children { visit(arg, checked, source, locals, out); }
+                                for arg in &args.children { visit(arg, checked, source, locals, handles, out); }
                             }
                             return;
                         }
                         if (name == "int" || name == "float") && !checked.sigs.contains_key(name.as_str()) {
                             if let Some(arg_tuple) = node.children.get(1) {
                                 for arg in &arg_tuple.children {
-                                    visit(arg, checked, source, locals, out);
+                                    visit(arg, checked, source, locals, handles, out);
                                 }
                                 return;
                             }
@@ -1500,7 +1507,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                         if (name == "len" || name == "throw") && !checked.sigs.contains_key(name.as_str()) {
                             if let Some(arg_tuple) = node.children.get(1) {
                                 for arg in &arg_tuple.children {
-                                    visit(arg, checked, source, locals, out);
+                                    visit(arg, checked, source, locals, handles, out);
                                 }
                                 return;
                             }
@@ -1522,7 +1529,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                                 if let Some(members) = crate::runtime::world::native_members(&head_name) {
                                     if members.iter().any(|(k, _)| k == &member_name) {
                                         for arg in &node.children[1].children {
-                                            visit(arg, checked, source, locals, out);
+                                            visit(arg, checked, source, locals, handles, out);
                                         }
                                         return;
                                     }
@@ -1533,10 +1540,10 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                 }
                 if callee.kind == NodeKind::Property {
                     if let Some(head) = callee.children.first() {
-                        visit(head, checked, source, locals, out);
+                        visit(head, checked, source, locals, handles, out);
                     }
                     for arg in &node.children[1].children {
-                        visit(arg, checked, source, locals, out);
+                        visit(arg, checked, source, locals, handles, out);
                     }
                     return;
                 }
@@ -1549,9 +1556,26 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     if checked.classes.contains_key(&name) {
                         if let Some(arg_tuple) = node.children.get(1) {
                             for arg in &arg_tuple.children {
-                                visit(arg, checked, source, locals, out);
+                                visit(arg, checked, source, locals, handles, out);
                             }
                             return;
+                        }
+                    }
+                }
+                if callee.kind == NodeKind::Property {
+                    // Method calls on native opaque handles (`http_client`,
+                    // `web_socket`) are lowered as native method calls.
+                    if let Some(head) = callee.children.first() {
+                        if head.kind == NodeKind::Identifier {
+                            let name = source.span(head.start, head.length).to_string();
+                            if handles.contains(&name) {
+                                if let Some(arg_tuple) = node.children.get(1) {
+                                    for arg in &arg_tuple.children {
+                                        visit(arg, checked, source, locals, handles, out);
+                                    }
+                                    return;
+                                }
+                            }
                         }
                     }
                 }
@@ -1576,12 +1600,12 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     return;
                 }
                 for arg in &node.children[1].children {
-                    visit(arg, checked, source, locals, out);
+                    visit(arg, checked, source, locals, handles, out);
                 }
             }
             NodeKind::Pair => {
                 for child in &node.children {
-                    visit(child, checked, source, locals, out);
+                    visit(child, checked, source, locals, handles, out);
                 }
             }
             NodeKind::Dict => {
@@ -1590,7 +1614,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     return;
                 }
                 for child in &node.children {
-                    visit(child, checked, source, locals, out);
+                    visit(child, checked, source, locals, handles, out);
                 }
             }
             NodeKind::List => {
@@ -1599,23 +1623,23 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     return;
                 }
                 for child in &node.children {
-                    visit(child, checked, source, locals, out);
+                    visit(child, checked, source, locals, handles, out);
                 }
             }
             NodeKind::Property => {
                 let receiver = node.children.first();
                 if let Some(receiver) = receiver {
-                    visit(receiver, checked, source, locals, out);
+                    visit(receiver, checked, source, locals, handles, out);
                 }
             }
             NodeKind::Index => {
                 for child in &node.children {
-                    visit(child, checked, source, locals, out);
+                    visit(child, checked, source, locals, handles, out);
                 }
             }
             NodeKind::Try => {
                 for child in &node.children {
-                    visit(child, checked, source, locals, out);
+                    visit(child, checked, source, locals, handles, out);
                 }
             }
             NodeKind::Catch => {
@@ -1630,12 +1654,12 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     if child.kind != NodeKind::Block {
                         continue;
                     }
-                    visit(child, checked, source, &scoped, out);
+                    visit(child, checked, source, &scoped, handles, out);
                 }
             }
             NodeKind::Finally => {
                 for child in &node.children {
-                    visit(child, checked, source, locals, out);
+                    visit(child, checked, source, locals, handles, out);
                 }
             }
             NodeKind::Slice | NodeKind::Tuple | NodeKind::Set
@@ -1651,7 +1675,7 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
         }
     }
     let mut out = true;
-    visit(body, checked, source, &locals, &mut out);
+    visit(body, checked, source, &locals, &handles, &mut out);
     out
 }
 
@@ -2263,15 +2287,14 @@ fn native_call_shape<'a>(
 pub(crate) use crate::typeck::native_module_ret_type;
 
 fn core_ty_of(ty: &Ty) -> Option<CoreTy> {
-    // Deliberately no `Ty::Bytes` arm: the standalone native core has no bytes
-    // ABI, so such programs must stay on the VM/`--embed` path. The typed
-    // pipeline still produces `TirTy::Bytes` via `tir_ty_from_ty`; this helper
-    // is only for the restricted core lowering.
+    // `bytes` is an opaque NObj handle in NRT (`nrt/src/bytes_native.rs`), so it
+    // lowers to the same boxed core type as other dynamic-but-supported values.
     match ty {
         Ty::Int => Some(CoreTy::Int),
         Ty::Float => Some(CoreTy::Float),
         Ty::Bool => Some(CoreTy::Bool),
         Ty::Str => Some(CoreTy::Str),
+        Ty::Bytes => Some(CoreTy::Obj),
         _ => None,
     }
 }
@@ -4053,26 +4076,29 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 return lower_iter_minmax(&member, args_tuple, ctx);
             }
             if let Some(ret_ty) = native_module_ret_type(&module, &member) {
-                if let Some(core_ret) = core_ty_of(&ret_ty) {
-                    let args = lower_arg_list(args_tuple, ctx)?;
-                    return Ok((
-                        TirExpr::Located {
-                            span: (node.start, node.length),
-                            inner: Box::new(TirExpr::NativeCallExpr {
-                            module: module.clone().into_boxed_str(),
-                            member: member.clone().into_boxed_str(),
-                            args,
-                            ret: match ret_ty {
-                                Ty::Int => TirTy::Int,
-                                Ty::Float => TirTy::Float,
-                                Ty::Bool => TirTy::Bool,
-                                Ty::Str => TirTy::Str,
-                                _ => unreachable!(),
+                // Use the class-aware conversion so `http.connect()` /
+                // `ws.connect()` can return opaque handle classes that later
+                // accept method calls, and `bytes.*` returns TirTy::Bytes.
+                if let Some(tir_ret) = tir_ty_from_ty(ctx.classes, &ret_ty) {
+                    if matches!(
+                        tir_ret,
+                        TirTy::Int | TirTy::Float | TirTy::Bool | TirTy::Str
+                            | TirTy::Bytes | TirTy::Class(_)
+                    ) {
+                        let args = lower_arg_list(args_tuple, ctx)?;
+                        return Ok((
+                            TirExpr::Located {
+                                span: (node.start, node.length),
+                                inner: Box::new(TirExpr::NativeCallExpr {
+                                    module: module.clone().into_boxed_str(),
+                                    member: member.clone().into_boxed_str(),
+                                    args,
+                                    ret: tir_ret,
+                                }),
                             },
-                        }),
-                    },
-                        core_ret,
-                    ));
+                            CoreTy::from(tir_ret),
+                        ));
+                    }
                 }
             }
         }
@@ -4120,7 +4146,9 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 receiver: Box::new(recv),
                 member: member.into_boxed_str(),
                 args,
-                ret: tir_ty_of(field_ret)?,
+                // A method returning `none` has no TirTy; its value is always
+                // consumed as a discarded expression statement, so use Obj.
+                ret: tir_ty_of(field_ret).unwrap_or(TirTy::Obj),
             },
             field_ret,
         ));
@@ -4508,14 +4536,15 @@ fn collect_decls(stmt: &TirStmt, locals: &mut Vec<TirTy>) -> Result<(), String> 
 }
 
 fn ty_to_tir_simple(ty: &Ty) -> Result<TirTy, String> {
-    // Deliberately no `Ty::Bytes` arm: `TirTy::Bytes` is intentionally outside
-    // the standalone NRT allowlist, so bytes fields/annotations are rejected
-    // here and routed to `un build --embed` instead. No behavior change.
+    // `bytes` is now implemented in NRT (nrt/src/bytes_native.rs). A `none`
+    // return has no dedicated TirTy and is represented as an opaque handle.
     Ok(match ty {
         Ty::Int => TirTy::Int,
         Ty::Float => TirTy::Float,
         Ty::Bool => TirTy::Bool,
         Ty::Str => TirTy::Str,
+        Ty::Bytes => TirTy::Bytes,
+        Ty::None_ => TirTy::Obj,
         Ty::List(elem) => match elem.as_ref() {
             Ty::Int => TirTy::ListInt,
             Ty::Float => TirTy::ListFloat,
@@ -5390,9 +5419,11 @@ mod abi_tests {
     #[test]
     fn statement_native_calls_share_expression_gate() {
         assert!(!nrt_supported(&program_with_native_stmt("random", "int")));
-        assert!(!nrt_supported(&program_with_native_stmt("bytes", "len")));
-        assert!(!nrt_supported(&program_with_native_stmt("fs", "read_bytes")));
-        assert!(!nrt_supported(&program_with_native_stmt("fs", "write_bytes")));
+        // `bytes.*`, `fs.read_bytes` and `fs.write_bytes` are implemented in
+        // NRT (nrt/src/bytes_native.rs), so the shared gate now admits them.
+        assert!(nrt_supported(&program_with_native_stmt("bytes", "len")));
+        assert!(nrt_supported(&program_with_native_stmt("fs", "read_bytes")));
+        assert!(nrt_supported(&program_with_native_stmt("fs", "write_bytes")));
         assert!(nrt_supported(&program_with_native_stmt("io", "print")));
     }
 }

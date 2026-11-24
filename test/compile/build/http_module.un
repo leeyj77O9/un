@@ -1,0 +1,10 @@
+use io
+use http
+
+fn main() -> none
+    client = http.connect()
+    client.set_header('user-agent', 'un-test')
+    client.clear_headers()
+    io.write('http client ready')
+
+main()

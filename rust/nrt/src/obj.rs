@@ -113,6 +113,9 @@ pub(crate) fn display(p: u64) -> String {
             7 => crate::dict::display_dict(p),
             8 => crate::closure::display_closure(p),
             9 => crate::class::display_instance(p),
+            11 => "http_client".into(),
+            12 => "web_socket".into(),
+            13 => crate::bytes_native::display_bytes(p),
             _ => "value".into(),
         }
     }
