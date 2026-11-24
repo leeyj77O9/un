@@ -447,6 +447,79 @@ struct Analysis {
     error: Option<LangError>,
 }
 
+/// Hand-written descriptions for native modules, builtins and common
+/// functions. Anything not listed gets a generated fallback so every native
+/// symbol has a description on hover.
+mod docs {
+    pub fn module(name: &str) -> Option<&'static str> {
+        match name {
+            "io" => Some("입출력 — 콘솔 출력, 파일 스트림, 읽기/쓰기"),
+            "math" => Some("수학 함수와 상수"),
+            "fs" => Some("파일 시스템 조회·읽기·쓰기"),
+            "os" => Some("운영체제 및 환경 정보"),
+            "sys" => Some("런타임/시스템 정보와 디버그 훅"),
+            "time" => Some("시간, 대기, 타임스탬프"),
+            "random" => Some("난수 생성과 무작위 선택"),
+            "iter" => Some("반복자 생성과 변환"),
+            "bytes" => Some("바이트 시퀀스 생성·변환·조회"),
+            "types" => Some("타입 검사와 캐스팅"),
+            "inspect" => Some("객체 속성과 전역 심볼 검사"),
+            "flow" => Some("제어 흐름 및 동시성 유틸리티"),
+            "atomic" => Some("원자적 카운터/플래그 (협력적 단일 스레드)"),
+            "re" => Some("정규식 매칭"),
+            "codes" => Some("문자와 코드 값 변환"),
+            "http" => Some("HTTP 클라이언트"),
+            "ws" => Some("WebSocket 클라이언트"),
+            "stream" => Some("스트림 처리"),
+            "stopwatch" => Some("경과 시간 측정"),
+            "net" => Some("네트워크 유틸리티"),
+            _ => None,
+        }
+    }
+
+    pub fn builtin(name: &str) -> Option<&'static str> {
+        match name {
+            "len" => Some("값의 길이(요소 수)를 반환합니다."),
+            "type" => Some("값의 런타임 타입을 반환합니다."),
+            "hash" => Some("값의 해시 값을를 반환합니다."),
+            "repr" => Some("값의 표현 문자열을 반환합니다."),
+            "exit" => Some("주어진 종료 코드로 프로그램을 종료합니다."),
+            "throw" => Some("예외를 던집니다."),
+            "throw_if" => Some("조건이 참이면 예외를 던집니다."),
+            "throw_unless" => Some("조건이 거짓이면 예외를 던집니다."),
+            _ => None,
+        }
+    }
+
+    pub fn function(module: &str, name: &str) -> Option<&'static str> {
+        match (module, name) {
+            ("io", "write") => Some("값을 표준 출력이나 지정 스트림에 씁니다."),
+            ("io", "read") => Some("표준 입력에서 한 줄을 읽습니다."),
+            ("io", "open") => Some("파일 스트림을 엽니다."),
+            ("math", "sqrt") => Some("제곱근을 반환합니다."),
+            ("math", "pow") => Some("거듭제곱을 계산합니다."),
+            ("math", "abs") => Some("절댓값을 반환합니다."),
+            ("math", "clamp") => Some("값을 지정 범위로 제한합니다."),
+            ("fs", "read") => Some("파일 전체를 문자열로 읽습니다."),
+            ("fs", "write") => Some("파일에 문자열을 씁니다."),
+            ("fs", "exists") => Some("경로의 존재 여부를 반환합니다."),
+            ("random", "int") => Some("범위 안의 난수 정수를 반환합니다."),
+            ("random", "choice") => Some("시퀀스에서 무작위 원소를 선택합니다."),
+            ("random", "shuffle") => Some("시퀀스를 제자리에서 섞습니다."),
+            ("iter", "range") => Some("범위 반복자를 만듭니다."),
+            ("iter", "map") => Some("반복자의 각 원소를 변환합니다."),
+            ("iter", "filter") => Some("조건에 맞는 원소만 남깁니다."),
+            ("time", "sleep") => Some("지정한 시간(초) 동안 대기합니다."),
+            ("bytes", "from_hex") => Some("16진수 문자열을 바이트로 변환합니다."),
+            ("bytes", "to_hex") => Some("바이트를 16진수 문자열로 변환합니다."),
+            ("list", "add") => Some("리스트 끝에 값을 추가합니다."),
+            ("str", "split") => Some("구분자를 기준으로 문자열을 나눕니다."),
+            ("dict", "get") => Some("키에 해당하는 값을 반환합니다."),
+            _ => None,
+        }
+    }
+}
+
 struct NativeSig {
     name: String,
     label: String,
@@ -455,6 +528,7 @@ struct NativeSig {
 struct NativeCatalog {
     modules: HashMap<String, Vec<NativeSig>>,
     module_names: Vec<String>,
+    builtins: HashMap<String, String>,
 }
 
 fn native_catalog() -> &'static NativeCatalog {
@@ -479,7 +553,15 @@ fn native_catalog() -> &'static NativeCatalog {
                 modules.insert(module, sigs);
             }
         }
-        NativeCatalog { modules, module_names }
+        let mut builtins = HashMap::new();
+        for name in ["len", "exit", "type", "hash", "throw", "throw_if", "throw_unless", "repr"] {
+            if let Some(obj) = unvm::runtime::world::try_get_global(name) {
+                if let Some(label) = native_signature(&obj) {
+                    builtins.insert(name.to_string(), label);
+                }
+            }
+        }
+        NativeCatalog { modules, module_names, builtins }
     })
 }
 
@@ -2663,7 +2745,7 @@ fn member_receiver(source: &Source, offset: usize) -> Option<String> {
 fn builtin_catalog() -> &'static HashMap<String, Vec<NativeSig>> {
     static CATALOG: OnceLock<HashMap<String, Vec<NativeSig>>> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        crate::native::init("");
+        let _ = native_catalog(); // registry must be initialised exactly once
         let mut map = HashMap::new();
         for type_name in [
             "str", "list", "dict", "set", "iter", "date", "stopwatch", "pool", "lock", "stream",
@@ -2868,6 +2950,103 @@ fn sig_params(root: &Node, source: &Source, name_start: usize, name_end: usize) 
         None => format!("{name}({})", params_text.join(", ")),
     };
     Some((label, params_text, ret))
+}
+
+/// Consecutive whole-line `#` comments immediately above a declaration.
+/// The lexer discards comments, so read them from the original source text.
+fn doc_comment(source: &Source, position: usize) -> String {
+    let code = &source.code;
+    let mut cursor = source.get_line_start(position);
+    let mut lines: Vec<String> = Vec::new();
+    while cursor > 0 {
+        let end = cursor - 1; // the newline that ends the previous line
+        let mut start = end;
+        while start > 0 && code[start - 1] != '\n' {
+            start -= 1;
+        }
+        let text: String = code[start..end].iter().collect();
+        let trimmed = text.trim();
+        if !trimmed.starts_with('#') {
+            break;
+        }
+        lines.push(trimmed.trim_start_matches('#').trim().to_string());
+        cursor = start;
+    }
+    lines.reverse();
+    lines.join("  \n") // Markdown hard line break
+}
+
+/// Compact hover: an optional doc comment followed by a signature code block.
+fn def_hover_markdown(analysis: &Analysis, def: &Def) -> String {
+    let mut text = String::new();
+    let doc = doc_comment(&analysis.source, def.start);
+    if !doc.is_empty() {
+        text.push_str(&doc);
+        text.push_str("\n\n");
+    }
+    let signature = if matches!(def.kind, DefKind::Function | DefKind::Extension) {
+        analysis.root.as_ref().and_then(|root| {
+            sig_params(root, &analysis.source, def.name_start, def.name_end)
+                .map(|(label, _, _)| label)
+        })
+    } else {
+        None
+    };
+    if let Some(label) = signature {
+        text.push_str("```un\n");
+        text.push_str(&label);
+        text.push_str("\n```\n");
+    } else {
+        let declaration = analysis.source.get_line_text(def.start).trim().to_string();
+        text.push_str("```un\n");
+        text.push_str(&declaration);
+        text.push_str("\n```\n");
+    }
+    text
+}
+
+/// Hover for builtins and native members, which have no local def.
+fn builtin_hover_markdown(
+    analysis: &Analysis,
+    word: &str,
+    start: usize,
+    end: usize,
+) -> Option<Json> {
+    let _ = native_catalog(); // ensure the registry is initialised
+    let mut doc = String::new();
+    let label = if let Some(receiver) = member_receiver_before(&analysis.source, start) {
+        let module = analysis
+            .use_aliases
+            .iter()
+            .find(|(alias, _)| alias == &receiver)
+            .map(|(_, module)| module.clone())
+            .unwrap_or_else(|| receiver.clone());
+        doc = docs::function(&module, word)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("`{module}` 모듈의 네이티브 함수"));
+        if let Some(sigs) = native_catalog().modules.get(&module) {
+            sigs.iter()
+                .find(|sig| sig.name == word)
+                .map(|sig| sig.label.clone())
+        } else {
+            resolve_receiver_class(analysis, &receiver, start)
+                .map(|(_, _, name)| name)
+                .as_deref()
+                .and_then(builtin_members)
+                .and_then(|sigs| signature_for_native(word, sigs).map(|(label, _)| label))
+        }
+    } else {
+        doc = docs::builtin(word)
+            .map(str::to_string)
+            .unwrap_or_else(|| "빌트인 함수".to_string());
+        native_catalog().builtins.get(word).cloned()
+    }?;
+    Some(hover_json(
+        format!("{doc}\n\n```un\n{label}\n```\n"),
+        &analysis.source,
+        start,
+        end,
+    ))
 }
 
 fn signature_for_native(name: &str, members: &[NativeSig]) -> Option<(String, Vec<String>)> {
@@ -3774,8 +3953,11 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                 if let Some((start, end)) = word_range_at(&analysis.source, offset) {
                     let word = analysis.source.span(start, end - start);
                     if let Some((target, _, _, _)) = server.use_segment_target(&uri, offset) {
+                        let doc = docs::module(&word)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| format!("`{word}` 모듈"));
                         hover = Some(hover_json(
-                            format!("module `{word}`\n\n`{target}`"),
+                            format!("{doc}\n\n`{target}`"),
                             &analysis.source,
                             start,
                             end,
@@ -3786,10 +3968,9 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                             if let Some((target, target_analysis, def)) =
                                 server.module_member_target(&uri, &receiver, &word)
                             {
-                                let declaration =
-                                    target_analysis.source.get_line_text(def.start).trim().to_string();
+                                let body = def_hover_markdown(&target_analysis, &def);
                                 hover = Some(hover_json(
-                                    format!("```un\n{declaration}\n```\n\n_defined in `{target}`_"),
+                                    format!("{body}\n_defined in `{target}`_"),
                                     &analysis.source,
                                     start,
                                     end,
@@ -3803,15 +3984,16 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                             .iter()
                             .find(|def| def.name == word)
                             .map(|def| {
-                                let declaration =
-                                    analysis.source.get_line_text(def.start).trim().to_string();
                                 hover_json(
-                                    format!("```un\n{declaration}\n```"),
+                                    def_hover_markdown(&analysis, def),
                                     &analysis.source,
                                     start,
                                     end,
                                 )
                             });
+                    }
+                    if hover.is_none() {
+                        hover = builtin_hover_markdown(&analysis, &word, start, end);
                     }
                 }
             }
@@ -4207,6 +4389,7 @@ mod tests {
 
     #[test]
     fn native_catalog_tracks_registered_modules() {
+        crate::native::init(""); // world registry is thread-local
         let catalog = native_catalog();
         let registered = unvm::runtime::world::native_module_names();
         assert_eq!(catalog.module_names.len(), registered.len(), "catalog drifted from registry");
@@ -4214,6 +4397,34 @@ mod tests {
             assert!(catalog.module_names.contains(name), "module missing from catalog: {name}");
         }
         assert!(!namespace_member_completions("bytes").is_empty(), "bytes module missing");
+    }
+
+    #[test]
+    fn function_hover_has_doc_and_signature() {
+        let analysis = analyze(
+            "# Adds two values\n# second line\nfn add(a: int, b: int) -> int\n    -> a + b\nx = add(1, 2)\n",
+            "main.un",
+        );
+        let def = analysis
+            .defs
+            .iter()
+            .find(|def| def.name == "add")
+            .expect("function definition missing");
+        let text = def_hover_markdown(&analysis, def);
+        assert!(text.starts_with("Adds two values  \nsecond line\n\n"), "{text}");
+        assert!(text.contains("```un\nadd(a: int, b: int) -> int\n```"), "{text}");
+    }
+
+    #[test]
+    fn builtin_hover_has_doc() {
+        let analysis = analyze("len([1])", "main.un");
+        let hover = builtin_hover_markdown(&analysis, "len", 0, 3).expect("builtin hover missing");
+        let body = hover
+            .get("contents")
+            .and_then(|contents| contents.get("value"))
+            .and_then(Json::as_str)
+            .unwrap_or("");
+        assert!(body.starts_with("값의 길이(요소 수)를 반환합니다.\n\n```un\nlen("), "{body}");
     }
 
     #[test]
