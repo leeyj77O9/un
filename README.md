@@ -406,7 +406,7 @@ are documented divergences between implementations and are not counted as failur
 The current baseline is Positive 51 files / 1638 passed / 0 failed / 0 crashed,
 Negative 51 checks matched + 0 documented divergences, and Known 0 files
 (re-measured 2026-11-23). Rust tests: `cargo test --release --workspace` reports
-277 passed (nrt 4 + lib 246 + LSP 19 + playground 8). JIT differential: 102 files,
+291 passed (nrt 4 + lib 246 + LSP 21 + playground 8). JIT differential: 102 files,
 0 differences. `.unbc` round-trip: Positive 51/51, Negative 42 identical
 (9 compile-rejected skips), Compile cross-check 36/0, exe equality 42/0.
 

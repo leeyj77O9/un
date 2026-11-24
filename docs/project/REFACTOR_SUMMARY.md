@@ -77,14 +77,14 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
 | Gate | Result |
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
-| `cargo test --release --workspace` | **277 passed / 0 failed** (nrt 4 + lib 246 + un bin/LSP 19 + playground 8; includes 2 JIT + 3 sandbox regression guards added 2026-11-20) |
+| `cargo test --release --workspace` | **291 passed / 0 failed** (nrt 4 + lib 246 + un bin/LSP 21 + playground 8; includes 2 JIT + 3 sandbox regression guards added 2026-11-20) |
 | `scripts/test.ps1` | Positive **51 files / 1638 passed** / 0 failed / 0 crashed; Negative **51 matched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **102 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **51/51**; Negative compilable **42/42** identical (+ 9 compile-rejected skip) |
 | `test/test_suite.un` | **109 passed / 0 failed** |
 | `scripts/compile-check.ps1` | **36 passed / 0 failed** |
 | `scripts/exe-diff.ps1` | **42 passed / 0 failed** |
-| `scripts/bench.ps1 -Group all -Report` | 6 lanes (unvm/unjit/python/node/unnative/unbuild) self-validate; `BENCHMARK.md` regenerated per run (생성 시점 커밋 명시); Un JIT/Python geomean **4.318x** (`BENCHMARK.md`, 재생성 2026-11-24 10:48 +09:00, 커밋 64e4b7e 기준) |
+| `scripts/bench.ps1 -Group all -Report` | 6 lanes (unvm/unjit/python/node/unnative/unbuild) self-validate; `BENCHMARK.md` regenerated per run (생성 시점 커밋 명시); Un JIT/Python geomean **4.334x** (`BENCHMARK.md`, 재생성 2026-11-24 11:25 +09:00, 커밋 64e4b7e 기준) |
 
 ## Intentionally not done / known limits
 
