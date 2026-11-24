@@ -1,1 +1,19 @@
-#! 원자적 카운터/플래그 (협력적 단일 스레드)
+#! Atomic counters and flags (cooperative single-thread semantics)
+# Add a delta to an atomic integer.
+add(atomic, delta)
+# Return the boolean value of an atomic flag.
+bool(atomic)
+# Compare and swap an atomic value.
+compare_and_swap(atomic, expected, new)
+# Decrement an atomic integer.
+dec(atomic)
+# Exchange an atomic value.
+exchange(atomic, value)
+# Return the current value of an atomic.
+get(atomic)
+# Increment an atomic integer.
+inc(atomic)
+# Create an atomic integer.
+int(value?)
+# Set the value of an atomic.
+set(atomic, value)

@@ -1,1 +1,41 @@
-#! 런타임/시스템 정보와 디버그 훅
+#! Runtime and system information plus debug hooks
+# Return the CPU architecture.
+arch()
+# Return the command-line arguments.
+args()
+# Return the number of logical CPUs.
+cpuCount()
+# Return an environment variable.
+env(name)
+# Return all environment variables.
+environ()
+# Expand environment variables in a string.
+expand_vars(text)
+# Return the current call depth.
+getcalldepth()
+# Return the recursion limit.
+getrecursionlimit()
+# Return the host name.
+hostname()
+# Return true when the process is 64-bit.
+is64bit()
+# Return the platform line separator.
+linesep()
+# Return the runtime name.
+name()
+# Return the platform path separator.
+pathsep()
+# Return the process id.
+pid()
+# Return the platform path separator.
+sep()
+# Set the current call depth.
+setcalldepth(depth)
+# Set the recursion limit.
+setrecursionlimit(limit)
+# Return a monotonic tick count.
+tickCount()
+# Return the user name.
+username()
+# Return the runtime version.
+version()

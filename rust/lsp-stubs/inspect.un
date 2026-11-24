@@ -1,1 +1,15 @@
-#! 객체 속성과 전역 심볼 검사
+#! Inspect object attributes and global symbols
+# Inspect an object attribute.
+attr(obj, name)
+# Delete an attribute from an object.
+delattr(obj, name)
+# Return an attribute of an object.
+getattr(obj, name)
+# Return a global symbol.
+global(name)
+# Return true when an object has an attribute.
+hasattr(obj, name)
+# Inspect object metadata.
+meta(obj)
+# Set an attribute on an object.
+setattr(obj, name, value)

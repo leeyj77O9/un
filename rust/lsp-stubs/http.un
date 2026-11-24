@@ -1,1 +1,21 @@
-#! HTTP 클라이언트
+#! HTTP client
+# Clear all request headers.
+clear_headers()
+# Open an HTTP connection.
+connect(url)
+# Send a DELETE request.
+delete(url)
+# Send a GET request.
+get(url)
+# Send a HEAD request.
+head(url)
+# Send an OPTIONS request.
+options(url)
+# Send a PATCH request.
+patch(url, body?)
+# Send a POST request.
+post(url, body?)
+# Send a PUT request.
+put(url, body?)
+# Set a request header.
+set_header(name, value)

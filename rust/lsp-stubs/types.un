@@ -1,1 +1,21 @@
-#! 타입 검사와 캐스팅
+#! Type inspection and conversion
+# Convert a value to a 16-bit float.
+f32(value)
+# Convert a value to a 32-bit float.
+f64(value)
+# Convert a value to a 16-bit signed integer.
+i16(value)
+# Convert a value to a 32-bit signed integer.
+i32(value)
+# Convert a value to a 64-bit signed integer.
+i64(value)
+# Convert a value to an 8-bit signed integer.
+i8(value)
+# Convert a value to a 16-bit unsigned integer.
+u16(value)
+# Convert a value to a 32-bit unsigned integer.
+u32(value)
+# Convert a value to a 64-bit unsigned integer.
+u64(value)
+# Convert a value to an 8-bit unsigned integer.
+u8(value)

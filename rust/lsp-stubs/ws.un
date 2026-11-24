@@ -1,1 +1,11 @@
-#! WebSocket 클라이언트
+#! WebSocket client
+# Close the WebSocket connection.
+close()
+# Connect to a WebSocket endpoint.
+connect(url)
+# Return true when the connection is open.
+is_open()
+# Receive a message from the WebSocket.
+receive()
+# Send a message over the WebSocket.
+send(message)

@@ -1,7 +1,65 @@
-#! 파일 시스템 조회·읽기·쓰기
-# 경로의 존재 여부를 반환합니다.
-exists(path)
-# 파일 전체를 문자열로 읽습니다.
+#! File system queries, reading and writing
+# Return the absolute form of a path.
+absolute(path)
+# Return the last access time of a path.
+accessed(path)
+# Append data to a file.
+append(path, data)
+# Change the current working directory.
+chdir(path)
+# Remove a file.
+delete(path)
+# Return a directory handle.
+dir(path)
+# Return the subdirectories of a directory.
+dirs(path)
+# Return the file extension.
+ext(path)
+# Return a file handle.
+file(path)
+# Return the files in a directory.
+files(path)
+# Return true when a path is hidden.
+hidden(path)
+# Return the home directory.
+home()
+# Join path components.
+join(parts)
+# Return the last modification time of a path.
+modified(path)
+# Move or rename a file or directory.
+move(source, target)
+# Return the file name without the directory.
+name(path)
+# Normalize a path.
+normalize(path)
+# Return the parent directory.
+parent(path)
+# Read a whole file as a string.
 read(path)
-# 파일에 문자열을 씁니다.
+# Read a whole file as bytes.
+read_bytes(path)
+# Rename a file or directory.
+rename(source, target)
+# Remove an empty directory.
+rmdir(path)
+# Return the file size in bytes.
+size(path)
+# Return the file name without its extension.
+stem(path)
+# Return the path to a temporary location.
+temp()
+# Create an empty file if it does not exist.
+touch(path)
+# Recursively walk a directory tree.
+walk(path)
+# Write a string to a file.
 write(path, data)
+# Write bytes to a file.
+write_bytes(path, data)
+# Return true when a path exists.
+exists(path)
+# Return the current working directory.
+cwd()
+# Return the executable path.
+exe()

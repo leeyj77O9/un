@@ -1,3 +1,21 @@
-#! 시간, 대기, 타임스탬프
-# 지정한 시간(초) 동안 대기합니다.
+#! Time, sleeping and timestamps
+# Return the current Unix epoch time.
+epoch()
+# Return the current Unix epoch time in milliseconds.
+epoch_ms()
+# Build a time from a Unix epoch value.
+from_epoch(seconds)
+# Build a time from a Unix epoch value in milliseconds.
+from_epoch_ms(ms)
+# Return a monotonic clock value.
+monotonic()
+# Return a monotonic clock value in milliseconds.
+monotonic_ms()
+# Return the current local time.
+now()
+# Sleep for the given number of seconds.
 sleep(seconds)
+# Create a stopwatch.
+stopwatch()
+# Return the current UTC time.
+utc_now()

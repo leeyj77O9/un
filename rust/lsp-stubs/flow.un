@@ -1,1 +1,19 @@
-#! 제어 흐름 및 동시성 유틸리티
+#! Control flow and cooperative concurrency helpers
+# Acquire a lock or resource.
+acquire(resource)
+# Close a resource.
+close(resource)
+# Dispose of a resource.
+dispose(resource)
+# Acquire a lock.
+lock(resource)
+# Map a function over a collection.
+map(collection, fn)
+# Release a lock or resource.
+release(resource)
+# Spawn a cooperative task.
+spawn(fn)
+# Submit work to a pool.
+submit(pool, fn)
+# Try to acquire a lock without blocking.
+try_acquire(resource)

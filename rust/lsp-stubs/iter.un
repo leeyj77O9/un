@@ -1,7 +1,45 @@
-#! 반복자 생성과 변환
-# 범위 반복자를 만듭니다.
-range(start, stop, step?)
-# 반복자의 각 원소를 변환합니다.
-map(iter, fn)
-# 조건에 맞는 원소만 남깁니다.
+#! Iterator creation and transformation
+# Return true when all elements satisfy the predicate.
+all(iter, fn)
+# Return true when any element satisfies the predicate.
+any(iter, fn)
+# Create an iterator from an array.
+array(values)
+# Chain multiple iterators into one.
+chain(a, b)
+# Count the number of elements.
+count(iter)
+# Create a counting iterator.
+counter(start?, step?)
+# Attach an index to each element.
+enumerate(iter)
+# Keep only elements matching a predicate.
 filter(iter, fn)
+# Flatten nested iterators.
+flatten(iter)
+# Return the index of a value.
+index_of(iter, value)
+# Transform each element with a function.
+map(iter, fn)
+# Return the largest element.
+max(iter)
+# Return the smallest element.
+min(iter)
+# Create a numeric range iterator.
+range(start, stop, step?)
+# Repeat a value a number of times.
+repeat(value, count?)
+# Reverse an iterator.
+reverse(iter)
+# Skip the first n elements.
+skip(iter, n)
+# Return a sorted iterator.
+sorted(iter)
+# Sum the elements of an iterator.
+sum(iter)
+# Take the first n elements.
+take(iter, n)
+# Return the current iterator value.
+value(iter)
+# Zip iterators together.
+zip(a, b)

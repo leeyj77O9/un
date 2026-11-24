@@ -1,9 +1,63 @@
-#! 수학 함수와 상수
-# 제곱근을 반환합니다.
-sqrt(x)
-# 거듭제곱을 계산합니다.
-pow(base, exp)
-# 절댓값을 반환합니다.
+#! Math functions and constants
+# Return the absolute value.
 abs(x)
-# 값을 지정 범위로 제한합니다.
+# Return the arc cosine in radians.
+acos(x)
+# Return the arc sine in radians.
+asin(x)
+# Return the arc tangent in radians.
+atan(x)
+# Return the arc tangent of y/x using the signs of both arguments.
+atan2(y, x)
+# Return the cube root.
+cbrt(x)
+# Round up to the nearest integer.
+ceil(x)
+# Constrain a value to the given range.
 clamp(value, low, high)
+# Return the cosine of an angle in radians.
+cos(x)
+# Euler's number constant.
+e
+# Return e raised to the power of x.
+exp(x)
+# Round down to the nearest integer.
+floor(x)
+# Return the greatest common divisor.
+gcd(a, b)
+# Return the Euclidean distance between two points.
+hypot(x, y)
+# Return true when the value is finite.
+is_finite(x)
+# Return true when the value is infinite.
+is_infinite(x)
+# Return true when the value is NaN.
+is_nan(x)
+# Return the integer square root.
+isqrt(x)
+# Return the least common multiple.
+lcm(a, b)
+# Return the natural logarithm.
+log(x)
+# Return the base-10 logarithm.
+log10(x)
+# Return the base-2 logarithm.
+log2(x)
+# Pi constant.
+pi
+# Return base raised to the power of exp.
+pow(base, exp)
+# Round to the nearest integer.
+round(x)
+# Return the sign of a number (-1, 0 or 1).
+sign(x)
+# Return the sine of an angle in radians.
+sin(x)
+# Return the square root.
+sqrt(x)
+# Return the tangent of an angle in radians.
+tan(x)
+# Pi multiplied by two.
+tau
+# Truncate toward zero.
+trunc(x)

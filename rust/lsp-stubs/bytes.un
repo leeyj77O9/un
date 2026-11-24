@@ -1,5 +1,25 @@
-#! 바이트 시퀀스 생성·변환·조회
-# 16진수 문자열을 바이트로 변환합니다.
+#! Byte sequence creation, conversion and inspection
+# Concatenate byte sequences.
+concat(a, b)
+# Compare two byte sequences for equality.
+eq(a, b)
+# Create bytes from a hexadecimal string.
 from_hex(text)
-# 바이트를 16진수 문자열로 변환합니다.
+# Create bytes from a list of integers.
+from_list(values)
+# Create bytes from a string.
+from_str(text)
+# Return a byte at the given index.
+get(value, index)
+# Return true when the value is a byte sequence.
+is_bytes(value)
+# Return the number of bytes.
+len(value)
+# Return a slice of a byte sequence.
+slice(value, start, end?)
+# Convert bytes to a hexadecimal string.
 to_hex(value)
+# Convert bytes to a list of integers.
+to_list(value)
+# Convert bytes to a string.
+to_str(value)

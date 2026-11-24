@@ -1,1 +1,13 @@
-#! 문자와 코드 값 변환
+#! Character and code-point conversion
+# Convert a code point to a binary string.
+bin(code)
+# Return the character for a code point.
+chr(code)
+# Convert a code point to a hexadecimal string.
+hex(code)
+# Convert a code point to an octal string.
+oct(code)
+# Return the ASCII code of a character.
+ascii(char)
+# Return the code point of a character.
+ord(char)

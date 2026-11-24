@@ -1,1 +1,29 @@
-#! 스트림 처리
+#! Stream processing
+# Return true when the stream supports reading.
+can_read(stream)
+# Return true when the stream supports seeking.
+can_seek(stream)
+# Return true when the stream supports writing.
+can_write(stream)
+# Close a stream.
+close(stream)
+# Return true when the stream is at end of file.
+eof(stream)
+# Flush buffered data to a stream.
+flush(stream)
+# Return the length of a stream.
+length(stream)
+# Return the current position in a stream.
+position(stream)
+# Read bytes from a stream.
+read(stream, count?)
+# Read a line from a stream.
+read_line(stream)
+# Seek to a position in a stream.
+seek(stream, offset, origin)
+# Set the current position in a stream.
+set_position(stream, position)
+# Write data to a stream.
+write(stream, data)
+# Write a line to a stream.
+write_line(stream, line)

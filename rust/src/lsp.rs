@@ -518,6 +518,7 @@ mod docs {
                 ("stream", include_str!("../lsp-stubs/stream.un")),
                 ("stopwatch", include_str!("../lsp-stubs/stopwatch.un")),
                 ("net", include_str!("../lsp-stubs/net.un")),
+                ("members", include_str!("../lsp-stubs/members.un")),
             ] {
                 map.insert(key.to_string(), parse(text));
             }
@@ -535,6 +536,15 @@ mod docs {
         module_stub(name)
             .map(|stub| stub.doc.as_str())
             .filter(|doc| !doc.is_empty())
+    }
+
+    /// Fallback description for native symbols without a stub entry.
+    pub fn auto(module: &str, name: &str, is_type: bool) -> String {
+        if is_type {
+            format!("Method `{name}` of the `{module}` type.")
+        } else {
+            format!("Native function `{name}` from the `{module}` module.")
+        }
     }
 
     pub fn builtin(name: &str) -> Option<&'static str> {
@@ -3061,18 +3071,24 @@ fn builtin_hover_markdown(
             .find(|(alias, _)| alias == &receiver)
             .map(|(_, module)| module.clone())
             .unwrap_or_else(|| receiver.clone());
+        let class_name = resolve_receiver_class(analysis, &receiver, start)
+            .map(|(_, _, name)| name);
         doc = docs::function(&module, word)
+            .or_else(|| class_name.as_deref().and_then(|name| docs::function("members", word)))
             .map(str::to_string)
-            .unwrap_or_else(|| format!("`{module}` 모듈의 네이티브 함수"));
+            .unwrap_or_else(|| {
+                docs::auto(class_name.as_deref().unwrap_or(&module), word, class_name.is_some())
+            });
         if let Some(sig) = docs::signature(&module, word) {
+            Some(sig.to_string())
+        } else if let Some(sig) = class_name.as_deref().and_then(|_| docs::signature("members", word)) {
             Some(sig.to_string())
         } else if let Some(sigs) = native_catalog().modules.get(&module) {
             sigs.iter()
                 .find(|sig| sig.name == word)
                 .map(|sig| sig.label.clone())
         } else {
-            resolve_receiver_class(analysis, &receiver, start)
-                .map(|(_, _, name)| name)
+            class_name
                 .as_deref()
                 .and_then(builtin_members)
                 .and_then(|sigs| signature_for_native(word, sigs).map(|(label, _)| label))
@@ -3080,7 +3096,7 @@ fn builtin_hover_markdown(
     } else {
         doc = docs::builtin(word)
             .map(str::to_string)
-            .unwrap_or_else(|| "빌트인 함수".to_string());
+            .unwrap_or_else(|| "Built-in function.".to_string());
         docs::signature("builtins", word)
             .map(str::to_string)
             .or_else(|| native_catalog().builtins.get(word).cloned())
@@ -3999,7 +4015,7 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                     if let Some((target, _, _, _)) = server.use_segment_target(&uri, offset) {
                         let doc = docs::module(&word)
                             .map(str::to_string)
-                            .unwrap_or_else(|| format!("`{word}` 모듈"));
+                            .unwrap_or_else(|| format!("Module `{word}`."));
                         hover = Some(hover_json(
                             format!("{doc}\n\n`{target}`"),
                             &analysis.source,
@@ -4039,7 +4055,7 @@ fn handle_message(server: &mut Server, out: &mut dyn Write, body: &str) {
                     if hover.is_none() && native_catalog().module_names.contains(&word) {
                         let doc = docs::module(&word)
                             .map(str::to_string)
-                            .unwrap_or_else(|| format!("`{word}` 모듈"));
+                            .unwrap_or_else(|| format!("Module `{word}`."));
                         hover = Some(hover_json(
                             format!("{doc}\n\n`{word}`"),
                             &analysis.source,
@@ -4479,7 +4495,7 @@ mod tests {
             .and_then(|contents| contents.get("value"))
             .and_then(Json::as_str)
             .unwrap_or("");
-        assert!(body.starts_with("값의 길이(요소 수)를 반환합니다.\n\n```un\nlen("), "{body}");
+        assert!(body.starts_with("Return the number of elements or the length of a value.\n\n```un\nlen("), "{body}");
     }
 
     #[test]

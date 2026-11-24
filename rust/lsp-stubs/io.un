@@ -1,7 +1,7 @@
-#! 입출력 — 콘솔 출력, 파일 스트림, 읽기/쓰기
-# 값을 표준 출력이나 지정 스트림에 씁니다.
+#! Input and output: console output, file streams, reading and writing
+# Write values to standard output or to the given stream.
 write(values, sep?, end?, stream?)
-# 표준 입력에서 한 줄을 읽습니다.
+# Read a line from standard input.
 read()
-# 파일 스트림을 엽니다.
+# Open a file stream.
 open(path, mode?)

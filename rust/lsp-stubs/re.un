@@ -1,1 +1,19 @@
-#! 정규식 매칭
+#! Regular expression matching
+# Escape a string for use in a regular expression.
+escape(text)
+# Return all matches of a pattern.
+find_all(pattern, text)
+# Return the capture groups of a match.
+groups(pattern, text)
+# Test whether a string matches a pattern.
+match(pattern, text)
+# Replace matches of a pattern in a string.
+replace(pattern, text, replacement)
+# Replace all matches of a pattern in a string.
+replace_all(pattern, text, replacement)
+# Search for a pattern in a string.
+search(pattern, text)
+# Split a string by a pattern.
+split(pattern, text)
+# Return true when a string matches a pattern.
+test(pattern, text)

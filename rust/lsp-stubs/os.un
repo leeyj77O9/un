@@ -1,1 +1,41 @@
-#! 운영체제 및 환경 정보
+#! Operating system and environment information
+# Return the CPU architecture.
+arch()
+# Return the command-line arguments.
+args()
+# Return the number of logical CPUs.
+cpuCount()
+# Return an environment variable.
+env(name)
+# Return all environment variables.
+environ()
+# Execute an external command.
+exec(command)
+# Exit the process.
+exit(code?)
+# Expand environment variables in a string.
+expand_vars(text)
+# Return the host name.
+hostname()
+# Return true when the process is 64-bit.
+is64bit()
+# Return the platform line separator.
+linesep()
+# Return the operating system name.
+name()
+# Return the platform path separator.
+pathsep()
+# Return the process id.
+pid()
+# Return the platform path separator.
+sep()
+# Set an environment variable.
+setenv(name, value)
+# Return a monotonic tick count.
+tickCount()
+# Remove an environment variable.
+unsetenv(name)
+# Return the user name.
+username()
+# Return the operating system version.
+version()

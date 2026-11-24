@@ -1,1 +1,27 @@
-#! 경과 시간 측정
+#! Elapsed-time measurement
+# Return the elapsed time in hours.
+hours(stopwatch)
+# Return true when the stopwatch is running.
+is_running(stopwatch)
+# Record a lap.
+lap(stopwatch)
+# Return the elapsed time in minutes.
+minutes(stopwatch)
+# Return the elapsed time in milliseconds.
+ms(stopwatch)
+# Return the elapsed time in nanoseconds.
+ns(stopwatch)
+# Return the elapsed time in seconds.
+elapsed(stopwatch)
+# Reset the stopwatch.
+reset(stopwatch)
+# Restart the stopwatch.
+restart(stopwatch)
+# Return the elapsed time in seconds.
+seconds(stopwatch)
+# Start the stopwatch.
+start(stopwatch)
+# Stop the stopwatch.
+stop(stopwatch)
+# Advance the stopwatch by one tick.
+tick(stopwatch)

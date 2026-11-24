@@ -1,7 +1,35 @@
-#! 난수 생성과 무작위 선택
-# 범위 안의 난수 정수를 반환합니다.
-int(low, high)
-# 시퀀스에서 무작위 원소를 선택합니다.
+#! Random number generation and random selection
+# Return a random boolean.
+bool()
+# Return random bytes.
+bytes(count)
+# Return true with the given probability.
+chance(probability)
+# Choose one element from a sequence.
 choice(seq)
-# 시퀀스를 제자리에서 섞습니다.
+# Choose several elements from a sequence.
+choices(seq, count)
+# Return a random floating point number.
+float(low?, high?)
+# Return a random integer in a range.
+int(low, high)
+# Generate the next random value.
+next()
+# Return a random floating point number between 0 and 1.
+random()
+# Return a random integer range.
+range(low, high)
+# Sample elements from a sequence without replacement.
+sample(seq, count)
+# Seed the random number generator.
+seed(value)
+# Shuffle a sequence in place.
 shuffle(seq)
+# Return a random string.
+str(length?)
+# Return a random value from a collection.
+value(values)
+# Choose an element using weights.
+weighted(values, weights)
+# Return a random UUID string.
+uuid()

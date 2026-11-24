@@ -1,0 +1,101 @@
+#! Common methods on built-in collection and string types
+# Add a value to a collection.
+add(value)
+# Return true when all elements satisfy a predicate.
+all(fn)
+# Return true when any element satisfies a predicate.
+any(fn)
+# Find an element using binary search.
+binary_search(value)
+# Return the middle element.
+center()
+# Remove all elements.
+clear()
+# Return a shallow copy.
+clone()
+# Return true when a collection contains a value.
+contains(value)
+# Return true when a dictionary contains a key.
+contains_key(key)
+# Return true when a dictionary contains a value.
+contains_value(value)
+# Count elements.
+count()
+# Return the difference with another set.
+difference(other)
+# Return true when a string ends with a suffix.
+ends_with(suffix)
+# Append elements from another collection.
+extend(other)
+# Return the intersection with another set.
+intersect(other)
+# Return true when a string consists of alphabetic characters.
+is_alphabet()
+# Return true when a collection is empty.
+is_empty()
+# Return true when a string consists of numeric characters.
+is_number()
+# Join elements into a string.
+join(sep?)
+# Return the keys of a dictionary.
+keys()
+# Return the last element.
+last()
+# Return the lower bound for a value.
+lower_bound(value)
+# Transform each element with a function.
+map(fn)
+# Return a sorted copy.
+order()
+# Remove and return the last element.
+pop()
+# Remove an element or key.
+remove(value)
+# Remove an element at an index.
+remove_at(index)
+# Replace a substring or element.
+replace(old, new)
+# Resize a collection.
+resize(size)
+# Reverse a collection in place.
+reverse()
+# Return the upper bound for a value.
+upper_bound(value)
+# Split a string into parts.
+split(sep?)
+# Return true when a string starts with a prefix.
+starts_with(prefix)
+# Sum numeric elements.
+sum()
+# Take the first n elements.
+take(n)
+# Convert to a list.
+to_list()
+# Convert a string to lower case.
+to_lower()
+# Convert to a tuple.
+to_tuple()
+# Convert a string to upper case.
+to_upper()
+# Trim whitespace from a string.
+trim()
+# Return the union with another set.
+union(other)
+# Return the values of a dictionary.
+values()
+# Return the first element.
+first()
+# Return a slice from an index to the end.
+left(index)
+# Return a slice up to an index.
+right(index)
+# Find the index of a value.
+index_of(value)
+# Insert a value at an index.
+insert(index, value)
+# Add an element to a set (hash-push).
+hpush(value)
+# Remove and return an element from a set (hash-pop).
+hpop()
+# Return the full element list.
+to_list_all()
