@@ -2080,3 +2080,73 @@ No action items. No regression against the 2026-11-18 baseline; the 17 commits s
   differential 95, cargo test 213, roundtrip 47/47 + 39/39, WASM smoke 64/64).
 - `main.un`, bench lanes and WASM untouched; `cargo test` 213/213, UV_JIT=2
   canaries OK.
+
+---
+
+## 2026-11-24 — Work-ID별 변경 요약 (DOC-01 / W-2026-11-24-DOCSYNC)
+
+HEAD `b45ebd5`까지 2026-11-24에 통합된 Work를 시간순으로 정리한다. 이 세션은
+문서 동기화 전용이라 코드를 수정하지 않았고, 아래 게이트 수치는 각 Work의 커밋
+메시지와 갱신된 기준 문서에 기록된 값이다.
+
+### W-2026-11-24-VMPERF1 / VMPERF2 (VM-02 · RT-03 · TOOL-08) — `de11781`, `c460fbe`
+
+- 인터프리터 핫패스 할당 제거: `Payload` clone 대신 `is_panic`/`payload_ref`,
+  dict write의 bucket-walk, interned Int/Float 타입 이름 TLS 캐시, JIT 후보 간
+  번역 plan 공유, LSP 문서별 분석 캐시, 자기참조 `slot_scope` Rc 제거(`owns_slots`).
+  슬롯 스코프 누수도 함께 수정.
+- 벤치 6레인 재생성: Un VM `int_ops` ~0.99 s, Un JIT/Python geomean 4.023x.
+
+### ARC-00 (build 드라이버) + CMP-05 (typeck) — `991acdd`, `05a3423`
+
+- `un build`가 plain·`--embed` 모두 기본적으로 **fully typed mode**가 됐다:
+  명시적 `any`/Union 어노테이션과 별칭, variadic·이름 없는 파라미터, 타입 없는
+  lambda 파라미터를 진단과 함께 거부. `--allow-dynamic`이 escape hatch이며
+  `un run`은 동적 타입을 유지한다. `un check`/`un native`/`un obj`/LSP/playground
+  기본 동작은 변하지 않았다.
+- dict write의 RefCell 재진입 회귀 수정. `test/compile/build_negative/`에 동적
+  타입 거부 픽스처 6개와 manifest 행 추가. exe-diff 60/0, 벤치 4.154x.
+
+### NAT-07 + NRT-06 + CMP-05 — `26d457f`
+
+- 순수 std HTTP/WebSocket 네트워킹과 바이트 스트링 연산을 NRT opaque handle로
+  이식. `b"..."` 리터럴과 12함수 `bytes` 모듈, `fs.read_bytes`/`write_bytes`,
+  `http`/`ws`가 plain no-VM exe에서 `un run`과 byte-identical하게 동작한다.
+- `test/compile/build/{bytes,http,ws}_module.un` 픽스처 추가.
+
+### NRT-06 · CMP-05 · VM-02 · TOOL-08 · JIT-04 · NAT-07 · RT-03 · BENCH-10 — `e70104f`, `8ae1aac`
+
+- NRT list slice/clear dispatch, CMP-05 Slice/FString/Ternary/빈 컬렉션 TIR과
+  네이티브 codegen, VM-02 deferred frame 이름·무할당 이름 조회, TOOL-08 크로스
+  파일 LSP 모듈 인식, JIT-04 컴파일타임 중복 제거, RT-03 scope/field 핫패스.
+- BENCH-10이 `dict_str_key.un`/`bytes_ops.un`/`slice_ops.un` 3개 워크로드를 추가
+  (`dict_str5000`, `bytes_ops`, `slice_ops`). tuple/set은 opaque tag 승인 전까지
+  VM 경로 유지. workspace 277, 벤치 4.318x.
+
+### FE-01 · RT-03 · TOOL-08 · NRT-06 — `221bf76`, `d621845`
+
+- NRT tag 14/15로 tuple/set의 `(..)`/`{..}` 표시를 VM과 동일하게 재현하고,
+  typeck/TIR/codegen에 tuple/set과 `list.resize`를 연결. FE-01이 명시적 상대
+  import `use .foo` / `use ..pkg`를 추가하고, RT-03이 중복 멤버 스캔과 `Rc<str>`
+  churn을 제거, TOOL-08이 LSP에서 상대 경로를 인식. embed 실행 경계의 JIT
+  메모리 해제도 보완.
+- workspace 291, Un JIT/Python geomean 4.334x로 기준치 갱신.
+
+### MEM-01 / MEMPLAN-01 → D-093 (ARC-00 정리) — `b45ebd5`
+
+- 메모리 계약 확정: GC 미도입, `Weak` 전환 거부(강한 참조가 bound-method 수명과
+  lambda escape 계약), 순환은 유계로 두고 `world::reset()`/프로세스 종료 시
+  회수, JIT 코드는 CLI 정상·CLI 오류·플레이그라운드 매 실행·`unvm_run_embedded()`
+  종료 4경계에서 명시 해제, `PLAN_CACHE` 64개 FIFO 유지, NRT 의도적 누수 모델.
+  TD-03/TD-05/TD-22를 "해결"이 아닌 "계약 확정(유계 누수 포함)"으로 재기재.
+
+### W-2026-11-24-DOCSYNC (DOC-01) — 이 세션
+
+- `README.md` ↔ `docs/README.ko.md`: fully typed build와 `--allow-dynamic`,
+  no-VM AOT 커버리지 확대(bytes/http-ws/tuple/set/슬라이스/FString/Ternary/
+  빈 리터럴/list.clear·resize), 상대 import, LSP 크로스 파일 인식, 메모리 계약
+  (D-093), 벤치 4.334x와 신규 워크로드를 한영 쌍으로 반영.
+- `docs/compile/OBJ_MILESTONES.md`: No-VM 커버리지 표를 추가하고 신규 지원 항목과
+  fully typed 경계를 반영. 이 로그에 Work-ID별 요약 추가.
+- 검증: 문서 전용 변경이라 빌드 불필요. 한영 README의 섹션 제목·목록/표 항목 수가
+  대응되는지 확인. 커밋/푸시 없음.

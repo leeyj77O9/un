@@ -37,7 +37,7 @@ Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(�
 - 클래스, 상속, 다중 상속, `enum`
 - 클래스 Property: `get`/`set` 접근자와 `field`, `value`
 - 범위 연산자 `a..b` (반개구간, 지연 평가)
-- `use`, 별칭, 선택적 import를 갖는 모듈 시스템
+- `use`, 별칭, 선택적 import, 명시적 상대 경로(`use .foo` / `use ..pkg`)를 갖는 모듈 시스템
 - `using`과 `defer`를 통한 자원 관리
 - 백틱 문자열 보간 `` `..{expr}..` ``
 - `list`, `dict`, `set`, `tuple` 컬렉션
@@ -314,23 +314,32 @@ Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일�
   없이도 단일 실행형이다.
 - plain `un build`(`--embed` 없이)는 **VM을 전혀 포함하지 않는다**. 대신 `libnrt.a`
   (독립 네이티브 런타임)를 링크하며 exe는 약 5 MB다. 클래스(필드·메서드·`__init__`·상속),
-  예외, 문자열/리스트/딕트, 네이티브 모듈(io/math/iter/os/sys/fs/codes/re/time/types),
-  기본값 인자, 람다(캡처·closure·리스트 저장), 단순 사용자 모듈 import/전역,
-  VM과 byte-identical한 traceback을 지원한다. 동적 타입(`Any`/Union), 시간 기반
-  `random`, 모듈 최상위 부수 효과가 있는 프로그램은 `un build --embed`를 써야 한다.
+  예외, 문자열/리스트/딕트, 네이티브 모듈(io/math/iter/os/sys/fs/codes/re/time/types,
+  그리고 `bytes`·`http`/`ws`), 기본값 인자, 람다(캡처·closure·리스트 저장), 단순 사용자
+  모듈 import/전역, VM과 byte-identical한 traceback을 지원한다. 여기에 `b"..."` 리터럴과
+  12개 함수의 `bytes` 모듈, tuple/set 값, 슬라이스 읽기·할당, FString·삼항 표현식,
+  빈 컬렉션 리터럴, `list.clear()`/`list.resize()`까지 네이티브로 지원한다.
   제네릭 컬렉션 타입(`list[str]`, `list[bool]`, `dict[int, str]`,
   `dict[str, ClassName]` 등)은 elem kind를 TIR에 명시해 plain build에서도 네이티브로
   컴파일된다. 중첩 리스트의 element는 불투명 핸들로 취급되어 내부 인덱싱·연산은
   lowering하지 않는다.
+- `un build`는 plain과 `--embed` 양쪽 모두 기본적으로 **fully typed mode**다.
+  명시적 `any`/Union 어노테이션과 별칭, variadic·이름 없는 파라미터, 타입 없는 lambda
+  파라미터는 진단과 함께 거부된다. `--allow-dynamic`을 붙이면 이전의 동적 동작으로
+  되돌린다. `un run`은 동적 타입을 유지하고 `un check` / `un native` / `un obj` / LSP /
+  플레이그라운드는 변하지 않는다. 시간 기반 `random`과 단순 대입을 넘어서는 모듈
+  최상위 부수 효과는 여전히 `un build --embed`가 필요하다.
 - `un lsp`는 stdin/stdout으로 LSP 언어 서버를 실행한다. 기본은 lexer/parser
   오류만 보고하며, Compile Mode 타입 진단은 `initializationOptions.compileMode`
   또는 `un/compileMode` 알림으로 opt-in한다. Rust를 쓰지 않는 클라이언트도
   그대로 쓸 수 있으며, 저장소 밖 `C:\dev\un-vscode`에는 이를 사용하는
   VS Code 확장(`un-language`) 소스가 있다 — 구문 강조 + 실시간 진단, 호버,
   F12 정의로 이동, 계층 아웃라인(클래스 > 메서드/필드), Shift+F12 참조 찾기,
-   F2 이름 변경, 접기, 자동완성(`.` 멤버추천, 시그니처 도움말, 스니펫 포함), AST 기반 semantic tokens를 제공하며,
-   에디터 안에서 `Un: Run File` 버튼(에디터 제목 바/우클릭/상태 바)으로
-   현재 파일을 바로 `un run`으로 실행할 수 있다.
+  F2 이름 변경, 접기, 자동완성(`.` 멤버추천 — 사용자 모듈 멤버 포함 — 시그니처
+  도움말, 스니펫 포함), AST 기반 semantic tokens를 제공한다. 사용자 모듈은
+  파일을 넘나드는 호버·정의로 이동과 상대 import(`use .foo` / `use ..pkg`) 해석도
+  지원한다. 에디터 안에서 `Un: Run File` 버튼(에디터 제목 바/우클릭/상태 바)으로
+  현재 파일을 바로 `un run`으로 실행할 수 있다.
 
 ### 첫 프로그램
 
@@ -402,6 +411,9 @@ Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 36/0, exe 
 입력·알고리즘·측정 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`, `results.json`, `results.md`에 저장한다.
 `scripts\bench-report.ps1`은 결과를 `bench/report.html`로 변환하고 `-Gate`로 회귀를 검사한다.
+현재 보고서의 Un JIT/Python 기하평균은 **4.439x**이며, 새 워크로드
+`dict_str5000`(문자열 키 dict 삽입·조회), `bytes_ops`(bytes 모듈 왕복),
+`slice_ops`(리스트 슬라이스 읽기·할당)이 포함되어 있다.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
@@ -637,6 +649,10 @@ use re as re
 io.write(re.test("\\d+", "abc123"))
 ```
 
+상대 import는 현재 파일이 있는 디렉터리를 기준으로 해석한다: 같은 디렉터리의
+모듈은 `use .foo`, 부모 디렉터리 아래의 모듈은 `use ..pkg`로 가져온다. LSP와
+plain `un build`가 두 형태를 모두 인식한다.
+
 ### 자원 관리
 
 ```un
@@ -662,6 +678,7 @@ work()    # start done
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
 | `math` | `round`/`abs`/`ceil`/`floor`/`trunc`/`sign`, `sqrt`/`cbrt`/`pow`/`exp`/`log`/`log2`/`log10`, `sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`hypot`, `gcd`/`lcm`/`clamp`, `is_nan`/`is_infinite`/`is_finite`, `pi`/`e`/`tau` |
 | `codes` | `bin`/`oct`/`hex` (정수 2/8/16진), `ascii` (첫 UTF-16 코드 유닛), `chr`/`ord` (코드포인트 ↔ 문자) |
+| `bytes` | `from_str`/`from_list`/`from_hex`, `to_str`/`to_list`/`to_hex`, `len`/`get`/`slice`/`concat`/`eq`/`is_bytes` — `b"..."` 리터럴과 `fs.read_bytes`/`fs.write_bytes`가 만드는 바이트 문자열; plain `un build`에서 네이티브로 컴파일됨 |
 | `iter` | `array`/`range`/`counter`/`reverse`/`repeat`, `zip`/`enumerate`, `map`/`filter`/`take`/`skip`/`chain`/`flatten`, `sum`/`max`/`min`/`sorted`, `all`/`any`/`count` |
 | `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
@@ -672,7 +689,7 @@ work()    # start done
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
 | `types` | `u8`/`u16`/`u32`/`u64`, `i8`/`i16`/`i32`/`i64`, `f32`/`f64` — 고정 폭 정수/실수 변환 생성자. 범위 검사는 변환 시점에만 하고 벗어나면 잡을 수 없는 예외를 발생(출력은 `error: <메시지>`). 이후 연산은 일반 `int`/`float`과 동일(`u64`는 Un int가 i64라 `i64::MAX`까지만 담김). `use types` 필요 — import가 없는 모듈에서는 고정 폭 이름(`u32` 등 포함)이 알 수 없는 타입 어노테이션이 됨 |
 
-컬렉션 메서드로는 `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, 그리고 `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with` 같은 문자열 메서드가 있다.
+컬렉션 메서드로는 `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`clear`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, 그리고 `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with` 같은 문자열 메서드가 있다.
 
 모듈 없이 전역에 있는 내장 함수는 `len`/`type`/`hash`/`exit`/`throw`/`throw_if`/`throw_unless`/`repr`이고, 생성자로는 `int`/`float`/`str`/`bool`/`list`/`set`/`tuple`/`date`가 있다. 기수/문자 코드 변환은 `use codes`로 가져온다 (`codes.hex()`/`codes.bin()`/`codes.oct()`/`codes.ascii()`/`codes.chr()`/`codes.ord()`). `math.pi`, `math.e`, `math.tau`, `os.sep`, `os.pathsep`, `os.linesep`, `os.cpuCount`, `os.is64bit` 같은 값은 함수로 노출되므로 호출해서 쓴다.
 
@@ -682,6 +699,12 @@ work()    # start done
 
 ### 의미 주의사항
 
+- **메모리(D-093)**: Un에는 GC가 없고 `Weak` 참조도 쓰지 않는다. 객체는 참조
+  카운팅으로 해제되고, 의도적인 순환(bound method, closure 캡처)은 유계로 두고
+  `world::reset()` / 프로세스 종료 시 회수한다. JIT 네이티브 코드는 네 가지 실행
+  경계 — CLI 정상 종료, CLI 오류/패닉, 플레이그라운드 매 실행,
+  `unvm_run_embedded()` 종료 — 에서 명시 해제하며, `clear()` 이후에는 다시
+  진입할 수 없다. 장기 실행 embed 호스트는 프로세스를 재시작하는 전제로 둔다.
 - `time.stopwatch`: `.elapsed`는 단조 경과시간을 담은 `date`를 반환한다(타임스탬프가 아니다). `start()`는 재개가 아니라 타이머 재시작이다.
 - `hash(...)`: `NaN`에 대한 해시 키는 딕셔너리에서 찾을 수 없다 — IEEE semantics / .NET과 같은 동작이며 버그가 아니다. `NaN`이 키에 들어가면 조회는 항상 `key not found`가 된다.
 - `2 ** 3 ** 2`는 `2 ** (3 ** 2)`(거듭제곱은 오른쪽 결합, Python/JS와 동일)로 평가된다. `2 ** 3`은 `8`이다.
@@ -839,10 +862,14 @@ class Heap
 - 핫 패스 Int 부분집합(loops, 산술, 비트연산, iter.range, FusedIntMulAdd, IntVec/IntDict intrinsic, Int 필드 위주 클래스 메서드, math Float intrinsic)을 native 코드로 컴파일하는 Cranelift JIT (UV_JIT=0으로 비활성화, UV_JIT=2로 strict canary). Int-Int 전용 `d[k] = v` / `d[k]` IntDict intrinsic과 Bool 반환도 포함.
 - 제네릭 함수/클래스(`fn f[T]`, `class Box[T]`)와 호출부 추론, 명시적 타입 인자(`f[int](42)`), 제약(`[T: int | float]`)
 - 타입 별칭(`type Id = int | str`), 패턴 가드·or-pattern·중첩 구조 분해, `match`/`un check`의 `is` 기반 타입 좁히기
-- 바이트 리터럴(`b"..."`), `bytes` 모듈(12함수), `fs.read_bytes`/`fs.write_bytes` 바이너리 파일 I/O(plain build/NRT 지원)
+- 바이트 리터럴(`b"..."`), 12개 함수의 `bytes` 모듈, `fs.read_bytes`/`fs.write_bytes` 바이너리 파일 I/O — plain `un build`에서 네이티브 지원
 - 페이로드를 갖는 enum variant(`Test.a(42)`)와 `match` 분해
 - Compile Mode(`un check`/`un native`)와 VM 없는 독립 실행형 `un build`/`un obj` (libnrt.a)
 - LSP 언어 서버(`un lsp`)와 VS Code 확장 `un-language`
+- `un build`(plain·`--embed`)의 기본 fully typed mode와 escape hatch `--allow-dynamic` (`un run`은 동적 유지)
+- no-VM AOT 커버리지 확대: `bytes` 모듈·바이트 리터럴, `http`/`ws`, tuple/set, 슬라이스 읽기·할당, FString·삼항, 빈 리터럴, `list.clear()`/`list.resize()`
+- 명시적 상대 import(`use .foo` / `use ..pkg`)와 LSP 사용자 모듈 멤버 자동완성·크로스 파일 호버/정의로 이동
+- 메모리 계약 문서화(D-093): 참조 카운팅, GC/Weak 없음, 유계 순환, 실행 경계 JIT 정리
 - 런타임 객체 모델과 타입 시스템
 - 표준 라이브러리 모듈
 - 비동기 실행과 워커 풀

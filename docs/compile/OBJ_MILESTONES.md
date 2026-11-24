@@ -33,7 +33,7 @@ self-contained mingw gcc를 경유한 `rustc`가 담당한다.
 |---|---|---|
 | 1 | 수직 슬라이스: core 부분집합(Int 상수/지역변수/산술/비교/`JmpIf`/직접 호출/`Return`) → COFF `.obj`, fib 데모 | **완료** |
 | 2 | `for i in a..b` / `while` 반복 하강 | **완료** (소스 경로: TIR ForRange/While을 그대로 하강; 루프 경계 가드 포함) |
-| 3 | 런타임 ABI — 생성 코드의 `unrt_*` 호출 | **완료** (`un build --embed`는 `libunvm.a`(VM), plain `un build`는 `libnrt.a`(독립 런타임)를 링크. 두 경로 모두 `io.write`, Str, list/dict, 클래스(상속 포함), 예외, 기본값 인자, 람다/closure, 단순 모듈 import/전역, byte-identical traceback 지원. 아래 "No-VM plain executable" 섹션 참고) |
+| 3 | 런타임 ABI — 생성 코드의 `unrt_*` 호출 | **완료** (`un build --embed`는 `libunvm.a`(VM), plain `un build`는 `libnrt.a`(독립 런타임)를 링크. 두 경로 모두 `io.write`, Str, list/dict, 클래스(상속 포함), 예외, 기본값 인자, 람다/closure, 단순 모듈 import/전역·상대 import, byte-identical traceback, 바이트 리터럴/`bytes` 모듈, `http`/`ws`, tuple/set, 슬라이스 읽기·할당, FString·삼항, 빈 리터럴, `list.clear`/`resize` 지원. 아래 "No-VM plain executable" 섹션 참고) |
 | 4 | `.un` 소스에서 바로 `un obj` (typeck/TIR 재사용) | **완료** |
 | 5 | `un build` — 링크까지 자동화 (self-contained mingw gcc 자동 탐지) | **완료** |
 
@@ -101,9 +101,8 @@ plain exe 회귀를 잡을 수 있다.
   `list[int]`/`list[float]`가 거부하는 것(빈 리스트, 중첩 리스트, 비 str 키 등)은 동일하게 거부한다.
 - `list[int]`/`list[float]` 메서드: `add(v)`(append), `insert(v, i)`(인덱스 clamp),
   `reverse()`, `sort()`(VM comparator), `pop()`/`pop(i)`(원소 반환),
-  `contains(v)`, `index_of(v)`, `remove(v)`까지 네이티브 지원한다. `list.clear()`는
-  VM/typeck이 지원하지 않아 no-VM 전용 허용은 하지 않는다. 나머지 리스트 메서드는
-  인터프리터로 넘긴다. 정적 체커(`un check`/`un native`)는
+  `contains(v)`, `index_of(v)`, `remove(v)`, `clear()`, `resize(n)`까지 네이티브
+  지원한다. 나머지 리스트 메서드는 인터프리터로 넘긴다. 정적 체커(`un check`/`un native`)는
   등록된 list/dict 멤버 시그니처를 알고 있으며, 없는 멤버를 호출하면 컴파일 오류다.
 - `dict[str, int]`/`dict[str, float]`: 리터럴(`{"k": v}`), `d["k"]` 인덱스 **read**,
   `d["k"] = v` **write**(없는 키는 삽입),
@@ -202,15 +201,34 @@ plain exe 회귀를 잡을 수 있다.
 
 ## No-VM plain executable (2026-11-21, 전체 네이티브 런타임 이식)
 
+### No-VM 커버리지 (2026-11-24 기준)
+
+| 영역 | plain `un build` | 비고 |
+|---|---|---|
+| Int/Float/Bool/Str, 기본 연산·비교 | 지원 | 기존 |
+| `list[int|float|class]`, `dict[str,int|float]`, `dict[int,int]`, 제네릭 elem kind, 중첩 list | 지원 | 기존 |
+| 클래스(필드·메서드·`__init__`·상속), 예외/try·catch·finally, closure/람다, traceback | 지원 | 기존 |
+| 바이트 리터럴 `b"..."` + `bytes` 모듈 12함수, `fs.read_bytes`/`write_bytes` | **지원 (신규)** | NRT opaque handle, `un run`과 byte-identical |
+| `http`/`ws` (connect/get/post/... , send/receive/close) | **지원 (신규)** | NRT net/native.rs, `test/compile/build/{http,ws}_module.un` |
+| tuple/set 값과 표시 `(..)`/`{..}` | **지원 (신규)** | NRT tags 14/15, VM과 동일 |
+| 리스트 슬라이스 읽기 + 슬라이스 할당 | **지원 (신규)** | TIR `Slice`/`SetSlice` lowering, `bench/slice_ops.un` |
+| FString, Ternary, 빈 컬렉션 리터럴 | **지원 (신규)** | TIR/codegen 하강 |
+| `list.clear()`, `list.resize(n)` | **지원 (신규)** | NRT list dispatch |
+| 상대 import `use .foo` / `use ..pkg` | **지원 (신규)** | 현재 파일 기준 경로 해석 |
+| 동적 타입(명시적 `any`/Union, variadic·이름 없는 파라미터, 타입 없는 lambda) | **fully typed mode에서 거부** | `--allow-dynamic`으로 해제 (escape hatch); `un run`은 동적 유지 |
+| 시간 시드 `random`, 모듈 최상위 부수 효과 | 거부 | `--embed` 필요 |
+
 - **plain `un build`는 이제 `libunvm.a`를 절대 링크하지 않는다.** `rust/nrt/`
   (`libnrt.a`)가 VM 브릿지 43개(`unrt_*`)와 `un_math_*`를 전부 독립 구현한다.
   Cranelift가 만든 `.obj` + `libnrt.a`만 링크하고, 결과 exe는 약 5 MB(VM 링크 시
   약 17 MB), `un run`과 stdout/stderr/exit code가 바이트 단위로 같다.
 - 이식 범위: Int/Float/Bool/Str, `list[int|float]`, `dict[str,int|float]`, `dict[int,int]`,
   클래스(필드·메서드·`__init__`), `try`/`catch`/`finally`/`throw`, pending error,
-  그리고 `io`/`math`/`iter`/`os`/`sys`/`fs`/`codes`/`re`/`time`/`types`/`random`
-  모듈 멤버. `re`는 VM의 순수 Rust regex 엔진(`native/regex/`)을 그대로 복사해
-  사용하므로 의미론이 같다.
+  그리고 `io`/`math`/`iter`/`os`/`sys`/`fs`/`codes`/`re`/`time`/`types`/`random`/
+  `bytes`/`http`/`ws` 모듈 멤버. `re`는 VM의 순수 Rust regex 엔진(`native/regex/`)을
+  그대로 복사해 사용하므로 의미론이 같다. 2026-11-24에 tuple/set(NRT tag 14/15),
+  슬라이스 읽기·할당, FString/Ternary/빈 리터럴, `list.clear()`/`resize()`, 상대
+  import가 추가됐다(`test/compile/build/{bytes,http,ws}_module.un`).
 - 클래스: `obj_compile`이 TIR의 `class_names`/`class_fields`/`class_methods`를 읽어
   `(class, method, TIR index, arity, return kind)` 목록을 `EmitOutcome`으로 반환하고,
   생성 드라이버가 `nrt_register_class/field/method`를 호출한다. 메서드는 `.obj`의
@@ -235,11 +253,12 @@ plain exe 회귀를 잡을 수 있다.
   `un_tir_N` extern 선언을 중복 제거해, base 메서드가 여러 클래스에서 참조돼도 링크된다.
 - 사용자 모듈 import: `inline_user_modules_text`가 빌드 시 `use a.b as alias`를
   텍스트 기반으로 인라인하고 함수명을 `alias_`로 mangle한 뒤 `alias.member(`를
-  `alias_member(`로 치환한다. 모듈 최상위에 함수 선언 외 문장(전역 상태 등)이
+  `alias_member(`로 치환한다. 명시적 상대 import(`use .foo` / `use ..pkg`)도 현재
+  파일 기준으로 해석한다. 모듈 최상위에 함수 선언 외 문장(전역 상태 등)이
   있으면 거부한다.
-- VM이 필요한 나머지 기능(동적 타입, lambda escape, 모듈 전역 효과)은 plain
-  build가 `un build --embed` 안내와 함께 거부한다. 거부된 프로그램이 조용히 VM을
-  링크하는 일은 없다.
+- VM이 필요한 나머지 기능(`--allow-dynamic`으로 허용된 동적 타입, 모듈 전역 효과
+  등)은 plain build가 `un build --embed` 안내와 함께 거부한다. 거부된 프로그램이
+  조용히 VM을 링크하는 일은 없다.
 - 드라이버 ABI 주의: `unrt_len`은 raw i64가 아닌 **Obj 핸들**을 반환하고,
   `io.write`는 값 사이에 `" "`를 넣고 마지막에 `"\n"`을 붙인다.
   `unrt_take_error()`는 pending error가 없으면 `0`을 반환한다.
@@ -267,9 +286,14 @@ plain exe 회귀를 잡을 수 있다.
   `unrt_global_get`/`unrt_global_set`으로 읽기/쓰기한다. 모듈 init 문장은 `main`
   본문 앞에 삽입된다(`test/compile/build/module_globals.un`은 init + 읽기를
   검증한다; 함수 내 전역 재할당은 VM의 `StoreLocal` 의미론과 달라 아직 미지원).
-- 알려진 제한: lambda를 `any` 타입 파라미터로 넘기거나 반환하는 형태, 동적 타입
-  코드(`Ty::Any`/Union, 타입 없는 함수 파라미터)는 여전히 `un build --embed`
-  전용이다. `test/assert.un`처럼 타입 없는 함수가 있는 모듈은 전역 상태가
-  인라인돼도 typeck에서 거부된다.
-  이들은 TIR의 정적 타입 모델을 넘어서는 기능으로, 완전 지원은 별도 백엔드
-  확장(closure 객체 + 간접 호출, 전역 슬롯, 태그 기반 동적 연산)이 필요하다.
+- 알려진 제한: `un build`는 plain·`--embed` 모두 기본적으로 **fully typed mode**여서
+  명시적 `any`/Union(별칭 포함), variadic·이름 없는 파라미터, 타입 없는 lambda
+  파라미터를 진단과 함께 거부한다(`--allow-dynamic`으로 이전 동작 복원, `un run`은
+  동적 유지). `test/assert.un`처럼 타입 없는 함수가 있는 모듈은 전역 상태가
+  인라인돼도 typeck에서 거부된다. lambda를 `any` 파라미터로 넘기거나 반환하는
+  형태도 같은 경계에 있다. TIR의 정적 타입 모델을 넘어서는 기능이므로 완전 지원은
+  별도 백엔드 확장(closure 객체 + 간접 호출, 전역 슬롯, 태그 기반 동적 연산)이 필요하다.
+- 메모리 계약(D-093): NRT는 의도적 누수 모델(`Box::into_raw`, 정적 small-int 배열)을
+  유지하고, JIT 코드는 CLI 정상·오류, 플레이그라운드 매 실행, embed 실행 종료
+  (`unvm_run_embedded()`) 네 가지 경계에서 해제된다. GC/Weak는 도입하지 않고
+  순환은 유계로 둔다(자세한 내용은 `docs/project/DECISIONS.md` D-093).

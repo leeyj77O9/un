@@ -37,7 +37,7 @@ Design goals:
 - Classes, inheritance, multiple inheritance, and `enum`
 - Class properties with `get`/`set` accessors, `field`, and `value`
 - Range operator `a..b` (half-open, lazily evaluated)
-- Modules with `use`, aliases, and selective imports
+- Modules with `use`, aliases, selective imports, and explicit relative paths (`use .foo` / `use ..pkg`)
 - Resource management with `using` and `defer`
 - Backtick string interpolation `` `..{expr}..` ``
 - Collections: `list`, `dict`, `set`, `tuple`
@@ -323,15 +323,24 @@ runs in the interpreter with identical semantics.
 - Plain `un build` (without `--embed`) contains **no VM at all**: it links
   `libnrt.a` (the standalone native runtime) and produces a ~5 MB exe. Classes
   (fields, methods, `__init__`, inheritance), exceptions, strings/lists/dicts,
-  native modules (io/math/iter/os/sys/fs/codes/re/time/types), default
-  arguments, lambdas (including captured and list-stored closures), simple
-  user-module imports/globals, and byte-identical tracebacks all work natively.
-  Programs needing dynamic `Any`/union types, time-seeded `random`, or
-  module-level side effects beyond simple assignments need `un build --embed`.
-  Generic collection types (`list[str]`, `list[bool]`, `dict[int, str]`,
-  `dict[str, ClassName]`, ...) also compile natively in a plain build by
-  recording the element kind in TIR; elements of nested lists are opaque
-  handles, so indexing/operations on them are not lowered.
+  native modules (io/math/iter/os/sys/fs/codes/re/time/types, plus `bytes` and
+  `http`/`ws`), default arguments, lambdas (including captured and list-stored
+  closures), simple user-module imports/globals, and byte-identical tracebacks
+  all work natively. Native coverage also includes `b"..."` literals with the
+  12-function `bytes` module, tuple/set values, slice reads and slice
+  assignment, FString and ternary expressions, empty collection literals, and
+  `list.clear()` / `list.resize()`. Generic collection types (`list[str]`,
+  `list[bool]`, `dict[int, str]`, `dict[str, ClassName]`, ...) also compile
+  natively in a plain build by recording the element kind in TIR; elements of
+  nested lists are opaque handles, so indexing/operations on them are not
+  lowered.
+- `un build` is **fully typed** by default (both plain and `--embed`): explicit
+  `any`/union annotations and aliases, variadic or unnamed parameters, and
+  untyped lambda parameters are rejected with a diagnostic. Use
+  `--allow-dynamic` to restore the previous dynamic behaviour. `un run` stays
+  dynamically typed, and `un check` / `un native` / `un obj` / the LSP / the
+  playground are unchanged. Time-seeded `random` and module-level side effects
+  beyond simple assignments still require `un build --embed`.
 - `un lsp` runs a Language Server Protocol server over stdin/stdout. It reports
   lexer/parser diagnostics by default; Compile Mode type diagnostics are opt-in
   via `initializationOptions.compileMode` or the `un/compileMode` notification.
@@ -339,9 +348,12 @@ runs in the interpreter with identical semantics.
   `un-language` VS Code extension that launches it — syntax highlighting plus
   live diagnostics, hover, F12 go-to-definition, hierarchical outlines
   (class > methods/fields), Shift+F12 references, F2 rename, folding,
-    completion (with member completion after `.`, signature help, and snippets),
-     and AST-based semantic tokens. The extension adds an `Un: Run File` button (editor title bar / right-click / status bar) that saves
-   the current file and runs it in a terminal as `un run <file>`.
+  completion (with member completion after `.` — including user-module members —
+  signature help, and snippets), and AST-based semantic tokens. Hover and
+  go-to-definition also work across files for user modules, and relative imports
+  (`use .foo` / `use ..pkg`) resolve in the language server. The extension adds
+  an `Un: Run File` button (editor title bar / right-click / status bar) that
+  saves the current file and runs it in a terminal as `un run <file>`.
 
 ### First program
 
@@ -414,7 +426,9 @@ Benchmarks measure 6 lanes (Un VM, Un JIT, Compile Mode, standalone exe, CPython
 Node.js) with warmup and repeated runs; results go to
 `bench/results/<timestamp>/results.csv`, `results.json`, and `results.md`.
 `scripts\bench-report.ps1` renders `bench/report.html` and checks regressions with
-`-Gate`.
+`-Gate`. The current report puts Un JIT at a **4.439x geomean over CPython** and
+includes three new workloads — `dict_str5000` (string-key dict inserts/lookups),
+`bytes_ops` (bytes module round-trips), and `slice_ops` (list slice read/assign).
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
@@ -664,6 +678,10 @@ use re as re
 io.write(re.test("\\d+", "abc123"))
 ```
 
+Relative imports resolve against the importing file's directory: `use .foo` for
+a sibling module, `use ..pkg` for a module under the parent directory. The LSP
+and plain `un build` understand both forms.
+
 ### Resource management
 
 ```un
@@ -689,6 +707,7 @@ work()    # start done
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
 | `math` | `round`/`abs`/`ceil`/`floor`/`trunc`/`sign`, `sqrt`/`cbrt`/`pow`/`exp`/`log`/`log2`/`log10`, `sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`hypot`, `gcd`/`lcm`/`clamp`, `is_nan`/`is_infinite`/`is_finite`, `pi`/`e`/`tau` |
 | `codes` | `bin`/`oct`/`hex` (integer in base 2/8/16), `ascii` (code of the first UTF-16 unit), `chr`/`ord` (code point <-> single character) |
+| `bytes` | `from_str`/`from_list`/`from_hex`, `to_str`/`to_list`/`to_hex`, `len`/`get`/`slice`/`concat`/`eq`/`is_bytes` — byte strings from `b"..."` literals or `fs.read_bytes`/`fs.write_bytes`; compiled natively in plain `un build` |
 | `iter` | `array`/`range`/`counter`/`reverse`/`repeat`, `zip`/`enumerate`, `map`/`filter`/`take`/`skip`/`chain`/`flatten`, `sum`/`max`/`min`/`sorted`, `all`/`any`/`count` |
 | `random` | `int`/`float`/`bool`/`bytes`/`chance`, `choice`/`choices`/`sample`/`shuffle`/`weighted`, `range`/`str`/`value`/`next`/`seed`/`uuid` |
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
@@ -699,7 +718,7 @@ work()    # start done
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
 | `types` | `u8`/`u16`/`u32`/`u64`, `i8`/`i16`/`i32`/`i64`, `f32`/`f64` — fixed-width integer/float constructors. Range checks happen at conversion time only; out-of-range values raise the uncatchable error panic (printed as `error: <message>`). Afterwards they behave like ordinary `int`/`float` (and `u64` is capped at `i64::MAX` because Un ints are signed 64-bit). `use types` is required — in a module without the import, all fixed-width names (including `u32` etc.) are unknown type annotations |
 
-Collection methods include `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, and string methods such as `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with`.
+Collection methods include `list.add`/`insert`/`extend`/`remove`/`remove_at`/`index_of`/`contains`/`order`/`sort`/`reverse`/`binary_search`/`hpush`/`hpop`/`pop`/`map`/`clear`/`resize`, `dict.add`/`get`/`remove`/`keys`/`values`/`contains_key`/`contains_value`/`clear`, `set.add`/`union`/`intersect`/`difference`/`contains`/`remove`/`clone`/`clear`, and string methods such as `split`/`join`/`trim`/`center`/`left`/`right`/`replace`/`find`/`sub_str`/`to_upper`/`to_lower`/`starts_with`/`ends_with`.
 
 The built-in functions available without a module are `len`/`type`/`hash`/`exit`/`throw`/`throw_if`/`throw_unless`/`repr`, and the constructors are `int`/`float`/`str`/`bool`/`list`/`set`/`tuple`/`date`. Conversion helpers and character codes live behind `use codes` (`codes.hex()`/`codes.bin()`/`codes.oct()`/`codes.ascii()`/`codes.chr()`/`codes.ord()`). Values such as `math.pi`, `math.e`, `math.tau`, `os.sep`, `os.pathsep`, `os.linesep`, `os.cpuCount`, and `os.is64bit` are exposed as functions, so call them.
 
@@ -709,6 +728,13 @@ Chaining `iter` methods (`(0..10).map(fn(x) -> x * 2).take(3)`) is lazy: nothing
 
 ### Semantic notes
 
+- **Memory (D-093)**: Un has no garbage collector and uses no `Weak`
+  references. Objects are released by reference counting; intentional cycles
+  (bound methods, closure captures) are bounded and reclaimed by
+  `world::reset()` / process exit. JIT native code is freed at four execution
+  boundaries — CLI success, CLI error/panic, every playground run, and
+  `unvm_run_embedded()` exit — and must not be re-entered after `clear()`.
+  Long-lived embedders are expected to restart the process.
 - `time.stopwatch`: `.elapsed` returns a `date` that holds the monotonic duration (not a wall-clock timestamp). `start()` resets the timer — it does not resume it.
 - `hash(...)`: a `NaN` hash key is unfindable in dictionaries — every lookup raises `key not found`. This is the IEEE/.NET behaviour, not a bug.
 - `2 ** 3 ** 2` evaluates as `2 ** (3 ** 2)` (right-associative, like Python/JS). `2 ** 3` is `8`.
@@ -870,10 +896,14 @@ Implemented:
 - Hot-path Int Cranelift JIT (Int loops, arithmetic and bit ops, `iter.range`, FusedIntMulAdd, class methods over Int fields, IntVec/IntDict intrinsics, math Float intrinsics) (disable with `UV_JIT=0`, strict canary with `UV_JIT=2`). Includes Int-only IntDict intrinsics for `d[k] = v` / `d[k]` patterns and Bool returns.
 - Generic functions/classes (`fn f[T]`, `class Box[T]`) with call-site inference, explicit type arguments (`f[int](42)`), and bounds (`[T: int | float]`)
 - Type aliases (`type Id = int | str`), guarded/or-patterns, nested destructuring, and `is`-based narrowing in `match` / `un check`
-- Byte literals (`b"..."`), the `bytes` module, and `fs.read_bytes` / `fs.write_bytes` for binary file I/O (plain build requires `--embed` until NRT support lands)
+- Byte literals (`b"..."`), the 12-function `bytes` module, and `fs.read_bytes` / `fs.write_bytes` for binary file I/O — now native in plain `un build`
 - Data-carrying enum variants (`Test.a(42)`) with `match` destructuring
 - Compile Mode (`un check`/`un native`) and standalone `un build`/`un obj` (libnrt.a, no VM)
 - LSP language server (`un lsp`) and the `un-language` VS Code extension
+- Fully typed `un build` (plain and `--embed`) by default, with `--allow-dynamic` as the escape hatch; `un run` stays dynamic
+- Expanded no-VM AOT coverage: `bytes` module and byte literals, `http`/`ws`, tuple/set, slice reads and assignment, FString/ternary, empty literals, `list.clear()`/`list.resize()`
+- Explicit relative imports (`use .foo` / `use ..pkg`) and LSP user-module member completion plus cross-file hover/definition
+- Documented memory contract (D-093): reference counting, no GC/Weak, bounded cycles, JIT cleanup at execution boundaries
 - Runtime object model and type system
 - Standard library modules
 - Asynchronous execution and worker pools
