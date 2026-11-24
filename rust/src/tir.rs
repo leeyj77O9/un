@@ -6136,7 +6136,10 @@ fn validate_stmt(
                     .ok_or_else(|| format!("local slot {} out of range", s))?;
                 let boxes = expected == TirTy::Obj
                     && matches!(ty, TirTy::Int | TirTy::Float | TirTy::Bool | TirTy::Obj);
-                if ty != expected && !boxes {
+                // A concrete `__lambda_N` value and an opaque `func(..)` slot
+                // are the same NRT closure handle; only the entry index differs.
+                let lambda_ok = matches!(ty, TirTy::Lambda(_)) && matches!(expected, TirTy::Lambda(_));
+                if ty != expected && !boxes && !lambda_ok {
                     return Err(format!(
                         "assignment of '{}' to '{}' slot {}",
                         param_name(ty),

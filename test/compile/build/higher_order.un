@@ -16,5 +16,9 @@ fn main() -> none
     io.write(apply(twice, 21))
     io.write(apply(inc, 41))
     io.write(compose(twice, inc, 20))
+    f: func(int) -> int = twice
+    io.write(f(20))
+    f = inc
+    io.write(f(41))
 
 main()
