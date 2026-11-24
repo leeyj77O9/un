@@ -82,3 +82,16 @@ throw on unsuccessful status); the connect/read/write timeouts, the
 message, and case-insensitive `set_header` names were the defects and are
 fixed. TD-36's budget is per engine attempt (10M dispatch steps) and never
 reports a negative match.
+
+## 잔여 항목 메모 (2026-11-24, DOC-01 교차 확인)
+
+이 메모는 상태 열을 바꾸지 않는다. 상태 판정은 위 표가 기준이다.
+
+- 여전히 잔여: **TD-10**(`set_attr_from`의 refcount-clone 잔여, 재구조화 안 함),
+  **TD-20**(frame 4종 + scope 2종 중복 명칭), **TD-21**(equality 4종 + clone 2종 중복),
+  **TD-47**(os/sys helper 중복은 won't-fix). 모두 low/medium의 문서화·중복 성격이다.
+- 컴파일 언어 잔여는 `docs/project/COMPILER_LANGUAGE_ROADMAP.md` §4 참조: D-096
+  class/variant pattern + named field/spread, D-095 `func(..)` 반환 타입, D-097 상속/`__is__`,
+  `go`/`wait` 진짜 병렬(RFC), LANG5의 빌드 캐시 기초.
+- 확인 필요: `native/bytes.rs`의 임시 `List<Int>` 표현을 `Payload::Bytes`로 교체하는 어댑터 3함수.
+  원본 `docs/project/COMPILER_LANGUAGE_GAPS.md`는 저장소에 없어 초기 분석 근거를 직접 확인할 수 없다.

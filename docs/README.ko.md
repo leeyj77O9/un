@@ -897,6 +897,7 @@ class Heap
 
 - 더 강한 정적 타입 검사
 - 패키지 매니저
+- 컴파일 언어 잔여 항목(`docs/project/COMPILER_LANGUAGE_ROADMAP.md`): class/variant pattern AOT와 named field/spread, `func(..)` 반환 타입, 상속/`__is__` 타입 패턴, `go`/`wait` 진짜 병렬(RFC), 빌드 캐시
 
 ## 기여하기
 

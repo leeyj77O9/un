@@ -931,6 +931,7 @@ Planned:
 
 - Stronger static type checking
 - Package manager
+- Remaining compiler-language work tracked in `docs/project/COMPILER_LANGUAGE_ROADMAP.md`: class/variant pattern AOT and named field/spread, `func(..)` return types, inherited/`__is__` type patterns, real `go`/`wait` parallelism (RFC), and the build cache
 
 ## Contributing
 
