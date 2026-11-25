@@ -350,6 +350,7 @@ fn expand_generics(checked: &CheckedProgram) -> Expanded {
         fn_generics: checked.fn_generics.clone(),
         generic_bounds: checked.generic_bounds.clone(),
         call_instances: checked.call_instances.clone(),
+        enums: checked.enums.clone(),
     };
     let mut call_names: HashMap<usize, String> = HashMap::new();
     let mut instance_args: HashMap<String, (String, Vec<Ty>)> = HashMap::new();
@@ -1712,7 +1713,8 @@ fn pattern_core_ok(
             // name is still only legal when the binder collector saw it.
             let is_type_name = crate::compiler::is_primitive_type_name(name.as_str())
                 || checked.aliases.contains_key(name.as_str())
-                || checked.classes.contains_key(name.as_str());
+                || checked.classes.contains_key(name.as_str())
+                || checked.enums.iter().any(|e| e.as_str() == name);
             if !is_type_name && !locals.contains_key(&name) {
                 tirdbg_reject(node);
                 *out = false;
@@ -1846,6 +1848,10 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     if checked.sigs.contains_key(name.as_str())
                         && checked.functions.iter().any(|f| f.sig.name == name && is_core_fn(f))
                     {
+                        return;
+                    }
+                    // Top-level enum names are type names (variant patterns).
+                    if checked.enums.iter().any(|e| e.as_str() == name) {
                         return;
                     }
                     tirdbg_reject(node); *out = false;

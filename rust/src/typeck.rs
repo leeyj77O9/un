@@ -187,6 +187,8 @@ pub struct CheckedProgram {
     pub generic_bounds: HashMap<u32, String>,
     /// Inferred instantiations, keyed by the call node's source start offset.
     pub call_instances: HashMap<usize, CallInstance>,
+    /// Top-level `enum Name` declarations (D-096/D-097 variant patterns).
+    pub enums: Vec<String>,
 }
 
 /// Static information for an `enum Name[T]` with data-carrying variants.
@@ -1674,6 +1676,7 @@ impl<'a> Checker<'a> {
             fn_generics: std::mem::take(&mut self.fn_generics),
             generic_bounds: std::mem::take(&mut self.generic_bounds),
             call_instances: std::mem::take(&mut self.call_instances),
+            enums: std::mem::take(&mut self.enums),
         }
     }
 
