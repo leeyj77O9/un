@@ -7,6 +7,9 @@
 # Local benchmark measurement dumps (scripts/bench.ps1 - results.csv/md per run)
 /bench/results/
 
+# graphify knowledge graph — generated output (graph.json, GRAPH_REPORT.md, graph.html)
+/graphify-out/
+
 # Audit evidence logs are local-only; the report (AUDIT_REVIEW.md) is the tracked record.
 docs/audit/evidence/*.log
 
@@ -19,6 +22,7 @@ __pycache__/
 
 # Local / agent state
 .opencode/
+.planning/
 .claude/
 .cursor/
 .windsurf/

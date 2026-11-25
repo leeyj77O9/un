@@ -10,7 +10,7 @@
 | 게이트 | 기준 |
 |---|---|
 | `cargo build --release` | 오류 0, 경고 0 |
-| `cargo test --release --workspace` | **314 passed** (보고된 crate별 집계: nrt 16 + lib 266 + LSP 24 + playground 8) |
+| `cargo test --release --workspace` | **315 passed** (보고된 crate별 집계: nrt 16 + lib 266 + LSP 24 + playground 8) |
 | `scripts/test.ps1` | Positive **51 files / 1638 passed / 0 failed / 0 crashed**, Negative 51 matched, Known 0 |
 | JIT differential | **102 files / 0 differences** |
 | `.unbc` round-trip | Positive **51/51**, Negative **42 identical** (9 compile-rejected skip) |
@@ -20,8 +20,8 @@
 | Un JIT / Python geomean | **4.428x** (2026-11-24 20:47 +09:00, `ca47f3f` 기준) |
 
 - 총계 314는 `5d7804c` 커밋 메시지와 일치한다. crate별 세부는 문서 간 차이가 있어 **확인 필요**:
-  `docs/README.ko.md`는 nrt 16 + lib 263 + LSP 24 + playground 8,
-  `docs/project/REFACTOR_SUMMARY.md`는 nrt 4 + lib 263 + un bin/LSP 22 + playground 8로 적혀 있다.
+  `docs/README.ko.md`는 nrt 16 + lib 267 + LSP 24 + playground 8,
+  `docs/project/REFACTOR_SUMMARY.md`는 nrt 16 + lib 267 + un bin/LSP 24 + playground 8로 적혀 있다.
 
 ## 1. 우선순위와 파도(Wave)
 
@@ -40,7 +40,7 @@ Wave 1(LANG3, LANG4) 완료. Wave 2: LANG1 완료, LANG5는 opt-level만 완료(
 1. **`un run`과 byte-identical**: stdout/stderr/exit, traceback caret까지 유지. `exe-diff.ps1` 71/0이 회귀 게이트.
 2. **ABI 신중**: 새 `unrt_*` 심볼은 ARC-00 승인, 기존 심볼 시그니처 변경 금지.
 3. **`--embed`는 escape hatch**: 지원 범위를 넓히되 기존 동작을 깨지 않는다.
-4. **검증**: build 0/0, workspace 314, test.ps1 51/1638, compile-check 40/0, exe-diff 71/0,
+4. **검증**: build 0/0, workspace 314, test.ps1 51/1638, compile-check 41/0, exe-diff 75/0,
    differential 102/0, unbc 51/51+42, strict canary 5/5. 상세는 위 '현재 기준' 표 참조.
 
 ## 3. 보류/별도 RFC

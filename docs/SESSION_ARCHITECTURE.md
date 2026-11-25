@@ -176,7 +176,7 @@ purpose: 전체 아키텍처 일관성 유지, 작업 분배, 인터페이스 �
 priority: 최상
 owns:
   dirs: [docs/, vendor/, .github/workflows/]
-  files: [AGENTS.md, INFORMATION.md, SESSION_ARCHITECTURE.md, BENCHMARK.md(승인만),
+  files: [AGENTS.md, INFORMATION.md, docs/SESSION_ARCHITECTURE.md, BENCHMARK.md(승인만),
           rust/Cargo.toml, rust/Cargo.lock, rust-toolchain.toml, .gitignore, .gitattributes]
   shared_primary: rust/src/main.rs   # 커맨드별 기능 소유자는 따로 있으나 변경 승인은 이 세션
 may_not:
@@ -443,7 +443,7 @@ notify: [ARC-00, QA-09]
 | `rust/src/lsp.rs`, `rust/playground/**` | TOOL-08 |  |
 | `test/**`, 게이트 스크립트 6종 | QA-09 | 매니페스트 단일 소유 |
 | `bench/**`, bench 스크립트 3종, `BENCHMARK.md` | BENCH-10 |  |
-| `docs/**`, `AGENTS.md`, `INFORMATION.md`, `SESSION_ARCHITECTURE.md`, `.github/workflows/**`, Cargo/t/toolchain/vendor | ARC-00 |  |
+| `docs/**`, `AGENTS.md`, `INFORMATION.md`, `docs/SESSION_ARCHITECTURE.md`, `.github/workflows/**`, Cargo/t/toolchain/vendor | ARC-00 |  |
 
 ### 6.2 공동 관리 대상 (변경 승인 필수)
 

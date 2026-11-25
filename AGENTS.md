@@ -3,6 +3,21 @@
 이 문서는 이 저장소에서 작업하는 AI 코딩 에이전트를 위한 프로젝트 가이드다.
 사람이 읽는 문서는 `README.md`(영어)와 `docs/README.ko.md`(한국어)를 참고한다.
 
+## MANDATORY — 다중 세션 운영 규칙 (항상 적용)
+
+`docs/OPENCODE_SESSION_SYSTEM.md`는 이 저장소의 **운영 마스터 문서**다. 모든 세션은 작업 전에 반드시 읽고 아래를 지킨다. 이 절은 예외 없이 항상 우선 적용된다.
+
+1. **파일 소유권**: 한 파일에는 한 주 소유자만 둔다(§3.1). 담당 세션이 아닌 파일은 읽기 전용이다. 공동 관리 파일(§3.3)은 소유자와 ARC-00 승인 없이 수정하지 않는다.
+2. **역할 경계**: ARC-00(총괄)은 전문 세션의 구현을 직접 대신하지 않는다(§5.2). 조율·승인·통합·검증만 수행한다. 서브에이전트가 차단되더라도 다른 세션 소유 파일을 직접 수정하지 말고 **blocked로 보고**한다.
+3. **커밋/푸시/배포**: 사용자가 **매 작업마다 명시적으로 요청하지 않으면 절대 하지 않는다**(§1.2 규칙 6, §11). "ㄱㄱ"/"전부" 같은 일반 지시는 커밋 승인으로 해석하지 않는다. 이전에 승인받은 적이 있어도 다음 작업에는 다시 승인을 받는다.
+4. **Work ID**: 모든 작업은 `W-YYYY-MM-DD-NNN` 단위로 부여받아 수행한다(§6). Work ID 없이 파일을 수정하지 않는다.
+5. **검증 증거**: 실행하지 않은 테스트를 통과로 보고하지 않는다(§1.2 규칙 7). 코드 작성 완료(`review`)와 통합 완료(`merged`)를 구분하고(§8.2), 전체 게이트 통과 없이 완료를 선언하지 않는다.
+6. **공개 인터페이스**: `Op`/bytecode/`.unbc`, `Ty`/`TirTy`/`CheckedProgram`, `unrt_*`/`nrt_*` ABI, `nrt_supported` 경계, CLI 옵션 변경은 ARC-00 사전 승인 대상이다(§4).
+7. **사용자 데이터/기존 변경 보존**: `main.un`(사용자 스크래치)과 `docs/audit/evidence/**`는 수정 금지. 기존 untracked/변경 사항을 덮어쓰거나 정리하지 않는다.
+8. **병렬 원칙**: 병렬 수정은 별도 worktree에서만. 같은 파일을 동시에 수정하지 않는다. 공유 `un.exe` 재빌드와 그 바이너리를 쓰는 테스트를 동시에 실행하지 않는다.
+
+위 규칙과 충돌하는 기존 관행(예: 과거 세션에서 ARC-00이 직접 코드를 수정하고 커밋했던 이력)은 모두 폐기된 선례다. 현재 규칙이 항상 우선한다.
+
 ## 프로젝트 개요
 
 - **Un**: 들여쓰기 기반 문법, 패턴 매칭, `go`/`wait` 비동기 실행을 제공하는 동적 타입 스크립팅 언어.
@@ -62,7 +77,7 @@ rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path ru
 # WASM 산출물 (un-playground용)
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --target wasm32-unknown-unknown --manifest-path rust/Cargo.toml -p unvm-playground
 
-# Rust 테스트 (nrt 16 + lib 263 + LSP 24 + playground 8 = 314 passed)
+# Rust 테스트 (nrt 16 + lib 267 + LSP 24 + playground 8 = 315 passed)
 rustup run stable-x86_64-pc-windows-gnu cargo test --release --workspace --manifest-path rust/Cargo.toml
 
 # 전체 테스트 runner ( Positive + Negative + KnownFailures + KnownDivergent 집계 )
@@ -237,8 +252,8 @@ C:\dev\un
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 51 files /
   1638 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
   Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다. (2026-11-23 재측정)
-  그 외 게이트: `cargo test --release --workspace` 314 passed, differential 102 파일 / 0 차이,
-  `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 40/0, exe-diff 71/0.
+  그 외 게이트: `cargo test --release --workspace` 315 passed, differential 102 파일 / 0 차이,
+  `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 41/0, exe-diff 75/0.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).
 - `test/KnownFailures.txt`의 파일은 runner가 KNOWN FAIL로 기록하고 Positive 집계에
@@ -277,3 +292,17 @@ C:\dev\un
   커밋/푸시하지 않는다.**
 - `.gitignore`에는 `bin/`, `obj/`가 없다(현재 `bin/`·`obj/` 디렉터리는 존재하지 않지만, 그런 경로가 생겨도 자동으로 제외되지 않는다). 로컬 에이전트 상태 디렉터리는 제외된다.
 - 생성된 빌드 산출물이나 도구 캐시를 저장소에 추가하지 않는다.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+
+Rules:
+- When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code. Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. When the answer is under a Markdown heading, `graphify section "<heading>"` prints that section's text, so the .md need not be opened. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.

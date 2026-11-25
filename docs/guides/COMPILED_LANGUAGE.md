@@ -57,7 +57,7 @@
 ### 1.3 `unrt_*` / `un_math_*` C ABI
 
 - VM 측 구현은 `rust/src/unrt.rs`, no-VM 측 구현은 `rust/nrt/`(외부 의존성 0)이며,
-  두 구현은 `natcode.rs`의 import 선언과 1:1로 대응한다(`SESSION_ARCHITECTURE.md:323-326`).
+  두 구현은 `natcode.rs`의 import 선언과 1:1로 대응한다(`docs/SESSION_ARCHITECTURE.md:323-326`).
 - 값 표현: NRT는 `#[repr(C)] NObj { tag: i64, a: i64, b: i64 }`를 `Box::into_raw`로 할당하고
   `u64` 핸들로 주고받는다(`rust/nrt/src/obj.rs:6-12, 39-47`). tag 의미는
   `0=Int, 1=Float, 2=Bool, 3=List, 4=None, 5=Error, 6=Str, 7=Dict, 8=Closure, 9=Class instance, 10=Panic`
@@ -81,7 +81,7 @@ source → parse/optimize → typeck → TIR → nrt_supported → obj_compile(.
        → 생성된 driver.rs → rustc + libnrt.a  →  exe (약 5 MB, VM 없음)
 ```
 
-- 근거: `SESSION_ARCHITECTURE.md:73`, `rust/src/main.rs:988-1017, 1083-1189`,
+- 근거: `docs/SESSION_ARCHITECTURE.md:73`, `rust/src/main.rs:988-1017, 1083-1189`,
   `docs/guides/CLI.md:262-273`.
 - 링크는 rustup self-contained mingw gcc 경유 `rustc`가 수행한다. `--target x86_64-pc-windows-gnu`,
   `--edition 2021`, `linker=<gcc>`, `link-arg=<libnrt.a>`, `-lmingw32 -lmsvcrt -lmingwex -lgcc ...`
@@ -98,7 +98,7 @@ source → compile(.unbc) → driver.rs(include_bytes!) → rustc + libunvm.a �
 extern "C" { fn unvm_run_embedded(bytes: *const u8, len: usize) -> i32; }
 ```
 
-- 근거: `rust/src/main.rs:866-934`, `docs/guides/CLI.md:283-287`, `SESSION_ARCHITECTURE.md:74`.
+- 근거: `rust/src/main.rs:866-934`, `docs/guides/CLI.md:283-287`, `docs/SESSION_ARCHITECTURE.md:74`.
 - 임의의 Un 프로그램(클래스, 컬렉션, IO, 문자열 보간)이 동작하며 인터프리터 의미론을 유지한다.
 - `.obj` 산출물은 Windows/GNU에서 **COFF**다(`docs/guides/CLI.md:249-251`). 다른 포맷/타깃 지원 여부는
   **확인 필요**.
@@ -255,7 +255,7 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 | `W-2026-11-24-TOOL4` 패키지 매니저 | `use` 경로 해석(`Global.PATH`) 위 manifest/버전 고정, 잠금 파일 | 모듈 import 동작(`AGENTS.md`), 3장 버전 제안과 연계 | 선언적 의존성 설치 + 재현 가능한 빌드 |
 
 - 공통 원칙(`COMPILER_LANGUAGE_ROADMAP.md:18-23`): byte-identical 유지, ABI 신중, `--embed` escape hatch,
-  기존 게이트 통과. 새 심볼/경계 변경은 ARC-00 승인 사항이다(`SESSION_ARCHITECTURE.md:310`).
+  기존 게이트 통과. 새 심볼/경계 변경은 ARC-00 승인 사항이다(`docs/SESSION_ARCHITECTURE.md:310`).
 - 우선순위 제안: `TOOL1`(빌드 비용) → `TOOL2`(디버깅 경험) → `TOOL3`(배포) → `TOOL4`(생태계).
 
 ## 부록 A. 근거 파일 색인
@@ -268,7 +268,7 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 | 바이트코드/버전 | `docs/spec/BYTECODE.md`, `docs/spec/ARCHITECTURE.md` |
 | 객체 모델/ABI | `rust/src/runtime/obj.rs`, `rust/src/unrt.rs`, `rust/nrt/src/obj.rs`, `rust/nrt/src/abi.rs`, `rust/nrt/src/class.rs` |
 | 빌드 드라이버/거부 | `rust/src/main.rs`, `rust/src/compiler.rs`, `rust/src/tir.rs` |
-| Work/권한 | `docs/project/COMPILER_LANGUAGE_ROADMAP.md`, `SESSION_ARCHITECTURE.md`, `OPENCODE_SESSION_SYSTEM.md` |
+| Work/권한 | `docs/project/COMPILER_LANGUAGE_ROADMAP.md`, `docs/SESSION_ARCHITECTURE.md`, `docs/OPENCODE_SESSION_SYSTEM.md` |
 
 ## 부록 B. `확인 필요` 항목 모음
 

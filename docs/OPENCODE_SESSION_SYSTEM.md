@@ -2,7 +2,7 @@
 
 > 목적: Un 저장소를 여러 OpenCode 세션이 병렬로 개발하되, 담당 범위·파일 소유권·인터페이스 변경·검증·통합 절차를 일관되게 관리한다.
 >
-> 이 문서는 `SESSION_ARCHITECTURE.md`의 실제 저장소 분석을 바탕으로 작성한 운영용 마스터 문서다. 별도 Agent 파일을 여러 개 만들지 않고, 이 파일 하나를 기준으로 각 세션에 해당 역할 프롬프트를 전달할 수 있도록 구성했다.
+> 이 문서는 `docs/SESSION_ARCHITECTURE.md`의 실제 저장소 분석을 바탕으로 작성한 운영용 마스터 문서다. 별도 Agent 파일을 여러 개 만들지 않고, 이 파일 하나를 기준으로 각 세션에 해당 역할 프롬프트를 전달할 수 있도록 구성했다.
 
 ## 1. 운영 모델
 
@@ -58,7 +58,7 @@ OpenCode의 여러 세션은 역할과 대화 컨텍스트가 분리되어도, �
 
 ### 2.1 작업 전
 
-- 프로젝트 루트의 `AGENTS.md`, `SESSION_ARCHITECTURE.md`, 이 문서를 먼저 읽는다.
+- 프로젝트 루트의 `AGENTS.md`, `docs/SESSION_ARCHITECTURE.md`, `docs/OPENCODE_SESSION_SYSTEM.md`를 먼저 읽는다.
 - 작업 트리의 현재 브랜치, 변경 사항, untracked 파일을 확인한다.
 - 기존 변경 사항을 덮어쓰거나 정리하지 않는다.
 - 담당 범위와 파일 소유권을 확인한다.
@@ -209,7 +209,7 @@ Git 상태:
 너는 Un 프로젝트의 독립 전문 개발 세션이다.
 
 작업을 시작하기 전에 프로젝트 루트의 AGENTS.md,
-SESSION_ARCHITECTURE.md, OPENCODE_SESSION_SYSTEM.md를 읽어라.
+docs/SESSION_ARCHITECTURE.md, docs/OPENCODE_SESSION_SYSTEM.md를 읽어라.
 (이 문서의 실제 파일명이 다르면 현재 제공된 운영 문서를 기준으로 한다.)
 
 반드시 네 세션 ID의 담당 범위와 파일 소유권을 준수한다.
@@ -253,7 +253,7 @@ SESSION_ARCHITECTURE.md, OPENCODE_SESSION_SYSTEM.md를 읽어라.
 
 주 소유:
 - docs/**
-- AGENTS.md, INFORMATION.md, SESSION_ARCHITECTURE.md
+- AGENTS.md, INFORMATION.md, docs/SESSION_ARCHITECTURE.md
 - .github/workflows/**
 - rust/Cargo.toml, rust/Cargo.lock, rust-toolchain.toml
 - .gitignore, .gitattributes, vendor/**
@@ -837,10 +837,10 @@ ARC-00은 기능 요청을 받으면 다음 형식으로 작업을 분배한다.
 
 ## 10. 최초 도입 절차
 
-1. 이 파일을 프로젝트 루트에 `OPENCODE_SESSION_SYSTEM.md`로 저장한다.
+1. 이 파일을 `docs/OPENCODE_SESSION_SYSTEM.md`로 저장한다.
 2. OpenCode에서 프로젝트를 열고 ARC-00 세션을 생성한다.
 3. ARC-00에 §5.1 공통 프롬프트와 §5.2 ARC-00 역할 프롬프트를 전달한다.
-4. ARC-00이 저장소의 `AGENTS.md`, `SESSION_ARCHITECTURE.md`, 이 운영 문서를 읽고 현재 HEAD와 작업 트리를 확인하게 한다.
+4. ARC-00이 저장소의 `AGENTS.md`, `docs/SESSION_ARCHITECTURE.md`, `docs/OPENCODE_SESSION_SYSTEM.md`를 읽고 현재 HEAD와 작업 트리를 확인하게 한다.
 5. ARC-00이 초기 게이트 상태와 진행 중인 변경을 기록하게 한다.
 6. 필요한 전문 세션만 생성하고, 각 세션에 공통 프롬프트와 해당 역할 프롬프트를 전달한다.
 7. 전문 세션은 Work ID가 부여된 작업만 수행한다.
@@ -851,7 +851,7 @@ ARC-00은 기능 요청을 받으면 다음 형식으로 작업을 분배한다.
 ```text
 이 프로젝트에서 너의 세션 ID는 [SESSION ID]다.
 
-프로젝트 루트의 OPENCODE_SESSION_SYSTEM.md를 읽고,
+docs/OPENCODE_SESSION_SYSTEM.md를 읽고,
 §2의 공통 규칙과 §5의 네 역할 정의를 적용해라.
 
 아직 코드를 수정하지 마라.
