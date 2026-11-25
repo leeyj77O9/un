@@ -1712,6 +1712,22 @@ impl Parser {
         } else {
             self.parse_identifier()?
         };
+        // Qualified type paths (`mod.Type`, `a.b.Type`). Fold the whole path
+        // into the same single `Identifier` node used by every other type
+        // annotation, carrying the exact source text, so typeck's text-based
+        // parser keeps seeing an unchanged node shape. Interpreting the
+        // qualified name belongs to CMP-05; the parser only preserves it.
+        // The lookahead leaves a stray `.` with the caller, so malformed
+        // annotations keep their existing error path.
+        while self.current().typ == TokenType::Dot
+            && self.peek_type(1) == Some(TokenType::Identifier)
+        {
+            self.next(); // '.'
+            let member = self.parse_identifier()?;
+            let length = len(n(&typ), n(&member));
+            typ = Node::new(typ.start, length, NodeKind::Identifier)
+                .with_value(Const::Str(self.get_text(typ.start, length)));
+        }
         if self.match_(TokenType::LBrack) {
             let inner_start = typ.start;
             if self.current().typ != TokenType::RBrack {
@@ -2262,5 +2278,75 @@ mod tests {
         let mut texts = Vec::new();
         func_type_texts(&root, &mut texts);
         assert_eq!(texts, vec!["func(int) -> int".to_string()]);
+    }
+
+    /// Collect the exact source text of type nodes carrying a qualified
+    /// (`mod.Type`) path. Qualified types are ordinary Identifier nodes, so
+    /// this also proves no new NodeKind/value shape was introduced.
+    fn qualified_type_texts(node: &Node, out: &mut Vec<String>) {
+        if let Some(Const::Str(text)) = &node.value {
+            if text.contains("types.") {
+                out.push(text.clone());
+            }
+        }
+        for child in &node.children {
+            qualified_type_texts(child, out);
+        }
+    }
+
+    #[test]
+    fn parses_qualified_type_in_variable_parameter_and_return() {
+        let root = parse_text(
+            "use types\n\
+             x: types.u32 = 7\n\
+             fn f(x: types.u32) -> types.u32\n    -> x\n",
+        );
+        let mut texts = Vec::new();
+        qualified_type_texts(&root, &mut texts);
+        assert_eq!(
+            texts,
+            vec![
+                "types.u32".to_string(),
+                "types.u32".to_string(),
+                "types.u32".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_nested_qualified_types() {
+        let root = parse_text(
+            "use types\n\
+             fn f(xs: list[types.u32], d: dict[types.u32, types.i64]) -> types.u32 | types.i64\n    -> 0\n",
+        );
+        let mut texts = Vec::new();
+        qualified_type_texts(&root, &mut texts);
+        assert_eq!(
+            texts,
+            vec![
+                "list[types.u32]".to_string(),
+                "dict[types.u32, types.i64]".to_string(),
+                "types.u32 | types.i64".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_qualified_type_in_type_alias() {
+        let root = parse_text("use types\ntype U = types.u32\n");
+        let mut texts = Vec::new();
+        qualified_type_texts(&root, &mut texts);
+        assert_eq!(texts, vec!["types.u32".to_string()]);
+    }
+
+    #[test]
+    fn qualified_type_syntax_leaves_expression_member_access_unchanged() {
+        let root = parse_text("use types\nx = types.u32()\n");
+        let mut texts = Vec::new();
+        qualified_type_texts(&root, &mut texts);
+        assert!(
+            texts.is_empty(),
+            "expression member access must not be folded as a type: {texts:?}"
+        );
     }
 }

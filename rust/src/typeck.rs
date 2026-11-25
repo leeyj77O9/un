@@ -398,8 +398,10 @@ impl<'a> Checker<'a> {
         // FE-01 carries the complete `func(...) -> ...` spelling in a
         // `Const::Str` on the annotation node. Prefer it when present so the
         // resolver sees the whole type even if the node span is narrower.
+        // The same applies to qualified fixed-width atoms (`types.u32`).
         if let Some(Const::Str(value)) = &node.value {
-            if value.trim_start().starts_with("func(") {
+            let trimmed = value.trim_start();
+            if trimmed.starts_with("func(") || contains_qualified_fixed_width(trimmed) {
                 return value.clone();
             }
         }
@@ -625,6 +627,9 @@ impl<'a> Checker<'a> {
     }
 
     fn resolve_type_atom(&mut self, name: &str, span: (usize, usize), depth: usize) -> Ty {
+        // `types.u32` resolves exactly like bare `u32`: the import check,
+        // the Float/Int mapping and the unknown-type diagnostic all stay shared.
+        let name = strip_types_qualifier(name);
         match name {
             "int" => Ty::Int,
             "float" => Ty::Float,
@@ -713,8 +718,43 @@ fn is_fixed_width_alias(name: &str) -> bool {
     )
 }
 
+/// FE-01 hands a qualified fixed-width annotation over as one text atom
+/// (`types.u32`). Strip the `types.` qualifier so the qualified spelling takes
+/// exactly the same resolution and range-check path as the bare `u32` spelling.
+/// Anything else is returned unchanged.
+fn strip_types_qualifier(name: &str) -> &str {
+    let trimmed = name.trim();
+    if let Some(rest) = trimmed.strip_prefix("types.") {
+        let rest = rest.trim();
+        if is_fixed_width_alias(rest) {
+            return rest;
+        }
+    }
+    name
+}
+
+/// True when a `Const::Str` annotation atom mentions a `types.<fixed-width>`
+/// spelling anywhere (including nested text such as `list[types.u32]`), so
+/// `text_of` must prefer the carried text over the node's source span.
+fn contains_qualified_fixed_width(text: &str) -> bool {
+    let mut offset = 0;
+    while let Some(rel) = text[offset..].find("types.") {
+        let start = offset + rel + "types.".len();
+        let after = &text[start..];
+        let name_len = after
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            .count();
+        if is_fixed_width_alias(&after[..name_len]) {
+            return true;
+        }
+        offset = start;
+    }
+    false
+}
+
 fn fixed_width_bounds(name: &str) -> Option<(&'static str, (i128, i128))> {
-    Some(match name {
+    Some(match strip_types_qualifier(name) {
         "u8" => ("u8", (0, 255)),
         "u16" => ("u16", (0, u16::MAX as i128)),
         "u32" => ("u32", (0, u32::MAX as i128)),
@@ -5674,5 +5714,191 @@ mod tests {
             Some(text.find("list[").unwrap() + "list".len())
         );
         assert_eq!(find_top_bracket("func(list[int], int) -> int"), None);
+    }
+
+    /// FE-01 hands `types.u32` over as one `Const::Str` annotation atom. The
+    /// source span here is deliberately blank so the assertion also proves
+    /// `text_of` prefers the carried text over the span.
+    fn qualified_annotation_node(text: &str) -> Node {
+        Node::new(0, 0, NodeKind::Identifier).with_value(Const::Str(text.to_string()))
+    }
+
+    #[test]
+    fn qualified_fixed_width_annotation_resolves_like_bare() {
+        let cases = [
+            ("types.u8", Ty::Int),
+            ("types.u16", Ty::Int),
+            ("types.u32", Ty::Int),
+            ("types.u64", Ty::Int),
+            ("types.i8", Ty::Int),
+            ("types.i16", Ty::Int),
+            ("types.i32", Ty::Int),
+            ("types.i64", Ty::Int),
+            ("types.f32", Ty::Float),
+            ("types.f64", Ty::Float),
+        ];
+        for (text, expected) in cases {
+            let source = Source::new("qualified.un", "  ");
+            let node = qualified_annotation_node(text);
+            let root = Node::new(0, 0, NodeKind::Block);
+            let mut checker = checker_for(&source, &root);
+            checker.import_names.push("types".to_string());
+            let ty = checker.parse_annotation_node(&node);
+            assert_eq!(ty, expected, "annotation: {text}");
+            assert!(checker.errors.is_empty(), "unexpected errors for {text}");
+        }
+    }
+
+    #[test]
+    fn qualified_fixed_width_without_import_is_unknown() {
+        let text = "types.u32";
+        let source = Source::new("qualified.un", "  ");
+        let node = qualified_annotation_node(text);
+        let root = Node::new(0, 0, NodeKind::Block);
+        let mut checker = checker_for(&source, &root);
+        let ty = checker.parse_annotation_node(&node);
+        assert_eq!(ty, Ty::Unknown);
+        assert!(
+            checker.errors.iter().any(|e| e.message.contains("unknown type 'u32'")),
+            "expected the same unknown-type diagnostic as bare u32, got {:?}",
+            checker.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn qualified_fixed_width_bounds_match_bare() {
+        for qualified in ["types.u8", "types.u16", "types.u32", "types.u64",
+                          "types.i8", "types.i16", "types.i32", "types.i64"] {
+            let bare = &qualified["types.".len()..];
+            assert_eq!(
+                fixed_width_bounds(qualified),
+                fixed_width_bounds(bare),
+                "bounds must match for {qualified}"
+            );
+        }
+        assert_eq!(fixed_width_bounds("types.f32"), None);
+        assert_eq!(fixed_width_bounds("f32"), None);
+    }
+
+    #[test]
+    fn nested_qualified_fixed_width_annotations() {
+        let cases = [
+            ("list[types.u32]", "list[int]", true),
+            ("types.u32 | types.i64", "int", true),
+            ("dict[types.i32, types.f64]", "dict[int, float]", true),
+            ("func(types.u64) -> types.i8", "fn(int) -> int", true),
+            ("list[types.u32]", "list[<unknown>]", false),
+        ];
+        for (text, expected, imported) in cases {
+            let source = Source::new("qualified.un", "  ");
+            let node = qualified_annotation_node(text);
+            let root = Node::new(0, 0, NodeKind::Block);
+            let mut checker = checker_for(&source, &root);
+            if imported {
+                checker.import_names.push("types".to_string());
+            }
+            let ty = checker.parse_annotation_node(&node);
+            assert_eq!(ty.display(), expected, "annotation: {text}");
+            if imported {
+                assert!(checker.errors.is_empty(), "unexpected errors for {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn qualified_fixed_width_range_check_uses_bare_semantics() {
+        let code = "types.u8";
+        let source = Source::new("qualified.un", code);
+        let ann = Node::new(0, 0, NodeKind::Identifier)
+            .with_value(Const::Str("types.u8".to_string()));
+        let typed = Node::with_children(
+            0,
+            code.len(),
+            NodeKind::Typed,
+            None,
+            vec![Node::new(0, 1, NodeKind::Identifier), ann],
+        );
+        let val = Node::new(0, 1, NodeKind::Integer).with_value(Const::Int(7));
+        let assign = Node::with_children(0, code.len(), NodeKind::Assign, None, vec![typed, val]);
+        let root = Node::with_children(0, code.len(), NodeKind::Block, None, vec![assign]);
+        let mut checker = checker_for(&source, &root);
+        checker.import_names.push("types".to_string());
+        assert!(matches!(checker.run(), Ok(_)), "in-range `types.u8 = 7` must typecheck");
+
+        let ann = Node::new(0, 0, NodeKind::Identifier)
+            .with_value(Const::Str("types.u8".to_string()));
+        let typed = Node::with_children(
+            0,
+            code.len(),
+            NodeKind::Typed,
+            None,
+            vec![Node::new(0, 1, NodeKind::Identifier), ann],
+        );
+        let val = Node::new(0, 1, NodeKind::Integer).with_value(Const::Int(300));
+        let assign = Node::with_children(0, code.len(), NodeKind::Assign, None, vec![typed, val]);
+        let root = Node::with_children(0, code.len(), NodeKind::Block, None, vec![assign]);
+        let mut checker = checker_for(&source, &root);
+        checker.import_names.push("types".to_string());
+        let errors = match checker.run() {
+            Ok(_) => panic!("out-of-range `types.u8 = 300` must be rejected"),
+            Err(errors) => errors,
+        };
+        assert!(
+            errors.iter().any(|e| e.message.contains("value 300 out of range for u8")),
+            "expected the bare-u8 range diagnostic, got {:?}",
+            errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn qualified_fixed_width_in_fully_typed_mode_matches_bare() {
+        let strict = || CheckOptions { forbid_dynamic: true };
+        for (bare, qualified, expected) in [
+            ("u32", "types.u32", Ty::Int),
+            ("i64", "types.i64", Ty::Int),
+            ("f32", "types.f32", Ty::Float),
+        ] {
+            for text in [bare, qualified] {
+                let source = Source::new("qualified.un", text);
+                let node = Node::new(0, text.len(), NodeKind::Identifier)
+                    .with_value(Const::Str(text.to_string()));
+                let root = Node::new(0, 0, NodeKind::Block);
+                let mut checker = Checker::new(&source, &root, strict());
+                checker.import_names.push("types".to_string());
+                let ty = checker.parse_annotation_node(&node);
+                assert_eq!(ty, expected, "fully typed annotation: {text}");
+                assert!(checker.errors.is_empty(), "unexpected errors for {text}");
+            }
+        }
+
+        // Unions stay rejected in `un build` for both spellings.
+        for text in ["u32 | i64", "types.u32 | types.i64"] {
+            let source = Source::new("qualified.un", text);
+            let node = Node::new(0, text.len(), NodeKind::Identifier)
+                .with_value(Const::Str(text.to_string()));
+            let root = Node::new(0, 0, NodeKind::Block);
+            let mut checker = Checker::new(&source, &root, strict());
+            checker.import_names.push("types".to_string());
+            checker.parse_annotation_node(&node);
+            assert!(
+                checker.errors.iter().any(|e| e.message.contains("union type is not allowed in un build")),
+                "expected the fully-typed union rejection for {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn qualified_fixed_width_from_source_span() {
+        // Without a Const::Str, the resolver must still read the qualifier from
+        // the real source span (a plain source-level type annotation).
+        let text = "types.i64";
+        let source = Source::new("qualified.un", text);
+        let node = Node::new(0, text.len(), NodeKind::Identifier);
+        let root = Node::new(0, 0, NodeKind::Block);
+        let mut checker = checker_for(&source, &root);
+        checker.import_names.push("types".to_string());
+        let ty = checker.parse_annotation_node(&node);
+        assert_eq!(ty, Ty::Int);
+        assert!(checker.errors.is_empty());
     }
 }
