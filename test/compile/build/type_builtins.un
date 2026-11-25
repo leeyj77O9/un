@@ -1,0 +1,15 @@
+use io
+use bytes
+
+fn main() -> none
+    io.write(type(1))
+    io.write(repr(1))
+    io.write(str(1))
+    io.write(type(b'abc'))
+    io.write(type(bytes.from_str('abc')))
+    io.write(type(type(1)))
+    a = 1
+    b = 2
+    io.write(type(a) == type(b))
+
+main()

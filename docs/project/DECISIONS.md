@@ -1449,3 +1449,7 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - **영향 파일**: `runtime/obj.rs`(RT-03), `nrt/src/obj.rs`(NRT-06), `native/bytes.rs`(NAT-07), JIT tag 판정(JIT-04), 게이트(QA-09).
 - **근거**: AGENTS.md 후속 지점, `native/bytes.rs:5-33` 계약 주석.
 - **검증**: `scripts/test.ps1`, `differential.ps1`, `exe-diff.ps1`, `unbc-roundtrip.ps1 -IncludeNegative`, strict canary 5종.
+### D-097 후속 정정 (2026-11-25, PATTYPE/NRTINHERIT 실측)
+- VM의 타입 패턴(`Pattern::Type`)은 `class_tobj(name)` → `is_obj` → `Types::accepts`의 **이름 매칭**만 수행한다. `obj_is`의 `__is__` 디스패치는 non-TObj RHS에서만 도달하며 타입 패턴에서는 호출되지 않는다(`vm/mod.rs:1714-1720, 2087-2097`, `test/unit/runtime/classes.un:110-116`).
+- 따라서 위 §4의 "`__is__` 포함" 기술은 실제와 달랐다. plain 미지원 분기에서 NRT가 `__is__`를 호출해 VM과 불일치(및 typed `__is__`에서 0xC0000005 crash)가 발생 → NRT의 `user_is` 디스패치 제거로 정렬.
+- 상속客户关系도 VM `Types::accepts`가 부모를 포함하지 않아 `c is Base`가 false. `TirProgram.class_parents`는 수집하되 driver에 배선하지 않음(배선 시 plain만 true가 되어 byte-identical 위반).

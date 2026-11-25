@@ -1,0 +1,12 @@
+use io
+use bytes
+
+fn main() -> none
+    b = b'abc'
+    io.write(type(b))
+    io.write(repr(b))
+    io.write(b[1])
+    io.write(bytes.to_hex(b))
+    io.write(len(b))
+
+main()

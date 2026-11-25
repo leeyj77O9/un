@@ -218,7 +218,7 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 | 함수 타입 반환 (`-> func(..) -> ..`) | **지원** — `TirTy::Lambda(u32::MAX)` 반환, JIT 센티넬 유출은 proto bail로 차단 | 불필요 | `tir.rs::core_rejection_reason`, `jit_bc.rs`, `test/compile/build/func_return.un` |
 | tuple/list 구조분해 (`case (a, b)`) | **지원** — 정확한 길이 일치, 중첩·guard·or-pattern 포함 | 불필요 | `tir.rs::TirPattern::Tuple`, `unrt_match_seq_len/get`, `test/compile/build/tuple_pattern.un` |
 | class/variant pattern (`case Point(x, y)`) | **지원** — positional/named 필드 구조분해 + variant payload, 기존 unrt ABI 재사용 | 불필요 | `tir.rs::TirPattern::{Class,Variant,Fields}`, `test/compile/build/{class,variant}_pattern.un` |
-| 타입 이름 패턴 (`int ->`, `Id ->`) | **지원** — `unrt_type_is`로 `is`와 동일 검사, 별칭은 Or(Type…)로 펼침 | 클래스 상속·사용자 `__is__`는 `--embed` | D-097, `test/compile/build/type_pattern.un` |
+| 타입 이름 패턴 (`int ->`, `Id ->`) | **지원** — `unrt_type_is`로 `is`와 동일한 이름 매칭, 별칭은 Or(Type…)로 펼침 | 클래스 상속 이름 매치·`__is__`는 VM이 하지 않으므로 미배선 | D-097 + D-097 후속, `test/compile/build/type_pattern.un` |
 | 시간 시드 `random` | 거부(byte-identical 불가) | 예 | `tir.rs:609, 702-706` |
 | `bytes` 모듈(12함수) / `fs.read_bytes`/`write_bytes` | 지원 | 불필요 | `nrt/src/bytes_native.rs`, `test/compile/build/bytes_module.un` |
 | 바이트 리터럴 `b"..."` | **지원** (`26d457f` 이후 plain build 가능) | 불필요 | `tir.rs` Bytes core-lowering; `test/compile/build/bytes_module.un` |

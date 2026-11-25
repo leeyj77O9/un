@@ -286,6 +286,17 @@ runtime statically). Embed mode works for **any** Un program — classes,
 collections, IO, string interpolation — and produces a single self-contained
 executable. See `docs/compile/OBJ_MILESTONES.md`.
 
+**Build cache (TOOL1).** Successful builds are cached under
+`%TEMP%\un-build-cache-v1` (the OS temp directory; no build artifacts are
+added to the repository). The key is the source bytes (including inlined user
+modules), input path, `embed`/`allow-dynamic`/`opt-level` flags, target triple,
+and the identity of rustc, the linker, `un.exe` and the static runtime library
+(`libnrt.a` / `libunvm.a`). A hit copies the cached exe to the requested output
+and replays the `skipped:` warnings and rustc diagnostics captured on the miss,
+so stdout, stderr and exit code are the same as a fresh build. Set
+`UV_BUILD_CACHE=0` (also `off` or `false`) to disable
+the cache and always rebuild. Removing the cache directory is safe.
+
 ### `un lsp`
 
 Run a minimal Language Server Protocol server over stdin/stdout (stdio).
