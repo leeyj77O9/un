@@ -77,7 +77,7 @@ rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path ru
 # WASM 산출물 (un-playground용)
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --target wasm32-unknown-unknown --manifest-path rust/Cargo.toml -p unvm-playground
 
-# Rust 테스트 (nrt 16 + lib 292 + LSP 24 + playground 8 = 340 passed)
+# Rust 테스트 (nrt 16 + lib 294 + LSP 24 + playground 8 = 346 passed)
 rustup run stable-x86_64-pc-windows-gnu cargo test --release --workspace --manifest-path rust/Cargo.toml
 
 # 전체 테스트 runner ( Positive + Negative + KnownFailures + KnownDivergent 집계 )
@@ -252,7 +252,7 @@ C:\dev\un
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 51 files /
   1638 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
   Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다. (2026-11-23 재측정)
-  그 외 게이트: `cargo test --release --workspace` 340 passed, differential 102 파일 / 0 차이,
+  그 외 게이트: `cargo test --release --workspace` 346 passed, differential 102 파일 / 0 차이,
   `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 42/0, exe-diff 77/0.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).

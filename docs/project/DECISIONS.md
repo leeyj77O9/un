@@ -1437,3 +1437,15 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
   `docs/spec/BYTECODE.md`, `docs/guides/COMPILED_LANGUAGE.md`.
 - **검증**: `int`→100 / `float`→-100.1 / 별칭 int·float 양쪽 / tuple 중첩 `(int,float)`→1,
   `(float,float)`→3. `un run` ≡ `un native` ≡ plain `un build` byte-identical.
+## D-098 | bytes 값을 전용 Payload::Bytes 표현으로 전환 | Accepted
+
+- **배경**: `native/bytes.rs:5-33`은 `bytes` 값을 `Payload::List` + `Int(0..=255)`로 흉내내는 임시 표현을 쓰고 있다. 어댑터 세 함수(`bytes_obj`/`as_bytes`/`is_bytes`)만 교체하면 나머지 native 코드는 그대로 새 표현을 쓰도록 설계돼 있다(32개 호출 지점).
+- **결정**:
+  1. `ObjData`/`Payload`에 `Bytes(Vec<u8>)` variant를 추가한다. VM과 NRT 양쪽에 동일하게 구현한다(`rust/src/runtime/obj.rs`, `rust/nrt/src/obj.rs`).
+  2. `native/bytes.rs`의 어댑터 세 함수만 `Payload::Bytes`를 우선 사용하도록 교체한다. 편의 입력(Str / 0..=255 Int 리스트)은 유지한다.
+  3. `fs.read_bytes`/`write_bytes`가 어댑터를 거치므로 자동으로 새 표현을 사용한다.
+  4. **tag/JIT 계약**: `Payload::Bytes`는 `Payload::List`와 동일한 NObj tag를 유지하거나 새 tag를 명시적으로 할당해야 한다 — JIT tag 표는 `jit_cache.rs`가 단일 소스.
+  5. byte-identical 게이트 필수: `bytes` 모듈 12함수 결과, `type(b)`/`repr(b)`, `fs.read_bytes` → `io.write` 등 4레인 비교.
+- **영향 파일**: `runtime/obj.rs`(RT-03), `nrt/src/obj.rs`(NRT-06), `native/bytes.rs`(NAT-07), JIT tag 판정(JIT-04), 게이트(QA-09).
+- **근거**: AGENTS.md 후속 지점, `native/bytes.rs:5-33` 계약 주석.
+- **검증**: `scripts/test.ps1`, `differential.ps1`, `exe-diff.ps1`, `unbc-roundtrip.ps1 -IncludeNegative`, strict canary 5종.

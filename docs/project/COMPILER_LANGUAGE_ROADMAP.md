@@ -53,8 +53,8 @@ Wave 1(LANG3, LANG4) 완료. Wave 2: LANG1 완료, LANG5는 opt-level만 완료(
 
 | 잔여 항목 | 근거 | 상태 |
 |---|---|---|
-| class/variant pattern AOT + named field/spread | D-096 §3 (새 type dispatch ABI 별도 범위), `COMPILED_LANGUAGE.md:220` | 미구현 |
-| 함수 반환 타입 `-> func(...)` | D-095 후속 — VM이 `-> funcname`을 int로 반환하는 기존 버그 선행 수정 필요, `COMPILED_LANGUAGE.md:218` | 미구현 |
+| class/variant pattern AOT + named field | W-FIELDDESTRUCT 완료 — positional/named `TirPattern::Fields` 코드젠, 기존 unrt ABI 재사용 | 완료 |
+| 함수 반환 타입 `-> func(...)` | W-FUNCRET + W-JITROOT 완료 — JIT 센티넬 유출 proto bail, 3레인 byte-identical | 완료 |
 | 타입 패턴 상속 / 사용자 `__is__` | D-097 §4 — NRT는 tag 기반 정확 비교라 `--embed` 유지 필요(`ca47f3f` 커밋 메시지) | 미구현(plain) |
 | `go`/`wait` 진짜 병렬(안 A) | LANG2는 안 B(명시 거부)만 완료; D-012/D-054/D-063 폐기·byte-identical 충돌로 RFC 대기 | RFC |
 | CLI 빌드 캐시 기초 | LANG5의 opt-level은 완료, 캐시(TOOL1) 미착수 | 미구현 |
