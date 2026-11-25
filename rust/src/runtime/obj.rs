@@ -51,6 +51,10 @@ pub enum Payload {    Plain,
     WebSocket(Rc<RefCell<crate::native::net::WsState>>),
 
     List(Rc<RefCell<Vec<Obj>>>),
+    /// Dedicated byte-string representation (D-098). Externally it behaves
+    /// like the legacy `List` + `Int(0..=255)` view with type name `bytes`;
+    /// both representations remain readable during the adapter transition.
+    Bytes(Vec<u8>),
     Dict(Rc<RefCell<KeyMap>>),
     Set(Rc<RefCell<crate::runtime::collections::KeyMap>>),
     Tup(Rc<Vec<Obj>>, Rc<Vec<String>>),
@@ -94,6 +98,7 @@ impl std::fmt::Debug for Payload {
             Payload::AtomicInt(_) => f.write_str("AtomicInt"),
             Payload::AtomicBool(_) => f.write_str("AtomicBool"),
             Payload::List(v) => write!(f, "List({} items)", v.borrow().len()),
+            Payload::Bytes(v) => write!(f, "Bytes({} bytes)", v.len()),
             Payload::Dict(km) => write!(f, "Dict({} entries)", km.borrow().len()),
             Payload::Set(s) => write!(f, "Set({} items)", s.borrow().len()),
             Payload::Tup(v, n) => write!(f, "Tup({} values, {} names)", v.len(), n.len()),
@@ -132,6 +137,7 @@ impl PartialEq for Payload {
             (Str(a), Str(b)) => a == b,
             (Date(a), Date(b)) => a == b,
             (List(a), List(b)) => Rc::ptr_eq(a, b),
+            (Bytes(a), Bytes(b)) => a == b,
             (Dict(a), Dict(b)) => Rc::ptr_eq(a, b),
             (Set(a), Set(b)) => Rc::ptr_eq(a, b),
             (Tup(a, na), Tup(b, nb)) => Rc::ptr_eq(a, b) && Rc::ptr_eq(na, nb),
@@ -197,6 +203,51 @@ pub fn obj_new(type_name: &str, payload: Payload) -> Obj {
         payload,
     )))
 }
+
+// --- D-098: bridging `Payload::Bytes` to the legacy List<Int> view -----------
+// The temporary `bytes` representation is `Payload::List` of `Int(0..=255)`
+// with type name "bytes". These adapters let every existing collection/obj
+// operation work on a dedicated `Bytes` value with byte-identical semantics,
+// while the List-based representation remains readable during the transition.
+
+fn bytes_cells(bytes: &[u8]) -> Rc<RefCell<Vec<Obj>>> {
+    Rc::new(RefCell::new(
+        bytes.iter().map(|b| int(*b as i64)).collect(),
+    ))
+}
+
+/// Wrap the List view in an Obj that keeps the source type name, so delegated
+/// operations produce the same error text (`'bytes'`) as before D-098.
+fn bytes_view(o: &Obj, bytes: &[u8]) -> Obj {
+    obj_new(&type_name(o), Payload::List(bytes_cells(bytes)))
+}
+
+fn cells_to_bytes(cells: &Rc<RefCell<Vec<Obj>>>) -> Option<Vec<u8>> {
+    cells
+        .borrow()
+        .iter()
+        .map(|e| match payload(e) {
+            Payload::Int(i) if (0..=255).contains(&i) => Some(i as u8),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Index assignment on a dedicated byte string. Reuses `list_set_item` so
+/// bounds/index errors stay identical, then validates the 0..=255 invariant.
+fn bytes_set_item(o: &Obj, bytes: &[u8], key: &Obj, value: &Obj) -> Obj {
+    let cells = bytes_cells(bytes);
+    let r = collections::list_set_item(&cells, key, value);
+    if is_err(&r) {
+        return r;
+    }
+    let Some(updated) = cells_to_bytes(&cells) else {
+        return err("bytes elements must be ints in 0..=255");
+    };
+    o.borrow_mut().payload = Payload::Bytes(updated);
+    value.clone()
+}
+
 pub fn plain(type_name: Rc<str>) -> Obj {
     Rc::new(RefCell::new(ObjData::new(type_name, Payload::Plain)))
 }
@@ -367,6 +418,15 @@ fn hash_code_depth(o: &Obj, depth: u32) -> u64 {
             let mut h = 0u64;
             for e in v.borrow().iter() {
                 h = combine_hash(h, hash_code_depth(e, depth + 1));
+            }
+            h
+        }
+        // Mirrors the legacy List<Int> view: each byte hashes as its Int
+        // element does, so dict keys keep the same hash across the transition.
+        Payload::Bytes(v) => {
+            let mut h = 0u64;
+            for b in v {
+                h = combine_hash(h, b as u64);
             }
             h
         }
@@ -695,6 +755,9 @@ pub fn init(o: &Obj, args: &[Obj]) -> Obj {
 
     match payload(o) {
         Payload::List(..) => return collections::list_init(o, args),
+        // Byte strings have no user-facing constructor; preserve the value
+        // when `init` is applied (the legacy zero-arg view was a no-op too).
+        Payload::Bytes(_) => return o.clone(),
         Payload::Dict(..) => return collections::dict_init(o, args),
         Payload::Set(..) => return collections::set_init(o, args),
         Payload::Tup(..) => return collections::tup_init(o, args),
@@ -1009,6 +1072,7 @@ pub fn obj_in(o: &Obj, other: &Obj) -> Obj {
     }
     match payload(o) {
         Payload::List(..) => collections::list_in(o, other),
+        Payload::Bytes(v) => collections::list_in(&bytes_view(o, &v), other),
         Payload::Dict(..) => collections::dict_in(o, other),
 
         Payload::Set(v) => {
@@ -1073,6 +1137,7 @@ pub fn clone_obj(o: &Obj) -> Obj {
         Payload::Str(s) => return str_obj(s, world::str_type()),
         Payload::Date(t) => return date_obj(t),
         Payload::List(v) => return collections::list_clone(&v),
+        Payload::Bytes(v) => return obj_new(&type_name(o), Payload::Bytes(v.clone())),
         Payload::Dict(km) => return collections::dict_clone(&km),
         Payload::Set(s) => return collections::set_clone(&s),
         Payload::Tup(vals, names) => return collections::tup_clone(&vals, &names),
@@ -1135,6 +1200,7 @@ pub fn copy_obj(o: &Obj) -> Obj {
         Payload::Stru(_) => collections::stru_copy(o),
 
         Payload::List(..)
+        | Payload::Bytes(..)
         | Payload::Dict(..)
         | Payload::Set(..)
         | Payload::Iter(..)
@@ -1208,6 +1274,7 @@ pub fn unpack_items(o: &Obj) -> Vec<Obj> {
     match payload(o) {
         Payload::Tup(v, _) => v.to_vec(),
         Payload::List(v) => v.borrow().clone(),
+        Payload::Bytes(v) => v.iter().map(|b| int(*b as i64)).collect(),
         Payload::Spread(v) => v.to_vec(),
         _ => {
             let s = spread(o);
@@ -1244,6 +1311,7 @@ pub fn class_name(o: &Obj) -> &'static str {
         Payload::Lock(..) => "Lock",
         Payload::Date(..) => "Date",
         Payload::List(..) => "List",
+        Payload::Bytes(..) => "Bytes",
         Payload::Dict(..) => "Dict",
         Payload::Set(..) => "Set",
         Payload::Tup(..) => "Tup",
@@ -1296,6 +1364,7 @@ pub fn to_str(o: &Obj) -> Obj {
         Payload::Date(t) => str(&date::format(t)),
         Payload::Error { header, message } => str(&format!("{header}: {message}")),
         Payload::List(v) => str(&collections::list_to_str(&v)),
+        Payload::Bytes(v) => str(&collections::list_to_str(&bytes_cells(&v))),
         Payload::Dict(km) => str(&collections::dict_to_str(&km)),
         Payload::Set(s) => str(&collections::set_to_str(&s)),
         Payload::Tup(vals, _) => str(&collections::tup_to_str(&vals)),
@@ -1315,6 +1384,7 @@ pub fn get_item(o: &Obj, key: &Obj) -> Obj {
         let p = payload_ref(o);
         match &*p {
             Payload::List(v) => return collections::list_get_item(v, key),
+            Payload::Bytes(v) => return collections::list_get_item(&bytes_cells(v), key),
             Payload::Dict(km) => return collections::dict_get_item(km, key),
             Payload::Set(s) => return collections::set_get_item(s, key),
             Payload::Tup(vals, names) => {
@@ -1357,6 +1427,7 @@ pub fn get_item(o: &Obj, key: &Obj) -> Obj {
             _ => err("invalid index type"),
         },
         Payload::List(v) => collections::list_get_item(&v, key),
+        Payload::Bytes(v) => collections::list_get_item(&bytes_cells(&v), key),
         Payload::Dict(km) => collections::dict_get_item(&km, key),
         Payload::Set(s) => collections::set_get_item(&s, key),
         Payload::Json(inner) => get_item(&inner, key),
@@ -1379,6 +1450,7 @@ pub fn set_item(o: &Obj, key: &Obj, value: &Obj) -> Obj {
     }
     match payload(o) {
         Payload::List(v) => return collections::list_set_item(&v, key, value),
+        Payload::Bytes(v) => return bytes_set_item(o, &v, key, value),
         Payload::Dict(km) => return collections::dict_set_item(&km, key, value),
         Payload::Json(inner) => return set_item(&inner, key, value),
         _ => {}
@@ -1413,6 +1485,9 @@ pub fn slice(o: &Obj, start: Option<Obj>, end: Option<Obj>, step: Option<Obj>) -
             str(&date::utf16_join(&picked))
         }
         Payload::List(v) => collections::list_slice(&v, &start, &end, &step),
+        // Strict parity with the legacy view: slicing a byte string yields the
+        // same plain Int list the temporary List-based representation yielded.
+        Payload::Bytes(v) => collections::list_slice(&bytes_cells(&v), &start, &end, &step),
         Payload::Tup(vals, names) => collections::tup_slice(&vals, &names, &start, &end, &step),
         _ => err(format!("unsupported slice for '{}'", type_name(o))),
     }
@@ -1711,6 +1786,7 @@ fn builtin_binop(o: &Obj, op: BinOp, other: &Obj) -> Obj {
         Payload::Bool(a) => bool_binop(a, op, other, &t, &ot),
         Payload::Date(a) => date_binop(a, op, other, &t, &ot),
         Payload::List(..) => collections::list_binop(o, op, other, &t, &ot),
+        Payload::Bytes(v) => collections::list_binop(&bytes_view(o, &v), op, other, &t, &ot),
         Payload::Tup(..) => collections::tup_binop(o, op, other, &t, &ot),
         Payload::Set(..) => collections::set_binop(o, op, other, &t, &ot),
         Payload::Stru(..) => collections::stru_binop(o, op, other, &t, &ot),
@@ -1800,6 +1876,7 @@ fn builtin_unop(o: &Obj, op: UnOp) -> Obj {
             _ => err(op.message(&t)),
         },
         Payload::List(v) => collections::list_unop(&v, op, &t),
+        Payload::Bytes(v) => collections::list_unop(&bytes_cells(&v), op, &t),
         Payload::Dict(km) => collections::dict_unop(&km, op, &t),
         Payload::Set(s) => collections::set_unop(&s, op, &t),
         Payload::Tup(vals, names) => collections::tup_unop(&vals, &names, op, &t),
@@ -2419,5 +2496,82 @@ mod tests {
         );
         assert!(has(&o, "x"));
         assert!(!has(&o, "y"));
+    }
+
+    // --- D-098: dedicated Payload::Bytes parity -------------------------------
+
+    fn legacy_bytes(data: &[u8]) -> Obj {
+        obj_new(
+            "bytes",
+            Payload::List(Rc::new(RefCell::new(
+                data.iter().map(|b| int(*b as i64)).collect(),
+            ))),
+        )
+    }
+
+    fn dedicated_bytes(data: &[u8]) -> Obj {
+        obj_new("bytes", Payload::Bytes(data.to_vec()))
+    }
+
+    #[test]
+    fn payload_bytes_matches_legacy_list_view() {
+        let legacy = legacy_bytes(b"abc");
+        let dedicated = dedicated_bytes(b"abc");
+
+        // Externally visible identity and text.
+        assert_eq!(type_name(&legacy), type_name(&dedicated));
+        assert_eq!(message(&repr(&legacy)), message(&repr(&dedicated)));
+        assert_eq!(message(&to_str(&legacy)), message(&to_str(&dedicated)));
+        assert_eq!(hash_code(&legacy), hash_code(&dedicated));
+        assert_eq!(message(&unary(&legacy, UnOp::Hash)), message(&unary(&dedicated, UnOp::Hash)));
+
+        // Indexing, membership, length, slicing.
+        assert_eq!(message(&len(&legacy)), message(&len(&dedicated)));
+        assert_eq!(message(&get_item(&legacy, &int(0))), message(&get_item(&dedicated, &int(0))));
+        assert_eq!(message(&get_item(&legacy, &int(-1))), message(&get_item(&dedicated, &int(-1))));
+        assert_eq!(message(&get_item(&legacy, &int(9))), message(&get_item(&dedicated, &int(9))));
+        assert_eq!(message(&obj_in(&legacy, &int(98))), message(&obj_in(&dedicated, &int(98))));
+        let (a, b, c) = (Some(int(1)), Some(int(3)), None);
+        assert_eq!(
+            message(&slice(&legacy, a.clone(), b.clone(), c.clone())),
+            message(&slice(&dedicated, a, b, c))
+        );
+
+        // Element-wise equality across both representations and in both directions.
+        assert_eq!(message(&binop(&legacy, BinOp::Eq, &dedicated)), "true");
+        assert_eq!(message(&binop(&dedicated, BinOp::Eq, &legacy)), "true");
+        assert_eq!(message(&binop(&dedicated, BinOp::Eq, &dedicated)), "true");
+        assert_eq!(message(&binop(&dedicated, BinOp::Eq, &dedicated_bytes(b"abd"))), "false");
+        assert_eq!(message(&binop(&dedicated, BinOp::Eq, &legacy_bytes(b"abd"))), "false");
+        assert_eq!(message(&binop(&dedicated, BinOp::NEq, &dedicated_bytes(b"abd"))), "true");
+
+        // Unpacking, clone and copy keep the byte payload.
+        let left: Vec<String> = unpack_items(&legacy).iter().map(message).collect();
+        let right: Vec<String> = unpack_items(&dedicated).iter().map(message).collect();
+        assert_eq!(left, right);
+        assert!(matches!(payload(&clone_obj(&dedicated)), Payload::Bytes(v) if v == b"abc"));
+        assert_eq!(type_name(&clone_obj(&dedicated)), type_name(&dedicated));
+        assert!(Rc::ptr_eq(&copy_obj(&dedicated), &dedicated));
+    }
+
+    #[test]
+    fn payload_bytes_set_item_keeps_index_errors_and_invariant() {
+        let bytes = dedicated_bytes(b"abc");
+        assert_eq!(message(&set_item(&bytes, &int(1), &int(66))), "66");
+        assert!(matches!(payload(&bytes), Payload::Bytes(v) if v == b"aBc"));
+        assert_eq!(
+            message(&set_item(&bytes, &int(-4), &int(1))),
+            "Error: list index out of range"
+        );
+        assert_eq!(
+            message(&set_item(&bytes, &int(0), &int(300))),
+            "Error: bytes elements must be ints in 0..=255"
+        );
+        assert!(matches!(payload(&bytes), Payload::Bytes(v) if v == b"aBc"));
+
+        // The legacy List-based representation stays readable during transition.
+        let legacy = legacy_bytes(b"abc");
+        assert_eq!(message(&get_item(&legacy, &int(2))), "99");
+        assert_eq!(message(&unary(&legacy, UnOp::Len)), "3");
     }
 }

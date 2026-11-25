@@ -138,12 +138,33 @@ pub(crate) fn cmp_obj(a: u64, b: u64) -> std::cmp::Ordering {
                 .partial_cmp(&(y.a as f64))
                 .unwrap_or(std::cmp::Ordering::Equal),
             (6, 6) => crate::strings::str_of(a).cmp(crate::strings::str_of(b)),
+            // Bytes (tag 13) and the legacy List<Int> bytes value (tag 3)
+            // compare by content. A non-byte List is never equal to bytes.
+            (13, 13) | (13, 3) | (3, 13) => crate::bytes_native::bytes_cmp(a, b)
+                .unwrap_or(std::cmp::Ordering::Less),
             _ => std::cmp::Ordering::Equal,
         }
     }
 }
 pub(crate) fn eq_obj(a: u64, b: u64) -> bool {
-    cmp_obj(a, b) == std::cmp::Ordering::Equal
+    unsafe {
+        let (x, y) = (obj(a), obj(b));
+        match (x.tag, y.tag) {
+            (13, _) | (_, 13) => {
+                crate::bytes_native::bytes_cmp(a, b) == Some(std::cmp::Ordering::Equal)
+            }
+            // The VM's `list_binop` compares List payloads element-wise even
+            // when their type names differ (`bytes` vs `list`). This keeps
+            // `unrt_obj_eq` byte-identical for both bytes representations.
+            (3, 3) => {
+                let left = crate::list::items(a).clone();
+                let right = crate::list::items(b).clone();
+                left.len() == right.len()
+                    && left.iter().zip(right.iter()).all(|(x, y)| eq_obj(*x, *y))
+            }
+            _ => cmp_obj(a, b) == std::cmp::Ordering::Equal,
+        }
+    }
 }
 /// Element stringification shared by tags 14/15. The VM's
 /// `collections::tup_to_str` / `set_to_str` map `obj::display` over the

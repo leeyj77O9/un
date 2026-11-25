@@ -646,6 +646,9 @@ pub fn list_binop(o: &Obj, op: BinOp, other: &Obj, t: &Rc<str>, ot: &Rc<str>) ->
     if op == BinOp::Eq {
         return element_eq(&list_of(o), other, |p| match p {
             Payload::List(v) => Some(v.borrow().clone()),
+            // D-098: dedicated bytes compare element-wise with both the new
+            // and the legacy List<Int> representation during the transition.
+            Payload::Bytes(v) => Some(v.iter().map(|b| obj::int(*b as i64)).collect()),
             _ => None,
         });
     }

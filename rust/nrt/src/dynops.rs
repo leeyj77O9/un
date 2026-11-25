@@ -201,10 +201,29 @@ pub extern "C" fn unrt_dyn_bin(op: i64, a: u64, b: u64) -> u64 {
 fn compare(op: i64, a: u64, b: u64) -> u64 {
     let ta = tag(a);
     let tb = tag(b);
+    // A dedicated bytes handle has List payload semantics in the VM: `==`
+    // against bytes / legacy List<Int> bytes is structural, and against any
+    // other type is false. Never stringify an Error/Panic handle.
+    if (ta == crate::bytes_native::TAG_BYTES || tb == crate::bytes_native::TAG_BYTES)
+        && !matches!(ta, 5 | 10)
+        && !matches!(tb, 5 | 10)
+    {
+        let eq = crate::bytes_native::bytes_eq(a, b).unwrap_or(false);
+        return if op == OP_EQ {
+            box_bool(eq)
+        } else if op == OP_NE {
+            box_bool(!eq)
+        } else {
+            unsupported(op, a, b)
+        };
+    }
     let eq = if ta == tb && ta != 5 && ta != 10 {
         // Collections/closures/instances compare by identity; scalars reuse
         // the NRT comparator (which handles numeric and string payloads).
-        if matches!(ta, 3 | 7 | 8 | 9) {
+        if ta == 3 {
+            // VM `list_binop` compares List payloads element-wise.
+            crate::obj::eq_obj(a, b)
+        } else if matches!(ta, 7 | 8 | 9) {
             a == b
         } else {
             crate::obj::cmp_obj(a, b) == std::cmp::Ordering::Equal

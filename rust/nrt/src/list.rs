@@ -25,6 +25,9 @@ pub extern "C" fn unrt_len(o: u64) -> u64 {
         match obj(o).tag {
             3 => obj(o).a,
             6 => crate::strings::str_of(o).chars().count() as i64,
+            // Dedicated bytes handle: length is mirrored in `b` by
+            // `bytes_native::bytes_obj`, matching the VM's List-backed bytes.
+            13 => crate::bytes_native::bytes_len(o),
             7 => crate::dict::len(o),
             // Tuple/Set lengths are mirrored in `b` by `obj::seq_new`.
             14 | 15 => seq_len(o),

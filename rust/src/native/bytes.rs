@@ -1,39 +1,21 @@
 //! `bytes` 값 생성/조회용 native 모듈과, 파일 바이너리 I/O가 공유하는 어댑터.
 //!
-//! ## RT-03 / CMP-05 연동 계약 (중요)
+//! ## D-098 계약 (RT-03 / CMP-05 연동)
 //!
-//! 이 모듈은 `bytes` 값의 런타임 표현을 **`Payload::Bytes(Vec<u8>)`** 로
-//! 기대한다. 아직 그 variant가 합의/추가되지 않았으므로, 변경 범위를
-//! `rust/src/native/` 내부로 한정하기 위해 **`bytes_obj` / `as_bytes` /
-//! `is_bytes` 세 함수에만** 임시 표현을 두었다. 그 밖의 모든 함수는 이
-//! 어댑터만 호출하므로, RT-03이 variant를 추가한 뒤 위 세 함수의 본문만
-//! 교체하면 나머지 native 코드는 수정 없이 새 ABI를 사용한다.
+//! 이 모듈은 `bytes` 값의 런타임 표현을 **`Payload::Bytes(Vec<u8>)`** 로 만든다.
+//! `bytes_obj` / `as_bytes` / `is_bytes` 세 어댑터가 표현 변환을 전담하고,
+//! 나머지 12개 native 함수와 `fs.read_bytes` / `write_bytes`는 어댑터만 호출해
+//! 표현과 무관하게 동작한다.
 //!
-//! 임시 표현: `Payload::List` + 각 원소 `Int(0..=255)`, `type_name = "bytes"`.
-//! (`fs.read_bytes` / `bytes.from_str` 등이 생성하는 값은 모두 이 어댑터를
-//! 거치므로 임시 표현과 새 표현이 섞이지 않는다.)
+//! - 생성: `bytes_obj`는 항상 `Payload::Bytes`를 만든다(`type_name = "bytes"`).
+//! - 조회: `as_bytes`는 `Payload::Bytes`를 우선 읽고, 점진 전환을 위해 구 표현
+//!   (`Payload::List` + `Int(0..=255)`)과 편의용 `Str`(UTF-8)도 그대로 받는다.
+//! - 판정: `is_bytes`는 `Payload::Bytes`를 우선하고, 구 표현의 `type_name`도
+//!   인정해 전환 전후 동작이 같다.
 //!
-//! RT-03 반영 후 교체본 (각 함수 주석에도 동일하게 적어 두었다):
-//!
-//! ```ignore
-//! pub fn bytes_obj(bytes: Vec<u8>) -> Obj {
-//!     obj::obj_new(TYPE_NAME, Payload::Bytes(bytes))
-//! }
-//! pub fn as_bytes(value: &Obj) -> Option<Vec<u8>> {
-//!     match obj::payload(value) {
-//!         Payload::Bytes(v) => Some(v),
-//!         // 편의용 입력 (문자열 / 정수 리스트)은 그대로 유지해도 무방
-//!         Payload::Str(s) => Some(s.as_bytes().to_vec()),
-//!         _ => None,
-//!     }
-//! }
-//! pub fn is_bytes(value: &Obj) -> bool {
-//!     matches!(obj::payload(value), Payload::Bytes(_))
-//! }
-//! ```
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! RT-03이 `runtime/obj.rs`에 둔 브릿지 헬퍼(`bytes_view` / `bytes_cells` 등)는
+//! 새 표현과 구 표현을 동시에 읽으므로, `b"..."` 리터럴의 `list[int]` 표현도
+//! 계속 이 어댑터를 통해 안전하게 다룰 수 있다.
 
 use crate::runtime::collections;
 use crate::runtime::context::Context;
@@ -42,30 +24,25 @@ use crate::runtime::scope::{self, Scope};
 
 use super::{arg, native, one, two};
 
-/// `bytes` 값의 type name. RT-03이 전용 타입을 정하면 그 이름으로 맞춘다.
+/// `bytes` 값의 type name (`Payload::Bytes` 및 전환 전 구 표현 모두 공유).
 pub const TYPE_NAME: &str = "bytes";
 
 // ---------------------------------------------------------------------------
-// 어댑터 (RT-03 반영 시 이 세 함수만 교체)
+// 어댑터 (D-098: `Payload::Bytes` 우선, 구 표현 호환)
 // ---------------------------------------------------------------------------
 
-/// `Vec<u8>` → `bytes` Obj.
-///
-/// RT-03 반영 후: `obj::obj_new(TYPE_NAME, Payload::Bytes(bytes))`.
+/// `Vec<u8>` → `bytes` Obj (`Payload::Bytes`).
 pub fn bytes_obj(bytes: Vec<u8>) -> Obj {
-    obj::obj_new(
-        TYPE_NAME,
-        Payload::List(Rc::new(RefCell::new(
-            bytes.into_iter().map(|b| obj::int(b as i64)).collect(),
-        ))),
-    )
+    obj::obj_new(TYPE_NAME, Payload::Bytes(bytes))
 }
 
-/// `bytes` Obj → `Vec<u8>`. 편의상 문자열(UTF-8)과 `0..=255` 정수 리스트도 받는다.
+/// `bytes` Obj → `Vec<u8>`.
 ///
-/// RT-03 반영 후 최우선 분기: `Payload::Bytes(v) => Some(v)`.
+/// `Payload::Bytes`를 우선 읽고, 점진 전환을 위해 구 표현(`Int(0..=255)` 리스트)
+/// 과 편의용 문자열(UTF-8)도 그대로 받는다.
 pub fn as_bytes(value: &Obj) -> Option<Vec<u8>> {
     match obj::payload(value) {
+        Payload::Bytes(v) => Some(v.clone()),
         Payload::List(cells) => cells
             .borrow()
             .iter()
@@ -81,9 +58,9 @@ pub fn as_bytes(value: &Obj) -> Option<Vec<u8>> {
 
 /// 값이 `bytes`인지 판정.
 ///
-/// RT-03 반영 후: `matches!(obj::payload(value), Payload::Bytes(_))`.
+/// `Payload::Bytes`면 참이고, 전환 전 구 표현(`type_name = "bytes"`)도 인정한다.
 pub fn is_bytes(value: &Obj) -> bool {
-    &*obj::type_name(value) == TYPE_NAME
+    matches!(obj::payload(value), Payload::Bytes(_)) || &*obj::type_name(value) == TYPE_NAME
 }
 
 // ---------------------------------------------------------------------------
