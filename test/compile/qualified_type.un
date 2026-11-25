@@ -1,0 +1,24 @@
+use io
+use types
+
+# Qualified fixed-width types, including the `types.u32 | types.i64` union.
+# `un run` (VM), `un native` (Compile Mode) and `un build --embed --allow-dynamic`
+# (embedded exe) must agree byte-for-byte. Plain `un build` rejects unions in
+# fully typed mode by design; the plain-build variant lives in
+# test/compile/build/qualified_type.un.
+
+fn f(v: types.i64) -> types.i64
+    -> v + 1
+
+fn main() -> int
+    x: types.u32 = 7
+    xs: list[types.u32] = [x, 8, 9]
+    y: types.u32 | types.i64 = 5
+    io.write(x)
+    io.write(f(41))
+    io.write(xs)
+    io.write(y)
+    io.write(len(xs))
+    -> 0
+
+main()

@@ -2,7 +2,7 @@ use crate::ast::{Const, Node, NodeKind};
 use crate::error::LangError;
 use crate::source::Source;
 use crate::token::TokenType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -296,6 +296,12 @@ pub struct Checker<'a> {
     strict_dynamic: bool,
     errors: Vec<LangError>,
     aliases: HashMap<String, Ty>,
+    /// Textual right-hand side of each alias, keyed by alias name. `aliases`
+    /// stores the resolved `Ty` (both `i32` and `u32` collapse to `Ty::Int`),
+    /// which cannot carry the width needed for a range check; this parallel
+    /// table keeps the original spelling so alias chains resolve to the same
+    /// bounds as the spelled-out annotation.
+    alias_text: HashMap<String, String>,
     functions: Vec<DeclFn<'a>>,
     classes: HashMap<String, ClassInfo>,
     class_order: Vec<String>,
@@ -346,6 +352,7 @@ impl<'a> Checker<'a> {
             strict_dynamic: opts.forbid_dynamic,
             errors: Vec::new(),
             aliases: HashMap::new(),
+            alias_text: HashMap::new(),
             functions: Vec::new(),
             classes: native_handle_classes(),
             class_order: Vec::new(),
@@ -708,6 +715,29 @@ impl<'a> Checker<'a> {
             }
         }
         ty
+    }
+
+    /// Resolve the bounds of a fixed-width annotation through alias chains.
+    ///
+    /// `fixed_width_bounds` only sees the annotation's spelling, so an alias
+    /// hides the actual width. Follow `alias_text` (alias names take priority
+    /// over built-in width names, so `type u32 = types.i32` inherits i32
+    /// bounds), with a visited set and a depth cap so cyclic aliases cannot
+    /// loop forever. Non-fixed-width aliases simply yield `None`.
+    fn fixed_width_bounds_resolved(&self, text: &str) -> Option<(&'static str, (i128, i128))> {
+        let mut current = text.trim().to_string();
+        let mut visited = HashSet::new();
+        for _ in 0..=MAX_ALIAS_DEPTH {
+            if !visited.insert(current.clone()) {
+                return None;
+            }
+            if let Some(target) = self.alias_text.get(&current) {
+                current = target.trim().to_string();
+                continue;
+            }
+            return fixed_width_bounds(&current);
+        }
+        None
     }
 }
 
@@ -1249,11 +1279,13 @@ impl<'a> Checker<'a> {
         if name.is_empty() {
             return;
         }
+        let target_text = self.text_of(&node.children[1]);
         let ty = self.parse_annotation_node(&node.children[1]);
         if matches!(ty, Ty::Unknown) {
             return;
         }
-        self.aliases.insert(name, ty);
+        self.aliases.insert(name.clone(), ty);
+        self.alias_text.insert(name, target_text);
     }
 
     fn collect_module_var(&mut self, node: &'a Node) {
@@ -1272,7 +1304,8 @@ impl<'a> Checker<'a> {
                     }
                     if let Some(ty) = self.try_type_text(&text) {
                         let name = self.text_of(target);
-                        self.aliases.insert(name, ty);
+                        self.aliases.insert(name.clone(), ty);
+                        self.alias_text.insert(name, text);
                         return;
                     }
                 }
@@ -2305,7 +2338,8 @@ impl<'a> Checker<'a> {
                     .map(|t| self.parse_annotation_node(t))
                     .unwrap_or(Ty::Unknown);
                 let annotation_text_str = annotation_text.as_deref();
-                let fixed_width = annotation_text_str.and_then(fixed_width_bounds);
+                let fixed_width = annotation_text_str
+                    .and_then(|text| self.fixed_width_bounds_resolved(text));
                 let value_const = self.const_int_expr(value, env);
                 if let Some((fw_name, range)) = fixed_width {
                     if let Some(constant) = value_const {
@@ -5848,6 +5882,177 @@ mod tests {
             "expected the bare-u8 range diagnostic, got {:?}",
             errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
         );
+    }
+
+    /// Build `type <name> = <target>` declarations followed by
+    /// `x: <ann> = <value>`. All text is ASCII, so byte offsets are also the
+    /// char offsets used by `Source`.
+    fn alias_bounds_program(aliases: &[(&str, &str)], ann: &str, value: i64) -> (Source, Node) {
+        let mut code = String::new();
+        for (name, target) in aliases {
+            code.push_str(&format!("type {name} = {target}\n"));
+        }
+        let value_text = value.to_string();
+        code.push_str(&format!("x: {ann} = {value_text}\n"));
+
+        let mut children = Vec::new();
+        let mut cursor = 0usize;
+        for (name, target) in aliases {
+            let name_start = cursor + "type ".len();
+            let target_start = name_start + name.len() + " = ".len();
+            let name_node = Node::new(name_start, name.len(), NodeKind::Identifier);
+            let target_node = Node::new(target_start, target.len(), NodeKind::Identifier)
+                .with_value(Const::Str((*target).to_string()));
+            children.push(Node::with_children(
+                cursor,
+                "type ".len() + name.len() + " = ".len() + target.len(),
+                NodeKind::TypeAlias,
+                None,
+                vec![name_node, target_node],
+            ));
+            cursor += format!("type {name} = {target}\n").len();
+        }
+        let x_start = cursor;
+        let ann_start = x_start + "x: ".len();
+        let value_start = ann_start + ann.len() + " = ".len();
+        let typed = Node::with_children(
+            x_start,
+            "x: ".len() + ann.len(),
+            NodeKind::Typed,
+            None,
+            vec![
+                Node::new(x_start, 1, NodeKind::Identifier),
+                Node::new(ann_start, ann.len(), NodeKind::Identifier),
+            ],
+        );
+        let val = Node::new(value_start, value_text.len(), NodeKind::Integer)
+            .with_value(Const::Int(value));
+        children.push(Node::with_children(
+            x_start,
+            code.len() - x_start,
+            NodeKind::Assign,
+            None,
+            vec![typed, val],
+        ));
+        let root = Node::with_children(0, code.len(), NodeKind::Block, None, children);
+        (Source::new("alias.un", &code), root)
+    }
+
+    fn alias_range_errors(aliases: &[(&str, &str)], ann: &str, value: i64, import_types: bool) -> Vec<LangError> {
+        let (source, root) = alias_bounds_program(aliases, ann, value);
+        let mut checker = checker_for(&source, &root);
+        if import_types {
+            checker.import_names.push("types".to_string());
+        }
+        match checker.run() {
+            Ok(_) => Vec::new(),
+            Err(errors) => errors,
+        }
+    }
+
+    fn messages(errors: &[LangError]) -> Vec<String> {
+        errors.iter().map(|e| e.message.clone()).collect()
+    }
+
+    #[test]
+    fn alias_to_i32_applies_i32_bounds() {
+        let errors = alias_range_errors(&[("MyI32", "types.i32")], "MyI32", 3_000_000_000, true);
+        assert!(
+            errors.iter().any(|e| e.message.contains("out of range for i32 (-2147483648..=2147483647)")),
+            "expected i32 bounds through the alias, got {:?}",
+            messages(&errors)
+        );
+        // -1 and the top edge are valid i32 values; the alias must not invent u32 bounds.
+        assert!(alias_range_errors(&[("MyI32", "types.i32")], "MyI32", -1, true).is_empty());
+        assert!(alias_range_errors(&[("MyI32", "types.i32")], "MyI32", i32::MAX as i64, true).is_empty());
+    }
+
+    #[test]
+    fn alias_to_u32_applies_u32_bounds() {
+        let errors = alias_range_errors(&[("Small", "types.u32")], "Small", -1, true);
+        assert!(
+            errors.iter().any(|e| e.message.contains("out of range for u32 (0..=4294967295)")),
+            "expected u32 bounds through the alias, got {:?}",
+            messages(&errors)
+        );
+        // 3000000000 is a valid u32 and must stay accepted.
+        assert!(alias_range_errors(&[("Small", "types.u32")], "Small", 3_000_000_000, true).is_empty());
+    }
+
+    #[test]
+    fn alias_shadowing_builtin_name_uses_target_bounds() {
+        // The alias name wins over the built-in spelling: `type u32 = types.i32`
+        // must inherit i32 bounds, not u32's 0..=4294967295.
+        assert!(alias_range_errors(&[("u32", "types.i32")], "u32", -1, true).is_empty());
+        let errors = alias_range_errors(&[("u32", "types.i32")], "u32", 3_000_000_000, true);
+        assert!(
+            errors.iter().any(|e| e.message.contains("out of range for i32")),
+            "alias target i32 must win over the name u32, got {:?}",
+            messages(&errors)
+        );
+    }
+
+    #[test]
+    fn qualified_annotation_keeps_its_own_bounds_under_a_shadowing_alias() {
+        // `type u32 = ...` only shadows the bare spelling. The fully qualified
+        // `types.u32` annotation keeps the original fixed_width_bounds path.
+        assert!(alias_range_errors(&[("u32", "types.i32")], "types.u32", -1, true)
+            .iter()
+            .any(|e| e.message.contains("out of range for u32")));
+        assert!(alias_range_errors(&[("u32", "types.i32")], "types.u32", 3_000_000_000, true).is_empty());
+    }
+
+    #[test]
+    fn chained_alias_applies_terminal_bounds() {
+        let aliases = [("MyU32", "types.u32"), ("Chain", "MyU32")];
+        let errors = alias_range_errors(&aliases, "Chain", -1, true);
+        assert!(
+            errors.iter().any(|e| e.message.contains("out of range for u32")),
+            "a multi-hop alias must reach the fixed-width target, got {:?}",
+            messages(&errors)
+        );
+    }
+
+    #[test]
+    fn non_fixed_width_alias_has_no_range_check() {
+        assert!(alias_range_errors(&[("Foo", "int")], "Foo", 3_000_000_000, true).is_empty());
+        assert!(alias_range_errors(&[("Foo", "types.f64")], "Foo", -1, true).is_empty());
+    }
+
+    #[test]
+    fn bare_and_qualified_alias_targets_share_bounds() {
+        let bare = alias_range_errors(&[("Alias", "i32")], "Alias", 3_000_000_000, true);
+        let qualified = alias_range_errors(&[("Alias", "types.i32")], "Alias", 3_000_000_000, true);
+        assert_eq!(messages(&bare), messages(&qualified));
+        assert!(bare.iter().any(|e| e.message.contains("out of range for i32")));
+    }
+
+    #[test]
+    fn qualified_alias_target_without_import_keeps_unknown_diagnostic() {
+        let errors = alias_range_errors(&[("Alias", "types.i32")], "Alias", 3_000_000_000, false);
+        assert!(
+            errors.iter().any(|e| e.message.contains("unknown type 'i32'")),
+            "missing `use types` must still diagnose the unknown type, got {:?}",
+            messages(&errors)
+        );
+    }
+
+    #[test]
+    fn cyclic_alias_bounds_resolution_terminates() {
+        let source = Source::new("cycle.un", "  ");
+        let root = Node::new(0, 0, NodeKind::Block);
+        let mut checker = checker_for(&source, &root);
+        checker.alias_text.insert("A".into(), "B".into());
+        checker.alias_text.insert("B".into(), "A".into());
+        assert_eq!(checker.fixed_width_bounds_resolved("A"), None);
+
+        checker.alias_text.insert("Self".into(), "Self".into());
+        assert_eq!(checker.fixed_width_bounds_resolved("Self"), None);
+
+        for i in 0..MAX_ALIAS_DEPTH + 2 {
+            checker.alias_text.insert(format!("N{i}"), format!("N{}", i + 1));
+        }
+        assert_eq!(checker.fixed_width_bounds_resolved("N0"), None);
     }
 
     #[test]

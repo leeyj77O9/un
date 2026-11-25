@@ -1,0 +1,28 @@
+use io
+use types
+
+# Qualified fixed-width names (`types.u32`, `types.i64`, `types.f64`) must
+# resolve exactly like the bare aliases in all three plain-build lanes:
+#   un run (VM) / un native (Compile Mode) / plain un build exe.
+#
+# The `types.u32 | types.i64` union spelling is covered by the sibling fixture
+# test/compile/qualified_type.un. Plain `un build` rejects unions in fully
+# typed mode by design, so it cannot be exercised from this directory.
+
+fn f(v: types.i64) -> types.i64
+    -> v + 1
+
+fn g(v: types.f64) -> types.f64
+    -> v * 2.0
+
+fn main() -> int
+    x: types.u32 = 7
+    xs: list[types.u32] = [x, 8, 9]
+    io.write(x)
+    io.write(f(41))
+    io.write(g(1.5))
+    io.write(xs)
+    io.write(len(xs))
+    -> 0
+
+main()
