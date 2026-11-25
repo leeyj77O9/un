@@ -1,0 +1,33 @@
+use io
+
+# Plain-build regression for class type-name patterns (`case Point -> ...`)
+# and function-valued class fields (`h.op = f; h.op(x)`).
+#
+# This fixture deliberately uses the bare class pattern, not field
+# destructuring (`case Point(x, y)`): named/positional field destructuring
+# still emits a trap stub in plain build and is covered only by the VM/native
+# lanes. The `case Line` arm first exercises a guaranteed non-match so the
+# exact type-name dispatch is checked in both directions.
+class Point(x: int, y: int)
+class Line(x: int, y: int)
+
+class Holder
+    op: func(int) -> int
+
+fn twice(n: int) -> int
+    -> n * 2
+
+fn classify(p: Point) -> int
+    -> match p {
+        case Line -> 100,
+        case Point -> 1,
+        _ -> -1
+    }
+
+fn main() -> none
+    io.write(classify(Point(1, 2)))
+    h = Holder()
+    h.op = twice
+    io.write(h.op(21))
+
+main()

@@ -1,0 +1,20 @@
+use io
+use test.assert as assert
+
+# Bare function value returned with `-> funcname`: `un run`, `un native` and
+# `un check` must agree, and the returned value must stay callable (not leak
+# the JIT's internal call-candidate sentinel as Int(1)).
+fn twice(n: int) -> int
+    -> n * 2
+
+fn make() -> func(int) -> int
+    -> twice
+
+fn main() -> int
+    f: func(int) -> int = make()
+    assert.assert_eq(f(21), 42, "returned function value called")
+    assert.assert_eq(make()(41), 82, "direct returned function call")
+    io.write("func value return OK")
+    -> 0
+
+main()

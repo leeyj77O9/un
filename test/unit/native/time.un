@@ -48,7 +48,12 @@ time.sleep(10)
 assert.assert_true(sw.ms >= 0, "stopwatch measures elapsed ms via property")
 assert.assert_eq(type(sw.ms), int, "sw.ms is an int property, not a method")
 assert.assert_eq(type(sw.ns), int, "sw.ns is an int property, not a method")
-assert.assert_true(sw.ns >= sw.ms * 1_000_000, "sw.ns is at least ms * 1e6 ticks (100 ns each)")
+# Read ms first, ns second: a tick between the two reads can only make ns
+# larger, never smaller than ms * 1e6. Reading ns first made this flaky at a
+# millisecond boundary (TOCTOU between the two property reads).
+ms = sw.ms
+ns = sw.ns
+assert.assert_true(ns >= ms * 1_000_000, "sw.ns is at least ms * 1e6 ticks (100 ns each)")
 try
     sw.ms = 5
     assert.assert_false(true, "assigning to a read-only property must error")

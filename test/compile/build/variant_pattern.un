@@ -1,0 +1,23 @@
+use io
+
+# Plain-build regression for `Enum.variant(v)` pattern matching. Uses a
+# non-generic data enum so the program stays inside the no-VM core subset;
+# `test/compile/enum_data.un` covers the check/native path with generics.
+enum Shape
+    point: int
+    text: int
+    circle: int
+
+fn classify(s: Shape) -> int
+    -> match s {
+        Shape.point(v) -> v,
+        Shape.text(v) -> -v,
+        _ -> -1
+    }
+
+fn main() -> none
+    io.write(classify(Shape.point(7)))
+    io.write(classify(Shape.text(3)))
+    io.write(classify(Shape.circle(9)))
+
+main()

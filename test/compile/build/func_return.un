@@ -1,0 +1,20 @@
+use io
+
+# Plain-build regression: a function declared `-> func(int) -> int` returns a
+# bare function value (`-> twice`) and that value is called both directly and
+# via a typed `func(int) -> int` parameter/field-style local.
+fn twice(n: int) -> int
+    -> n * 2
+
+fn make() -> func(int) -> int
+    -> twice
+
+fn apply(f: func(int) -> int, x: int) -> int
+    -> f(x)
+
+fn main() -> none
+    f: func(int) -> int = make()
+    io.write(f(21))
+    io.write(apply(make(), 20))
+
+main()

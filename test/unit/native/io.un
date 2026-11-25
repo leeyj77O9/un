@@ -1,5 +1,6 @@
 use io
 use fs
+use os
 use test.assert as assert
 
 # ============================================================
@@ -12,7 +13,9 @@ use test.assert as assert
 # 그래서 이 테스트는 io.open + close()만 쓴다.
 # ============================================================
 
-work = fs.join(fs.temp(), "un_test_io")
+# PID-scoped directory: parallel runners (and the JIT-on/off differential pair)
+# must not share a scratch path. fs.temp() itself is unchanged.
+work = fs.join(fs.temp(), "un_test_io_" + str(os.pid()))
 fs.mkdir(work)
 f = fs.join(work, "io_test.txt")
 
