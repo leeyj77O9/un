@@ -221,7 +221,7 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 | 타입 이름 패턴 (`int ->`, `Id ->`) | **지원** — `unrt_type_is`로 `is`와 동일 검사, 별칭은 Or(Type…)로 펼침 | 클래스 상속·사용자 `__is__`는 `--embed` | D-097, `test/compile/build/type_pattern.un` |
 | 시간 시드 `random` | 거부(byte-identical 불가) | 예 | `tir.rs:609, 702-706` |
 | `bytes` 모듈(12함수) / `fs.read_bytes`/`write_bytes` | 지원 | 불필요 | `nrt/src/bytes_native.rs`, `test/compile/build/bytes_module.un` |
-| 바이트 리터럴 `b"..."` | 거부(TIR core-lowering 게이트) | 예 | `tir.rs::kind_is("Bytes")`; CMP-05 구현 대기 |
+| 바이트 리터럴 `b"..."` | **지원** (`26d457f` 이후 plain build 가능) | 불필요 | `tir.rs` Bytes core-lowering; `test/compile/build/bytes_module.un` |
 | 모듈 전역 쓰기 (`has_global_write`) | 거부 | 예 | `tir.rs:602, 712-713` |
 | 최상위 부수효과(단순 전역 초기화 초과) | 명시적 진단 | 예 | `compiler.rs:48-91`, `main.rs:1011-1017` |
 | 중첩 클래스 선언(제어 흐름 내부) | 명시 거부 | 예 | `main.rs:981-987` |
