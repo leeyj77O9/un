@@ -825,14 +825,15 @@ impl<'a> Compiler<'a> {
             NodeKind::Tagged => self.code_tagged(node)?,
             NodeKind::Tuple => self.code_tuple(node)?,
             NodeKind::List => self.code_container(node, Op::BuildList)?,
-            // Byte strings have no Const variant: children are Integer nodes
-            // holding one byte each, materialised as a list[int] value.
+            // D-098: a byte string is a single `Payload::Bytes` constant (NRT
+            // tag 13), not a `list[int]` built from per-byte Int constants.
+            // The `.unbc` representation stays an ordinary `LoadConst` with an
+            // additive constant tag, so no opcode or VERSION change is needed.
             NodeKind::Bytes => {
-                let count = node.children.len();
-                self.emit(Op::ArgBegin, 0, count as i32, span);
+                let mut bytes = Vec::with_capacity(node.children.len());
                 for child in &node.children {
                     let byte = match child.value.as_ref() {
-                        Some(Const::Int(v)) if (0..=255).contains(v) => *v,
+                        Some(Const::Int(v)) if (0..=255).contains(v) => *v as u8,
                         _ => {
                             return Err(Panic::named(
                                 "error",
@@ -840,11 +841,10 @@ impl<'a> Compiler<'a> {
                             ))
                         }
                     };
-                    let ci = self.const_index(Constant::Int(byte));
-                    self.emit(Op::LoadConst, 0, ci as i32, span_of(child));
-                    self.emit(Op::ArgPos, 0, 0, span_of(child));
+                    bytes.push(byte);
                 }
-                self.emit(Op::BuildList, 0, count as i32, span);
+                let ci = self.const_index(Constant::Bytes(bytes));
+                self.emit(Op::LoadConst, 0, ci as i32, span);
             }
             // Type aliases are declarations with no runtime representation.
             NodeKind::TypeAlias => self.emit(Op::LoadNone, 0, 0, span),

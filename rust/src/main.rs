@@ -1,5 +1,6 @@
 mod lsp;
 
+use std::io::Write;
 use std::process::exit;
 use std::rc::Rc;
 use unvm::ast::{Const, Node};
@@ -824,6 +825,204 @@ fn collect_global_names(code: &str) -> Vec<String> {
     out
 }
 
+// ---- build cache (TOOL1) -------------------------------------------------
+// Fingerprint helpers are std-only: two independent FNV-1a lanes give a
+// 128-bit key without adding a dependency.
+const CACHE_FNV_SEED_A: u64 = 0xcbf2_9ce4_8422_2325;
+const CACHE_FNV_SEED_B: u64 = 0x8422_2325_cbf2_9ce4;
+
+fn cache_fnv(bytes: &[u8], seed: u64) -> u64 {
+    let mut hash = seed;
+    for &byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x1000_0000_1b3);
+    }
+    hash
+}
+fn cache_digest(bytes: &[u8]) -> String {
+    format!(
+        "{:016x}{:016x}",
+        cache_fnv(bytes, CACHE_FNV_SEED_A),
+        cache_fnv(bytes, CACHE_FNV_SEED_B)
+    )
+}
+fn cache_push(buf: &mut Vec<u8>, text: &str) {
+    buf.extend_from_slice(&(text.len() as u64).to_le_bytes());
+    buf.extend_from_slice(text.as_bytes());
+}
+fn cache_file_digest(path: &std::path::Path) -> Option<String> {
+    Some(cache_digest(&std::fs::read(path).ok()?))
+}
+
+/// Cache lives in the OS temp dir — never inside the repository.
+fn build_cache_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("un-build-cache-v1")
+}
+fn build_cache_disabled() -> bool {
+    matches!(std::env::var("UV_BUILD_CACHE").as_deref(), Ok("0" | "off" | "false"))
+}
+fn source_path_of(path: &str) -> std::path::PathBuf {
+    if path.ends_with(".un") {
+        std::path::PathBuf::from(path)
+    } else {
+        std::path::PathBuf::from(format!("{path}.un"))
+    }
+}
+
+fn tool_identity(path: &std::path::Path, version_arg: &str) -> String {
+    let mut out = cache_file_digest(path).unwrap_or_else(|| "missing".to_string());
+    if let Ok(meta) = std::fs::metadata(path) {
+        out.push(':');
+        out.push_str(&meta.len().to_string());
+    }
+    if let Ok(result) = std::process::Command::new(path).arg(version_arg).output() {
+        out.push('|');
+        out.push_str(&String::from_utf8_lossy(&result.stdout));
+        out.push_str(&String::from_utf8_lossy(&result.stderr));
+    }
+    out
+}
+
+/// Identity of everything outside the source that can change the linked exe:
+/// rustc/gcc versions, this executable (the Un code generator) and the static
+/// runtime library. If any is unavailable, the cache is skipped so the normal
+/// build reports the usual error instead.
+fn build_toolchain_identity(embed: bool) -> Option<String> {
+    let (rustc, gcc) = find_gnu_toolchain()?;
+    let current = std::env::current_exe().ok()?;
+    let library = current.with_file_name(if embed { "libunvm.a" } else { "libnrt.a" });
+    let un_hash = cache_file_digest(&current)?;
+    let lib_hash = cache_file_digest(&library)?;
+    Some(format!(
+        "rustc={}|gcc={}|un={}|lib={}",
+        tool_identity(&rustc, "-vV"),
+        tool_identity(&gcc, "--version"),
+        un_hash,
+        lib_hash
+    ))
+}
+
+/// Key = source bytes + inlined user modules + build flags + target triple +
+/// toolchain/runtime identity. Hashing happens before validation; on a hit the
+/// validation would have succeeded too, so stdout/stderr/exit stay identical.
+fn build_cache_key(
+    input: &str,
+    source_bytes: &[u8],
+    embed: bool,
+    allow_dynamic: bool,
+    opt_level: &str,
+) -> Option<String> {
+    let identity = build_toolchain_identity(embed)?;
+    let text = String::from_utf8_lossy(source_bytes);
+    let normalized: String = Source::new(input, &text).code.iter().collect();
+    // Reuse the real inliner so module contents are part of the key. Its
+    // diagnostics are still emitted later by the normal build path.
+    let bundle = inline_user_modules_text(&normalized, input);
+    let mut buf = Vec::new();
+    cache_push(&mut buf, "un-build-cache-v1");
+    cache_push(&mut buf, input);
+    buf.extend_from_slice(&(source_bytes.len() as u64).to_le_bytes());
+    buf.extend_from_slice(source_bytes);
+    match &bundle {
+        Ok(code) => {
+            cache_push(&mut buf, "inline");
+            cache_push(&mut buf, code);
+        }
+        Err(message) => {
+            cache_push(&mut buf, "inline-error");
+            cache_push(&mut buf, message);
+        }
+    }
+    cache_push(&mut buf, if embed { "embed" } else { "plain" });
+    cache_push(&mut buf, if allow_dynamic { "dynamic" } else { "typed" });
+    cache_push(&mut buf, opt_level);
+    cache_push(&mut buf, "x86_64-pc-windows-gnu");
+    cache_push(&mut buf, &identity);
+    Some(cache_digest(&buf))
+}
+
+fn cache_entry_paths(key: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = build_cache_dir();
+    (dir.join(format!("{key}.exe")), dir.join(format!("{key}.skipped")))
+}
+fn cache_diag_paths(key: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = build_cache_dir();
+    (dir.join(format!("{key}.stdout")), dir.join(format!("{key}.stderr")))
+}
+
+/// Restores a cached executable. Returns false (without output) when the copy
+/// fails, so the caller falls back to the ordinary build path.
+fn build_cache_restore(key: &str, output: &str) -> bool {
+    if build_cache_disabled() {
+        return false;
+    }
+    let (cached_exe, skipped_path) = cache_entry_paths(key);
+    if !cached_exe.is_file() || std::fs::copy(&cached_exe, output).is_err() {
+        return false;
+    }
+    // `skipped:` warnings are part of the plain-build stderr; replay them.
+    if let Ok(text) = std::fs::read_to_string(&skipped_path) {
+        if !text.is_empty() {
+            eprint!("{text}");
+        }
+    }
+    true
+}
+
+/// rustc can emit warnings for the generated driver. Replay the exact bytes
+/// captured on the miss so a hit has identical stdout/stderr/exit.
+fn build_cache_replay_diag(key: &str) {
+    let (stdout_path, stderr_path) = cache_diag_paths(key);
+    if let Ok(bytes) = std::fs::read(stdout_path) {
+        let _ = std::io::stdout().write_all(&bytes);
+    }
+    if let Ok(bytes) = std::fs::read(stderr_path) {
+        let _ = std::io::stderr().write_all(&bytes);
+    }
+}
+
+/// Best effort: a cache write failure must never change build success.
+fn build_cache_save(key: &str, output: &str, skipped: &[String], stdout: &[u8], stderr: &[u8]) {
+    if build_cache_disabled() {
+        return;
+    }
+    let dir = build_cache_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let temp = dir.join(format!("{key}.{}.tmp", std::process::id()));
+    if std::fs::copy(output, &temp).is_err() {
+        return;
+    }
+    let (cached_exe, skipped_path) = cache_entry_paths(key);
+    let _ = std::fs::remove_file(&cached_exe);
+    if std::fs::rename(&temp, &cached_exe).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return;
+    }
+    if skipped.is_empty() {
+        let _ = std::fs::remove_file(&skipped_path);
+    } else {
+        let mut text = String::new();
+        for line in skipped {
+            text.push_str(line);
+            text.push('\n');
+        }
+        let _ = std::fs::write(&skipped_path, text);
+    }
+    let (stdout_path, stderr_path) = cache_diag_paths(key);
+    if stdout.is_empty() {
+        let _ = std::fs::remove_file(&stdout_path);
+    } else {
+        let _ = std::fs::write(&stdout_path, stdout);
+    }
+    if stderr.is_empty() {
+        let _ = std::fs::remove_file(&stderr_path);
+    } else {
+        let _ = std::fs::write(&stderr_path, stderr);
+    }
+}
+
 fn build_cmd(args: &[String]) {
     let mut input: Option<&String> = None;
     let mut output: Option<String> = None;
@@ -882,6 +1081,25 @@ fn build_cmd(args: &[String]) {
             format!("{input}.exe")
         }
     });
+
+    let opt_level = opt_level.as_deref().unwrap_or("0");
+    let key = if build_cache_disabled() {
+        None
+    } else {
+        std::fs::read(source_path_of(input))
+            .ok()
+            .and_then(|bytes| build_cache_key(input, &bytes, embed, allow_dynamic, opt_level))
+    };
+    if let Some(ref key) = key {
+        if build_cache_restore(key, &output) {
+            if !embed {
+                println!("un build: no-VM native runtime (no libunvm.a)");
+            }
+            build_cache_replay_diag(key);
+            println!("wrote {output}");
+            return;
+        }
+    }
 
     let temp_dir = std::env::temp_dir();
     let driver_path = temp_dir.join(format!("un_build_driver_{}.rs", std::process::id()));
@@ -950,14 +1168,14 @@ fn build_cmd(args: &[String]) {
             let _ = std::fs::remove_file(&driver_path);
             exit(1);
         }
-        let status = std::process::Command::new(&rustc)
+        let link = std::process::Command::new(&rustc)
             .arg(&driver_path)
             .arg("--target")
             .arg("x86_64-pc-windows-gnu")
             .arg("--edition")
             .arg("2021")
             .arg("-C")
-            .arg(format!("opt-level={}", opt_level.as_deref().unwrap_or("0")))
+            .arg(format!("opt-level={opt_level}"))
             .arg("-C")
             .arg(format!("linker={}", gcc.display()))
             .arg("-C")
@@ -1000,16 +1218,24 @@ fn build_cmd(args: &[String]) {
             .arg("link-arg=-lmingwex")
             .arg("-o")
             .arg(&output)
-            .status();
+            .output();
         let _ = std::fs::remove_file(&image_path);
         let _ = std::fs::remove_file(&driver_path);
-        match status {
-            Ok(status) if status.success() => {
-                println!("wrote {output}");
-            }
-            Ok(status) => {
-                eprintln!("link failed (rustc exited with {status})");
-                exit(1);
+        match link {
+            Ok(link) => {
+                // `status()` used to inherit the streams; replay the captured
+                // bytes verbatim so diagnostics stay byte-identical.
+                let _ = std::io::stdout().write_all(&link.stdout);
+                let _ = std::io::stderr().write_all(&link.stderr);
+                if link.status.success() {
+                    if let Some(ref key) = key {
+                        build_cache_save(key, &output, &[], &link.stdout, &link.stderr);
+                    }
+                    println!("wrote {output}");
+                } else {
+                    eprintln!("link failed (rustc exited with {})", link.status);
+                    exit(1);
+                }
             }
             Err(e) => {
                 eprintln!("cannot spawn rustc: {e}");
@@ -1115,12 +1341,12 @@ fn build_cmd(args: &[String]) {
     }
     // Classes are registered natively from TIR metadata; no `<classes_init>`
     // bytecode image and no VM static library are needed in a plain build.
+    let cache_skipped: Vec<String>;
     let emit_outcome = match unvm::natcode::obj_compile(0, &lowered, &obj_path, None) {
         Ok(outcome) => {
-            if !outcome.skipped.is_empty() {
-                for reason in &outcome.skipped {
-                    eprintln!("skipped: {reason}");
-                }
+            cache_skipped = outcome.skipped.iter().map(|reason| format!("skipped: {reason}")).collect();
+            for line in &cache_skipped {
+                eprintln!("{line}");
             }
             outcome
         }
@@ -1193,6 +1419,15 @@ fn build_cmd(args: &[String]) {
             "    unsafe {{ nrt_register_global({name:?}.as_bytes().as_ptr(), {name:?}.len()) }};\n"
         ));
     }
+    // INHERIT-WIRING decision (W-2026-11-25-INHERITWIRING): `class_parents` is
+    // recorded in TIR, but the driver deliberately does NOT call
+    // `nrt_register_class_parent`. Measured on `class Child: Base`, the VM's
+    // type-name pattern goes through `is_obj` -> `Types::accepts` (exact name),
+    // so `match c { Base -> .. }` falls through to `_` in `un run` and
+    // `un native`. NRT's `unrt_type_is` instead walks registered parents via
+    // `class_chain_accepts`; emitting the edges would make a plain exe match
+    // `Base` and break byte-identical parity. Wire them only together with a
+    // VM semantics change (and renewed 3-lane evidence).
     for (class_id, class_name) in lowered.class_names.iter().enumerate() {
         d.push_str(&format!(
             "    let c{class_id} = unsafe {{ nrt_register_class({class_name:?}.as_bytes().as_ptr(), {}) }};\n",
@@ -1272,13 +1507,13 @@ fn build_cmd(args: &[String]) {
         .arg("--edition")
         .arg("2021")
         .arg("-C")
-        .arg(format!("opt-level={}", opt_level.as_deref().unwrap_or("0")))
+        .arg(format!("opt-level={opt_level}"))
         .arg("-C")
         .arg(format!("linker={}", gcc.display()))
         .arg("-C")
         .arg(format!("link-arg={}", obj_path.display()));
     cmd.arg("-C").arg(format!("link-arg={}", nrtlib.display()));
-    let status = cmd
+    let link = cmd
         .arg("-C")
         .arg("link-arg=-lmingw32")
         .arg("-C")
@@ -1315,16 +1550,22 @@ fn build_cmd(args: &[String]) {
         .arg("link-arg=-lgcc")
         .arg("-o")
         .arg(&output)
-        .status();
+        .output();
     let _ = std::fs::remove_file(&obj_path);
     let _ = std::fs::remove_file(&driver_path);
-    match status {
-        Ok(status) if status.success() => {
-            println!("wrote {output}");
-        }
-        Ok(status) => {
-            eprintln!("link failed (rustc exited with {status})");
-            exit(1);
+    match link {
+        Ok(link) => {
+            let _ = std::io::stdout().write_all(&link.stdout);
+            let _ = std::io::stderr().write_all(&link.stderr);
+            if link.status.success() {
+                if let Some(ref key) = key {
+                    build_cache_save(key, &output, &cache_skipped, &link.stdout, &link.stderr);
+                }
+                println!("wrote {output}");
+            } else {
+                eprintln!("link failed (rustc exited with {})", link.status);
+                exit(1);
+            }
         }
         Err(e) => {
             eprintln!("cannot spawn rustc: {e}");

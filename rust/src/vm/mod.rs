@@ -2105,6 +2105,9 @@ fn materialize(c: &Constant) -> Obj {
         Constant::Bool(b) => world::bool_obj(*b),
         Constant::None => world::none_obj(),
         Constant::Null => world::null_obj(),
+        // D-098: byte literals are dedicated `Payload::Bytes` values (NRT tag
+        // 13), created through the same adapter the `bytes` native module uses.
+        Constant::Bytes(v) => crate::native::bytes::bytes_obj(v.clone()),
     }
 }
 #[cfg(test)] pub(crate) mod tests;

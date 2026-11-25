@@ -21,6 +21,9 @@ pub enum Constant {
     Bool(bool),
     None,
     Null,
+    /// D-098: a `b"..."` literal's raw bytes, materialised as `Payload::Bytes`
+    /// (NRT tag 13). Additive `.unbc` constant tag; VERSION stays 1.
+    Bytes(Vec<u8>),
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {

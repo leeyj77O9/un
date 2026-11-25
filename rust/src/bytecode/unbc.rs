@@ -15,6 +15,9 @@ const CONST_STR: u8 = 2;
 const CONST_BOOL: u8 = 3;
 const CONST_NONE: u8 = 4;
 const CONST_NULL: u8 = 5;
+// D-098: additive constant tag for `b"..."` literals. Old images never carry
+// tag 6, so VERSION and every historical tag remain unchanged.
+const CONST_BYTES: u8 = 6;
 const PATTERN_WILDCARD: u8 = 0;
 const PATTERN_BIND: u8 = 1;
 const PATTERN_LITERAL: u8 = 2;
@@ -70,6 +73,11 @@ pub fn write(program: &Program) -> Vec<u8> {
             }
             Constant::None => out.push(CONST_NONE),
             Constant::Null => out.push(CONST_NULL),
+            Constant::Bytes(bytes) => {
+                out.push(CONST_BYTES);
+                out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                out.extend_from_slice(bytes);
+            }
         }
     }
 
@@ -298,6 +306,10 @@ fn read_constant(reader: &mut Reader) -> Result<Constant, String> {
         CONST_BOOL => Constant::Bool(reader.u8()? != 0),
         CONST_NONE => Constant::None,
         CONST_NULL => Constant::Null,
+        CONST_BYTES => {
+            let length = reader.u32()? as usize;
+            Constant::Bytes(reader.take(length)?.to_vec())
+        }
         other => return Err(format!("unknown constant tag {other}")),
     })
 }

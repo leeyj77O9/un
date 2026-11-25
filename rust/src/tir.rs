@@ -783,6 +783,16 @@ pub struct TirProgram {
     pub class_setters: Vec<std::collections::HashSet<String>>,
     /// Declared field order per class (for positional ctor assignment).
     pub class_field_order: Vec<Vec<String>>,
+    /// Declared `(child, parent)` class-name pairs (`class Child: Base`).
+    ///
+    /// TIR otherwise flattens inherited fields/methods and drops the names, so
+    /// this is the only remaining record of the declaration graph. It is
+    /// intentionally NOT emitted to the native driver yet: the VM's type-name
+    /// patterns use exact `Types::accepts` matching (no inheritance), while
+    /// NRT's `unrt_type_is` walks registered parents. Registering them would
+    /// make a plain exe match `Base` where `un run`/`un native` do not,
+    /// breaking byte-identical output. Kept for a coordinated VM+NRT change.
+    pub class_parents: Vec<(String, String)>,
     /// True if any function writes a global (VM uses different semantics).
     pub has_global_write: bool,
 }
@@ -919,6 +929,12 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
         if matches!(module, "random" | "flow" | "atomic" | "inspect") {
             return false;
         }
+        // `type`/`repr`/`str` builtins lower to `types.<name>` and are served
+        // by the existing `unrt_call_native` dispatch (W-NRTTYPE). Allow them
+        // explicitly so this hand-maintained mirror of NRT stays intentional.
+        if module == "types" && matches!(member, "type" | "repr" | "str") {
+            return true;
+        }
         !matches!(
             (module, member),
             ("io", "open")
@@ -954,6 +970,9 @@ struct ClassTable {
     methods: Vec<std::collections::HashMap<String, Ty>>,
     setters: Vec<std::collections::HashSet<String>>,
     field_order: Vec<Vec<String>>,
+    /// Raw `(child, parent)` names from the class declarations, before the
+    /// inherited fields/methods are flattened into the child entry.
+    parents: Vec<(String, String)>,
 }
 
 impl ClassTable {
@@ -1076,7 +1095,18 @@ impl ClassTable {
             }
             order
         }).collect();
-        ClassTable { index, names, fields, methods, setters, field_order }
+        // Keep the declared inheritance edges. `parents` is used by nothing
+        // in codegen yet (see `TirProgram::class_parents`): the VM matches
+        // type names exactly, so registering these edges in NRT would diverge.
+        let mut parents = Vec::new();
+        for child in &names {
+            if let Some(info) = checked.classes.get(child) {
+                for base in &info.bases {
+                    parents.push((child.clone(), base.clone()));
+                }
+            }
+        }
+        ClassTable { index, names, fields, methods, setters, field_order, parents }
     }
 
     fn setters(&self, id: u16) -> Option<&std::collections::HashSet<String>> {
@@ -2019,7 +2049,10 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                 if let Some(first) = node.children.first() {
                     if first.kind == NodeKind::Identifier {
                         let name = source.span(first.start, first.length).to_string();
-                        if (name == "len" || name == "throw") && !checked.sigs.contains_key(name.as_str()) {
+                        if (name == "len" || name == "throw"
+                            || name == "type" || name == "repr" || name == "str")
+                            && !checked.sigs.contains_key(name.as_str())
+                        {
                             if let Some(arg_tuple) = node.children.get(1) {
                                 for arg in &arg_tuple.children {
                                     visit(arg, checked, source, locals, handles, out);
@@ -2609,6 +2642,7 @@ impl TirProgram {
             class_methods: classes.methods.clone(),
             class_setters: classes.setters.clone(),
             class_field_order: classes.field_order.clone(),
+            class_parents: classes.parents.clone(),
             has_global_write: any_global_write,
         };
         program.pad_default_args();
@@ -3163,6 +3197,14 @@ fn declare(ctx: &mut LowerCtx, name: &str, ty: TirTy) -> u16 {
     slot
 }
 
+/// Slot type for a freshly declared local. `lower_expr` flattens D-098 byte
+/// handles to `CoreTy::Obj`, so the inferred core type alone would erase a
+/// typeck-declared `bytes` binding and break `len(b)`'s precise gate. Prefer the
+/// declared static type when one is available.
+fn declared_slot_ty(ctx: &LowerCtx<'_>, name: &str, inferred: CoreTy) -> Result<TirTy, String> {
+    ctx.declared_types.get(name).copied().map(Ok).unwrap_or_else(|| tir_ty_of(inferred))
+}
+
 /// Collect identifiers in a lambda body that refer to locals of the enclosing
 /// function (free variables). These become leading parameters of the
 /// synthesized lambda function.
@@ -3396,7 +3438,7 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
                 ctx.lambda_vars.remove(&slot);
                 out.push(TirStmt::Set(slot, expr));
             } else {
-                let tty = tir_ty_of(ty)?;
+                let tty = declared_slot_ty(ctx, &name, ty)?;
                 let slot = declare(ctx, &name, tty);
                 out.push(TirStmt::Let(slot, expr));
             }
@@ -3416,7 +3458,7 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
             if let Some(slot) = slot_of(ctx, &name) {
                 out.push(TirStmt::Set(slot, expr));
             } else {
-                let tty = tir_ty_of(ty)?;
+                let tty = declared_slot_ty(ctx, &name, ty)?;
                 let slot = declare(ctx, &name, tty);
                 out.push(TirStmt::Let(slot, expr));
             }
@@ -4711,13 +4753,30 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                     ))
                 }
                 CoreTy::Obj => {
-                    // Dynamic index (e.g. a variant payload binder typed `any`).
-                    // NRT's existing `("tuple", "get", [obj, int])` dispatch and
-                    // the VM bridge in `unrt.rs` both use `get_item` semantics.
                     let (key, kty) = lower_expr(key_node, ctx)?;
                     if kty != CoreTy::Int {
                         return Err("dynamic index must be an int".to_string());
                     }
+                    // D-098: byte handles lower to the opaque `CoreTy::Obj`.
+                    // They are indexed through the existing `bytes.get`
+                    // native dispatch (tag 13 aware), not tuple's `get_item`.
+                    if expr_is_bytes(&target, ctx) {
+                        return Ok((
+                            TirExpr::Located {
+                                span: (node.start, node.length),
+                                inner: Box::new(TirExpr::NativeCallExpr {
+                                    module: "bytes".into(),
+                                    member: "get".into(),
+                                    args: vec![target, key],
+                                    ret: TirTy::Int,
+                                }),
+                            },
+                            CoreTy::Int,
+                        ));
+                    }
+                    // Dynamic index (e.g. a variant payload binder typed `any`).
+                    // NRT's existing `("tuple", "get", [obj, int])` dispatch and
+                    // the VM bridge in `unrt.rs` both use `get_item` semantics.
                     Ok((
                         TirExpr::Located {
                             span: (node.start, node.length),
@@ -4821,18 +4880,36 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             Ok((acc, CoreTy::Str))
         }
         NodeKind::Bytes => {
-            // VM materialises `b"..."` as a list[int] of byte values.
-            let mut bytes = Vec::with_capacity(node.children.len());
+            // D-098 / W-PLAINBYTESLIT: route `b"..."` through the existing
+            // `bytes.from_list` native dispatch so both VMs and plain builds
+            // materialise a dedicated `Payload::Bytes` handle (NRT tag 13).
+            // The VM already lowered literals to `Constant::Bytes`; reusing
+            // the native bridge here keeps the plain path byte-identical
+            // without introducing a new `unrt_*` C ABI symbol.
+            let mut values = Vec::with_capacity(node.children.len());
             for child in &node.children {
                 match child.value {
-                    Some(Const::Int(v)) => bytes.push(TirExpr::Int(v)),
+                    Some(Const::Int(v)) => values.push(TirExpr::Int(v)),
                     _ => return Err("byte literal element must be an integer".to_string()),
                 }
             }
-            if bytes.is_empty() {
-                return Ok((TirExpr::EmptyCollection { ty: TirTy::ListInt }, CoreTy::ListInt));
-            }
-            Ok((TirExpr::List(bytes), CoreTy::ListInt))
+            let list = if values.is_empty() {
+                TirExpr::EmptyCollection { ty: TirTy::ListInt }
+            } else {
+                TirExpr::List(values)
+            };
+            Ok((
+                TirExpr::Located {
+                    span: (node.start, node.length),
+                    inner: Box::new(TirExpr::NativeCallExpr {
+                        module: "bytes".into(),
+                        member: "from_list".into(),
+                        args: vec![list],
+                        ret: TirTy::Bytes,
+                    }),
+                },
+                CoreTy::Obj,
+            ))
         }
         NodeKind::Tuple => {
             // NRT tag 14: build a temporary list of boxed elements, then wrap
@@ -5671,6 +5748,26 @@ fn lower_math_call(
     Ok((TirExpr::Math(math_fn.0, promoted), CoreTy::Float))
 }
 
+/// `lower_expr` reports D-098 byte strings as the opaque `CoreTy::Obj`, so the
+/// `len()` gate cannot tell them apart from arbitrary dynamic handles by type
+/// alone. Recover the precise static type from the lowered expression instead:
+/// only these forms are allowed through to `unrt_len` (which handles tag 13).
+fn expr_is_bytes(expr: &TirExpr, ctx: &LowerCtx<'_>) -> bool {
+    match expr {
+        TirExpr::Local(slot) => ctx.locals.get(*slot as usize) == Some(&TirTy::Bytes),
+        TirExpr::NativeCallExpr { ret, .. } => *ret == TirTy::Bytes,
+        TirExpr::Located { inner, .. } => expr_is_bytes(inner, ctx),
+        TirExpr::Select { then_expr, else_expr, .. } => {
+            expr_is_bytes(then_expr, ctx) && expr_is_bytes(else_expr, ctx)
+        }
+        TirExpr::Call(index, _) => ctx.checked.functions.iter().enumerate().any(|(i, f)| {
+            ctx.tir_index.get(&i) == Some(&(*index as usize))
+                && f.sig.ret == crate::typeck::Ty::Bytes
+        }),
+        _ => false,
+    }
+}
+
 fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), String> {
     let callee = node
         .children
@@ -5969,9 +6066,42 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             | CoreTy::DictStrInt | CoreTy::DictStrFloat | CoreTy::DictIntInt
             | CoreTy::ListGen(_) | CoreTy::DictGen(_, _) | CoreTy::SetGen(_)
             | CoreTy::TupleGen(_) => {}
+            // D-098: a dedicated `bytes` value lowers to the opaque `CoreTy::Obj`.
+            // Accept it only when the lowered expression is statically bytes —
+            // `unrt_len` dispatches tag 13, while unrelated dynamic handles keep
+            // the existing compile-time rejection.
+            CoreTy::Obj if expr_is_bytes(&arg, ctx) => {}
             _ => return Err("len() requires a string or collection in the core".to_string()),
         }
         return Ok((TirExpr::Len(Box::new(arg)), CoreTy::Int));
+    }
+    // `type`/`repr`/`str` are global builtins in the VM, but the plain build
+    // reaches them through the existing `unrt_call_native` `types` module
+    // (W-NRTTYPE) — no new C ABI symbol. natcode passes a `TirTy::Str` result
+    // through as a raw tagged handle, so the VM-style rendering is preserved.
+    if matches!(name.as_str(), "type" | "repr" | "str")
+        && !ctx.checked.sigs.contains_key(name.as_str())
+    {
+        let args_node = node
+            .children
+            .get(1)
+            .ok_or_else(|| format!("{name}() without arguments"))?;
+        if args_node.kind != NodeKind::Tuple {
+            return Err(format!("{name}() arguments must be positional"));
+        }
+        if args_node.children.len() != 1 {
+            return Err(format!("{name}() expects exactly one argument"));
+        }
+        let (arg, _) = lower_expr(&args_node.children[0], ctx)?;
+        return Ok((
+            TirExpr::NativeCallExpr {
+                module: "types".into(),
+                member: name.into(),
+                args: vec![arg],
+                ret: TirTy::Str,
+            },
+            CoreTy::Str,
+        ));
     }
     if let Some(cid) = ctx.classes.id(&name) {
         let args_node = node
@@ -6412,7 +6542,10 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
             match expr_ty(arg, f, program, locals)? {
                 TirTy::Str | TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_)
                 | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt
-                | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) | TirTy::TupleGen(_) => {
+                | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_) | TirTy::TupleGen(_)
+                // D-098: native bytes handles are laid out with the length in
+                // the list-style slot and dispatched by `unrt_len` (tag 13).
+                | TirTy::Bytes => {
                     Ok(TirTy::Int)
                 }
                 _ => Err("len() requires a string or collection in the core".to_string()),
@@ -7219,6 +7352,7 @@ mod abi_tests {
             class_methods: vec![],
             class_setters: vec![],
             class_field_order: vec![],
+            class_parents: vec![],
             has_global_write: false,
         }
     }
@@ -7383,5 +7517,73 @@ mod lower_call_tests {
             tir_ty_from_ty(&classes, &fcheck.sig.ret),
             Some(TirTy::Lambda(u32::MAX))
         );
+    }
+
+    /// D-098: `len()` admits a dedicated bytes handle but not other opaque
+    /// values that also lower to `CoreTy::Obj`.
+    #[test]
+    fn expr_is_bytes_recovers_opaque_bytes_type() {
+        let source = Source::new("bytes.un", "");
+        let checked = CheckedProgram::default();
+        let classes = ClassTable::new(&checked);
+        let tir_index = HashMap::new();
+        let call_names = HashMap::new();
+        let instance_args = HashMap::new();
+        let mut lambdas = Vec::new();
+        let globals = HashMap::new();
+        let mut wrote_global = false;
+        let ctx = LowerCtx {
+            source: &source,
+            checked: &checked,
+            tir_index: &tir_index,
+            call_names: &call_names,
+            current_instance: String::new(),
+            instance_args: &instance_args,
+            slots: HashMap::new(),
+            locals: vec![TirTy::Bytes, TirTy::Obj],
+            declared_types: HashMap::new(),
+            classes: &classes,
+            lambda_vars: HashMap::new(),
+            lambdas: &mut lambdas,
+            lambda_base: 0,
+            globals: &globals,
+            wrote_global: &mut wrote_global,
+            pending: Vec::new(),
+        };
+        assert!(expr_is_bytes(&TirExpr::Local(0), &ctx));
+        assert!(!expr_is_bytes(&TirExpr::Local(1), &ctx));
+        let native = TirExpr::NativeCallExpr {
+            module: "bytes".into(),
+            member: "from_str".into(),
+            args: vec![TirExpr::Str("abc".into())],
+            ret: TirTy::Bytes,
+        };
+        assert!(expr_is_bytes(&native, &ctx));
+        assert!(!expr_is_bytes(&TirExpr::Int(1), &ctx));
+    }
+}
+
+#[cfg(test)]
+mod class_parents_tests {
+    use super::*;
+
+    /// The declared inheritance edge survives lowering as a name pair even
+    /// though the child's fields/methods are flattened into it.
+    #[test]
+    fn class_table_collects_declared_parents() {
+        let mut checked = CheckedProgram::default();
+        checked.classes.insert("Base".into(), crate::typeck::ClassInfo::default());
+        let mut child = crate::typeck::ClassInfo::default();
+        child.bases.push("Base".into());
+        checked.classes.insert("Child".into(), child);
+
+        let classes = ClassTable::new(&checked);
+        assert_eq!(
+            classes.parents,
+            vec![("Child".to_string(), "Base".to_string())]
+        );
+        // Every declared class still has a registration slot, including the
+        // base; the edge itself is the only new information.
+        assert_eq!(classes.names, vec!["Base".to_string(), "Child".to_string()]);
     }
 }

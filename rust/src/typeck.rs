@@ -4094,6 +4094,9 @@ impl<'a> Checker<'a> {
                 refine_unknown(Ty::union(items.iter().cloned().collect()))
             }
             Ty::Str => Ty::Str,
+            // D-098: a byte string indexes to an `int` byte value (0..=255),
+            // matching the VM's `get_item` semantics on `Payload::Bytes`.
+            Ty::Bytes => Ty::Int,
             Ty::Any => Ty::Any,
             Ty::Unknown => Ty::Unknown,
             other => {
