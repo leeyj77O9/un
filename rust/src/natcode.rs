@@ -681,7 +681,6 @@ struct FnEmit<'a> {
     unrt_member_get: Option<cranelift_module::FuncId>,
     unrt_member_set: Option<cranelift_module::FuncId>,
     unrt_obj_type_name: Option<cranelift_module::FuncId>,
-    unrt_obj_field_at: Option<cranelift_module::FuncId>,
     unrt_method_call: Option<cranelift_module::FuncId>,
     unrt_bool_from_obj: Option<cranelift_module::FuncId>,
     unrt_list_pop: Option<cranelift_module::FuncId>,
@@ -1084,16 +1083,6 @@ fn emit_internal<M: Module>(
     } else {
         None
     };
-    let unrt_obj_field_at = if mode == NativeMode::Obj {
-        Some(declare_import(
-            module,
-            "unrt_obj_field_at",
-            vec![types::I64, types::I64],
-            Some(types::I64),
-        )?)
-    } else {
-        None
-    };
     let unrt_member_set = if mode == NativeMode::Obj {
         Some(declare_import(
             module,
@@ -1343,7 +1332,6 @@ fn emit_internal<M: Module>(
         unrt_class_new,
         unrt_member_get,
         unrt_obj_type_name,
-        unrt_obj_field_at,
         unrt_member_set,
         unrt_method_call,
         unrt_bool_from_obj,
@@ -1785,20 +1773,24 @@ fn emit_class_pattern_check<M: Module>(
     let res = builder.ins().call(r, &[handle, nptr, nlen]);
     let ok = builder.inst_results(res)[0];
     let zero = builder.ins().iconst(types::I64, 0);
-    let neq = builder.ins().icmp(IntCC::NotEqual, ok, zero);
-    builder.ins().brif(neq, success_blk, &[], fail_blk, &[]);
+    let is_class = builder.ins().icmp(IntCC::NotEqual, ok, zero);
+    let inner_blk = builder.create_block();
+    builder.ins().brif(is_class, inner_blk, &[], fail_blk, &[]);
+    builder.switch_to_block(inner_blk);
+    emitter.terminated = false;
     emit_match_pattern(inner, handle, value_ty, success_blk, fail_blk, emitter, builder, module, f);
 }
 
 fn emit_variant_pattern_check<M: Module>(
-    enum_name: &str, _variant_name: &str, inner: &TirPattern, value: cranelift_codegen::ir::Value,
+    enum_name: &str, variant_name: &str, inner: &TirPattern, value: cranelift_codegen::ir::Value,
     value_ty: TirTy, success_blk: Block, fail_blk: Block,
     emitter: &mut FnEmit<'_>, builder: &mut FunctionBuilder, module: &mut M, f: &TirFn,
 ) {
     let handle = wrap_as_obj(value, value_ty, emitter, builder, module);
-    // VM: `Pattern::Variant` checks type_name == enum_name and
-    // `collections::variant_name(value) == variant_name`. Native side uses the
-    // registered enum class name and field 0 as the variant payload.
+    let zero = builder.ins().iconst(types::I64, 0);
+
+    // 1) Exact enum type name — mirrors `obj::type_name(value) == enum_name`
+    // in `vm::match_pattern`'s `Pattern::Variant` arm.
     let gv = embed_str_bytes(emitter, module, builder, enum_name.as_bytes());
     let nptr = builder.ins().symbol_value(types::I64, gv);
     let nlen = builder.ins().iconst(types::I64, enum_name.len() as i64);
@@ -1806,17 +1798,59 @@ fn emit_variant_pattern_check<M: Module>(
     let r = module.declare_func_in_func(id, builder.func);
     let res = builder.ins().call(r, &[handle, nptr, nlen]);
     let ok = builder.inst_results(res)[0];
-    let zero = builder.ins().iconst(types::I64, 0);
-    let neq = builder.ins().icmp(IntCC::NotEqual, ok, zero);
-    builder.ins().brif(neq, success_blk, &[], fail_blk, &[]);
-    // Variant payload: field 0 of the enum instance.
-    let id2 = emitter.unrt_obj_field_at.expect("unrt_obj_field_at import required for variant patterns");
-    let r2 = module.declare_func_in_func(id2, builder.func);
-    let idx = builder.ins().iconst(types::I64, 0);
-    let res2 = builder.ins().call(r2, &[handle, idx]);
-    let payload = builder.inst_results(res2)[0];
-    let inner_ty = TirTy::Obj;
-    emit_match_pattern(inner, payload, inner_ty, success_blk, fail_blk, emitter, builder, module, f);
+    let is_enum = builder.ins().icmp(IntCC::NotEqual, ok, zero);
+    let marker_blk = builder.create_block();
+    builder.ins().brif(is_enum, marker_blk, &[], fail_blk, &[]);
+
+    // 2) Variant name — `collections::variant_name` reads the `__un_variant`
+    // Str member. Use the existing `unrt_member_get` + `unrt_str_from_bytes` +
+    // `unrt_obj_eq` ABI instead of adding a new symbol.
+    builder.switch_to_block(marker_blk);
+    emitter.terminated = false;
+    let mgv = embed_str_bytes(emitter, module, builder, b"__un_variant");
+    let mptr = builder.ins().symbol_value(types::I64, mgv);
+    let mlen = builder.ins().iconst(types::I64, 12);
+    let get_id = emitter.unrt_member_get.expect("unrt_member_get import required for variant patterns");
+    let get_ref = module.declare_func_in_func(get_id, builder.func);
+    let marker_res = builder.ins().call(get_ref, &[handle, mptr, mlen]);
+    let marker = builder.inst_results(marker_res)[0];
+    let has_marker = builder.ins().icmp(IntCC::NotEqual, marker, zero);
+    let name_blk = builder.create_block();
+    builder.ins().brif(has_marker, name_blk, &[], fail_blk, &[]);
+
+    builder.switch_to_block(name_blk);
+    emitter.terminated = false;
+    let egv = embed_str_bytes(emitter, module, builder, variant_name.as_bytes());
+    let eptr = builder.ins().symbol_value(types::I64, egv);
+    let elen = builder.ins().iconst(types::I64, variant_name.len() as i64);
+    let str_id = emitter.unrt_str_new.expect("unrt_str_from_bytes import required for variant patterns");
+    let str_ref = module.declare_func_in_func(str_id, builder.func);
+    let expected_res = builder.ins().call(str_ref, &[eptr, elen]);
+    let expected = builder.inst_results(expected_res)[0];
+    let eq_id = emitter.unrt_obj_eq.expect("unrt_obj_eq import required for variant patterns");
+    let eq_ref = module.declare_func_in_func(eq_id, builder.func);
+    let eq_res = builder.ins().call(eq_ref, &[marker, expected]);
+    let eq = builder.inst_results(eq_res)[0];
+    let is_variant = builder.ins().icmp(IntCC::NotEqual, eq, zero);
+    let payload_blk = builder.create_block();
+    builder.ins().brif(is_variant, payload_blk, &[], fail_blk, &[]);
+
+    // 3) Payload — `collections::variant_value` reads the `value` member
+    // (not field 0, which is only positional `Pattern::Fields` lookup).
+    builder.switch_to_block(payload_blk);
+    emitter.terminated = false;
+    let vgv = embed_str_bytes(emitter, module, builder, b"value");
+    let vptr = builder.ins().symbol_value(types::I64, vgv);
+    let vlen = builder.ins().iconst(types::I64, 5);
+    let payload_res = builder.ins().call(get_ref, &[handle, vptr, vlen]);
+    let payload = builder.inst_results(payload_res)[0];
+    let has_payload = builder.ins().icmp(IntCC::NotEqual, payload, zero);
+    let match_blk = builder.create_block();
+    builder.ins().brif(has_payload, match_blk, &[], fail_blk, &[]);
+
+    builder.switch_to_block(match_blk);
+    emitter.terminated = false;
+    emit_match_pattern(inner, payload, TirTy::Obj, success_blk, fail_blk, emitter, builder, module, f);
 }
 
 /// Try each alternative of an alias-expanded pattern left to right. Bind slots

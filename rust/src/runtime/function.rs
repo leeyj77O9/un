@@ -298,7 +298,14 @@ pub fn fn_call(f: &Obj, args: &Args) -> Obj {    let Some(cell) = fn_cell(f) els
     if let Some(result) = match &cell.borrow().body {
         Body::Proto { index, program } => {
             let bound = f.borrow().self_.clone();
-            crate::jit_fast::try_call_jit(program, *index, args, bound)
+            // A bare function value cannot be represented by the JIT (it lowers
+            // to the i64 call-candidate sentinel), so such programs must stay
+            // on the interpreter for both call paths.
+            if crate::vm::jit_value_safe(program) {
+                crate::jit_fast::try_call_jit(program, *index, args, bound)
+            } else {
+                None
+            }
         }
         _ => None,
     } {
@@ -557,6 +564,121 @@ pub fn fn_repr(f: &Obj) -> String {
     let name = cell.borrow().name.clone().unwrap_or_default();
     format!("fn {name}({args}) -> {ret}")
 }
+/// Byte index of the first top-level `->` (bracket depth 0) in `text`.
+fn top_level_return_arrow(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth: usize = 0;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'-' if depth == 0 && bytes[i + 1] == b'>' => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `fn foo(a: int) -> int` yields `int`. A second top-level `->` (an expression
+/// body on the same line) and arrows nested inside a type (`func(int) -> int`)
+/// are ignored so the result is always the declared return type text.
+fn declared_return_text(line: &str) -> Option<&str> {
+    let start = top_level_return_arrow(line)? + 2;
+    let rest = &line[start..];
+    let end = top_level_return_arrow(rest).unwrap_or(rest.len());
+    let text = rest[..end].trim();
+    (!text.is_empty()).then_some(text)
+}
+
+/// NRT renders only `int`, `float`, `bool` and `any` (`kind_name` in
+/// `nrt/src/closure.rs`); every object-handle type collapses to `any`. The VM
+/// must use the same vocabulary for byte-identical output.
+fn nrt_display_type(text: &str) -> Types {
+    match text.trim() {
+        "int" => Types::single("int"),
+        "float" => Types::single("float"),
+        "bool" => Types::single("bool"),
+        _ => Types::single("any"),
+    }
+}
+
+fn is_any(t: &Types) -> bool {
+    matches!(t, Types::Single(n) if &**n == "any")
+}
+
+fn declared_function_name(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix("fn ")?;
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    (!rest[..end].is_empty()).then_some(&rest[..end])
+}
+
+/// Locate the `fn <name>` declaration line near `probe`. `fn_span` covers the
+/// whole function and is the primary anchor; the earliest `source_map` entry
+/// is the fallback for `.unbc` programs, where `fn_span` is not serialised.
+fn declared_line(source: &Source, probe: usize, name: &str) -> Option<String> {
+    let mut pos = probe.min(source.code.len());
+    while pos > 0 && source.code.get(pos - 1) != Some(&'\n') {
+        pos -= 1;
+    }
+    for _ in 0..4 {
+        let line = source.get_line_text(pos);
+        if declared_function_name(&line) == Some(name) {
+            return Some(line);
+        }
+        if pos == 0 {
+            break;
+        }
+        pos -= 1;
+        while pos > 0 && source.code.get(pos - 1) != Some(&'\n') {
+            pos -= 1;
+        }
+    }
+    None
+}
+
+/// The VM stores `any` as the runtime return type of every compiled function,
+/// while plain builds render the compiled return kind. Recover the declared
+/// return type from the function's source declaration so `io.write(fn_value)`
+/// is byte-identical across VM / `un native` / plain `un build`. This touches
+/// the display string only: `ObjData`/`Payload` stay unchanged.
+fn display_return_type(cell: &FnData) -> Types {
+    if !is_any(&cell.return_type) {
+        return cell.return_type.clone();
+    }
+    let Some(name) = cell.name.as_deref() else {
+        return cell.return_type.clone();
+    };
+    // Lambdas and synthesised protos have no declared return annotation.
+    if name.is_empty() || name == "lambda" || name.starts_with("__") {
+        return cell.return_type.clone();
+    }
+    let Body::Proto { index, program } = &cell.body else {
+        return cell.return_type.clone();
+    };
+    let Some(proto) = program.protos.get(*index) else {
+        return cell.return_type.clone();
+    };
+    let probe = proto
+        .fn_span
+        .map(|s| s.0)
+        .or_else(|| proto.source_map.iter().map(|(start, _)| *start).min());
+    let Some(probe) = probe else {
+        return cell.return_type.clone();
+    };
+    let source = context::source(&cell.closure);
+    let Some(line) = declared_line(&source, probe, name) else {
+        return cell.return_type.clone();
+    };
+    match declared_return_text(&line) {
+        Some(text) => nrt_display_type(text),
+        None => cell.return_type.clone(),
+    }
+}
+
 pub fn fn_to_str(f: &Obj) -> String {
     let cell = fn_cell(f).expect("func payload");
     let list = cell.borrow().args.clone();
@@ -566,7 +688,7 @@ pub fn fn_to_str(f: &Obj) -> String {
         .map(|a| a.type_name.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let ret = cell.borrow().return_type.display().to_string();
+    let ret = display_return_type(&cell.borrow()).display();
     format!("fn({args}) -> {ret}")
 }
 pub fn fn_clone(f: &Obj) -> Obj {

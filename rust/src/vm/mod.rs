@@ -1407,6 +1407,152 @@ impl VM {
 }
 
 
+// Per-program result of `jit_value_safe`. Program ids are monotonically
+// increasing (`bytecode::next_program_id`) and are never reused, so a cached
+// boolean cannot go stale when a program is reloaded.
+thread_local! {
+    static JIT_VALUE_SAFE_CACHE: RefCell<HashMap<u64, bool>> = RefCell::new(HashMap::new());
+}
+
+const JIT_VALUE_SAFE_CACHE_LIMIT: usize = 256;
+
+/// Whether the bytecode JIT can represent every value this program may let
+/// escape from a proto.
+///
+/// The JIT lowers a bare reference to a user function (`LoadName` of a proto
+/// name) to the i64 sentinel `1`, which only has meaning as the callee of the
+/// following `Call`. When such a value escapes other than as a return value -
+/// `f = funcname` or a call argument - the JIT hands back `Int(1)` instead of
+/// the function object. A program that does this is outside the JIT's value
+/// domain and must run on the interpreter in full: otherwise a JIT-compiled
+/// caller could inline-call the offending proto and observe the same bogus
+/// sentinel. Returning a bare function is safe: the JIT bails that individual
+/// proto (see `jit_bc`) so the interpreter produces the real function value.
+pub(crate) fn jit_value_safe(program: &Program) -> bool {
+    if let Some(cached) =
+        JIT_VALUE_SAFE_CACHE.with(|cache| cache.borrow().get(&program.id).copied())
+    {
+        return cached;
+    }
+    let safe = compute_jit_value_safe(program);
+    JIT_VALUE_SAFE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= JIT_VALUE_SAFE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(program.id, safe);
+    });
+    safe
+}
+
+fn compute_jit_value_safe(program: &Program) -> bool {
+    // Mirrors jit_bc's `callee_lookup`: the JIT treats proto names as callable
+    // sentinels only for user functions.
+    let mut callee_names: HashMap<&str, ()> = HashMap::new();
+    for proto in &program.protos {
+        if proto.flags & PROTO_FUNCTION != 0 {
+            if let Some(name) = program.names.get(proto.name) {
+                callee_names.insert(name.as_str(), ());
+            }
+        }
+    }
+    if callee_names.is_empty() {
+        return true;
+    }
+    // The JIT consumes the translated plan, so inspect the same translation.
+    // A program that cannot be translated cannot be JIT'd either.
+    let Ok(plan) = transfer::compile(program) else {
+        return true;
+    };
+    for (proto_index, proto_plan) in plan.protos.iter().enumerate() {
+        let Some(proto) = program.protos.get(proto_index) else {
+            continue;
+        };
+        let mut func_regs = vec![false; proto_plan.reg_count];
+        for ins in &proto_plan.code {
+            let a = ins.a as usize;
+            match ins.op {
+                Op::LoadName => {
+                    let is_callee = proto
+                        .names
+                        .get(ins.d as usize)
+                        .and_then(|&global| program.names.get(global))
+                        .is_some_and(|name| callee_names.contains_key(name.as_str()));
+                    if let Some(slot) = func_regs.get_mut(a) {
+                        *slot = is_callee;
+                    }
+                }
+                Op::Call => {
+                    // The callee register is consumed by the call; `a` gets the
+                    // call's result, which is not a directly loaded function.
+                    if let Some(slot) = func_regs.get_mut(ins.b as usize) {
+                        *slot = false;
+                    }
+                    if let Some(slot) = func_regs.get_mut(a) {
+                        *slot = false;
+                    }
+                }
+                Op::Dup => {
+                    let from = func_regs.get(ins.b as usize).copied().unwrap_or(false);
+                    if let Some(slot) = func_regs.get_mut(a) {
+                        *slot = from;
+                    }
+                }
+                // These do not write a fresh value to `a`; keep any live
+                // sentinel flag so a later Call/escape op is still detected.
+                Op::Unwrap
+                | Op::ArgBegin
+                | Op::Jmp
+                | Op::JmpIf
+                | Op::PushTry
+                | Op::PushTryProp
+                | Op::Propagate
+                | Op::PopTry
+                | Op::Raise
+                | Op::NewScope
+                | Op::PopScope
+                | Op::Break
+                | Op::Skip
+                | Op::PushDefer
+                | Op::PrepIter
+                | Op::Use
+                | Op::Unsupported => {}
+                // Any use of a function sentinel other than as a Call callee
+                // or a return value escapes the JIT's value domain. Bare
+                // returns are safe: jit_bc bails the offending proto instead.
+                Op::StoreName
+                | Op::StoreLocal
+                | Op::StoreUpv
+                | Op::ArgPos
+                | Op::ArgKw
+                | Op::ArgSpread
+                | Op::ArgKwSpread
+                | Op::SetAttr
+                | Op::SetItem
+                | Op::BuildList
+                | Op::BuildDict
+                | Op::BuildSet
+                | Op::BuildTuple
+                | Op::BuildTupleNamed
+                | Op::FString => {
+                    if func_regs.get(a).copied().unwrap_or(false) {
+                        return false;
+                    }
+                    if let Some(slot) = func_regs.get_mut(a) {
+                        *slot = false;
+                    }
+                }
+                _ => {
+                    if let Some(slot) = func_regs.get_mut(a) {
+                        *slot = false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
 impl VM {
     fn call_value(
         &mut self,
@@ -1432,8 +1578,10 @@ impl VM {
         args: &Args,
         span: (usize, usize),
     ) -> Result<Obj, Outcome> {
-    if let Some(result) = crate::jit_fast::try_call_jit(&program, proto_index, args, None) {
-        return Ok(result);
+    if jit_value_safe(&program) {
+        if let Some(result) = crate::jit_fast::try_call_jit(&program, proto_index, args, None) {
+            return Ok(result);
+        }
     }
     let frame = match function::begin_call(callable, args) {
             Ok(frame) => frame,

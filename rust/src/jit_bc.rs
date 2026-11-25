@@ -897,6 +897,11 @@ impl<'a> Tr<'a> {
         let val = self.emit_check_callee_result(builder, hp, callee_kind, CalleeBail::ReturnPair)?;
         builder.def_var(self.rv_i64(ins.a as usize), val);
         self.ret_slot[ins.a as usize] = None;
+        // The translated Call reuses the callee register as its destination,
+        // so the Name marker survives there unless it is cleared. A real call
+        // result is not a function value; leaving the marker set would make a
+        // later `-> <call result>` look like a sentinel return and bail.
+        self.call_candidate_regs.remove(&(ins.a as usize));
         self.class_ctor_regs.remove(&(ins.a as usize));
         self.instance_regs.remove(&(ins.a as usize));
         self.method_regs.remove(&(ins.a as usize));
@@ -3019,6 +3024,19 @@ impl<'a> Tr<'a> {
                 {
                     return None;
                 }
+                // A register still marked as a call candidate holds the
+                // internal `i64 1` sentinel from LoadName, not a user value.
+                // Returning it would leak the sentinel as Int(1); give up this
+                // proto and let the interpreter produce the real function value.
+                if self.call_candidate_regs.contains_key(&(ins.a as usize)) {
+                    if crate::jit_cache::jit_debug() {
+                        eprintln!(
+                            "JITREJECT proto[{}] Return: reg {} is a call-candidate sentinel",
+                            self.proto_index, ins.a
+                        );
+                    }
+                    return None;
+                }
                 if self.is_none[ins.a as usize] {
                     let zero = builder.ins().iconst(types::I64, 0);
                     let five = builder.ins().iconst(types::I64, crate::jit_cache::TAG_NONE);
@@ -3464,6 +3482,16 @@ fn analyze_one_proto(
             match ins.op {
                 Op::Return => {
                     let r = ins.a as usize;
+                    // A returned call-candidate register holds the internal
+                    // callee sentinel, not an Int. Drop the whole proto from
+                    // return-kind analysis so callers never assume RET_INT and
+                    // the emitter's matching bail sends it to the interpreter.
+                    if r < n_regs && reg_call[r].is_some() {
+                        if crate::jit_cache::jit_debug_if() {
+                            eprintln!("JITDBG ret-candidate proto={proto_index} r={r} (excluded)");
+                        }
+                        return None;
+                    }
                     if r < n_regs {
                         if reg_float[r] {
                             kinds |= RET_FLOAT;

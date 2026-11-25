@@ -960,6 +960,18 @@ impl ClassTable {
     fn new(checked: &CheckedProgram) -> Self {
         let mut names: Vec<String> = checked.classes.keys().cloned().collect();
         names.sort_unstable();
+        // Data-carrying enum variants lower to synthetic class instances with
+        // two fixed fields (`__un_variant`: Str, `value`: dynamic handle). The
+        // generated native driver registers them like ordinary classes, so no
+        // new runtime ABI symbol is needed.
+        let mut enum_names: Vec<String> = checked.enums.clone();
+        enum_names.sort_unstable();
+        for name in &enum_names {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        let is_enum = |name: &str| enum_names.iter().any(|e| e == name);
         let index: std::collections::HashMap<String, u16> = names
             .iter()
             .enumerate()
@@ -1030,7 +1042,16 @@ impl ClassTable {
         > = std::collections::HashMap::new();
         let fields = names
             .iter()
-            .map(|n| checked.classes[n].fields.clone())
+            .map(|n| {
+                if is_enum(n) {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("__un_variant".to_string(), Ty::Str);
+                    m.insert("value".to_string(), Ty::Any);
+                    m
+                } else {
+                    checked.classes[n].fields.clone()
+                }
+            })
             .collect();
         let methods = names
             .iter()
@@ -1042,6 +1063,9 @@ impl ClassTable {
             .collect();
         let field_order = names.iter().map(|n| {
             let mut order = Vec::new();
+            if is_enum(n) {
+                return vec!["__un_variant".to_string(), "value".to_string()];
+            }
             if let Some(info) = checked.classes.get(n) {
                 for base in &info.bases {
                     if let Some(b) = checked.classes.get(base) {
@@ -1613,13 +1637,12 @@ pub fn core_rejection_reason(fcheck: &FnCheck) -> Option<String> {
         // Set literals lower to the list ABI (no dedicated NRT tag).
         Ty::Set(_) => {}
         Ty::Class(_) | Ty::Generic { .. } | Ty::Tuple(_) => {}
-        // A function returning a callable is fine: `Lambda(u32::MAX)` is an
-        // NRT closure handle (I64 in the ABI), and a concrete `__lambda_N`
-        // value is assignable to it via `same_ty`.
-        // Returning a function value is not core-supported: the VM returns an
-        // int for `-> funcname` (pre-existing LoadName/scope behaviour), so
-        // allowing it here would break byte-identical run/native/exe output.
-        other => return Some(format!("'{}' returns non-core type '{other}'", sig.name)),
+        // A function returning a callable is core-supported: `Lambda(u32::MAX)`
+        // is an NRT closure handle (I64 in the ABI), and a concrete `__lambda_N`
+        // value is assignable to it via `same_ty`. A bare `-> funcname` lowers
+        // to a zero-capture wrapper closure, so run/native/exe all return the
+        // same `<type: func>` value.
+        Ty::Func { .. } => {}
     }
     if let Some((name, ty)) = locals.iter().find(|(_, ty)| !is_core_ty(ty)) {
         return Some(format!(
@@ -2270,6 +2293,14 @@ fn collect_binding_target(target: &Node, source: &Source, out: &mut HashMap<Stri
                 collect_binding_target(alt, source, out);
             }
         }
+        // Class pattern `Point(x, y)` / variant pattern `Shape.point(v)`:
+        // `children[1]` is the argument tuple carrying the payload binders;
+        // `children[0]` is the constructor name (not a binder).
+        NodeKind::Call | NodeKind::Property => {
+            if let Some(args) = target.children.get(1) {
+                collect_binding_target(args, source, out);
+            }
+        }
         _ => {}
     }
 }
@@ -2751,6 +2782,10 @@ fn lower_function<'a>(
         Ty::Bool => Some(TirTy::Bool),
         Ty::None_ => None,
         Ty::Str => Some(TirTy::Str),
+        // A declared `func(..) -> ..` return is the opaque NRT closure handle
+        // `Lambda(u32::MAX)`; a returned `funcname` produces a concrete
+        // `__lambda_N` handle that `same_ty` accepts for this slot.
+        Ty::Func { .. } => Some(TirTy::Lambda(u32::MAX)),
         Ty::List(_) | Ty::Class(_) | Ty::Dict(_, _) | Ty::Tuple(_) | Ty::Set(_) | Ty::Bytes
         | Ty::Any | Ty::Union(_) | Ty::Unknown => {
             Some(
@@ -3981,6 +4016,13 @@ fn pattern_bind_types(
                 pattern_bind_types(child, source, ty, precise, ctx, outer, out);
             }
         }
+        // Class/variant patterns bind inside their argument tuple. Payload
+        // types are not tracked per variant, so fall back to the scrutinee type.
+        NodeKind::Call | NodeKind::Property => {
+            if let Some(args) = node.children.get(1) {
+                pattern_bind_types(args, source, ty, precise, ctx, outer, out);
+            }
+        }
         _ => {}
     }
 }
@@ -4008,6 +4050,12 @@ fn pattern_bind_names(node: &Node, ctx: &LowerCtx, outer: &HashMap<String, u16>,
         NodeKind::OrPattern | NodeKind::Tuple | NodeKind::List => {
             for child in &node.children {
                 pattern_bind_names(child, ctx, outer, out);
+            }
+        }
+        // Class/variant patterns declare their binders in the argument tuple.
+        NodeKind::Call | NodeKind::Property => {
+            if let Some(args) = node.children.get(1) {
+                pattern_bind_names(args, ctx, outer, out);
             }
         }
         _ => {}
@@ -4093,6 +4141,52 @@ fn pattern_type_names(name: &str, ctx: &LowerCtx, depth: usize) -> Vec<String> {
     out
 }
 
+/// Lower `Enum.variant` / `Enum.variant(args...)` into `TirPattern::Variant`.
+/// `callee` is the `Property[Enum, variant]` node; `args_node` is the optional
+/// argument tuple carried by a `Call` wrapper.
+fn lower_variant_pattern(
+    callee: &Node,
+    args_node: Option<&Node>,
+    ctx: &mut LowerCtx,
+    value_ty: TirTy,
+    outer_slots: &HashMap<String, u16>,
+) -> Result<TirPattern, String> {
+    let head = callee.children.first().ok_or("variant pattern without enum name")?;
+    let variant_node = callee.children.get(1).ok_or("variant pattern without variant name")?;
+    let enum_name = ctx.source.span(head.start, head.length).to_string();
+    let variant_name = ctx.source.span(variant_node.start, variant_node.length).to_string();
+    let args_owned: Vec<&Node> = args_node
+        .map(|a| a.children.iter().collect())
+        .unwrap_or_default();
+    let args = &args_owned[..];
+    let has_named = args.iter().any(|c| c.kind == NodeKind::Pair);
+    // Mirror `compiler::compile_pattern`'s `Pattern::Variant` shape: a single
+    // positional payload is matched directly (not wrapped in a one-element
+    // tuple), named entries become `Fields`, and multiple positional payloads
+    // become `Tuple`.
+    let inner = if has_named {
+        let mut fields = Vec::new();
+        for c in args {
+            match lower_match_pattern(c, ctx, value_ty, outer_slots)? {
+                TirPattern::Fields(f) => fields.extend(f),
+                p => fields.push((None, p)),
+            }
+        }
+        TirPattern::Fields(fields)
+    } else if args.len() == 1 {
+        lower_match_pattern(args[0], ctx, value_ty, outer_slots)?
+    } else if args.is_empty() {
+        TirPattern::Wildcard
+    } else {
+        let mut items = Vec::with_capacity(args.len());
+        for c in args {
+            items.push(lower_match_pattern(c, ctx, value_ty, outer_slots)?);
+        }
+        TirPattern::Tuple(items)
+    };
+    Ok(TirPattern::Variant { enum_name, variant_name, inner: Box::new(inner) })
+}
+
 /// Lower one pattern, recursively for tuple/list destructuring. Bind names have
 /// already been declared in the current slot scope by `lower_match_expr` (per
 /// alternative); `value_ty` is the native type of the value being matched at
@@ -4148,6 +4242,12 @@ fn lower_match_pattern(
             }
             Ok(TirPattern::Tuple(items))
         }
+        // `Enum.variant(v)` is a `Call` whose callee is a `Property`; the VM
+        // compiler treats it as `Pattern::Variant`, not a class pattern.
+        NodeKind::Call if node.children.first().is_some_and(|c| c.kind == NodeKind::Property) => {
+            let callee = node.children.first().unwrap();
+            lower_variant_pattern(callee, node.children.get(1), ctx, value_ty, outer_slots)
+        }
         // Class pattern `Point` or `Point(a, b)` (VM `Pattern::Class`).
         NodeKind::Call => {
             let callee = node.children.first().ok_or("class pattern without name")?;
@@ -4163,24 +4263,8 @@ fn lower_match_pattern(
             }
             Ok(TirPattern::Class { name, inner: Box::new(TirPattern::Fields(fields)) })
         }
-        // Variant pattern `Shape.point` or `Shape.point(v)` (VM `Pattern::Variant`).
-        NodeKind::Property => {
-            let (enum_name, variant_name) = match node.children.first().map(|h| h.children.get(1)) {
-                Some(Some(v)) => (
-                    ctx.source.span(node.children[0].children[0].start, node.children[0].children[0].length).to_string(),
-                    ctx.source.span(v.start, v.length).to_string(),
-                ),
-                _ => return Err("variant pattern must be Enum.variant".to_string()),
-            };
-            let mut inner = Vec::new();
-            if let Some(a) = node.children.get(1) {
-                for c in &a.children {
-                    inner.push(lower_match_pattern(c, ctx, value_ty, outer_slots)?);
-                }
-            }
-            let inner = if inner.is_empty() { TirPattern::Wildcard } else { TirPattern::Tuple(inner) };
-            Ok(TirPattern::Variant { enum_name, variant_name, inner: Box::new(inner) })
-        }
+        // Bare variant pattern `Shape.point` (VM `Pattern::Variant`).
+        NodeKind::Property => lower_variant_pattern(node, None, ctx, value_ty, outer_slots),
         NodeKind::Pair => {
             let Some(name_node) = node.children.first() else {
                 return Err("match pattern pair without name".to_string());
@@ -4591,6 +4675,27 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                             }),
                         },
                         CoreTy::from(ret),
+                    ))
+                }
+                CoreTy::Obj => {
+                    // Dynamic index (e.g. a variant payload binder typed `any`).
+                    // NRT's existing `("tuple", "get", [obj, int])` dispatch and
+                    // the VM bridge in `unrt.rs` both use `get_item` semantics.
+                    let (key, kty) = lower_expr(key_node, ctx)?;
+                    if kty != CoreTy::Int {
+                        return Err("dynamic index must be an int".to_string());
+                    }
+                    Ok((
+                        TirExpr::Located {
+                            span: (node.start, node.length),
+                            inner: Box::new(TirExpr::NativeCallExpr {
+                                module: "tuple".into(),
+                                member: "get".into(),
+                                args: vec![target, key],
+                                ret: TirTy::Obj,
+                            }),
+                        },
+                        CoreTy::Obj,
                     ))
                 }
                 _ => {
@@ -5557,6 +5662,28 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
         }
         if head.kind == NodeKind::Identifier {
             let module = ctx.source.span(head.start, head.length).to_string();
+            if ctx.checked.enums.iter().any(|e| e.as_str() == module) {
+                // `Enum.variant(payload...)` lowers to a synthetic class
+                // instance. Field 0 carries the variant name (Str), field 1
+                // the boxed payload — the same layout `unrt.rs` builds for the
+                // VM and NRT builds through `nrt_register_field`.
+                let payloads = lower_arg_list(args_tuple, ctx)?;
+                let payload = if payloads.len() == 1 {
+                    TirExpr::BoxObj(Box::new(payloads.into_iter().next().unwrap()))
+                } else {
+                    TirExpr::BoxObj(Box::new(TirExpr::List(payloads)))
+                };
+                let tmp = declare(ctx, &format!("$enum_{}_{}", node.start, member), TirTy::Obj);
+                ctx.pending.push(TirStmt::Let(
+                    tmp,
+                    TirExpr::ClassNew {
+                        name: module.into_boxed_str(),
+                        args: vec![TirExpr::Str(member), payload],
+                        ret: TirTy::Obj,
+                    },
+                ));
+                return Ok((TirExpr::Local(tmp), CoreTy::Obj));
+            }
             if module == "math" {
                 return lower_math_call(&member, args_tuple, ctx);
             }
@@ -5918,6 +6045,9 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             Some(tty) => CoreTy::SetGen(elem_of_tir(tty)),
             None => CoreTy::SetGen(ObjElem::Obj),
         },
+        // A direct call to a function declared `-> func(..) -> ..` returns a
+        // closure handle; callers dispatch it via `unrt_call_obj` (CallObj).
+        Ty::Func { .. } => CoreTy::Lambda(u32::MAX),
         other => {
             return Err(format!(
                 "'{name}' returns '{}' which is not core-supported",
@@ -7185,5 +7315,40 @@ mod lower_call_tests {
             required: 1,
         };
         assert_eq!(tir_ty_from_ty(&classes, &func_ty), Some(TirTy::Lambda(u32::MAX)));
+    }
+
+    /// A declared `-> func(..) -> ..` return is core-eligible: a bare
+    /// `funcname` lowers to a zero-capture wrapper closure whose handle shares
+    /// the NRT ABI with the opaque `Lambda(u32::MAX)` slot. Without this, plain
+    /// `un build` rejects `fn maker() -> func(int) -> int` as non-core.
+    #[test]
+    fn func_return_is_core_eligible() {
+        let ret = Ty::Func {
+            params: std::rc::Rc::from(vec![Ty::Int]),
+            names: std::rc::Rc::from(vec!["x".to_string()]),
+            ret: std::rc::Rc::new(Ty::Int),
+            required: 1,
+        };
+        let fcheck = FnCheck {
+            sig: crate::typeck::FnSig {
+                name: "maker".to_string(),
+                params: vec![],
+                param_names: vec![],
+                ret,
+                required: 0,
+                is_method: false,
+                receiver: 0,
+                variadic: false,
+            },
+            locals: vec![],
+            local_types: HashMap::new(),
+        };
+        assert_eq!(core_rejection_reason(&fcheck), None);
+        assert!(is_core_fn(&fcheck));
+        let classes = ClassTable::new(&CheckedProgram::default());
+        assert_eq!(
+            tir_ty_from_ty(&classes, &fcheck.sig.ret),
+            Some(TirTy::Lambda(u32::MAX))
+        );
     }
 }

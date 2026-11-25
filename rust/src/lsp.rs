@@ -3074,7 +3074,7 @@ fn builtin_hover_markdown(
         let class_name = resolve_receiver_class(analysis, &receiver, start)
             .map(|(_, _, name)| name);
         doc = docs::function(&module, word)
-            .or_else(|| class_name.as_deref().and_then(|name| docs::function("members", word)))
+            .or_else(|| class_name.as_deref().and_then(|_| docs::function("members", word)))
             .map(str::to_string)
             .unwrap_or_else(|| {
                 docs::auto(class_name.as_deref().unwrap_or(&module), word, class_name.is_some())

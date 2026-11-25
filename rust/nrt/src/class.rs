@@ -532,6 +532,30 @@ pub(crate) fn display_instance(p: u64) -> String {
     let id = unsafe { obj(p).a as usize };
     let Some(class) = classes.get(id) else { return String::new() };
     let fields = instance_fields(p);
+    // CMP-05 lowers data-carrying enum variants to a synthetic class with the
+    // `__un_variant` (Str) marker and a `value` payload field. Mirror the VM's
+    // `collections::enu_to_str`: `Enum.variant(payload)`. Ordinary classes keep
+    // the existing `Name(field: value, ...)` display below.
+    if class.field_names.len() == 2
+        && class.field_names[0] == "__un_variant"
+        && class.field_names[1] == "value"
+    {
+        if let Some(&marker) = fields.get(0) {
+            if unsafe { obj(marker).tag } == 6 {
+                let variant = unsafe { crate::strings::str_of(marker) };
+                let payload = fields
+                    .get(1)
+                    .copied()
+                    .unwrap_or_else(|| crate::obj::unrt_obj_none());
+                return format!(
+                    "{}.{}({})",
+                    class.name,
+                    variant,
+                    crate::obj::display(payload)
+                );
+            }
+        }
+    }
     let parts: Vec<String> = class.field_names.iter().enumerate()
         .filter_map(|(i, name)| fields.get(i).map(|v| format!("{}: {}", name, crate::obj::display(*v))))
         .collect();

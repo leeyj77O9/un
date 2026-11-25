@@ -116,16 +116,28 @@ pub extern "C" fn unrt_class_new(
     let Ok(name) = std::str::from_utf8(name_bytes) else {
         return to_raw(crate::runtime::obj::err("unrt_class_new: class name is not utf-8"));
     };
-    let Some(class) = crate::runtime::world::get_class(name) else {
-        return to_raw(crate::runtime::obj::err(format!(
-            "class '{name}' not registered"
-        )));
-    };
     let values: Vec<crate::runtime::obj::Obj> = (0..argc)
         .map(|i| {
             borrow_obj(unsafe { *args.add(i) }).unwrap_or_else(crate::runtime::obj::none)
         })
         .collect();
+    let Some(class) = crate::runtime::world::get_class(name) else {
+        // TIR lowers `Enum.variant(payload)` to `ClassNew { name: "Enum",
+        // args: [Str(variant), BoxObj(payload)] }` so plain builds and VM
+        // builds share one layout (NRT registers the synthetic class). In the
+        // VM the enum value must be a real `collections::variant` object.
+        let variant = values.first().and_then(|v| match crate::runtime::obj::payload(v) {
+            crate::runtime::obj::Payload::Str(s) => Some(s.to_string()),
+            _ => None,
+        });
+        let Some(variant) = variant else {
+            return to_raw(crate::runtime::obj::err(format!(
+                "class '{name}' not registered"
+            )));
+        };
+        let payload = values.get(1).cloned().unwrap_or_else(crate::runtime::obj::none);
+        return to_raw(crate::runtime::collections::variant(name, &variant, 0, payload));
+    };
     let instance = crate::runtime::obj::clone_obj(&class);
     to_raw(crate::runtime::obj::init(&instance, &values))
 }
@@ -1084,6 +1096,12 @@ pub extern "C" fn unrt_call_native(
             borrow_obj(unsafe { *args.add(i) }).unwrap_or_else(crate::runtime::obj::none)
         })
         .collect();
+    // A dynamic index lowered from `x[i]` where `x` has an opaque/`any` type
+    // (e.g. a variant payload binder). NRT already exposes the same
+    // `("tuple", "get", [obj, int])` shape; the VM uses `obj::get_item`.
+    if module == "tuple" && member == "get" && values.len() == 2 {
+        return to_raw(crate::runtime::obj::get_item(&values[0], &values[1]));
+    }
     // Slice/clear are not registered as VM native members. Handle them here
     // with the same runtime helpers the interpreter uses so `--embed` stays
     // byte-identical with `un run`.
