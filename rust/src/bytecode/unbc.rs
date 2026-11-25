@@ -3,6 +3,12 @@ use crate::bytecode::{
     Constant, ExcEntry, ExcKind, Param, Pattern, Program, Proto, MAGIC, MAX_PATTERN_DEPTH, VERSION,
 };
 const NONE: u32 = u32::MAX;
+// Header flags. Bit 0 = embedded source (historical). Bit 1 = every proto
+// record carries a trailing declared-return-type name index. Old images only
+// ever set bit 0, so readers can tell the two layouts apart without bumping
+// VERSION or changing any Op value.
+const FLAG_SOURCE: u16 = 1;
+const FLAG_DECLARED_RET: u16 = 2;
 const CONST_INT: u8 = 0;
 const CONST_FLOAT: u8 = 1;
 const CONST_STR: u8 = 2;
@@ -30,7 +36,8 @@ pub fn write(program: &Program) -> Vec<u8> {
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
 
-    let flags: u16 = if program.source.is_some() { 1 } else { 0 };
+    let flags: u16 = if program.source.is_some() { FLAG_SOURCE } else { 0 }
+        | FLAG_DECLARED_RET;
     out.extend_from_slice(&flags.to_le_bytes());
     write_string(&mut out, &program.source_path);
     if let Some(source) = &program.source {
@@ -158,6 +165,11 @@ fn write_proto(out: &mut Vec<u8>, proto: &Proto) {
         Some(index) => out.extend_from_slice(&(index as u32).to_le_bytes()),
         None => out.extend_from_slice(&NONE.to_le_bytes()),
     }
+    // Additive tail field: present only in images with FLAG_DECLARED_RET.
+    match proto.declared_ret {
+        Some(index) => out.extend_from_slice(&(index as u32).to_le_bytes()),
+        None => out.extend_from_slice(&NONE.to_le_bytes()),
+    }
 }
 fn write_pattern(out: &mut Vec<u8>, pattern: &Pattern) {
     match pattern {
@@ -226,11 +238,11 @@ pub fn read(bytes: &[u8]) -> Result<Program, String> {
         return Err(format!("unsupported .unbc version {version}"));
     }
     let flags = reader.u16()?;
-    if flags & !1 != 0 {
+    if flags & !(FLAG_SOURCE | FLAG_DECLARED_RET) != 0 {
         return Err(format!("unsupported .unbc flags {flags:#06x}"));
     }
     let source_path = reader.string()?;
-    let source = if flags & 1 != 0 {
+    let source = if flags & FLAG_SOURCE != 0 {
         Some(reader.string()?)
     } else {
         None
@@ -252,8 +264,11 @@ pub fn read(bytes: &[u8]) -> Result<Program, String> {
     }
     let proto_count = reader.u32()? as usize; reader.guard(proto_count)?;
     let mut protos = Vec::with_capacity(proto_count);
+    // Old images (flags bit 1 clear) have no trailing declared-ret field;
+    // readers default it to None without changing VERSION.
+    let has_declared_ret = flags & FLAG_DECLARED_RET != 0;
     for _ in 0..proto_count {
-        protos.push(read_proto(&mut reader)?);
+        protos.push(read_proto(&mut reader, has_declared_ret)?);
     }
     let program = Program {
         source_path,
@@ -286,7 +301,7 @@ fn read_constant(reader: &mut Reader) -> Result<Constant, String> {
         other => return Err(format!("unknown constant tag {other}")),
     })
 }
-fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
+fn read_proto(reader: &mut Reader, has_declared_ret: bool) -> Result<Proto, String> {
     let name = reader.u32()? as usize;
     let arity = reader.u32()? as usize;
     let flags = reader.u16()?;
@@ -368,6 +383,11 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
         patterns.push(read_pattern(reader)?);
     }
     let ext_type = reader.optional_u32()?;
+    let declared_ret = if has_declared_ret {
+        reader.optional_u32()?
+    } else {
+        None
+    };
     Ok(Proto {
         name,
         arity,
@@ -383,6 +403,7 @@ fn read_proto(reader: &mut Reader) -> Result<Proto, String> {
         patterns,
         flags,
         ext_type,
+        declared_ret,
         fn_span: None,
     })
 }
@@ -527,7 +548,12 @@ mod tests {
         let mut program = Program {
             source_path: "test.un".to_string(),
             source: Some("x = 1 + 2\nmore source text here".to_string()),
-            names: vec!["<module>".to_string(), "io".to_string(), "x".to_string()],
+            names: vec![
+                "<module>".to_string(),
+                "io".to_string(),
+                "x".to_string(),
+                "int".to_string(),
+            ],
             consts: vec![
                 Constant::Int(1),
                 Constant::Float(1.5),
@@ -586,6 +612,7 @@ mod tests {
             ),
         ];
         proto.ext_type = Some(1);
+        proto.declared_ret = Some(3);
         program.protos.push(proto);
         program
     }
@@ -611,6 +638,55 @@ mod tests {
         assert_eq!(proto.exc, original.exc);
         assert_eq!(proto.patterns, original.patterns);
         assert_eq!(proto.ext_type, original.ext_type);
+        assert_eq!(proto.declared_ret, original.declared_ret);
+    }
+    #[test]
+    fn old_images_without_declared_ret_read_as_none() {
+        let program = sample();
+        let mut bytes = write(&program);
+        // Strip one additive u32 per proto and clear the header flag that
+        // marks its presence — exactly the layout produced before this change.
+        bytes.truncate(bytes.len() - 4 * program.protos.len());
+        // Header layout: MAGIC[0..4], VERSION[4..6], flags[6..8].
+        let flags = u16::from_le_bytes([bytes[6], bytes[7]]);
+        bytes[6..8].copy_from_slice(&(flags & !FLAG_DECLARED_RET).to_le_bytes());
+        let read_back = read(&bytes).expect("read legacy image");
+        assert!(read_back.protos[0].declared_ret.is_none());
+        assert_eq!(read_back.protos[0].code, program.protos[0].code);
+        assert_eq!(read_back.protos[0].ext_type, program.protos[0].ext_type);
+        assert_eq!(read_back.names, program.names);
+    }
+    #[test]
+    fn compiler_records_declared_return_types() {
+        let text = "fn add(a: int, b: int) -> int\n    -> a + b\n\nfn scaled(x: int) -> float\n    -> x * 1.5\n";
+        let mut source = crate::source::Source::new("test.un", text);
+        let tokens = crate::lexer::lex(&mut source).expect("lex");
+        let source = std::rc::Rc::new(source);
+        let node = crate::parser::parse(tokens, source.clone()).expect("parse");
+        let root = crate::optimize::optimize(&node).expect("optimize").root;
+        let program = crate::compiler::compile(&source, &root).expect("compile");
+        let declared: Vec<&str> = program
+            .protos
+            .iter()
+            .filter_map(|p| p.declared_ret.map(|i| program.names[i].as_str()))
+            .collect();
+        assert!(declared.contains(&"int"), "{declared:?}");
+        assert!(declared.contains(&"float"), "{declared:?}");
+
+        let read_back = read(&write(&program)).expect("round trip");
+        let back: Vec<&str> = read_back
+            .protos
+            .iter()
+            .filter_map(|p| p.declared_ret.map(|i| read_back.names[i].as_str()))
+            .collect();
+        assert_eq!(back, declared);
+    }
+    #[test]
+    fn an_out_of_range_declared_ret_is_rejected() {
+        let mut program = sample();
+        program.protos[0].declared_ret = Some(program.names.len());
+        let bytes = write(&program);
+        assert!(read(&bytes).is_err());
     }
     #[test]
     fn a_foreign_magic_is_rejected() {

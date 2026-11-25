@@ -560,7 +560,7 @@ pub fn fn_repr(f: &Obj) -> String {
         .map(|a| format!("{}: {}", a.name, a.type_name.display()))
         .collect::<Vec<_>>()
         .join(", ");
-    let ret = cell.borrow().return_type.display().to_string();
+    let ret = display_return_type(&cell.borrow()).display().to_string();
     let name = cell.borrow().name.clone().unwrap_or_default();
     format!("fn {name}({args}) -> {ret}")
 }
@@ -662,6 +662,17 @@ fn display_return_type(cell: &FnData) -> Types {
     let Some(proto) = program.protos.get(*index) else {
         return cell.return_type.clone();
     };
+    // `.unbc` images carry the declared annotation on the proto itself, so it
+    // is the primary source: it is available even when `fn_span` was dropped
+    // by serialisation or the image has no embedded source at all. The text is
+    // interned in `Program::names`, and `nrt_display_type` keeps the exact same
+    // vocabulary as the source-text fallback below (and NRT's `kind_name`).
+    if let Some(text) = proto
+        .declared_ret
+        .and_then(|name_index| program.names.get(name_index))
+    {
+        return nrt_display_type(text);
+    }
     let probe = proto
         .fn_span
         .map(|s| s.0)

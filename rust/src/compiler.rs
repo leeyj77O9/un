@@ -406,7 +406,7 @@ impl<'a> Compiler<'a> {
         if class_nodes.is_empty() {
             return Ok(());
         }
-        self.begin_proto("<classes_init>", None, None);
+        self.begin_proto("<classes_init>", None, None, None);
         for cls in class_nodes {
             self.code(cls)?;
             if !self.raises {
@@ -489,12 +489,19 @@ impl<'a> Compiler<'a> {
         self.slot_stack.len() - 1
     }
 
-    fn begin_proto(&mut self, name: &str, ext_type: Option<&str>, fn_span: Option<(usize, usize)>) -> usize {
+    fn begin_proto(
+        &mut self,
+        name: &str,
+        ext_type: Option<&str>,
+        declared_ret: Option<&str>,
+        fn_span: Option<(usize, usize)>,
+    ) -> usize {
         let name_index = push_name(&mut self.program, name);
         let mut proto = Proto::new(name_index, PROTO_FUNCTION);
         if let Some(ext) = ext_type {
             proto.ext_type = Some(push_name(&mut self.program, ext));
         }
+        proto.declared_ret = declared_ret.map(|text| push_name(&mut self.program, text));
         proto.fn_span = fn_span;
         self.program.protos.push(proto);
         let index = self.program.protos.len() - 1;
@@ -521,6 +528,7 @@ impl<'a> Compiler<'a> {
             flags: 0,
             patterns: Vec::new(),
             ext_type: None,
+            declared_ret: None,
             fn_span: None,
         };
         let original = std::mem::replace(&mut self.program.protos[proto_index], dummy);
@@ -627,6 +635,7 @@ impl<'a> Compiler<'a> {
             flags: original.flags,
             patterns: original.patterns,
             ext_type: original.ext_type,
+            declared_ret: original.declared_ret,
             fn_span: original.fn_span,
         };
         self.program.protos[proto_index] = final_proto;
@@ -1224,7 +1233,7 @@ impl<'a> Compiler<'a> {
         let span = (node.start, node.length);
         let block = &node.children[0];
 
-        self.begin_proto("defer", None, None);
+        self.begin_proto("defer", None, None, None);
         self.code_function_body(block)?;
         let proto_slot = self.end_proto();
         self.emit(Op::PushDefer, 0, proto_slot as i32, span);
@@ -1530,6 +1539,7 @@ impl<'a> Compiler<'a> {
         let name = self.text(&node.children[0]);
         let params = &node.children[1];
         let body = &node.children[2];
+        let declared_ret = node.function_ret().map(|ret| self.text(ret));
 
         let decorated = node
             .annotations
@@ -1537,7 +1547,7 @@ impl<'a> Compiler<'a> {
             .map(|a| !a.is_empty())
             .unwrap_or(false);
         let flags = if decorated { 0 } else { FLAG_FUNC_BIND };
-        self.compile_function(&name, None, params, body, span, flags)?;
+        self.compile_function(&name, None, declared_ret.as_deref(), params, body, span, flags)?;
         self.apply_annotations(node, span)?;
         if decorated {
             let slot = self.name_index(&name);
@@ -1569,7 +1579,16 @@ impl<'a> Compiler<'a> {
         let name = self.text(&node.children[1]);
         let params = &node.children[2];
         let body = &node.children[3];
-        self.compile_function(&name, Some(&ext_type), params, body, span, FLAG_FUNC_EXT)?;
+        let declared_ret = node.function_ret().map(|ret| self.text(ret));
+        self.compile_function(
+            &name,
+            Some(&ext_type),
+            declared_ret.as_deref(),
+            params,
+            body,
+            span,
+            FLAG_FUNC_EXT,
+        )?;
         self.apply_annotations(node, span)
     }
 
@@ -1577,13 +1596,14 @@ impl<'a> Compiler<'a> {
         let span = (node.start, node.length);
         let params = &node.children[0];
         let body = &node.children[1];
-        self.compile_function("lambda", None, params, body, span, 0)
+        self.compile_function("lambda", None, None, params, body, span, 0)
     }
 
     fn compile_function(
         &mut self,
         name: &str,
         ext_type: Option<&str>,
+        declared_ret: Option<&str>,
         params: &Node,
         body: &Node,
         span: (usize, usize),
@@ -1599,7 +1619,7 @@ impl<'a> Compiler<'a> {
 
         let saved_raises = self.raises;
         let saved_groups = std::mem::take(&mut self.groups);
-        self.begin_proto(name, ext_type, Some(span));
+        self.begin_proto(name, ext_type, declared_ret, Some(span));
         self.compile_params(params)?;
         self.code_function_body(body)?;
         let slot = self.end_proto();
@@ -1783,6 +1803,7 @@ impl<'a> Compiler<'a> {
                 NodeKind::Function => {
                     let member_name = self.text(&member.children[0]);
                     let slot = self.name_index(&member_name);
+                    let declared_ret = member.function_ret().map(|ret| self.text(ret));
 
                     let defaults = self.compile_defaults(&member.children[1])?;
                     if defaults > 255 {
@@ -1793,7 +1814,12 @@ impl<'a> Compiler<'a> {
                     }
                     let saved_raises = self.raises;
                     let saved_groups = std::mem::take(&mut self.groups);
-                    self.begin_proto(&member_name, Some(&class_name), Some((member.start, member.length)));
+                    self.begin_proto(
+                        &member_name,
+                        Some(&class_name),
+                        declared_ret.as_deref(),
+                        Some((member.start, member.length)),
+                    );
                     self.slot_alloc("self");
                     self.compile_params(&member.children[1])?;
                     self.code_function_body(&member.children[2])?;
@@ -1859,7 +1885,7 @@ impl<'a> Compiler<'a> {
                         let body = &accessor_node.children[1];
                         let saved_raises = self.raises;
                         let saved_groups = std::mem::take(&mut self.groups);
-                        self.begin_proto(name, Some(&class_name), Some((accessor_node.start, accessor_node.length)));
+                        self.begin_proto(name, Some(&class_name), None, Some((accessor_node.start, accessor_node.length)));
                         self.slot_alloc("self");
 
                         if accessor_node.value.as_ref()
@@ -1917,7 +1943,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), Panic> {
         // This slot belongs to the parent (enum declaration) proto.
         let variant_slot = self.name_index(variant_name);
-        self.begin_proto(variant_name, Some(enum_name), Some(span));
+        self.begin_proto(variant_name, Some(enum_name), None, Some(span));
         let arg_slot = self.slot_alloc("value");
         let param_name = push_name(&mut self.program, "value");
         self.program.protos[self.current].params.push(Param {
@@ -2147,7 +2173,7 @@ impl<'a> Compiler<'a> {
         if op == TokenType::Go {
             let saved_raises = self.raises;
             let saved_groups = std::mem::take(&mut self.groups);
-            self.begin_proto("go", None, None);
+            self.begin_proto("go", None, None, None);
             self.code(&node.children[0])?;
             self.emit(Op::Return, 0, 0, span);
             let slot = self.end_proto();

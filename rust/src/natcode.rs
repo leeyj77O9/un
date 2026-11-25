@@ -680,6 +680,10 @@ struct FnEmit<'a> {
     unrt_class_new: Option<cranelift_module::FuncId>,
     unrt_member_get: Option<cranelift_module::FuncId>,
     unrt_member_set: Option<cranelift_module::FuncId>,
+    /// Positional field lookup for `TirPattern::Fields`: the member at index
+    /// `i` of `collections::all_names(value)` (0 when absent), mirroring the
+    /// VM's `Pattern::Fields` positional arm.
+    unrt_obj_field_at: Option<cranelift_module::FuncId>,
     unrt_obj_type_name: Option<cranelift_module::FuncId>,
     unrt_method_call: Option<cranelift_module::FuncId>,
     unrt_bool_from_obj: Option<cranelift_module::FuncId>,
@@ -1073,6 +1077,18 @@ fn emit_internal<M: Module>(
     } else {
         None
     };
+    // ARC-00: reuse the existing ABI (implemented by both `unrt.rs` and
+    // `libnrt.a`) for positional field destructuring; no new symbol needed.
+    let unrt_obj_field_at = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_obj_field_at",
+            vec![types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
     let unrt_obj_type_name = if mode == NativeMode::Obj {
         Some(declare_import(
             module,
@@ -1331,6 +1347,7 @@ fn emit_internal<M: Module>(
         unrt_make_mod_zero_panic,
         unrt_class_new,
         unrt_member_get,
+        unrt_obj_field_at,
         unrt_obj_type_name,
         unrt_member_set,
         unrt_method_call,
@@ -1733,15 +1750,60 @@ fn emit_match_pattern<M: Module>(
                 success_blk, fail_blk, emitter, builder, module, f);
         }
         TirPattern::Fields(fields) => {
-            for (name_idx, pat) in fields {
-                let member_name: String = match name_idx {
-                    Some(idx) => f.name.clone() + ":" + idx,
-                    None => format!("__field_{}", f.name.clone()),
+            // Mirror `vm::match_pattern`'s `Pattern::Fields`: each entry is
+            // resolved left to right against the *scrutinee* (not against the
+            // previous member), and a missing/error member is a non-match.
+            // Bind writes from an earlier field must not jump to `success_blk`
+            // before the remaining fields have been tested, so every field
+            // gets its own continuation block and only the last jumps out.
+            let handle = wrap_as_obj(value, value_ty, emitter, builder, module);
+            let zero = builder.ins().iconst(types::I64, 0);
+            for (index, (name, pat)) in fields.iter().enumerate() {
+                let member = if let Some(name) = name {
+                    // Named field: resolve by the real attribute name, exactly
+                    // as the VM's `obj::get_attr(value, name)` does.
+                    let m = emit_member_get(handle, name, emitter, builder, module);
+                    let err_id = emitter.unrt_obj_is_err.expect("unrt import required for field patterns");
+                    let err_ref = module.declare_func_in_func(err_id, builder.func);
+                    let err_call = builder.ins().call(err_ref, &[m]);
+                    let is_err = builder.inst_results(err_call)[0];
+                    let clean = builder.ins().icmp(IntCC::Equal, is_err, zero);
+                    let probe_blk = builder.create_block();
+                    builder.ins().brif(clean, probe_blk, &[], fail_blk, &[]);
+                    builder.switch_to_block(probe_blk);
+                    emitter.terminated = false;
+                    m
+                } else {
+                    // Positional field: `unrt_obj_field_at` resolves the i-th
+                    // name from `collections::all_names(value)` and reads it.
+                    let at_id = emitter.unrt_obj_field_at.expect("unrt import required for field patterns");
+                    let at_ref = module.declare_func_in_func(at_id, builder.func);
+                    let idx = builder.ins().iconst(types::I64, index as i64);
+                    let at_call = builder.ins().call(at_ref, &[handle, idx]);
+                    let m = builder.inst_results(at_call)[0];
+                    let found = builder.ins().icmp(IntCC::NotEqual, m, zero);
+                    let probe_blk = builder.create_block();
+                    builder.ins().brif(found, probe_blk, &[], fail_blk, &[]);
+                    builder.switch_to_block(probe_blk);
+                    emitter.terminated = false;
+                    // A present member may still be an error object; the VM
+                    // treats that as a non-match too.
+                    let err_id = emitter.unrt_obj_is_err.expect("unrt import required for field patterns");
+                    let err_ref = module.declare_func_in_func(err_id, builder.func);
+                    let err_call = builder.ins().call(err_ref, &[m]);
+                    let is_err = builder.inst_results(err_call)[0];
+                    let clean = builder.ins().icmp(IntCC::Equal, is_err, zero);
+                    let clean_blk = builder.create_block();
+                    builder.ins().brif(clean, clean_blk, &[], fail_blk, &[]);
+                    builder.switch_to_block(clean_blk);
+                    emitter.terminated = false;
+                    m
                 };
-                let member = emit_member_get(value, &member_name, emitter, builder, module);
-                let member_ty = TirTy::Obj;
-                emit_match_pattern(pat, member, member_ty, success_blk, fail_blk,
+                let next_blk = builder.create_block();
+                emit_match_pattern(pat, member, TirTy::Obj, next_blk, fail_blk,
                     emitter, builder, module, f);
+                builder.switch_to_block(next_blk);
+                emitter.terminated = false;
             }
             builder.ins().jump(success_blk, &[]);
         }

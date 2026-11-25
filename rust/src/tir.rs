@@ -1783,8 +1783,14 @@ fn pattern_core_ok(
         }
         // Variant pattern `Shape.point` / `Shape.point(v)` (VM `Pattern::Variant`).
         NodeKind::Property => {}
-        // Named fields (`(a: x, b: y)`) — VM `Pattern::Fields`.
-        NodeKind::Pair | NodeKind::Spread => {
+        // Named fields (`(a: x, b: y)`) — VM `Pattern::Fields`. The first
+        // child is the field name (resolved at match time), not a binder.
+        NodeKind::Pair => {
+            if let Some(value) = node.children.get(1) {
+                if !pattern_core_ok(value, source, locals, checked, out) { return false; }
+            }
+        }
+        NodeKind::Spread => {
             for child in &node.children {
                 if !pattern_core_ok(child, source, locals, checked, out) { return false; }
             }
@@ -2291,6 +2297,14 @@ fn collect_binding_target(target: &Node, source: &Source, out: &mut HashMap<Stri
         NodeKind::OrPattern => {
             for alt in &target.children {
                 collect_binding_target(alt, source, out);
+            }
+        }
+        // Named field pattern `x: a` inside a class/variant pattern: only the
+        // value child (`a`) declares a binding. The first child is the field
+        // name (`x`), which is resolved by `unrt_member_get` at match time.
+        NodeKind::Pair => {
+            if let Some(value) = target.children.get(1) {
+                collect_binding_target(value, source, out);
             }
         }
         // Class pattern `Point(x, y)` / variant pattern `Shape.point(v)`:
@@ -4016,6 +4030,13 @@ fn pattern_bind_types(
                 pattern_bind_types(child, source, ty, precise, ctx, outer, out);
             }
         }
+        // Named field pattern `x: a`: the value child declares the binder; the
+        // field name child is resolved at match time, not bound.
+        NodeKind::Pair => {
+            if let Some(value) = node.children.get(1) {
+                pattern_bind_types(value, source, ty, precise, ctx, outer, out);
+            }
+        }
         // Class/variant patterns bind inside their argument tuple. Payload
         // types are not tracked per variant, so fall back to the scrutinee type.
         NodeKind::Call | NodeKind::Property => {
@@ -4050,6 +4071,12 @@ fn pattern_bind_names(node: &Node, ctx: &LowerCtx, outer: &HashMap<String, u16>,
         NodeKind::OrPattern | NodeKind::Tuple | NodeKind::List => {
             for child in &node.children {
                 pattern_bind_names(child, ctx, outer, out);
+            }
+        }
+        // Named field pattern `x: a`: only the value child declares a binding.
+        NodeKind::Pair => {
+            if let Some(value) = node.children.get(1) {
+                pattern_bind_names(value, ctx, outer, out);
             }
         }
         // Class/variant patterns declare their binders in the argument tuple.
@@ -4258,7 +4285,13 @@ fn lower_match_pattern(
             let mut fields = Vec::new();
             if let Some(a) = node.children.get(1) {
                 for c in &a.children {
-                    fields.push((None, lower_match_pattern(c, ctx, value_ty, outer_slots)?));
+                    // Mirror `compiler::compile_field`: a `Pair` child is a
+                    // named field, so record its name instead of treating the
+                    // whole `Fields` wrapper as a positional field.
+                    match lower_match_pattern(c, ctx, value_ty, outer_slots)? {
+                        TirPattern::Fields(f) => fields.extend(f),
+                        p => fields.push((None, p)),
+                    }
                 }
             }
             Ok(TirPattern::Class { name, inner: Box::new(TirPattern::Fields(fields)) })

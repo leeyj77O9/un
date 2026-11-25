@@ -763,6 +763,26 @@ fn strip_types_qualifier(name: &str) -> &str {
     name
 }
 
+/// Resolve a fixed-width type name on the right of `x is T`, accepting both
+/// the bare (`u32`) and the qualified (`types.u32`) spelling. FE-01 leaves
+/// the qualified form as a `Property` expression, so its source text is used
+/// and then folded by `strip_types_qualifier`, exactly as for annotations.
+///
+/// Fixed-width names are only known when `types` is imported, keeping the
+/// unknown/undefined diagnostic for code that has not imported the module.
+/// Every other RHS returns `None` so the caller keeps its existing path.
+fn imported_fixed_width_is_ty(checker: &Checker<'_>, rhs: &Node) -> Option<Ty> {
+    if !matches!(rhs.kind, NodeKind::Identifier | NodeKind::Property) {
+        return None;
+    }
+    let name = checker.text_of(rhs);
+    let bare = strip_types_qualifier(&name);
+    if !is_fixed_width_alias(bare) || !checker.import_names.iter().any(|i| i == "types") {
+        return None;
+    }
+    Some(if matches!(bare, "f32" | "f64") { Ty::Float } else { Ty::Int })
+}
+
 /// True when a `Const::Str` annotation atom mentions a `types.<fixed-width>`
 /// spelling anywhere (including nested text such as `list[types.u32]`), so
 /// `text_of` must prefer the carried text over the node's source span.
@@ -3621,6 +3641,11 @@ fn matches_pattern_ty(lit: &Ty, scrut: &Ty) -> bool {
 /// Best-effort static type denoted by the right-hand side of `x is T`.
 /// A dynamic type value (a variable holding `type(x)`) is not resolvable.
 fn is_type_rhs(checker: &Checker<'_>, rhs: &Node) -> Option<Ty> {
+    // `types.u32` resolves to the same static type as bare `u32` when the
+    // module is imported; otherwise both stay unresolved.
+    if let Some(ty) = imported_fixed_width_is_ty(checker, rhs) {
+        return Some(ty);
+    }
     if rhs.kind != NodeKind::Identifier {
         return None;
     }
@@ -4023,6 +4048,12 @@ impl<'a> Checker<'a> {
             let mut rhs_env = env.fork();
             apply_narrow(&mut rhs_env, &facts, node.op == Some(TokenType::And));
             self.check_expr(rhs, &mut rhs_env)
+        } else if matches!(node.op, Some(TokenType::Is) | Some(TokenType::IsNot)) {
+            // A fixed-width type name is a runtime type test, not a value:
+            // resolve it statically (like an annotation) instead of looking
+            // up `u32` / `types` as a variable and diagnosing it as undefined.
+            // All other RHS forms keep their existing value-checking path.
+            imported_fixed_width_is_ty(self, rhs).unwrap_or_else(|| self.check_expr(rhs, env))
         } else {
             self.check_expr(rhs, env)
         };
@@ -5797,6 +5828,82 @@ mod tests {
             "expected the same unknown-type diagnostic as bare u32, got {:?}",
             checker.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
         );
+    }
+
+    /// Build the `is`-RHS node FE-01 hands over: bare fixed-width names are an
+    /// `Identifier`, qualified ones a `Property` whose source text is the full
+    /// `types.u32` spelling. `qualified` selects which shape to produce.
+    fn is_rhs_node(code: &str, qualified: bool) -> Node {
+        if qualified {
+            // `x is types.u32`: receiver at 5..10, member at 11..14.
+            let receiver = Node::new(5, 5, NodeKind::Identifier);
+            let member = Node::new(11, 3, NodeKind::Identifier);
+            Node::with_children(5, 9, NodeKind::Property, None, vec![receiver, member])
+        } else {
+            Node::new(5, code.len() - 5, NodeKind::Identifier)
+        }
+    }
+
+    #[test]
+    fn is_rhs_fixed_width_resolves_when_types_imported() {
+        let cases = [
+            ("x is u32", false, Ty::Int),
+            ("x is f32", false, Ty::Float),
+            ("x is types.u32", true, Ty::Int),
+            ("x is types.f64", true, Ty::Float),
+        ];
+        for (code, qualified, expected) in cases {
+            let source = Source::new("is.un", code);
+            let rhs = is_rhs_node(code, qualified);
+            let root = Node::new(0, 0, NodeKind::Block);
+
+            let mut imported = checker_for(&source, &root);
+            imported.import_names.push("types".to_string());
+            assert_eq!(is_type_rhs(&imported, &rhs), Some(expected), "{code}");
+
+            let plain = checker_for(&source, &root);
+            assert_eq!(is_type_rhs(&plain, &rhs), None, "{code} (no import)");
+        }
+    }
+
+    #[test]
+    fn is_fixed_width_rhs_typechecks_with_import_and_stays_undefined_without() {
+        let cases = [
+            ("x is u32", false, "undefined name 'u32'"),
+            ("x is types.u32", true, "undefined name 'types'"),
+        ];
+        for (code, qualified, expected_error) in cases {
+            let source = Source::new("is.un", code);
+            let lhs = Node::new(0, 1, NodeKind::Integer).with_value(Const::Int(1));
+            let is = Node::with_children(
+                0,
+                code.len(),
+                NodeKind::Binary,
+                Some(TokenType::Is),
+                vec![lhs, is_rhs_node(code, qualified)],
+            );
+            let root = Node::with_children(0, code.len(), NodeKind::Block, None, vec![is]);
+
+            let mut imported = checker_for(&source, &root);
+            imported.import_names.push("types".to_string());
+            let errors = imported.run().err().unwrap_or_default();
+            assert!(
+                errors.is_empty(),
+                "{code} with `use types` must typecheck: {:?}",
+                errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
+            );
+
+            let plain = checker_for(&source, &root);
+            let errors = match plain.run() {
+                Ok(_) => panic!("{code} without `use types` must stay undefined"),
+                Err(errors) => errors,
+            };
+            assert!(
+                errors.iter().any(|e| e.message.contains(expected_error)),
+                "{code}: expected {expected_error}, got {:?}",
+                errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

@@ -106,6 +106,13 @@ pub struct Proto {
 
     pub ext_type: Option<usize>,
 
+    /// Declared return type of a function/extension declaration, stored as an
+    /// index into `Program::names` (the exact annotation text, e.g. `int` or
+    /// `int | float`). `None` for lambdas and compiler-synthesised protos.
+    /// Serialized additively in `.unbc`; consumers that do not use it yet keep
+    /// their existing behaviour.
+    pub declared_ret: Option<usize>,
+
     pub fn_span: Option<(usize, usize)>,
 }
 impl Proto {
@@ -125,6 +132,7 @@ impl Proto {
             flags,
             patterns: Vec::new(),
             ext_type: None,
+            declared_ret: None,
             fn_span: None,
         }
     }
@@ -255,6 +263,11 @@ impl Program {
             if let Some(ext) = proto.ext_type {
                 if ext >= self.names.len() {
                     return Err(format!("{label}: extension type index {ext} out of range"));
+                }
+            }
+            if let Some(ret) = proto.declared_ret {
+                if ret >= self.names.len() {
+                    return Err(format!("{label}: declared return type index {ret} out of range"));
                 }
             }
             for entry in &proto.exc {
