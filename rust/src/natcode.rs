@@ -680,6 +680,8 @@ struct FnEmit<'a> {
     unrt_class_new: Option<cranelift_module::FuncId>,
     unrt_member_get: Option<cranelift_module::FuncId>,
     unrt_member_set: Option<cranelift_module::FuncId>,
+    unrt_obj_type_name: Option<cranelift_module::FuncId>,
+    unrt_obj_field_at: Option<cranelift_module::FuncId>,
     unrt_method_call: Option<cranelift_module::FuncId>,
     unrt_bool_from_obj: Option<cranelift_module::FuncId>,
     unrt_list_pop: Option<cranelift_module::FuncId>,
@@ -1072,6 +1074,26 @@ fn emit_internal<M: Module>(
     } else {
         None
     };
+    let unrt_obj_type_name = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_obj_type_name",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
+    let unrt_obj_field_at = if mode == NativeMode::Obj {
+        Some(declare_import(
+            module,
+            "unrt_obj_field_at",
+            vec![types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else {
+        None
+    };
     let unrt_member_set = if mode == NativeMode::Obj {
         Some(declare_import(
             module,
@@ -1320,6 +1342,8 @@ fn emit_internal<M: Module>(
         unrt_make_mod_zero_panic,
         unrt_class_new,
         unrt_member_get,
+        unrt_obj_type_name,
+        unrt_obj_field_at,
         unrt_member_set,
         unrt_method_call,
         unrt_bool_from_obj,
@@ -1712,7 +1736,87 @@ fn emit_match_pattern<M: Module>(
                 emitter, builder, module, f,
             );
         }
+        TirPattern::Class { name, inner } => {
+            emit_class_pattern_check(name, inner, value, value_ty, success_blk, fail_blk,
+                emitter, builder, module, f);
+        }
+        TirPattern::Variant { enum_name, variant_name, inner } => {
+            emit_variant_pattern_check(enum_name, variant_name, inner, value, value_ty,
+                success_blk, fail_blk, emitter, builder, module, f);
+        }
+        TirPattern::Fields(fields) => {
+            for (name_idx, pat) in fields {
+                let member_name: String = match name_idx {
+                    Some(idx) => f.name.clone() + ":" + idx,
+                    None => format!("__field_{}", f.name.clone()),
+                };
+                let member = emit_member_get(value, &member_name, emitter, builder, module);
+                let member_ty = TirTy::Obj;
+                emit_match_pattern(pat, member, member_ty, success_blk, fail_blk,
+                    emitter, builder, module, f);
+            }
+            builder.ins().jump(success_blk, &[]);
+        }
     }
+}
+
+fn emit_member_get<M: Module>(value: cranelift_codegen::ir::Value, name: &str,
+    emitter: &mut FnEmit<'_>, builder: &mut FunctionBuilder, module: &mut M) -> cranelift_codegen::ir::Value {
+    let gv = embed_str_bytes(emitter, module, builder, name.as_bytes());
+    let nptr = builder.ins().symbol_value(types::I64, gv);
+    let nlen = builder.ins().iconst(types::I64, name.len() as i64);
+    let id = emitter.unrt_member_get.expect("unrt import required for classes");
+    let r = module.declare_func_in_func(id, builder.func);
+    let res = builder.ins().call(r, &[value, nptr, nlen]);
+    builder.inst_results(res)[0]
+}
+
+fn emit_class_pattern_check<M: Module>(
+    name: &str, inner: &TirPattern, value: cranelift_codegen::ir::Value,
+    value_ty: TirTy, success_blk: Block, fail_blk: Block,
+    emitter: &mut FnEmit<'_>, builder: &mut FunctionBuilder, module: &mut M, f: &TirFn,
+) {
+    let handle = wrap_as_obj(value, value_ty, emitter, builder, module);
+    let gv = embed_str_bytes(emitter, module, builder, name.as_bytes());
+    let nptr = builder.ins().symbol_value(types::I64, gv);
+    let nlen = builder.ins().iconst(types::I64, name.len() as i64);
+    let id = emitter.unrt_obj_type_name.expect("unrt_obj_type_name import required for class patterns");
+    let r = module.declare_func_in_func(id, builder.func);
+    let res = builder.ins().call(r, &[handle, nptr, nlen]);
+    let ok = builder.inst_results(res)[0];
+    let zero = builder.ins().iconst(types::I64, 0);
+    let neq = builder.ins().icmp(IntCC::NotEqual, ok, zero);
+    builder.ins().brif(neq, success_blk, &[], fail_blk, &[]);
+    emit_match_pattern(inner, handle, value_ty, success_blk, fail_blk, emitter, builder, module, f);
+}
+
+fn emit_variant_pattern_check<M: Module>(
+    enum_name: &str, _variant_name: &str, inner: &TirPattern, value: cranelift_codegen::ir::Value,
+    value_ty: TirTy, success_blk: Block, fail_blk: Block,
+    emitter: &mut FnEmit<'_>, builder: &mut FunctionBuilder, module: &mut M, f: &TirFn,
+) {
+    let handle = wrap_as_obj(value, value_ty, emitter, builder, module);
+    // VM: `Pattern::Variant` checks type_name == enum_name and
+    // `collections::variant_name(value) == variant_name`. Native side uses the
+    // registered enum class name and field 0 as the variant payload.
+    let gv = embed_str_bytes(emitter, module, builder, enum_name.as_bytes());
+    let nptr = builder.ins().symbol_value(types::I64, gv);
+    let nlen = builder.ins().iconst(types::I64, enum_name.len() as i64);
+    let id = emitter.unrt_obj_type_name.expect("unrt_obj_type_name import required for variant patterns");
+    let r = module.declare_func_in_func(id, builder.func);
+    let res = builder.ins().call(r, &[handle, nptr, nlen]);
+    let ok = builder.inst_results(res)[0];
+    let zero = builder.ins().iconst(types::I64, 0);
+    let neq = builder.ins().icmp(IntCC::NotEqual, ok, zero);
+    builder.ins().brif(neq, success_blk, &[], fail_blk, &[]);
+    // Variant payload: field 0 of the enum instance.
+    let id2 = emitter.unrt_obj_field_at.expect("unrt_obj_field_at import required for variant patterns");
+    let r2 = module.declare_func_in_func(id2, builder.func);
+    let idx = builder.ins().iconst(types::I64, 0);
+    let res2 = builder.ins().call(r2, &[handle, idx]);
+    let payload = builder.inst_results(res2)[0];
+    let inner_ty = TirTy::Obj;
+    emit_match_pattern(inner, payload, inner_ty, success_blk, fail_blk, emitter, builder, module, f);
 }
 
 /// Try each alternative of an alias-expanded pattern left to right. Bind slots

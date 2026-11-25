@@ -291,28 +291,96 @@ pub extern "C" fn unrt_obj_is_err(p: u64) -> i64 {
     if unsafe { obj(p).tag == 5 } { 1 } else { 0 }
 }
 
+/// ABI name of a value (exact match, no inheritance): mirrors the VM's
+/// `obj::type_name` for the NRT-representable types — scalar tags map to
+/// their primitive names and tag-9 instances to their registered class name.
+/// Used by class/variant patterns (`Pattern::Class`/`Pattern::Variant`), which
+/// the VM also matches by exact type name.
+#[no_mangle]
+pub extern "C" fn unrt_obj_type_name(value: u64, name_ptr: *const u8, name_len: usize) -> i64 {
+    if value == 0 {
+        return 0;
+    }
+    let name = name_of_cstr(name_ptr, name_len);
+    let tag = unsafe { obj(value).tag };
+    if tag == 9 {
+        let matched = crate::class::class_name(unsafe { obj(value).a as usize }) == Some(name.as_str());
+        return matched as i64;
+    }
+    let matched = match name.as_str() {
+        "int" => tag == 0,
+        "float" => tag == 1,
+        "bool" => tag == 2,
+        "list" => tag == 3,
+        "none" => tag == 4,
+        "str" => tag == 6,
+        "dict" => tag == 7,
+        "func" => tag == 8,
+        "bytes" => tag == 13,
+        "tuple" => tag == 14,
+        "set" => tag == 15,
+        _ => false,
+    };
+    matched as i64
+}
+
+/// Boxed field at a class instance's `index` (0-based), or 0 when the value
+/// is not an instance or the index is out of range — mirrors the VM's
+/// `collections::all_names(o).get(index)` lookup used by `Pattern::Fields`.
+#[no_mangle]
+pub extern "C" fn unrt_obj_field_at(value: u64, index: i64) -> u64 {
+    if value == 0 || index < 0 {
+        return 0;
+    }
+    let p = unsafe { obj(value) };
+    if p.tag != 9 {
+        return 0;
+    }
+    let fields = crate::class::instance_fields(value);
+    let Some(field) = fields.get(index as usize) else {
+        return 0;
+    };
+    *field
+}
+
+/// User `__is__` dispatch for type patterns, mirroring the VM's `obj_is`
+/// (the `try_method(o, "__is__", ..)` path): returns the method's result when
+/// the instance carries an `__is__` member, else None.
+fn user_is(value: u64, _name: &str) -> Option<i64> {
+    let id = unsafe { obj(value).a as usize };
+    let registry = crate::class::classes()?;
+    let class = registry.get(id)?;
+    let method = class.methods.iter().find(|m| m.name == "__is__")?;
+    let mut args = [0u64; 9];
+    args[0] = value;
+    let raw = crate::class::call_native_at(
+        method.ptr,
+        &method.param_kinds[..method.kinds_len],
+        &args[..],
+        method.ret_kind,
+    );
+    Some(bool_of(crate::class::box_return(raw, method.ret_kind)) as i64)
+}
+
 /// ARC-00: one new ABI symbol for bare type-name patterns (`Pattern::Type`).
 /// Mirrors the VM's `is_obj` for the runtime types NRT can represent: scalar
-/// tags map to their primitive type names, `any`/`obj` accept every value, and
-/// tag-9 instances match their registered class name. Inheritance chains and a
-/// custom `__is__` have no NRT representation; programs depending on those
-/// should stay on the `un build --embed` path.
+/// tags map to their primitive type names, `any`/`obj` accept every value,
+/// tag-9 instances match a registered class name in their inheritance chain,
+/// and a user-defined `__is__` member dispatches first (like the VM).
 #[no_mangle]
 pub extern "C" fn unrt_type_is(value: u64, name_ptr: *const u8, name_len: usize) -> i64 {
     if value == 0 {
         return 0;
     }
-    let name = if name_ptr.is_null() || name_len == 0 {
-        ""
-    } else {
-        let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
-        std::str::from_utf8(bytes).unwrap_or("")
-    };
+    let name = name_of_cstr(name_ptr, name_len);
     if name == "any" || name == "obj" {
         return 1;
     }
+    if let Some(result) = user_is(value, &name) {
+        return result;
+    }
     let tag = unsafe { obj(value).tag };
-    let matched = match name {
+    let matched = match name.as_str() {
         "int" => tag == 0,
         "float" => tag == 1,
         "bool" => tag == 2,
@@ -328,13 +396,23 @@ pub extern "C" fn unrt_type_is(value: u64, name_ptr: *const u8, name_len: usize)
         "iter" => false,
         _ => {
             if tag == 9 {
-                crate::class::class_name(unsafe { obj(value).a as usize }) == Some(name)
+                crate::class::class_chain_accepts(unsafe { obj(value).a as usize }, &name)
             } else {
                 false
             }
         }
     };
     if matched { 1 } else { 0 }
+}
+
+fn name_of_cstr(ptr: *const u8, len: usize) -> String {
+    if ptr.is_null() || len == 0 {
+        return String::new();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .unwrap_or_default()
 }
 #[no_mangle]
 pub extern "C" fn unrt_take_error() -> u64 {

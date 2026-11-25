@@ -18,7 +18,7 @@ static CLASSES: Mutex<Vec<ClassData>> = Mutex::new(Vec::new());
 /// driver after all `nrt_register_*` calls.
 static FROZEN: std::sync::OnceLock<Vec<ClassData>> = std::sync::OnceLock::new();
 
-fn classes() -> Option<&'static Vec<ClassData>> {
+pub(crate) fn classes() -> Option<&'static Vec<ClassData>> {
     FROZEN.get().or_else(|| {
         // Fallback for callers that did not freeze (e.g. a dynamically built
         // class); registration is complete in plain `un build` executables.
@@ -37,21 +37,24 @@ pub extern "C" fn nrt_freeze_classes() {
 
 /// 0 Int, 1 Float, 2 Bool, 3 object handle (also used for `self`).
 pub(crate) type Kind = u8;
-struct Method {
-    name: String,
-    ptr: usize,
+#[derive(Clone)]
+pub(crate) struct Method {
+    pub(crate) name: String,
+    pub(crate) ptr: usize,
     /// Parameter kinds excluding `self`, stored inline to avoid a heap clone
     /// on every method call. MAX_CORE_ARITY is 8, plus one `self` slot.
-    param_kinds: [Kind; 9],
-    kinds_len: usize,
-    ret_kind: Kind,
+    pub(crate) param_kinds: [Kind; 9],
+    pub(crate) kinds_len: usize,
+    pub(crate) ret_kind: Kind,
 }
 
-struct ClassData {
-    name: String,
-    fields: Vec<String>,
-    field_names: Vec<String>,
-    methods: Vec<Method>,
+pub(crate) struct ClassData {
+    pub(crate) name: String,
+    pub(crate) fields: Vec<String>,
+    pub(crate) field_names: Vec<String>,
+    pub(crate) methods: Vec<Method>,
+    /// Registered base class names (for type patterns with inheritance).
+    pub(crate) parents: Vec<String>,
 }
 
 fn name_of(ptr: *const u8, len: usize) -> String {
@@ -160,8 +163,59 @@ pub extern "C" fn nrt_register_class(name_ptr: *const u8, name_len: usize) -> i6
         fields: Vec::new(),
         field_names: Vec::new(),
         methods: Vec::new(),
+        parents: Vec::new(),
     });
     id as i64
+}
+
+/// Register a base class of an already-registered class (inheritance data for
+/// type patterns). Repeated registrations of the same parent are ignored.
+#[no_mangle]
+pub extern "C" fn nrt_register_class_parent(
+    class_id: i64,
+    parent_name_ptr: *const u8,
+    parent_len: usize,
+) {
+    if class_id < 0 {
+        return;
+    }
+    let parent = name_of(parent_name_ptr, parent_len);
+    if parent.is_empty() {
+        return;
+    }
+    let mut classes = CLASSES.lock().unwrap();
+    if let Some(class) = classes.get_mut(class_id as usize) {
+        if !class.parents.iter().any(|p| *p == parent) {
+            class.parents.push(parent);
+        }
+    }
+}
+
+/// True when `id` itself or any registered ancestor is named `name`.
+pub(crate) fn class_chain_accepts(id: usize, name: &str) -> bool {
+    let Some(cs) = classes() else {
+        return false;
+    };
+    let mut seen = vec![id];
+    let mut stack = vec![id];
+    while let Some(cur) = stack.pop() {
+        let Some(class) = cs.get(cur) else {
+            continue;
+        };
+        if class.name == name {
+            return true;
+        }
+        for parent in &class.parents {
+            if let Some(pid) = cs.iter().position(|c| c.name == *parent) {
+                if seen.contains(&pid) {
+                    continue;
+                }
+                seen.push(pid);
+                stack.push(pid);
+            }
+        }
+    }
+    false
 }
 
 /// Registered name of a class instance's class id (tag-9 `a` field).
@@ -247,7 +301,7 @@ fn alloc_field_block(n: usize) -> &'static mut [u64] {
     }
 }
 
-fn instance_fields(p: u64) -> &'static mut [u64] {
+pub(crate) fn instance_fields(p: u64) -> &'static mut [u64] {
     unsafe {
         let base = obj(p).b as *mut u64;
         let len = *base as usize;
@@ -317,7 +371,7 @@ pub extern "C" fn unrt_class_new(
     instance
 }
 
-fn call_native_at(ptr: usize, kinds: &[Kind], args: &[u64], ret_kind: Kind) -> u64 {
+pub(crate) fn call_native_at(ptr: usize, kinds: &[Kind], args: &[u64], ret_kind: Kind) -> u64 {
     // `args` starts with `self` (an object handle). Remaining values arrive as
     // boxed handles from the bridge but the emitted function expects raw
     // scalars for Int/Float/Bool parameters, so unbox according to `kinds`.

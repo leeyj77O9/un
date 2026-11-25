@@ -494,7 +494,7 @@ pub enum TirCmp {
 /// into the body-visible slots by a `TirStmt::Set` at the head of the winning
 /// arm's body (the "winner commit"). `Tuple` is a nested sequence pattern:
 /// VM `Pattern::Tuple` accepts both a tuple and a list and requires an exact
-/// length match. Class/variant patterns still stay on the interpreter path.
+/// length match.
 #[derive(Clone, Debug)]
 pub enum TirPattern {
     Wildcard,
@@ -512,6 +512,18 @@ pub enum TirPattern {
     /// Union of type tests (a type alias expanded to its member types). Each
     /// alternative is tried left to right, mirroring `Pattern::Or`.
     Or(Vec<TirPattern>),
+    /// Class pattern (`case Point(x, y)`): exact type name check via
+    /// `unrt_obj_type_name`, then the inner pattern against the value itself
+    /// (VM: `Pattern::Class`).
+    Class { name: String, inner: Box<TirPattern> },
+    /// Variant pattern (`case Color.RED` / `case Color.RED(x)`): exact type
+    /// name + payload lookup via `unrt_obj_type_name`/`unrt_obj_field_at`,
+    /// then the inner pattern against the payload (VM: `Pattern::Variant`).
+    Variant { enum_name: String, variant_name: String, inner: Box<TirPattern> },
+    /// Named/positional attribute destructuring (`case Point(a: x, b: y)`):
+    /// each entry is `(name, pattern)`; `None` means positional (VM:
+    /// `Pattern::Fields` — an empty pattern list matches any value).
+    Fields(Vec<(Option<String>, TirPattern)>),
 }
 
 impl TirPattern {
@@ -522,6 +534,10 @@ impl TirPattern {
             TirPattern::Tuple(items) | TirPattern::Or(items) => {
                 items.iter().flat_map(TirPattern::literals).collect()
             }
+            TirPattern::Class { inner, .. } | TirPattern::Variant { inner, .. } => {
+                inner.literals()
+            }
+            TirPattern::Fields(fields) => fields.iter().flat_map(|(_, p)| p.literals()).collect(),
             _ => Vec::new(),
         }
     }
@@ -533,6 +549,12 @@ impl TirPattern {
             TirPattern::Tuple(items) | TirPattern::Or(items) => {
                 items.iter().flat_map(TirPattern::bind_slots).collect()
             }
+            TirPattern::Class { inner, .. } | TirPattern::Variant { inner, .. } => {
+                inner.bind_slots()
+            }
+            TirPattern::Fields(fields) => {
+                fields.iter().flat_map(|(_, p)| p.bind_slots()).collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -542,6 +564,10 @@ impl TirPattern {
             TirPattern::Literal(e) => pred(e),
             TirPattern::Tuple(items) | TirPattern::Or(items) => {
                 items.iter().all(|p| p.literals_ok(pred))
+            }
+            TirPattern::Class { inner, .. } | TirPattern::Variant { inner, .. } => inner.literals_ok(pred),
+            TirPattern::Fields(fields) => {
+                fields.iter().all(|(_, p)| p.literals_ok(pred))
             }
             _ => true,
         }
@@ -1724,16 +1750,24 @@ fn pattern_core_ok(
                 }
             }
         }
+        // Class pattern `Point` / `Point(a, b)` (VM `Pattern::Class`).
+        NodeKind::Call => {
+            if node.children.first().is_none() {
+                tirdbg_reject(node); *out = false; return false;
+            }
+        }
+        // Variant pattern `Shape.point` / `Shape.point(v)` (VM `Pattern::Variant`).
+        NodeKind::Property => {}
+        // Named fields (`(a: x, b: y)`) — VM `Pattern::Fields`.
+        NodeKind::Pair | NodeKind::Spread => {
+            for child in &node.children {
+                if !pattern_core_ok(child, source, locals, checked, out) { return false; }
+            }
+        }
         // Tuple/list destructuring: every item must be a representable leaf or
-        // a nested sequence. Named fields (`Pair`) and spread items use the VM
-        // `Fields` path and stay on the interpreter.
+        // a nested sequence.
         NodeKind::Tuple | NodeKind::List => {
             for item in &node.children {
-                if item.kind == NodeKind::Pair || item.kind == NodeKind::Spread {
-                    tirdbg_reject(item);
-                    *out = false;
-                    return false;
-                }
                 if !pattern_core_ok(item, source, locals, checked, out) {
                     return false;
                 }
@@ -4104,16 +4138,52 @@ fn lower_match_pattern(
             let elem_ty = seq_elem_tir(value_ty);
             let mut items = Vec::with_capacity(node.children.len());
             for item in &node.children {
-                if matches!(item.kind, NodeKind::Pair | NodeKind::Spread) {
-                    return Err(format!(
-                        "match pattern kind {:?} requires `un build --embed`",
-                        item.kind
-                    ));
-                }
                 items.push(lower_match_pattern(item, ctx, elem_ty, outer_slots)?);
             }
             Ok(TirPattern::Tuple(items))
         }
+        // Class pattern `Point` or `Point(a, b)` (VM `Pattern::Class`).
+        NodeKind::Call => {
+            let callee = node.children.first().ok_or("class pattern without name")?;
+            if callee.kind != NodeKind::Identifier {
+                return Err("class pattern must be a class name".to_string());
+            }
+            let name = ctx.source.span(callee.start, callee.length).to_string();
+            let mut fields = Vec::new();
+            if let Some(a) = node.children.get(1) {
+                for c in &a.children {
+                    fields.push((None, lower_match_pattern(c, ctx, value_ty, outer_slots)?));
+                }
+            }
+            Ok(TirPattern::Class { name, inner: Box::new(TirPattern::Fields(fields)) })
+        }
+        // Variant pattern `Shape.point` or `Shape.point(v)` (VM `Pattern::Variant`).
+        NodeKind::Property => {
+            let (enum_name, variant_name) = match node.children.first().map(|h| h.children.get(1)) {
+                Some(Some(v)) => (
+                    ctx.source.span(node.children[0].children[0].start, node.children[0].children[0].length).to_string(),
+                    ctx.source.span(v.start, v.length).to_string(),
+                ),
+                _ => return Err("variant pattern must be Enum.variant".to_string()),
+            };
+            let mut inner = Vec::new();
+            if let Some(a) = node.children.get(1) {
+                for c in &a.children {
+                    inner.push(lower_match_pattern(c, ctx, value_ty, outer_slots)?);
+                }
+            }
+            let inner = if inner.is_empty() { TirPattern::Wildcard } else { TirPattern::Tuple(inner) };
+            Ok(TirPattern::Variant { enum_name, variant_name, inner: Box::new(inner) })
+        }
+        NodeKind::Pair => {
+            let Some(name_node) = node.children.first() else {
+                return Err("match pattern pair without name".to_string());
+            };
+            let name = ctx.source.span(name_node.start, name_node.length).to_string();
+            let inner = lower_match_pattern(node.children.get(1).ok_or("match pattern pair without pattern")?, ctx, value_ty, outer_slots)?;
+            Ok(TirPattern::Fields(vec![(Some(name), inner)]))
+        }
+        NodeKind::Spread => Ok(TirPattern::Wildcard),
         _ => Err(format!(
             "match pattern kind {:?} requires `un build --embed`",
             node.kind

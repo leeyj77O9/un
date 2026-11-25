@@ -515,6 +515,45 @@ pub extern "C" fn unrt_match_seq_get(value: u64, idx: i64) -> u64 {
     to_raw(items[i as usize].clone())
 }
 
+/// ABI name of a value (exact match, no inheritance): mirrors the VM's
+/// `obj::type_name` — used by class/variant patterns (`Pattern::Class`/
+/// `Pattern::Variant`), which the VM also matches by exact type name.
+#[no_mangle]
+pub extern "C" fn unrt_obj_type_name(value: u64, name_ptr: *const u8, name_len: usize) -> i64 {
+    let Some(value) = borrow_obj(value) else {
+        return 0;
+    };
+    if name_ptr.is_null() {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+    let Ok(name) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
+    (crate::runtime::obj::type_name(&value).as_ref() == name) as i64
+}
+
+/// Member lookup by position in `all_names`: mirrors the VM's
+/// `Pattern::Fields` lookup (`collections::all_names(o).get(index)` +
+/// `obj::get_attr`); 0 when the value has no such member.
+#[no_mangle]
+pub extern "C" fn unrt_obj_field_at(obj: u64, index: i64) -> u64 {
+    let Some(o) = borrow_obj(obj) else {
+        return 0;
+    };
+    if index < 0 {
+        return 0;
+    }
+    let names = crate::runtime::collections::all_names(&o);
+    let Some(name) = names.get(index as usize) else {
+        return 0;
+    };
+    match crate::runtime::obj::member(&o, name) {
+        Some(m) => to_raw(m),
+        None => 0,
+    }
+}
+
 /// ARC-00: runtime `is` test for bare type-name patterns. Uses the same
 /// `Types::accepts` path as the VM's `is_obj`, so inheritance and a custom
 /// `__is__` follow the interpreter when this bridge is linked into an embed
@@ -531,6 +570,20 @@ pub extern "C" fn unrt_type_is(value: u64, name_ptr: *const u8, name_len: usize)
     let Ok(name) = std::str::from_utf8(bytes) else {
         return 0;
     };
+    if name == "any" || name == "obj" {
+        return 1;
+    }
+    // User-defined `__is__` dispatch, mirroring the VM's `obj_is`
+    // (`try_method(o, "__is__", ..)` path).
+    if let Some(method) = crate::runtime::obj::member(&value, "__is__") {
+        let rhs = crate::runtime::world::class_tobj(name);
+        if let Some(result) = crate::runtime::obj::invoke(&method, &[rhs]) {
+            return matches!(
+                crate::runtime::obj::payload(&result),
+                crate::runtime::obj::Payload::Bool(true)
+            ) as i64;
+        }
+    }
     let rhs = crate::runtime::world::class_tobj(name);
     let crate::runtime::obj::Payload::TObj(t) = crate::runtime::obj::payload(&rhs) else {
         return 0;
