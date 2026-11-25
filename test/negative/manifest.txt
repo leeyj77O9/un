@@ -6,8 +6,8 @@
 # scripts/test.ps1 -Group negative 가 이 목록을 읽는다.
 test/fixtures/rel_test/main.un|0|rel ok
 test/fixtures/circular_main.un|1|circular import detected
-test/negative/bad_indent.un|1|unexpected primary token Indent
-test/negative/tab_indent.un|1|unexpected primary token Indent
+test/negative/bad_indent.un|1|expected an expression; unexpected token Indent here
+test/negative/tab_indent.un|1|expected an expression; unexpected token Indent here
 test/negative/bad_string.un|1|expected closing "
 test/negative/unclosed.un|1|expected ']' to close list
 test/negative/missing_body.un|1|expected indented block

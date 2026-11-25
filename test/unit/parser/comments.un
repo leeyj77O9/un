@@ -2,7 +2,7 @@ use io
 use test.assert as assert
 
 # A comment indented deeper than the surrounding block must not emit
-# stray Indent/Dedent tokens (used to fail with `unexpected primary token Indent`).
+# stray Indent/Dedent tokens (used to fail with `expected an expression; unexpected token Indent here`).
 fn outer()
     x = 1
         # deeply indented comment

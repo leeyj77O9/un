@@ -41,7 +41,7 @@ pass 수는 `Runner.LastOptimization`에만 노출되고 출력에는 나타나�
 
 reference는 생략된 slice bound를 `null` 자식으로 표현한다(`a[:2]`, `a[1:]`).
 Rust는 `Option<Node>`를 쓰지 않고 `NodeKind::Null` 노드를 쓴다. VM은 이를 `Obj.None`으로 평가한다.
-`a[1:2:3]`는 영향 없다. `a[..2]`는 reference에서 `unexpected primary token DotDot`로 실패한다.
+`a[1:2:3]`는 영향 없다. `a[..2]`는 reference에서 `expected an expression; unexpected token DotDot here`로 실패한다.
 
 ## D-007 | 문자열/타입 이름/off-by-one은 reference 문자열을 verbatim 재현한다 | Accepted
 

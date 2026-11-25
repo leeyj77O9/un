@@ -8,6 +8,22 @@ pub fn parse(tokens: Vec<Token>, source: Rc<Source>) -> Result<Node, LangError> 
     let mut parser = Parser::new(tokens, source);
     parser.parse()
 }
+
+/// Human-readable guidance for a token that is not valid where an expression
+/// was expected. Returns `None` when the generic message is already clear.
+fn unexpected_expression_token(typ: TokenType) -> Option<&'static str> {
+    match typ {
+        // Stray `:` is the most common "weird punctuation" mistake; give it the
+        // clearest hint since it has no valid expression form.
+        TokenType::Colon => Some("expected an expression; ':' is only valid as a type annotation or match-pattern label"),
+        TokenType::NewLine => Some("expected an expression; a statement ended here, so write the next statement on a new line"),
+        TokenType::Assign => Some("expected an expression; '=' assigns in statements like `x = 1`, it is not a value"),
+        TokenType::DotDot => Some("expected an expression; '..' only appears in list slices or as the keys argument"),
+        TokenType::Return => Some("expected an expression; '->' returns values from functions/matches"),
+        TokenType::Question => Some("expected an expression; '?' continues a statement or declares an optional binding"),
+        _ => None,
+    }
+}
 pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
@@ -197,11 +213,10 @@ impl Parser {
                 }
                 return Ok(statement);
             }
-            return Err(LangError::new(
-                token.start,
-                token.length,
-                format!("unexpected token {}", token.typ),
-            ));
+            let msg = unexpected_expression_token(token.typ)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("unexpected token {}", token.typ));
+            return Err(LangError::new(token.start, token.length, msg));
         }
         Ok(statement)
     }
@@ -1288,16 +1303,14 @@ impl Parser {
             TokenType::LBrack => self.parse_list(),
             TokenType::Func => self.parse_lambda(),
             TokenType::Match => self.parse_match(),
-            TokenType::Colon => Err(LangError::new(
-                token.start,
-                token.length,
-                "expected an expression; ':' is only valid as a type annotation or match-pattern label",
-            )),
-            _ => Err(LangError::new(
-                token.start,
-                token.length,
-                format!("unexpected primary token {}", token.typ),
-            )),
+            _ => match unexpected_expression_token(token.typ) {
+                Some(msg) => Err(LangError::new(token.start, token.length, msg.to_string())),
+                None => Err(LangError::new(
+                    token.start,
+                    token.length,
+                    format!("expected an expression; unexpected token {} here", token.typ),
+                )),
+            },
         }
     }
     fn parse_identifier(&mut self) -> Result<Node, LangError> {
