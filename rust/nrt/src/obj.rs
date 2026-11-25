@@ -368,6 +368,12 @@ pub extern "C" fn unrt_obj_field_at(value: u64, index: i64) -> u64 {
 /// (the `try_method(o, "__is__", ..)` path): returns the method's result when
 /// the instance carries an `__is__` member, else None.
 fn user_is(value: u64, _name: &str) -> Option<i64> {
+    // Only class instances carry methods. On scalars `a` is the value itself
+    // (or the float bit pattern), so Int(0)/Bool(false) would alias class id 0
+    // and wrongly dispatch that class's `__is__` with a non-instance `self`.
+    if unsafe { obj(value).tag } != 9 {
+        return None;
+    }
     let id = unsafe { obj(value).a as usize };
     let registry = crate::class::classes()?;
     let class = registry.get(id)?;
@@ -667,5 +673,129 @@ mod tests {
             [set, unrt_obj_int(2)].as_ptr(), 2,
         );
         assert_eq!(display(got), "2");
+    }
+}
+
+/// `unrt_type_is` tests for the NRT inheritance-chain and user-`__is__`
+/// semantics (D-097 §4). The NRT class registry is a process-global
+/// `OnceLock`, so one `OnceLock<Fixture>` builds and freezes the whole fixture
+/// exactly once and every test borrows it — no test may register after the
+/// freeze. See the work report for the observed VM-vs-NRT semantic gap.
+#[cfg(test)]
+mod type_is_tests {
+    use super::{unrt_obj_bool, unrt_obj_int, unrt_type_is};
+
+    struct Fixture {
+        child: u64,
+        unrelated: u64,
+        cycle_a: u64,
+        custom: u64,
+    }
+
+    static FIXTURE: std::sync::OnceLock<Fixture> = std::sync::OnceLock::new();
+
+    /// Bool return (kind 2): `call_native_at` reconstructs
+    /// `extern "C" fn(u64) -> u64` with a single `self` handle argument.
+    extern "C" fn is_always_true(_self_handle: u64) -> u64 {
+        1
+    }
+
+    fn register(name: &str) -> i64 {
+        let mut bytes = name.as_bytes().to_vec();
+        bytes.push(0);
+        crate::class::nrt_register_class(bytes.as_ptr(), name.len())
+    }
+
+    fn register_parent(class_id: i64, parent: &str) {
+        let mut bytes = parent.as_bytes().to_vec();
+        bytes.push(0);
+        crate::class::nrt_register_class_parent(class_id, bytes.as_ptr(), parent.len());
+    }
+
+    fn new_instance(name: &str) -> u64 {
+        let mut bytes = name.as_bytes().to_vec();
+        bytes.push(0);
+        let no_args = [0u64; 1];
+        crate::class::unrt_class_new(bytes.as_ptr(), name.len(), no_args.as_ptr(), 0)
+    }
+
+    fn matches(value: u64, name: &str) -> bool {
+        let mut bytes = name.as_bytes().to_vec();
+        bytes.push(0);
+        unrt_type_is(value, bytes.as_ptr(), name.len()) == 1
+    }
+
+    fn fixture() -> &'static Fixture {
+        FIXTURE.get_or_init(|| {
+            // Register the `__is__` carrier first so its id is 0. A primitive
+            // whose `a` field is 0 (Int(0), Bool(false)) must still not pick up
+            // that class's `__is__` — the non-instance guard is asserted below.
+            let custom = register("NrtCustomIs");
+            let _ = register("NrtBase");
+            let child = register("NrtChild");
+            let _ = register("NrtUnrelated");
+            let cycle_a = register("NrtCycleA");
+            let cycle_b = register("NrtCycleB");
+            register_parent(child, "NrtBase");
+            register_parent(cycle_a, "NrtCycleB");
+            register_parent(cycle_b, "NrtCycleA"); // deliberate A -> B -> A cycle
+            crate::class::nrt_register_method(
+                custom,
+                b"__is__\0".as_ptr(),
+                6,
+                is_always_true as *const () as usize,
+                std::ptr::null(),
+                0,
+                2,
+            );
+            crate::class::nrt_freeze_classes();
+            Fixture {
+                child: new_instance("NrtChild"),
+                unrelated: new_instance("NrtUnrelated"),
+                cycle_a: new_instance("NrtCycleA"),
+                custom: new_instance("NrtCustomIs"),
+            }
+        })
+    }
+
+    #[test]
+    fn type_name_pattern_matches_exact_and_inherited_class() {
+        let f = fixture();
+        assert!(matches(f.child, "NrtChild"), "exact class name");
+        assert!(matches(f.child, "NrtBase"), "base class via inheritance chain");
+    }
+
+    #[test]
+    fn type_name_pattern_rejects_unrelated_class() {
+        let f = fixture();
+        assert!(!matches(f.child, "NrtUnrelated"));
+        assert!(matches(f.unrelated, "NrtUnrelated"));
+        assert!(!matches(f.unrelated, "NrtBase"));
+    }
+
+    #[test]
+    fn user_is_method_is_dispatched_before_inheritance() {
+        let f = fixture();
+        // `__is__` returns true for every name, so it wins even though the
+        // class chain has no match — same priority as the VM's try_method path.
+        assert!(matches(f.custom, "NrtUnrelated"));
+        assert!(matches(f.custom, "int"));
+    }
+
+    #[test]
+    fn cyclic_inheritance_terminates_without_false_match() {
+        let f = fixture();
+        assert!(matches(f.cycle_a, "NrtCycleA"), "exact match still works");
+        assert!(!matches(f.cycle_a, "NrtUnrelated"), "cycle must terminate");
+    }
+
+    #[test]
+    fn non_instance_values_never_dispatch_user_is() {
+        // Int(0) / Bool(false) have `a == 0`, which is class id 0 here. The
+        // guard must keep the `__is__` method on that class from being called
+        // with a non-instance `self`.
+        let _ = fixture();
+        assert!(!matches(unrt_obj_int(0), "NrtUnrelated"));
+        assert!(!matches(unrt_obj_bool(0), "NrtUnrelated"));
     }
 }

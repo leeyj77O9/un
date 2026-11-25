@@ -6,7 +6,7 @@ use std::fs;
 use std::io::Write;
 
 use crate::obj::{
-    display, err, obj, unrt_obj_bool, unrt_obj_float, unrt_obj_int, unrt_obj_none,
+    display, err, obj, obj_mut, unrt_obj_bool, unrt_obj_float, unrt_obj_int, unrt_obj_none,
 };
 
 /// Format shared by `sys.version()` and `os.version()`. The VM builds these
@@ -69,6 +69,55 @@ fn int_arg(args: &[u64], i: usize) -> Result<i64, u64> {
 }
 fn num_arg(args: &[u64], i: usize) -> Result<f64, u64> {
     args.get(i).and_then(|p| as_number(*p)).ok_or_else(|| err("expected number"))
+}
+
+// A `type(x)` result is represented as tag-6 Str whose text is the VM's
+// `<type: NAME>` rendering, with `b` carrying a private marker so `repr()` and
+// a nested `type()` can tell it apart from an ordinary user string. This adds
+// no `unrt_*`/`nrt_*` symbol and keeps the existing `unrt_call_native` ABI.
+const TYPE_OBJ_MARKER: i64 = i64::MIN; // ordinary Str objects always keep `b == 0`
+
+fn type_obj(name: &str) -> u64 {
+    let p = crate::strings::str_new(format!("<type: {name}>"));
+    unsafe { obj_mut(p).b = TYPE_OBJ_MARKER };
+    p
+}
+
+fn is_type_obj(p: u64) -> bool {
+    unsafe { obj(p).tag == 6 && obj(p).b == TYPE_OBJ_MARKER }
+}
+
+/// VM `obj::type_name` for the NRT-representable tags. The names are the same
+/// ones `unrt_obj_type_name` matches, so `type()` and `repr()` stay aligned
+/// with class/variant pattern checks and with `un run` output.
+fn type_name_of(p: u64) -> &'static str {
+    let o = unsafe { obj(p) };
+    match o.tag {
+        0 => "int",
+        1 => "float",
+        2 => "bool",
+        3 | 13 => {
+            // D-098: a byte-string literal still carries a List<Int> payload,
+            // so `type(b"...")` is `list` in both VM and plain build.
+            if o.tag == 3 { "list" } else { "bytes" }
+        }
+        4 => "none",
+        // `obj::err` / `obj::panic` both attach type_name "obj" in the VM.
+        5 | 10 => "obj",
+        6 => if is_type_obj(p) { "type" } else { "str" },
+        7 => "dict",
+        8 => "func",
+        9 => crate::class::class_name(o.a as usize).unwrap_or("obj"),
+        11 => "http_client",
+        12 => "web_socket",
+        14 => "tuple",
+        15 => "set",
+        _ => "obj",
+    }
+}
+
+fn is_pending(p: u64) -> bool {
+    unsafe { matches!(obj(p).tag, 5 | 10) }
 }
 
 fn regex_compile(pattern: &str) -> Result<crate::regex::Regex, u64> {
@@ -586,6 +635,31 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
             }
         }
 
+        // `type`/`repr`/`str` are global builtins in the VM, but the plain
+        // build reaches them through the existing `types` native module (no
+        // new C ABI symbol). `type()` renders like the VM's `TObj` (`<type:
+        // NAME>`) and `repr()` returns the type-name string, byte-identical
+        // to `un run` for every NRT-representable tag.
+        ("types", "type") => match args.first().copied() {
+            Some(v) if is_pending(v) => v,
+            Some(v) => type_obj(type_name_of(v)),
+            None => err("type: expected an argument"),
+        },
+        ("types", "repr") => match args.first().copied() {
+            Some(v) if is_pending(v) => v,
+            // VM `repr` on a function uses `fn_repr`, which plain builds do
+            // not expose; keep the documented type-name contract here.
+            Some(v) => string(type_name_of(v)),
+            None => err("repr: expected an argument"),
+        },
+        ("types", "str") => match args.first().copied() {
+            Some(v) if is_pending(v) => v,
+            // VM `str()` delegates to `obj::to_str`, whose rendering is the
+            // same `display` this runtime already uses for `io.write`.
+            Some(v) => string(&display(v)),
+            None => err("str: expected an argument"),
+        },
+
         ("types", n @ ("u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64")) => {
             match int_arg(args, 0) {
                 Ok(v) => {
@@ -638,4 +712,64 @@ pub extern "C" fn unrt_call_native(
     };
     let vals = unsafe { std::slice::from_raw_parts(args, argc) };
     dispatch(m, name, vals)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dispatch, display, int, string};
+    use crate::list::list_new;
+
+    /// The exported C ABI itself (not just the internal `dispatch` helper)
+    /// must reach the new member. This is the exact symbol the plain build
+    /// calls, so it is the strongest check available while TIR is untouched.
+    #[test]
+    fn unrt_call_native_abi_reaches_types_type() {
+        let module = b"types\0";
+        let member = b"type\0";
+        let args = [int(1)];
+        let got = super::unrt_call_native(
+            module.as_ptr(), 5,
+            member.as_ptr(), 4,
+            args.as_ptr(), 1,
+        );
+        assert_eq!(display(got), "<type: int>");
+    }
+
+    /// Direct dispatch check: the `types` members must reproduce the VM's
+    /// rendering without any TIR/natcode change. VM reference (`un run`):
+    /// `type(1)` -> `<type: int>`, `repr(1)` -> `int`, `str(1)` -> `1`.
+    #[test]
+    fn types_type_repr_str_match_vm_scalars() {
+        assert_eq!(display(dispatch("types", "type", &[int(1)])), "<type: int>");
+        assert_eq!(display(dispatch("types", "repr", &[int(1)])), "int");
+        assert_eq!(display(dispatch("types", "str", &[int(1)])), "1");
+        assert_eq!(display(dispatch("types", "type", &[string("abc")])), "<type: str>");
+        assert_eq!(display(dispatch("types", "repr", &[string("abc")])), "str");
+    }
+
+    #[test]
+    fn types_type_distinguishes_byte_representations() {
+        // D-098: a byte-string literal is still a List<Int> (tag 3) in both
+        // engines, while `bytes.from_str` produces the dedicated tag.
+        let literal = list_new(vec![int(97), int(98), int(99)]);
+        assert_eq!(display(dispatch("types", "type", &[literal])), "<type: list>");
+        let dedicated = dispatch("bytes", "from_str", &[string("abc")]);
+        assert_eq!(display(dispatch("types", "type", &[dedicated])), "<type: bytes>");
+        assert_eq!(display(dispatch("types", "repr", &[dedicated])), "bytes");
+    }
+
+    #[test]
+    fn types_type_of_type_is_type() {
+        let t = dispatch("types", "type", &[int(1)]);
+        assert_eq!(display(t), "<type: int>");
+        assert_eq!(display(dispatch("types", "type", &[t])), "<type: type>");
+        assert_eq!(display(dispatch("types", "repr", &[t])), "type");
+        assert_eq!(display(dispatch("types", "str", &[t])), "<type: int>");
+    }
+
+    #[test]
+    fn types_cast_members_still_dispatch() {
+        assert_eq!(display(dispatch("types", "f64", &[int(7)])), "7");
+        assert!(dispatch("types", "u8", &[int(-1)]) != 0);
+    }
 }

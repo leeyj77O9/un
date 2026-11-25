@@ -8,3 +8,9 @@ edition = "2021"
 [lib]
 name = "nrt"
 crate-type = ["staticlib"]
+
+# Spike-only scheduler prototype (W-2026-11-25-P05S). Compiled as a standalone
+# test binary; never linked into libnrt.a, so the native-exe path is untouched.
+[[test]]
+name = "scheduler_spike"
+path = "src/scheduler_spike.rs"
