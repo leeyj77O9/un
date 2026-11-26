@@ -115,7 +115,7 @@
 - `scripts/differential.ps1`: 102 files 0 differences — **green**.
 - `scripts/unbc-roundtrip.ps1 -IncludeNegative`: positive 51/51 identical,
   negative 42 identical + 9 skipped(compile-rejected) — **green**.
-- `cargo test --release --workspace`: 423 passed (nrt 85 + nrt scheduler_spike 5 +
+- `cargo test --release --workspace`: 430 passed (nrt 92 + nrt scheduler_spike 5 +
   lib 301 + un bin 24 + playground 8), 0 failed — **green** (2026-11-27 재측정).
 - `scripts/compile-check.ps1`: 42 passed, 0 failed.
 - `scripts/exe-diff.ps1`: 78 passed, 0 failed — `test/compile/*.un`을 `un build --embed`로
