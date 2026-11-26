@@ -195,7 +195,12 @@ pub struct CheckedProgram {
 #[derive(Clone, Default)]
 struct EnumInfo {
     generics: Vec<(String, u32)>,
+    /// Data-carrying variants (`NAME: Ty`), which are constructor functions.
     variants: HashMap<String, Ty>,
+    /// Plain / explicitly valued variants (`NAME`, `NAME = 5`), which are Int
+    /// values at runtime. Used to type `Enum.NAME` value references as `int`
+    /// instead of `any`, matching the VM and the no-VM native build.
+    value_variants: HashSet<String>,
 }
 
 #[derive(Clone, Default)]
@@ -1233,21 +1238,34 @@ impl<'a> Checker<'a> {
             .map(|tp| self.declare_generic_params(tp))
             .unwrap_or_default();
         let mut variants = HashMap::new();
+        let mut value_variants = HashSet::new();
         for child in &node.children {
-            if child.kind != NodeKind::Typed {
-                continue;
+            match child.kind {
+                NodeKind::Typed => {
+                    let variant = self.text_of(&child.children[0]);
+                    let type_node = &child.children[1];
+                    let ty = self.parse_type_text(
+                        &self.text_of(type_node),
+                        self.span(type_node),
+                        0,
+                    );
+                    variants.insert(variant, ty);
+                }
+                NodeKind::Identifier => {
+                    // Plain value variant: auto-incremented Int at runtime.
+                    value_variants.insert(self.text_of(child));
+                }
+                NodeKind::Assign => {
+                    // Explicitly valued variant (`NAME = 5`): still an Int.
+                    if let Some(target) = child.children.first() {
+                        value_variants.insert(self.text_of(target));
+                    }
+                }
+                _ => {}
             }
-            let variant = self.text_of(&child.children[0]);
-            let type_node = &child.children[1];
-            let ty = self.parse_type_text(
-                &self.text_of(type_node),
-                self.span(type_node),
-                0,
-            );
-            variants.insert(variant, ty);
         }
         self.active_generics = saved_generics;
-        self.enum_infos.insert(name, EnumInfo { generics, variants });
+        self.enum_infos.insert(name, EnumInfo { generics, variants, value_variants });
     }
 
     fn collect_class(&mut self, node: &'a Node) {
@@ -4312,6 +4330,27 @@ impl<'a> Checker<'a> {
             .map(|c| self.text_of(c))
             .unwrap_or_default();
         let optional = node.op == Some(TokenType::QuestionDot);
+        // `Enum.VALUE` (a plain or explicitly valued member) is an Int at
+        // runtime ??the VM stores it as an integer constant and the native
+        // build lowers it to `TirExpr::Int`. Typing it as `any` here would
+        // leave locals holding enum values as opaque handles in TIR, breaking
+        // equality, dict keys and `str`/`type` in the plain build.
+        if receiver.kind == NodeKind::Identifier {
+            let enum_name = self.text_of(receiver);
+            // A local/global binding with the enum's name shadows it, matching
+            // the VM's scope-first lookup for property receivers.
+            let shadowed = env.lookup(&enum_name).is_some()
+                || self.globals.contains_key(&enum_name);
+            if !shadowed && self.enum_infos.get(&enum_name)
+                .is_some_and(|info| info.value_variants.contains(&member))
+            {
+                return if optional {
+                    Ty::union(vec![Ty::Int, Ty::None_])
+                } else {
+                    Ty::Int
+                };
+            }
+        }
         let ty = match &rty {
             Ty::Class(class) => {
                 let class_name = class.to_string();

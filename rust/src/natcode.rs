@@ -695,6 +695,17 @@ struct FnEmit<'a> {
     propagate_targets: &'a HashSet<usize>,
     /// Defer bodies in LIFO order, extracted from the tail of `f.body`.
     defer_flushes: Vec<(u16, Vec<TirStmt>)>,
+    /// While emitting a defer body, catchable errors are diverted here instead
+    /// of reaching a handler or the propagating-error route: the VM's
+    /// `function::end_call` replaces the call result with a defer's
+    /// `Flow::Propagate` and keeps draining, so an error raised *inside* a
+    /// defer does not escape and does not stop the remaining defers.
+    /// The second field is the handler depth at defer entry: handlers pushed
+    /// by a `try` nested in the defer body still win. `clear_error` is true
+    /// for a normal flush (no outer error to preserve) and false while
+    /// draining an exception, where the pending error belongs to the caller.
+    /// Panics never use this route (D-092/D-093) and keep their own drain.
+    defer_swallow: Option<(Block, usize, bool)>,
     loop_breaks: Vec<Block>,
     loop_skips: Vec<Block>,
     terminated: bool,
@@ -829,12 +840,22 @@ fn emit_defer_drain_seq<M: Module>(
         // `pop_defer` likewise removes a defer before executing it.
         let zero = builder.ins().iconst(types::I8, 0);
         builder.def_var(emitter.vars[*slot as usize], zero);
+        // A catchable error raised by this defer is consumed locally; control
+        // rejoins the drain at the next defer. Panics still leave via their
+        // own gate, which jumps back here to finish the drain before dumping.
+        let swallow_blk = builder.create_block();
+        let handler_depth = emitter.active_handlers.len();
+        emitter.defer_swallow = Some((swallow_blk, handler_depth, false));
         emitter.terminated = false;
         let terminated = emit_block(body, emitter, builder, module, f);
+        emitter.defer_swallow = None;
         if !terminated {
             builder.ins().jump(skip_blk, &[]);
         }
         builder.seal_block(run_blk);
+        builder.switch_to_block(swallow_blk);
+        builder.ins().jump(skip_blk, &[]);
+        builder.seal_block(swallow_blk);
         builder.switch_to_block(skip_blk);
         builder.seal_block(skip_blk);
     }
@@ -1412,6 +1433,7 @@ fn emit_internal<M: Module>(
         propagate_error,
         propagate_targets,
         defer_flushes,
+        defer_swallow: None,
         loop_breaks: Vec::new(),
         loop_skips: Vec::new(),
         terminated: false,
@@ -1781,15 +1803,7 @@ fn emit_no_match_case<M: Module>(
     let wid = emitter.unrt_write_error.expect("unrt import required");
     let wref = module.declare_func_in_func(wid, builder.func);
     let _ = builder.ins().call(wref, &[obj]);
-    match emitter.active_handlers.last().copied() {
-        Some(handler) => {
-            builder.ins().jump(handler, &[]);
-        }
-        None => {
-            // Propagating out: the shared drain block runs defers first.
-            builder.ins().jump(emitter.error_route_blk, &[]);
-        }
-    }
+    emit_error_dispatch(emitter, builder, module);
     emitter.terminated = true;
 }
 
@@ -2215,7 +2229,12 @@ fn emit_stmt<M: Module>(
             emitter.terminated = false;
             // A TIR defer flush clears its flag before running the body, so
             // an error inside the defer cannot re-run it via the exception
-            // drain (the VM's `pop_defer` is destructive too).
+            // drain (the VM's `pop_defer` is destructive too). Catchable
+            // errors raised by the body are consumed here: the VM's
+            // `end_call` keeps draining and does not let a defer's error
+            // escape, while panics keep their own uncatchable route.
+            let prev_swallow = emitter.defer_swallow;
+            let mut swallow: Option<Block> = None;
             if let TirExpr::Local(slot) = cond {
                 if emitter.mode == NativeMode::Obj
                     && else_body.is_empty()
@@ -2223,13 +2242,23 @@ fn emit_stmt<M: Module>(
                 {
                     let zero = builder.ins().iconst(types::I8, 0);
                     builder.def_var(emitter.vars[*slot as usize], zero);
+                    let blk = builder.create_block();
+                    emitter.defer_swallow = Some((blk, emitter.active_handlers.len(), true));
+                    swallow = Some(blk);
                 }
             }
             let then_terminated = emit_block(then_body, emitter, builder, module, f);
+            emitter.defer_swallow = prev_swallow;
             if !then_terminated {
                 builder.ins().jump(merge_blk, &[]);
             }
             builder.seal_block(then_blk);
+            if let Some(blk) = swallow {
+                // Catchable errors in the defer body rejoin the exit path here.
+                builder.switch_to_block(blk);
+                builder.ins().jump(merge_blk, &[]);
+                builder.seal_block(blk);
+            }
 
             builder.switch_to_block(else_blk);
             emitter.terminated = false;            let else_terminated = emit_block(else_body, emitter, builder, module, f);
@@ -2347,11 +2376,27 @@ fn emit_stmt<M: Module>(
             let idx_var = builder.declare_var(types::I64);
             let zero = builder.ins().iconst(types::I64, 0);
             builder.def_var(idx_var, zero);
+            // Tuples are tag-14 handles, so they are read with the existing
+            // sequence-pattern probes. Lists ??including the snapshot returned
+            // by `dict.keys()` / `dict.values()` ??keep the list ABI. No new
+            // extern symbol is introduced by this path.
+            let tuple_iter = matches!(col_ty, TirTy::TupleGen(_));
+            let len_id = if tuple_iter {
+                emitter.unrt_match_seq_len.expect("unrt import required for tuple iteration")
+            } else {
+                emitter.unrt_list_len.expect("unrt import required for lists")
+            };
+            let get_id = if tuple_iter {
+                emitter.unrt_match_seq_get.expect("unrt import required for tuple iteration")
+            } else if col_ty == TirTy::ListInt {
+                emitter.unrt_list_get_int.expect("unrt int-list import required")
+            } else {
+                emitter.unrt_list_get.expect("unrt import required for lists")
+            };
             // The trip count only needs one FFI call when the body cannot pop
             // elements from a list. Otherwise keep the per-iteration reload.
             let hoist_len = body_preserves_list_len(body);
             let hoisted_len = if hoist_len {
-                let len_id = emitter.unrt_list_len.expect("unrt import required for lists");
                 let len_ref = module.declare_func_in_func(len_id, builder.func);
                 let len_res = builder.ins().call(len_ref, &[col_v]);
                 Some(builder.inst_results(len_res)[0])
@@ -2368,7 +2413,6 @@ fn emit_stmt<M: Module>(
             let len_v = match hoisted_len {
                 Some(v) => v,
                 None => {
-                    let len_id = emitter.unrt_list_len.expect("unrt import required for lists");
                     let len_ref = module.declare_func_in_func(len_id, builder.func);
                     let len_res = builder.ins().call(len_ref, &[col_v]);
                     builder.inst_results(len_res)[0]
@@ -2378,20 +2422,17 @@ fn emit_stmt<M: Module>(
             builder.ins().brif(cont, body_blk, &[], exit_blk, &[]);
             builder.switch_to_block(body_blk);
             let idx2 = builder.use_var(idx_var);
+            let get_ref = module.declare_func_in_func(get_id, builder.func);
+            let elem_res = builder.ins().call(get_ref, &[col_v, idx2]);
+            let elem_raw = builder.inst_results(elem_res)[0];
             let elem_val = if col_ty == TirTy::ListInt {
-                let id = emitter.unrt_list_get_int.expect("unrt int-list import required");
-                let f_ref = module.declare_func_in_func(id, builder.func);
-                let res = builder.ins().call(f_ref, &[col_v, idx2]);
-                builder.inst_results(res)[0]
+                elem_raw
             } else {
-                let get_id = emitter.unrt_list_get.expect("unrt import required for lists");
-                let get_ref = module.declare_func_in_func(get_id, builder.func);
-                let elem_res = builder.ins().call(get_ref, &[col_v, idx2]);
-                let elem_v = builder.inst_results(elem_res)[0];
-                unbox_obj(elem_v, elem_ty, emitter, builder, module)
+                unbox_obj(elem_raw, elem_ty, emitter, builder, module)
             };
             builder.def_var(var_var, elem_val);
-            emitter.terminated = false;            for s in body {
+            emitter.terminated = false;
+            for s in body {
                 if emitter.terminated {
                     break;
                 }
@@ -2407,7 +2448,8 @@ fn emit_stmt<M: Module>(
             builder.switch_to_block(exit_blk);
             emitter.loop_breaks.pop();
             emitter.loop_skips.pop();
-            emitter.terminated = false;            builder.seal_block(exit_blk);
+            emitter.terminated = false;
+            builder.seal_block(exit_blk);
             builder.seal_block(header);
             false
         }
@@ -2668,12 +2710,7 @@ fn emit_stmt<M: Module>(
                 let wid = emitter.unrt_write_error.expect("unrt import required");
                 let wref = module.declare_func_in_func(wid, builder.func);
                 let _ = builder.ins().call(wref, &[obj]);
-                if let Some(&handler) = emitter.active_handlers.last() {
-                    builder.ins().jump(handler, &[]);
-                } else {
-                    // Propagating out: drain defers before dumping.
-                    builder.ins().jump(emitter.error_route_blk, &[]);
-                }
+                emit_error_dispatch(emitter, builder, module);
                 emitter.terminated = true;
                 return true;
             }
@@ -2684,12 +2721,7 @@ fn emit_stmt<M: Module>(
             let wid = emitter.unrt_write_error.expect("unrt import required");
             let wref = module.declare_func_in_func(wid, builder.func);
             let _ = builder.ins().call(wref, &[obj]);
-            if let Some(&handler) = emitter.active_handlers.last() {
-                builder.ins().jump(handler, &[]);
-            } else {
-                // Propagating out: drain defers before dumping.
-                builder.ins().jump(emitter.error_route_blk, &[]);
-            }
+            emit_error_dispatch(emitter, builder, module);
             emitter.terminated = true;
             true
         }
@@ -2949,6 +2981,44 @@ fn emit_set_error_site<M: Module>(
     }
 }
 
+/// Shared error dispatch for every *catchable* failure site.
+///
+/// A catchable error raised while emitting a defer body is swallowed: the VM's
+/// `end_call` turns a defer's `Flow::Propagate` into the call's result and
+/// continues the LIFO drain, so the error never reaches a caller handler or the
+/// uncaught dump. Panics are intentionally excluded ??they keep jumping to
+/// `defer_drain_blk` at their own sites (D-092/D-093). A `try` introduced
+/// *inside* the defer body is still honored: it has pushed a handler above the
+/// depth recorded when the body started.
+fn emit_error_dispatch<M: Module>(
+    emitter: &FnEmit,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+) {
+    if let Some((swallow_blk, handler_depth, clear_error)) = emitter.defer_swallow {
+        if emitter.active_handlers.len() <= handler_depth {
+            if clear_error {
+                // No outer error is in flight: drop the swallowed error and
+                // the source site/frames recorded for it, so a later uncaught
+                // error cannot inherit them. `unrt_take_error` is the existing
+                // NRT bridge (no new ABI symbol).
+                let tid = emitter.unrt_take_error.expect("unrt import required");
+                let r = module.declare_func_in_func(tid, builder.func);
+                let _ = builder.ins().call(r, &[]);
+            }
+            // On an exception drain the pending slot already holds the error
+            // that is being propagated; leave it untouched so the caller's
+            // handler (or the final dump) still observes it.
+            builder.ins().jump(swallow_blk, &[]);
+            return;
+        }
+    }
+    match emitter.active_handlers.last().copied() {
+        Some(handler) => builder.ins().jump(handler, &[]),
+        None => builder.ins().jump(emitter.error_route_blk, &[]),
+    };
+}
+
 /// Fast error gate for NRT calls whose success contract is "return the input
 /// handle unchanged". `unrt_list_set`, `unrt_dict_set` and `unrt_member_set`
 /// all return their first argument on success and a freshly allocated error
@@ -2974,15 +3044,7 @@ fn emit_self_return_gate<M: Module>(
     let wid = emitter.unrt_write_error.expect("unrt import required");
     let wref = module.declare_func_in_func(wid, builder.func);
     let _ = builder.ins().call(wref, &[result]);
-    match emitter.active_handlers.last().copied() {
-        Some(handler) => {
-            builder.ins().jump(handler, &[]);
-        }
-        None => {
-            // Propagating out: drain defers in the shared landing block.
-            builder.ins().jump(emitter.error_route_blk, &[]);
-        }
-    }
+    emit_error_dispatch(emitter, builder, module);
     builder.seal_block(err_blk);
     builder.switch_to_block(ok_blk);
 }
@@ -3013,15 +3075,7 @@ fn emit_error_gate_regular<M: Module>(
     let wid = emitter.unrt_write_error.expect("unrt import required");
     let wref = module.declare_func_in_func(wid, builder.func);
     let _ = builder.ins().call(wref, &[obj]);
-    match emitter.active_handlers.last().copied() {
-        Some(handler) => {
-            builder.ins().jump(handler, &[]);
-        }
-        None => {
-            // Propagating out: drain defers in the shared landing block.
-            builder.ins().jump(emitter.error_route_blk, &[]);
-        }
-    }
+    emit_error_dispatch(emitter, builder, module);
     builder.seal_block(err_blk);
     builder.switch_to_block(ok_blk);
 }
@@ -3065,23 +3119,11 @@ fn emit_error_gate<M: Module>(
     builder.ins().brif(is_err, err_blk, &[], ok_blk, &[]);
     builder.seal_block(ok_blk);
     builder.switch_to_block(err_blk);
-    match emitter.active_handlers.last().copied() {
-        Some(handler) => {
-            emit_set_error_site(emitter, builder, module);
-            let wid = emitter.unrt_write_error.expect("unrt import required");
-            let wref = module.declare_func_in_func(wid, builder.func);
-            let _ = builder.ins().call(wref, &[obj]);
-            builder.ins().jump(handler, &[]);
-        }
-        None => {
-            emit_set_error_site(emitter, builder, module);
-            let wid = emitter.unrt_write_error.expect("unrt import required");
-            let wref = module.declare_func_in_func(wid, builder.func);
-            let _ = builder.ins().call(wref, &[obj]);
-            // Propagating out: drain defers in the shared landing block.
-            builder.ins().jump(emitter.error_route_blk, &[]);
-        }
-    }
+    emit_set_error_site(emitter, builder, module);
+    let wid = emitter.unrt_write_error.expect("unrt import required");
+    let wref = module.declare_func_in_func(wid, builder.func);
+    let _ = builder.ins().call(wref, &[obj]);
+    emit_error_dispatch(emitter, builder, module);
     builder.seal_block(err_blk);
     builder.switch_to_block(ok_blk);
 }
@@ -3108,12 +3150,7 @@ fn emit_int_zero_guard<M: Module>(
             let wid = emitter.unrt_write_error.expect("unrt import required");
         let wref = module.declare_func_in_func(wid, builder.func);
         let _ = builder.ins().call(wref, &[err]);
-        if let Some(&handler) = emitter.active_handlers.last() {
-            builder.ins().jump(handler, &[]);
-        } else {
-            // Propagating out: drain defers before dumping.
-            builder.ins().jump(emitter.error_route_blk, &[]);
-        }
+        emit_error_dispatch(emitter, builder, module);
         builder.seal_block(fail_blk);
         builder.switch_to_block(ok_blk);
     } else {
@@ -3180,12 +3217,7 @@ fn emit_math_sqrt_guard<M: Module>(
             let wid = emitter.unrt_write_error.expect("unrt import required");
         let wref = module.declare_func_in_func(wid, builder.func);
         let _ = builder.ins().call(wref, &[err]);
-        if let Some(&handler) = emitter.active_handlers.last() {
-            builder.ins().jump(handler, &[]);
-        } else {
-            // Propagating out: drain defers before dumping.
-            builder.ins().jump(emitter.error_route_blk, &[]);
-        }
+        emit_error_dispatch(emitter, builder, module);
     } else {
         let bail_blk = emitter.bail_blk;
         builder.ins().jump(bail_blk, &[]);
@@ -3216,12 +3248,7 @@ fn emit_math_log_guard<M: Module>(
             let wid = emitter.unrt_write_error.expect("unrt import required");
         let wref = module.declare_func_in_func(wid, builder.func);
         let _ = builder.ins().call(wref, &[err]);
-        if let Some(&handler) = emitter.active_handlers.last() {
-            builder.ins().jump(handler, &[]);
-        } else {
-            // Propagating out: drain defers before dumping.
-            builder.ins().jump(emitter.error_route_blk, &[]);
-        }
+        emit_error_dispatch(emitter, builder, module);
     } else {
         let bail_blk = emitter.bail_blk;
         builder.ins().jump(bail_blk, &[]);
@@ -3468,8 +3495,13 @@ fn emit_expr<M: Module>(
             let write_ref = module.declare_func_in_func(write_id, builder.func);
             let _ = builder.ins().call(write_ref, &[err_obj]);
             // The VM's Await error is a catchable LangError: honor an active
-            // handler before falling back to the uncaught-error drain.
-            if let Some(&handler) = emitter.active_handlers.last() {
+            // handler before falling back to the uncaught-error drain, and
+            // consume it locally when raised inside a defer body. Keep the
+            // original drain target (not `error_route_blk`) so await behavior
+            // outside a defer stays byte-identical.
+            if emitter.defer_swallow.is_some() {
+                emit_error_dispatch(emitter, builder, module);
+            } else if let Some(&handler) = emitter.active_handlers.last() {
                 builder.ins().jump(handler, &[]);
             } else {
                 builder.ins().jump(emitter.defer_drain_blk, &[]);
@@ -4407,23 +4439,43 @@ fn emit_expr<M: Module>(
                     builder.seal_block(err_blk);
 
                     builder.switch_to_block(err_blk);
-                    match emitter.active_handlers.last().copied() {
-                        Some(handler) => {
-                            // A caught error pops this call frame; the handler's
-                            // `unrt_take_error` clears the trace anyway.
+                    let swallow = emitter.defer_swallow.filter(|(_, depth, _)| {
+                        emitter.active_handlers.len() <= *depth
+                    });
+                    match swallow {
+                        Some((swallow_blk, _, clear_error)) => {
+                            // A defer that calls a throwing function swallows
+                            // the propagated error just like a local raise.
                             if pushed {
                                 let pop = emitter.nrt_pop_frame.expect("pop import");
                                 let pop_ref = module.declare_func_in_func(pop, builder.func);
                                 let _ = builder.ins().call(pop_ref, &[]);
                             }
-                            builder.ins().jump(handler, &[]);
+                            if clear_error {
+                                let tid = emitter.unrt_take_error.expect("unrt import required");
+                                let r = module.declare_func_in_func(tid, builder.func);
+                                let _ = builder.ins().call(r, &[]);
+                            }
+                            builder.ins().jump(swallow_blk, &[]);
                         }
-                        None => {
-                            // On further propagation keep the frame pushed so
-                            // the final uncaught traceback matches the old
-                            // dump-inside-callee output byte for byte.
-                            builder.ins().jump(emitter.error_route_blk, &[]);
-                        }
+                        None => match emitter.active_handlers.last().copied() {
+                            Some(handler) => {
+                                // A caught error pops this call frame; the handler's
+                                // `unrt_take_error` clears the trace anyway.
+                                if pushed {
+                                    let pop = emitter.nrt_pop_frame.expect("pop import");
+                                    let pop_ref = module.declare_func_in_func(pop, builder.func);
+                                    let _ = builder.ins().call(pop_ref, &[]);
+                                }
+                                builder.ins().jump(handler, &[]);
+                            }
+                            None => {
+                                // On further propagation keep the frame pushed so
+                                // the final uncaught traceback matches the old
+                                // dump-inside-callee output byte for byte.
+                                builder.ins().jump(emitter.error_route_blk, &[]);
+                            }
+                        },
                     }
 
                     builder.switch_to_block(ok_blk);

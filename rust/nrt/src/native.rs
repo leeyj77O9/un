@@ -88,6 +88,71 @@ fn is_type_obj(p: u64) -> bool {
     unsafe { obj(p).tag == 6 && obj(p).b == TYPE_OBJ_MARKER }
 }
 
+/// W-2026-11-26-FUTURETYPE: recognise the closure handle that ASYNCDEFER's
+/// `tir::synthesize_go` produces for `go <expr>`.
+///
+/// `go` lowers to a zero-argument closure whose first two captures are the
+/// memo cells created at fork time:
+///   `captures[0]` — `flag: list[int]`, exactly `[0]` (pending) or `[1]` (done)
+///   `captures[1]` — `value: list[any]`, exactly one boxed result handle
+/// with registered kinds `[obj, obj, ...]` and return kind `obj`. Ordinary
+/// lambdas/functions never carry this capture/kind/return shape, so they keep
+/// the `"func"` type name.
+///
+/// NRT has no dedicated future tag (adding one would change the C ABI), so the
+/// probe reads the private `ClosureData` behind `NObj.b`. The raw layout is
+/// cross-checked against the public `unrt_arg_count` bridge: if the layout
+/// assumption ever breaks the probe returns false and the value falls back to
+/// `"func"` rather than mislabelling a lambda.
+fn go_future_of(p: u64) -> bool {
+    unsafe {
+        if obj(p).tag != 8 {
+            return false;
+        }
+        // ClosureData { captures: Vec<u64>, kinds: Vec<u8>, ret_kind: u8 }.
+        // On the pinned GNU toolchain each Vec is three usize words
+        // `[cap, ptr, len]` and the struct keeps declaration order. The
+        // unit tests below construct a real closure to pin this down.
+        let words = obj(p).b as *const usize;
+        let cap_c = *words;
+        let ptr_c = *words.add(1) as *const u64;
+        let len_c = *words.add(2);
+        let cap_k = *words.add(3);
+        let ptr_k = *words.add(4) as *const u8;
+        let len_k = *words.add(5);
+        let ret_kind = *words.add(6) as u8;
+        if ptr_c.is_null() || ptr_k.is_null()
+            || len_c > cap_c || len_k > cap_k
+            || cap_c > 4096 || cap_k > 4096
+        {
+            return false;
+        }
+        // Cross-check the raw layout against the real ClosureData.
+        let arg_count = crate::closure::unrt_arg_count(p);
+        if arg_count != (len_k as i64).saturating_sub(len_c as i64) {
+            return false;
+        }
+        if len_c < 2 || len_c != len_k || ret_kind != 3 {
+            return false;
+        }
+        let kinds = std::slice::from_raw_parts(ptr_k, len_k);
+        if kinds[0] != 3 || kinds[1] != 3 {
+            return false;
+        }
+        let captures = std::slice::from_raw_parts(ptr_c, len_c);
+        let flag = captures[0];
+        let value = captures[1];
+        // Both memo cells are one-element lists at `go` time and stay so
+        // after `wait` (the thunk overwrites element 0 in place).
+        let is_cell = |cell: u64| obj(cell).tag == 3 && obj(cell).a == 1;
+        if !is_cell(flag) || !is_cell(value) {
+            return false;
+        }
+        let f = crate::list::items(flag)[0];
+        obj(f).tag == 0 && (obj(f).a == 0 || obj(f).a == 1)
+    }
+}
+
 /// VM `obj::type_name` for the NRT-representable tags. The names are the same
 /// ones `unrt_obj_type_name` matches, so `type()` and `repr()` stay aligned
 /// with class/variant pattern checks and with `un run` output.
@@ -107,7 +172,10 @@ fn type_name_of(p: u64) -> &'static str {
         5 | 10 => "obj",
         6 => if is_type_obj(p) { "type" } else { "str" },
         7 => "dict",
-        8 => "func",
+        // W-2026-11-26-FUTURETYPE: a `go` future is a closure handle, but the
+        // VM gives it type_name "future" (native/flow.rs::future_of). Normal
+        // lambda/function values remain "func".
+        8 => if go_future_of(p) { "future" } else { "func" },
         9 => crate::class::class_name(o.a as usize).unwrap_or("obj"),
         11 => "http_client",
         12 => "web_socket",
@@ -944,13 +1012,19 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
         },
         ("types", "str") => match args.first().copied() {
             Some(v) if is_pending(v) => v,
-            // VM refuses `str()` on native flow handles (`test/unit/runtime/
-            // async.un` asserts this for pool/future). No new ABI is needed:
-            // the error is produced by the existing types bridge.
-            Some(v) if flow_type_name(v).is_some() => err(&format!(
-                "unsupported operand type(s) for str(): '{}'",
-                flow_type_name(v).unwrap_or("obj")
-            )),
+            // VM refuses `str()` on native flow handles and on `go` futures
+            // (`test/unit/runtime/async.un` asserts this for pool/future).
+            // No new ABI is needed: the error comes from the existing bridge.
+            // W-2026-11-26-FUTURETYPE: a future is a tag-8 closure, so add the
+            // same guard here; ordinary funcs keep the `display` path below.
+            Some(v) if flow_type_name(v).is_some() || go_future_of(v) => {
+                let name = if go_future_of(v) {
+                    "future"
+                } else {
+                    flow_type_name(v).unwrap_or("obj")
+                };
+                err(&format!("unsupported operand type(s) for str(): '{name}'"))
+            }
             // VM `str()` delegates to `obj::to_str`, whose rendering is the
             // same `display` this runtime already uses for `io.write`.
             Some(v) => string(&display(v)),
@@ -1068,6 +1142,75 @@ mod tests {
     fn types_cast_members_still_dispatch() {
         assert_eq!(display(dispatch("types", "f64", &[int(7)])), "7");
         assert!(dispatch("types", "u8", &[int(-1)]) != 0);
+    }
+
+    // ---- W-2026-11-26-FUTURETYPE: go future vs ordinary function ----------
+    // The go thunk's ABI is `[obj, obj] -> obj` with the two memo cells as
+    // captures (see tir::synthesize_go). `unrt_call_obj` prepends captures, so
+    // the thunk function itself just returns the value cell.
+    extern "C" fn go_thunk(_flag: u64, value: u64) -> u64 { value }
+
+    fn go_like_future(index: i64) -> u64 {
+        let kinds: [u8; 2] = [3, 3];
+        crate::closure::nrt_register_lambda(
+            index,
+            go_thunk as *const () as usize,
+            kinds.as_ptr(),
+            kinds.len(),
+            3,
+        );
+        let flag = crate::list::list_new(vec![int(0)]);
+        let value = crate::list::list_new(vec![int(0)]);
+        let captures = [flag, value];
+        crate::closure::unrt_obj_closure(index, captures.as_ptr(), captures.len())
+    }
+
+    #[test]
+    fn go_future_type_repr_str_match_vm_and_wait_still_works() {
+        let fut = go_like_future(9101);
+        assert_eq!(display(dispatch("types", "type", &[fut])), "<type: future>");
+        assert_eq!(display(dispatch("types", "repr", &[fut])), "future");
+        assert_eq!(
+            display(dispatch("types", "str", &[fut])),
+            "unsupported operand type(s) for str(): 'future'"
+        );
+        // WAITGUARD's happy path (`unrt_call_obj` on the same handle) is intact.
+        let empty = [0u64];
+        let got = crate::closure::unrt_call_obj(fut, empty.as_ptr(), 0);
+        assert_eq!(display(got), "[0]");
+    }
+
+    #[test]
+    fn ordinary_lambdas_keep_func_type_name() {
+        extern "C" fn zero() -> u64 { 0 }
+        let none: [u8; 0] = [];
+        crate::closure::nrt_register_lambda(9102, zero as *const () as usize, none.as_ptr(), 0, 3);
+        // A zero-arg, zero-capture lambda returning an object handle matches
+        // the thunk's `fn() -> any` display but has no memo cells.
+        let plain = crate::closure::unrt_obj_closure(9102, std::ptr::null(), 0);
+        assert_eq!(display(dispatch("types", "type", &[plain])), "<type: func>");
+        assert_eq!(display(dispatch("types", "repr", &[plain])), "func");
+
+        extern "C" fn inc(x: i64) -> i64 { x + 1 }
+        let kinds: [u8; 2] = [0, 0];
+        crate::closure::nrt_register_lambda(9103, inc as *const () as usize, kinds.as_ptr(), 2, 0);
+        let captures = [int(5)];
+        let lambda = crate::closure::unrt_obj_closure(9103, captures.as_ptr(), 1);
+        assert_eq!(display(dispatch("types", "type", &[lambda])), "<type: func>");
+    }
+
+    #[test]
+    fn lookalike_lambda_with_params_stays_func() {
+        // Same first two captures as a future, but it takes a real third
+        // argument: the `len(kinds) == len(captures)` guard rules it out.
+        extern "C" fn pick(_flag: u64, _value: u64, extra: u64) -> u64 { extra }
+        let kinds: [u8; 3] = [3, 3, 3];
+        crate::closure::nrt_register_lambda(9104, pick as *const () as usize, kinds.as_ptr(), 3, 3);
+        let flag = crate::list::list_new(vec![int(0)]);
+        let value = crate::list::list_new(vec![int(7)]);
+        let captures = [flag, value];
+        let lam = crate::closure::unrt_obj_closure(9104, captures.as_ptr(), 2);
+        assert_eq!(display(dispatch("types", "type", &[lam])), "<type: func>");
     }
 
     // ---- cooperative `flow` shim (W-2026-11-26-ASYNCflow) ------------------

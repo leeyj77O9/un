@@ -986,6 +986,79 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
         })
 }
 
+/// Compute the integer value of each *value* enum member, mirroring
+/// `compiler::code_enum`: plain members auto-increment from 0, an explicit
+/// `NAME = <int>` sets the current index to that value and the next plain
+/// member continues from `value + 1`. Data-carrying members (`NAME: Ty`) are
+/// constructors rather than Int values: they consume an index but get no
+/// entry here, so `Enum.NAME` in that case stays on the VM path.
+///
+/// The compiler rejects non-literal explicit values ("enum member must be an
+/// integer literal"), so only the same literal/unary forms are recognised.
+fn collect_enum_values(root: &Node, source: &Source) -> HashMap<String, HashMap<String, i64>> {
+    fn const_int(node: &Node) -> Option<i64> {
+        match node.kind {
+            NodeKind::Typed => const_int(node.children.first()?),
+            NodeKind::Unary => {
+                let inner = const_int(node.children.first()?)?;
+                match node.op? {
+                    TokenType::Minus => inner.checked_neg(),
+                    TokenType::Plus => Some(inner),
+                    TokenType::BNot => Some(!inner),
+                    _ => None,
+                }
+            }
+            _ => match &node.value {
+                Some(Const::Int(v)) => Some(*v),
+                _ => None,
+            },
+        }
+    }
+    fn visit(node: &Node, source: &Source, out: &mut HashMap<String, HashMap<String, i64>>) {
+        if node.kind == NodeKind::Enum {
+            let Some(name_node) = node.children.first() else { return };
+            let enum_name = source.span(name_node.start, name_node.length);
+            let mut values = HashMap::new();
+            let mut index = 0i64;
+            for member in node.children.iter().skip(1) {
+                if member.kind == NodeKind::TypeParams {
+                    continue;
+                }
+                if member.kind == NodeKind::Typed {
+                    // Data-carrying variant: a constructor function, not an
+                    // Int member. The VM still advances its index for it.
+                    index = index.wrapping_add(1);
+                    continue;
+                }
+                let (member_name, value) = match member.kind {
+                    NodeKind::Assign if member.children.len() >= 2 => {
+                        let name_node = &member.children[0];
+                        let name = source.span(name_node.start, name_node.length);
+                        let Some(v) = const_int(&member.children[1]) else { continue };
+                        index = v.wrapping_add(1);
+                        (name, v)
+                    }
+                    _ => {
+                        let name = source.span(member.start, member.length);
+                        let v = index;
+                        index = index.wrapping_add(1);
+                        (name, v)
+                    }
+                };
+                values.insert(member_name, value);
+            }
+            out.insert(enum_name, values);
+            return;
+        }
+        for child in &node.children {
+            visit(child, source, out);
+        }
+    }
+    let mut out = HashMap::new();
+    visit(root, source, &mut out);
+    out
+}
+
 struct ClassTable {
     index: std::collections::HashMap<String, u16>,
     names: Vec<String>,
@@ -996,6 +1069,12 @@ struct ClassTable {
     /// Raw `(child, parent)` names from the class declarations, before the
     /// inherited fields/methods are flattened into the child entry.
     parents: Vec<(String, String)>,
+    /// Compile-time integer values of plain (`RED`) and explicitly valued
+    /// (`RED = 5`) enum members, keyed by enum name then variant name. Mirrors
+    /// `compiler::code_enum` so `Enum.variant` value references lower to the
+    /// same Int the VM produces. Data-carrying variants (`RED: T`) are
+    /// constructors, not Int values, and are deliberately absent here.
+    enum_values: HashMap<String, HashMap<String, i64>>,
 }
 
 impl ClassTable {
@@ -1129,7 +1208,7 @@ impl ClassTable {
                 }
             }
         }
-        ClassTable { index, names, fields, methods, setters, field_order, parents }
+        ClassTable { index, names, fields, methods, setters, field_order, parents, enum_values: HashMap::new() }
     }
 
     fn setters(&self, id: u16) -> Option<&std::collections::HashSet<String>> {
@@ -2728,7 +2807,8 @@ impl TirProgram {
             .enumerate()
             .map(|(tir_i, &fn_i)| (fn_i, tir_i))
             .collect();
-        let classes = ClassTable::new(checked);
+        let mut classes = ClassTable::new(checked);
+        classes.enum_values = collect_enum_values(root, source);
         let lambda_base = eligible.len() as u32;
         let mut lambdas = Vec::new();
         let mut functions = Vec::with_capacity(eligible.len());
@@ -4139,6 +4219,42 @@ fn lower_while(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resul
     Ok(())
 }
 
+/// Element type of a `for x in <sequence>` value that the native path can
+/// iterate. `None` for scalars, dicts and other non-sequences, which remain on
+/// the range-only path (and are rejected there as before).
+fn foreach_elem_ty(ty: CoreTy) -> Option<TirTy> {
+    match ty {
+        CoreTy::ListInt => Some(TirTy::Int),
+        CoreTy::ListFloat => Some(TirTy::Float),
+        CoreTy::ListClass(id) => Some(TirTy::Class(id)),
+        CoreTy::ListGen(elem) | CoreTy::TupleGen(elem) => Some(tir_of_elem(elem)),
+        _ => None,
+    }
+}
+
+/// True for the two iterator spellings consumed by `parse_range_call`: `a..b`
+/// and `iter.range(...)`. They have no TIR value expression, so they must not
+/// be sent through `lower_expr` by the general sequence path in `lower_for`.
+fn is_range_iterator(node: &Node, ctx: &LowerCtx) -> bool {
+    if node.kind == NodeKind::Binary && node.op == Some(TokenType::DotDot) {
+        return true;
+    }
+    if node.kind != NodeKind::Call {
+        return false;
+    }
+    let Some(callee) = node.children.first() else {
+        return false;
+    };
+    if callee.kind != NodeKind::Property {
+        return false;
+    }
+    let (Some(recv), Some(member)) = (callee.children.first(), callee.children.get(1)) else {
+        return false;
+    };
+    ctx.source.span(recv.start, recv.length) == "iter"
+        && ctx.source.span(member.start, member.length) == "range"
+}
+
 fn lower_for(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<(), String> {
     let target = node
         .children
@@ -4159,16 +4275,10 @@ fn lower_for(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
         }
         _ => return Err("for loop target must be a plain variable in the core".to_string()),
     };
+    // A local list slot avoids re-lowering the identifier and keeps the
+    // existing element-kind mapping intact.
     if let Some(slot) = slot_of(ctx, &ctx.source.span(iter.start, iter.length).to_string()) {
-        let list_ty = ctx.locals[slot as usize];
-        if matches!(list_ty, TirTy::ListInt | TirTy::ListFloat | TirTy::ListClass(_) | TirTy::ListGen(_)) {
-            let elem_ty = match list_ty {
-                TirTy::ListInt => TirTy::Int,
-                TirTy::ListFloat => TirTy::Float,
-                TirTy::ListClass(id) => TirTy::Class(id),
-                TirTy::ListGen(e) => tir_of_elem(e),
-                _ => unreachable!(),
-            };
+        if let Some(elem_ty) = foreach_elem_ty(CoreTy::from(ctx.locals[slot as usize])) {
             let var = declare(ctx, &name, elem_ty);
             let mut body_out = Vec::new();
             lower_block(body, ctx, &mut body_out)?;
@@ -4180,13 +4290,17 @@ fn lower_for(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<
             return Ok(());
         }
     }
-    if iter.kind == NodeKind::List {
+    // Every other sequence-valued expression: list literals (including
+    // `list[...]` generics), `dict.keys()` / `dict.values()` snapshots, tuple
+    // literals, slices and calls returning a list. Ranges are excluded because
+    // they have no TIR value form and are handled by `parse_range_call` below.
+    if !is_range_iterator(iter, ctx) {
         let (collection, cty) = lower_expr(iter, ctx)?;
-        let elem_ty = match cty {
-            CoreTy::ListInt => TirTy::Int,
-            CoreTy::ListFloat => TirTy::Float,
-            CoreTy::ListClass(id) => TirTy::Class(id),
-            _ => return Err("for ... in requires a core list".to_string()),
+        let Some(elem_ty) = foreach_elem_ty(cty) else {
+            return Err(
+                "for: iterator must be a list, tuple, dict.keys()/values(), or iter.range(...) in the core"
+                    .to_string(),
+            );
         };
         flush_pending(ctx, out);
         let var = declare(ctx, &name, elem_ty);
@@ -5429,6 +5543,24 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                 .get(1)
                 .ok_or_else(|| "property without a member".to_string())?;
             let member = ctx.source.span(member_node.start, member_node.length).to_string();
+            // `Enum.variant` value reference. The VM stores plain enum members
+            // as Int constants on the enum object (auto-increment, or the
+            // explicit `= N` value), so lower the reference to that same Int.
+            // Data-carrying variants have no entry here and stay on the VM
+            // path (their `Enum.variant(...)` call form is handled separately
+            // by `lower_call`).
+            if receiver.kind == NodeKind::Identifier {
+                let enum_name = ctx.source.span(receiver.start, receiver.length);
+                // A local/global with the same name shadows the enum, matching
+                // the VM's scope-first lookup for property receivers.
+                let shadowed = slot_of(ctx, &enum_name).is_some()
+                    || ctx.globals.contains_key(&enum_name);
+                if !shadowed {
+                    if let Some(value) = ctx.classes.enum_values.get(&enum_name).and_then(|m| m.get(&member)) {
+                        return Ok((TirExpr::Int(*value), CoreTy::Int));
+                    }
+                }
+            }
             let (recv, rty) = lower_expr(receiver, ctx)?;
             let id = match rty {
                 CoreTy::Class(id) => id,
@@ -7572,8 +7704,8 @@ fn validate_stmt(
                     TirTy::ListInt => TirTy::Int,
                     TirTy::ListFloat => TirTy::Float,
                     TirTy::ListClass(id) => TirTy::Class(id),
-                    TirTy::ListGen(elem) => tir_of_elem(elem),
-                    _ => return Err("for ... in requires a core list".to_string()),
+                    TirTy::ListGen(elem) | TirTy::TupleGen(elem) => tir_of_elem(elem),
+                    _ => return Err("for ... in requires a core list or tuple".to_string()),
                 };
                 if (*var as usize) != *slot {
                     return Err(format!(
