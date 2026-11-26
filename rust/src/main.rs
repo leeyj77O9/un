@@ -1436,15 +1436,10 @@ fn build_cmd(args: &[String]) {
         print!("{}{}", diagnostic.display(&source), nl());
         exit(1);
     }
-    if let Some(async_node) = unvm::compiler::find_unsupported_async_node(&root) {
-        let diagnostic = LangError::new(
-            async_node.start,
-            async_node.length,
-            async_node.message(),
-        );
-        print!("{}{}", diagnostic.display(&source), nl());
-        exit(1);
-    }
+    // W-2026-11-26-ASYNCDEFER: `go`/`wait` are no longer rejected by plain
+    // builds. TIR lowers them to a deferred, memoized closure (see
+    // `tir::synthesize_go`) using only existing `unrt_*` primitives, with no
+    // background thread and no change to the VM's default deferred contract.
     let checked = match typeck::check_program_with_options(
         &source,
         &root,

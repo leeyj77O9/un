@@ -1,7 +1,6 @@
 # Plain `un build` must reject each of these with exit 1 and the substring below.
 # Row format: path (relative to this directory)|expected substring
 # Comments and blank lines are ignored by scripts/exe-diff.ps1 Part D.
-async_uncalled.un|go/wait are not supported in plain build
 toplevel_side_effect.un|top-level statements are not supported in plain build
 module_topwrite.un|has unsupported top-level statement
 generic_class.un|this program uses a feature that requires the VM runtime

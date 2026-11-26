@@ -411,6 +411,18 @@ impl<'a> Checker<'a> {
             if trimmed.starts_with("func(") || contains_qualified_fixed_width(trimmed) {
                 return value.clone();
             }
+            // `optimize::fresh_temp` stores compiler-generated temporary names
+            // in a `Const::Str` with a zero-length span, using a `\u{1}` marker
+            // that cannot appear in source identifiers. Reading the empty span
+            // makes every temp collide on the name `""` (e.g. `tmp[dkey] += 1`
+            // desugars to two temps that both bind `""`), which in turn makes
+            // typeck report bogus assignments such as `str` -> `dict[str, int]`.
+            // Only these temps take the carried name; ordinary identifiers and
+            // type-parameter nodes (whose `Const::Str` holds a generic bound)
+            // must keep reading their source span.
+            if node.kind == NodeKind::Identifier && value.starts_with('\u{1}') {
+                return value.clone();
+            }
         }
         self.source.span(node.start, node.length)
     }

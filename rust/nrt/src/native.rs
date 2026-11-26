@@ -2,11 +2,12 @@
 //! the VM: each module/member pair receives boxed argument handles and returns
 //! a boxed handle, matching `un run` byte-for-byte for the supported surface.
 
+use std::cell::RefCell;
 use std::fs;
 use std::io::Write;
 
 use crate::obj::{
-    display, err, obj, obj_mut, unrt_obj_bool, unrt_obj_float, unrt_obj_int, unrt_obj_none,
+    display, err, obj, obj_mut, unrt_obj_bool, unrt_obj_float, unrt_obj_int, unrt_obj_none, NObj,
 };
 
 /// Format shared by `sys.version()` and `os.version()`. The VM builds these
@@ -112,6 +113,8 @@ fn type_name_of(p: u64) -> &'static str {
         12 => "web_socket",
         14 => "tuple",
         15 => "set",
+        // Cooperative flow handles; names match the VM's native object types.
+        16 => flow_type_name(p).unwrap_or("obj"),
         _ => "obj",
     }
 }
@@ -161,7 +164,294 @@ fn iso_time(time: std::time::SystemTime) -> String {
     format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{ms:03}Z")
 }
 
+// ---- cooperative `flow` shim (W-2026-11-26-ASYNCflow) ---------------------
+//
+// D-012/D-054/D-061: Un never creates OS threads. `flow.lock`, `flow.spawn`
+// and `flow.atomic` are cooperative single-thread handles backed by RefCell
+// cells; `pool.map`/`pool.submit` invoke the supplied closure inline on the
+// calling thread. `rust/src/native/flow.rs` and `native/atomic.rs` are the
+// semantic reference — error strings and return values below mirror them.
+//
+// Everything is reached through the existing `unrt_call_native` bridge, so no
+// new `unrt_*`/`nrt_*` C ABI symbol is introduced (AGENTS.md §4 / §5.8).
+
+const TAG_FLOW: i64 = 16;
+const FLOW_LOCK: i64 = 0;
+const FLOW_POOL: i64 = 1;
+const FLOW_FUTURE: i64 = 2;
+const FLOW_ATOMIC_INT: i64 = 3;
+const FLOW_ATOMIC_BOOL: i64 = 4;
+
+// The VM's `PoolState` also stores a worker count; NRT is cooperative
+// single-thread (D-054), so only the `closed` flag has observable behaviour.
+struct FlowPool {
+    closed: bool,
+}
+
+enum FlowState {
+    Lock(RefCell<bool>),
+    Pool(RefCell<FlowPool>),
+    Future(RefCell<Option<u64>>),
+    AtomicInt(RefCell<i64>),
+    AtomicBool(RefCell<bool>),
+}
+
+fn flow_new(kind: i64, state: FlowState) -> u64 {
+    let ptr = Box::into_raw(Box::new(state));
+    unsafe { crate::obj::alloc(NObj { tag: TAG_FLOW, a: kind, b: ptr as i64 }) }
+}
+
+fn flow_kind(p: u64) -> Option<i64> {
+    unsafe {
+        let o = obj(p);
+        if o.tag == TAG_FLOW { Some(o.a) } else { None }
+    }
+}
+
+fn flow_type_name(p: u64) -> Option<&'static str> {
+    match flow_kind(p) {
+        Some(FLOW_LOCK) => Some("lock"),
+        Some(FLOW_POOL) => Some("pool"),
+        Some(FLOW_FUTURE) => Some("future"),
+        Some(FLOW_ATOMIC_INT) => Some("atomic_int"),
+        Some(FLOW_ATOMIC_BOOL) => Some("atomic_bool"),
+        _ => None,
+    }
+}
+
+/// The VM's rest argument arrives either as a tuple handle (`vargs`) or as
+/// plain trailing handles. Flatten both shapes before invoking the closure.
+fn flow_values(args: &[u64]) -> Vec<u64> {
+    if args.len() == 1 && unsafe { obj(args[0]).tag == 14 } {
+        unsafe { crate::obj::seq_items(args[0]).clone() }
+    } else {
+        args.to_vec()
+    }
+}
+
+fn flow_call(f: u64, values: &[u64]) -> u64 {
+    crate::closure::unrt_call_obj(f, values.as_ptr(), values.len())
+}
+
+fn atomic_int_arg(args: &[u64], i: usize, label: &str) -> Result<i64, u64> {
+    args.get(i).copied().and_then(as_i64)
+        .ok_or_else(|| err(&format!("expected '{label}' argument to be of type 'int'")))
+}
+
+fn atomic_bool_arg(args: &[u64], i: usize) -> Result<bool, u64> {
+    match args.get(i).copied() {
+        Some(p) if unsafe { obj(p).tag == 2 } => Ok(unsafe { obj(p).a != 0 }),
+        _ => Err(err("expected 'value' argument to be of type 'bool'")),
+    }
+}
+
+fn flow_atomic_int(state: &FlowState, member: &str, args: &[u64]) -> Option<u64> {
+    let FlowState::AtomicInt(cell) = state else { return None; };
+    let mut value = cell.borrow_mut();
+    match member {
+        "get" => Some(int(*value)),
+        "set" => match atomic_int_arg(args, 0, "value") {
+            Ok(a) => { *value = a; Some(none()) }
+            Err(e) => Some(e),
+        },
+        "add" => match atomic_int_arg(args, 0, "value") {
+            Ok(a) => { *value = value.wrapping_add(a); Some(int(*value)) }
+            Err(e) => Some(e),
+        },
+        "inc" => { *value = value.wrapping_add(1); Some(int(*value)) }
+        "dec" => { *value = value.wrapping_sub(1); Some(int(*value)) }
+        "exchange" => match atomic_int_arg(args, 0, "value") {
+            Ok(a) => {
+                let previous = *value;
+                *value = a;
+                Some(int(previous))
+            }
+            Err(e) => Some(e),
+        },
+        "compare_and_swap" => {
+            let expected = match atomic_int_arg(args, 0, "expected") { Ok(v) => v, Err(e) => return Some(e) };
+            let new_value = match atomic_int_arg(args, 1, "new_value") { Ok(v) => v, Err(e) => return Some(e) };
+            if *value == expected {
+                *value = new_value;
+                Some(boolean(true))
+            } else {
+                Some(boolean(false))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn flow_atomic_bool(state: &FlowState, member: &str, args: &[u64]) -> Option<u64> {
+    let FlowState::AtomicBool(cell) = state else { return None; };
+    let mut value = cell.borrow_mut();
+    match member {
+        "get" => Some(boolean(*value)),
+        "set" => match atomic_bool_arg(args, 0) {
+            Ok(a) => { *value = a; Some(none()) }
+            Err(e) => Some(e),
+        },
+        "exchange" => match atomic_bool_arg(args, 0) {
+            Ok(a) => {
+                let previous = *value;
+                *value = a;
+                Some(boolean(previous))
+            }
+            Err(e) => Some(e),
+        },
+        "compare_and_swap" => {
+            let expected = match atomic_bool_arg(args, 0) { Ok(v) => v, Err(e) => return Some(e) };
+            let new_value = match atomic_bool_arg(args, 1) { Ok(v) => v, Err(e) => return Some(e) };
+            if *value == expected {
+                *value = new_value;
+                Some(boolean(true))
+            } else {
+                Some(boolean(false))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Dispatch a method on a `flow` handle. `None` means the handle/member is not
+/// part of this shim (the caller then reports the existing unsupported-module
+/// error); failures that the VM surfaces as uncaught `Obj` errors are returned
+/// as `Some(err(..))`.
+pub(crate) fn flow_method(handle: u64, member: &str, args: &[u64]) -> Option<u64> {
+    let (kind, ptr) = unsafe {
+        let o = obj(handle);
+        if o.tag != TAG_FLOW { return None; }
+        (o.a, o.b as *const FlowState)
+    };
+    let state = unsafe { &*ptr };
+    match (kind, member) {
+        (FLOW_LOCK, "acquire") => match state {
+            FlowState::Lock(held) => { *held.borrow_mut() = true; Some(handle) }
+            _ => None,
+        },
+        (FLOW_LOCK, "try_acquire") => match state {
+            FlowState::Lock(held) => {
+                let mut h = held.borrow_mut();
+                if *h { Some(boolean(false)) } else { *h = true; Some(boolean(true)) }
+            }
+            _ => None,
+        },
+        (FLOW_LOCK, "release") => match state {
+            FlowState::Lock(held) => {
+                let mut h = held.borrow_mut();
+                if !*h { Some(err("lock not held")) } else { *h = false; Some(handle) }
+            }
+            _ => None,
+        },
+        (FLOW_LOCK, "dispose") => match state {
+            FlowState::Lock(held) => { *held.borrow_mut() = false; Some(none()) }
+            _ => None,
+        },
+        (FLOW_POOL, "submit") | (FLOW_POOL, "map") => match state {
+            FlowState::Pool(pool) => {
+                if pool.borrow().closed { return Some(err("pool is closed")); }
+                let Some(&f) = args.first() else {
+                    return Some(err("expected 'fn' argument to be of type 'func'"));
+                };
+                if crate::closure::unrt_is_callable(f) == 0 {
+                    return Some(err("expected 'fn' argument to be of type 'func'"));
+                }
+                let values = flow_values(&args[1..]);
+                if member == "submit" {
+                    let v = flow_call(f, &values);
+                    if crate::obj::unrt_obj_is_err(v) != 0 { return Some(v); }
+                    Some(flow_new(FLOW_FUTURE, FlowState::Future(RefCell::new(Some(v)))))
+                } else {
+                    let mut out = Vec::with_capacity(values.len());
+                    for value in values {
+                        let call_args = if unsafe { obj(value).tag == 14 } {
+                            unsafe { crate::obj::seq_items(value).clone() }
+                        } else { vec![value] };
+                        let r = flow_call(f, &call_args);
+                        if crate::obj::unrt_obj_is_err(r) != 0 { return Some(r); }
+                        out.push(r);
+                    }
+                    Some(list(out))
+                }
+            }
+            _ => None,
+        },
+        (FLOW_POOL, "close") => match state {
+            FlowState::Pool(pool) => { pool.borrow_mut().closed = true; Some(none()) }
+            _ => None,
+        },
+        (FLOW_FUTURE, "value") | (FLOW_FUTURE, "wait") => match state {
+            FlowState::Future(cell) => Some(cell.borrow().clone().unwrap_or_else(none)),
+            _ => None,
+        },
+        (FLOW_ATOMIC_INT, _) => flow_atomic_int(state, member, args),
+        (FLOW_ATOMIC_BOOL, _) => flow_atomic_bool(state, member, args),
+        _ => None,
+    }
+}
+
+/// Module-level constructors plus method-shaped calls routed through the
+/// existing `unrt_call_native` bridge (e.g. `flow.lock.try_acquire(handle)`).
+fn flow_module(m: &str, name: &str, args: &[u64]) -> Option<u64> {
+    match (m, name) {
+        ("flow", "lock") => Some(flow_new(FLOW_LOCK, FlowState::Lock(RefCell::new(false)))),
+        ("flow", "spawn") => {
+            // Validate the worker-count argument like the VM, but do not spawn
+            // anything: D-054 requires cooperative execution on this thread.
+            match args.first().copied() {
+                None => {}
+                Some(p) if as_i64(p).is_some() => {}
+                Some(_) => return Some(err("argument 'worker' must be of type int")),
+            }
+            Some(flow_new(FLOW_POOL, FlowState::Pool(RefCell::new(FlowPool { closed: false }))))
+        }
+        ("flow", "atomic") => {
+            match args.first().copied() {
+                None => Some(flow_new(FLOW_ATOMIC_INT, FlowState::AtomicInt(RefCell::new(0)))),
+                Some(p) if unsafe { obj(p).tag == 2 } => Some(flow_new(
+                    FLOW_ATOMIC_BOOL,
+                    FlowState::AtomicBool(RefCell::new(unsafe { obj(p).a != 0 })),
+                )),
+                Some(p) => match as_i64(p) {
+                    Some(v) => Some(flow_new(FLOW_ATOMIC_INT, FlowState::AtomicInt(RefCell::new(v)))),
+                    None => Some(err("expected 'initial' argument to be of type 'int'")),
+                },
+            }
+        }
+        ("atomic", "int") | ("atomic", "bool") => {
+            let want_bool = name == "bool";
+            match args.first().copied() {
+                None => Some(flow_new(
+                    if want_bool { FLOW_ATOMIC_BOOL } else { FLOW_ATOMIC_INT },
+                    if want_bool { FlowState::AtomicBool(RefCell::new(false)) }
+                    else { FlowState::AtomicInt(RefCell::new(0)) },
+                )),
+                Some(p) if want_bool && unsafe { obj(p).tag == 2 } => Some(flow_new(
+                    FLOW_ATOMIC_BOOL,
+                    FlowState::AtomicBool(RefCell::new(unsafe { obj(p).a != 0 })),
+                )),
+                Some(p) => match as_i64(p) {
+                    Some(v) => Some(flow_new(FLOW_ATOMIC_INT, FlowState::AtomicInt(RefCell::new(v)))),
+                    None => Some(err("expected 'initial' argument to be of type 'int'")),
+                },
+            }
+        }
+        // Method-shaped call: first argument is the receiver handle; an
+        // optional "<kind>." prefix is accepted for self-describing dispatch.
+        ("flow" | "atomic", _) => {
+            let handle = *args.first()?;
+            if flow_kind(handle).is_none() { return None; }
+            let member = name.split_once('.').map(|(_, rest)| rest).unwrap_or(name);
+            flow_method(handle, member, &args[1..])
+        }
+        _ => None,
+    }
+}
+
 fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
+    if let Some(result) = flow_module(m, name, args) {
+        return result;
+    }
     if let Some(result) = crate::bytes_native::dispatch(m, name, args) {
         return result;
     }
@@ -654,6 +944,13 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
         },
         ("types", "str") => match args.first().copied() {
             Some(v) if is_pending(v) => v,
+            // VM refuses `str()` on native flow handles (`test/unit/runtime/
+            // async.un` asserts this for pool/future). No new ABI is needed:
+            // the error is produced by the existing types bridge.
+            Some(v) if flow_type_name(v).is_some() => err(&format!(
+                "unsupported operand type(s) for str(): '{}'",
+                flow_type_name(v).unwrap_or("obj")
+            )),
             // VM `str()` delegates to `obj::to_str`, whose rendering is the
             // same `display` this runtime already uses for `io.write`.
             Some(v) => string(&display(v)),
@@ -716,7 +1013,7 @@ pub extern "C" fn unrt_call_native(
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, display, int, string};
+    use super::{boolean, dispatch, display, int, string};
     use crate::list::list_new;
 
     /// The exported C ABI itself (not just the internal `dispatch` helper)
@@ -771,5 +1068,129 @@ mod tests {
     fn types_cast_members_still_dispatch() {
         assert_eq!(display(dispatch("types", "f64", &[int(7)])), "7");
         assert!(dispatch("types", "u8", &[int(-1)]) != 0);
+    }
+
+    // ---- cooperative `flow` shim (W-2026-11-26-ASYNCflow) ------------------
+    //
+    // Reference values are from `test/unit/runtime/async.un` (VM) and D-062.
+    // These exercise the exact `unrt_call_native` surface the plain build uses;
+    // the TIR-side allowance for `flow.*` is tracked separately (see report).
+
+    extern "C" fn flow_double(x: i64) -> i64 { x * 2 }
+    extern "C" fn flow_add_one(x: i64) -> i64 { x + 1 }
+
+    fn flow_lambda(index: i64, f: extern "C" fn(i64) -> i64) -> u64 {
+        let kinds: [u8; 1] = [0]; // one Int parameter, Int return
+        crate::closure::nrt_register_lambda(index, f as usize, kinds.as_ptr(), 1, 0);
+        crate::closure::unrt_obj_closure(index, std::ptr::null(), 0)
+    }
+
+    #[test]
+    fn unrt_call_native_abi_reaches_flow_lock() {
+        let module = b"flow\0";
+        let member = b"lock\0";
+        // The exported bridge itself (not just the internal dispatcher) must
+        // construct a lock: this is the exact symbol the plain build calls.
+        let dummy = [0u64];
+        let got = super::unrt_call_native(
+            module.as_ptr(), 4, member.as_ptr(), 4, dummy.as_ptr(), 0,
+        );
+        assert_eq!(display(dispatch("types", "type", &[got])), "<type: lock>");
+    }
+
+    #[test]
+    fn flow_lock_lifecycle_matches_vm() {
+        let lock = dispatch("flow", "lock", &[]);
+        assert_eq!(display(dispatch("types", "type", &[lock])), "<type: lock>");
+        assert_eq!(display(dispatch("flow", "lock.try_acquire", &[lock])), "true");
+        assert_eq!(display(dispatch("flow", "lock.try_acquire", &[lock])), "false");
+        assert_eq!(dispatch("flow", "lock.release", &[lock]), lock);
+        assert_eq!(dispatch("flow", "lock.acquire", &[lock]), lock);
+        assert_eq!(display(dispatch("flow", "lock.try_acquire", &[lock])), "false");
+        assert_eq!(dispatch("flow", "lock.release", &[lock]), lock);
+        assert_eq!(display(dispatch("flow", "lock.try_acquire", &[lock])), "true");
+        assert_eq!(dispatch("flow", "lock.release", &[lock]), lock);
+        // async.un asserts the uncaught "lock not held" error on a second release.
+        assert_eq!(display(dispatch("flow", "lock.release", &[lock])), "lock not held");
+        assert_eq!(display(dispatch("flow", "lock.dispose", &[lock])), "none");
+        assert_eq!(
+            display(dispatch("types", "str", &[lock])),
+            "unsupported operand type(s) for str(): 'lock'"
+        );
+    }
+
+    #[test]
+    fn flow_pool_map_matches_async_test() {
+        let pool = dispatch("flow", "spawn", &[int(2)]);
+        assert_eq!(display(dispatch("types", "type", &[pool])), "<type: pool>");
+        let f = flow_lambda(9001, flow_double);
+        // `pool.map(fn(x) -> x * 2, 10, 20, 30)` -> `[20, 40, 60]`.
+        assert_eq!(
+            display(dispatch("flow", "pool.map", &[pool, f, int(10), int(20), int(30)])),
+            "[20, 40, 60]"
+        );
+        assert_eq!(display(dispatch("flow", "pool.map", &[pool, f, int(7)])), "[14]");
+        // VM rest-arg shape (a tuple handle) flattens to the same results.
+        let tup = crate::obj::tuple_new(vec![int(10), int(20), int(30)]);
+        assert_eq!(display(dispatch("flow", "pool.map", &[pool, f, tup])), "[20, 40, 60]");
+        assert_eq!(
+            display(dispatch("types", "str", &[pool])),
+            "unsupported operand type(s) for str(): 'pool'"
+        );
+    }
+
+    #[test]
+    fn flow_pool_submit_returns_future_and_close_rejects() {
+        let pool = dispatch("flow", "spawn", &[]); // VM default: 4 workers
+        let f = flow_lambda(9002, flow_add_one);
+        let fut = dispatch("flow", "pool.submit", &[pool, f, int(5)]);
+        assert_eq!(display(dispatch("types", "type", &[fut])), "<type: future>");
+        // Cooperative shim memoizes the inline result (`wait submitted` -> 6).
+        assert_eq!(display(dispatch("flow", "future.value", &[fut])), "6");
+        assert_eq!(
+            display(dispatch("types", "str", &[fut])),
+            "unsupported operand type(s) for str(): 'future'"
+        );
+        assert_eq!(display(dispatch("flow", "pool.close", &[pool])), "none");
+        assert_eq!(display(dispatch("flow", "pool.map", &[pool, f, int(1)])), "pool is closed");
+        assert_eq!(display(dispatch("flow", "pool.submit", &[pool, f, int(1)])), "pool is closed");
+        // Wrong argument strings match native/flow.rs (use a fresh pool:
+        // the closed check runs before the callable check in the VM).
+        let open_pool = dispatch("flow", "spawn", &[int(1)]);
+        assert_eq!(display(dispatch("flow", "pool.map", &[open_pool, int(0), int(1)])),
+                   "expected 'fn' argument to be of type 'func'");
+    }
+
+    #[test]
+    fn flow_atomic_int_matches_vm() {
+        // D-062: `atomic.int(5).add(3).get()` -> 8, exchange -> previous value.
+        let cell = dispatch("flow", "atomic", &[int(5)]);
+        assert_eq!(display(dispatch("types", "type", &[cell])), "<type: atomic_int>");
+        assert_eq!(display(dispatch("flow", "atomic_int.add", &[cell, int(3)])), "8");
+        assert_eq!(display(dispatch("flow", "atomic_int.get", &[cell])), "8");
+        assert_eq!(display(dispatch("flow", "atomic_int.exchange", &[cell, int(2)])), "8");
+        assert_eq!(display(dispatch("flow", "atomic_int.compare_and_swap", &[cell, int(2), int(9)])), "true");
+        assert_eq!(display(dispatch("flow", "atomic_int.get", &[cell])), "9");
+        assert_eq!(display(dispatch("flow", "atomic_int.compare_and_swap", &[cell, int(2), int(0)])), "false");
+        assert_eq!(display(dispatch("flow", "atomic_int.inc", &[cell])), "10");
+        assert_eq!(display(dispatch("flow", "atomic_int.dec", &[cell])), "9");
+        assert_eq!(display(dispatch("flow", "atomic_int.set", &[cell, int(4)])), "none");
+        assert_eq!(display(dispatch("flow", "atomic_int.get", &[cell])), "4");
+        // TD-39: wrapping arithmetic matches Un Int, no debug panic.
+        let max = dispatch("atomic", "int", &[int(i64::MAX)]);
+        assert_eq!(display(dispatch("flow", "atomic_int.inc", &[max])), "-9223372036854775808");
+    }
+
+    #[test]
+    fn flow_atomic_bool_matches_vm() {
+        let cell = dispatch("flow", "atomic", &[boolean(true)]);
+        assert_eq!(display(dispatch("types", "type", &[cell])), "<type: atomic_bool>");
+        assert_eq!(display(dispatch("flow", "atomic_bool.get", &[cell])), "true");
+        assert_eq!(display(dispatch("flow", "atomic_bool.exchange", &[cell, boolean(false)])), "true");
+        assert_eq!(display(dispatch("flow", "atomic_bool.get", &[cell])), "false");
+        assert_eq!(display(dispatch("flow", "atomic_bool.compare_and_swap", &[cell, boolean(false), boolean(true)])), "true");
+        assert_eq!(display(dispatch("flow", "atomic_bool.get", &[cell])), "true");
+        let default_bool = dispatch("atomic", "bool", &[]);
+        assert_eq!(display(dispatch("flow", "atomic_bool.get", &[default_bool])), "false");
     }
 }

@@ -1903,6 +1903,26 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             return false;
         }
     }
+    // TIR collects defers at function scope and flushes them at exits. The VM
+    // currently miscompiles a `defer` nested inside control flow (stack depth
+    // mismatch), so keep those functions on the VM path instead of emitting a
+    // plain exe that would not match `un run`.
+    fn nested_defer(node: &Node) -> bool {
+        fn walk(node: &Node, top: bool) -> bool {
+            if node.kind == NodeKind::Defer && !top {
+                return true;
+            }
+            // A lambda/function node is a separate function scope.
+            if matches!(node.kind, NodeKind::Lambda | NodeKind::Function) {
+                return false;
+            }
+            node.children.iter().any(|c| walk(c, false))
+        }
+        node.children.iter().any(|c| walk(c, true))
+    }
+    if nested_defer(body) {
+        return false;
+    }
     let mut locals: HashMap<String, ()> = HashMap::new();
     collect_locals(body, &mut locals, source, fcheck);
     for (name, _) in globals { locals.insert(name.clone(), ()); }
@@ -2017,7 +2037,12 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                     return;
                 }
                 if matches!(op, TokenType::Wait | TokenType::Go) {
-                    tirdbg_reject(node); *out = false;
+                    // W-2026-11-26-ASYNCDEFER: `go`/`wait` are lowered to a
+                    // synthesized deferred thunk (a closure with a memo cell)
+                    // and a `CallObj`, both already in the core/NRT surface.
+                    // Validate the operand like any other unary child instead
+                    // of forcing the whole function onto the VM path.
+                    visit(&node.children[0], checked, source, locals, handles, out);
                     return;
                 }
                 visit(&node.children[0], checked, source, locals, handles, out);
@@ -2291,7 +2316,42 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
             // actually *references* a nested class on the VM path, so static
             // registration cannot silently change observable behavior.
             NodeKind::Class => {}
-            NodeKind::Use | NodeKind::Using | NodeKind::Defer
+            // `defer` registers a body that runs when the function exits.
+            // TIR lowers it with a Bool registration flag plus reverse-order
+            // flush statements at each exit (see `lower_defer`). Bodies that
+            // transfer control out of the defer cannot be represented: in the
+            // VM a `return` inside a defer overrides the function's result,
+            // which TIR has no form for. Keep those on the VM path.
+            // `using` is a resource release via the VM's `obj::exit` and has
+            // no standalone NRT ABI, so it stays rejected. `Use` is module
+            // import and must never be lowered as a statement.
+            NodeKind::Defer => {
+                fn unsupported_in_defer(node: &Node) -> bool {
+                    matches!(
+                        node.kind,
+                        NodeKind::Return | NodeKind::Break | NodeKind::Skip
+                            | NodeKind::Defer | NodeKind::Using
+                            // These introduce local slots; a deferred body is
+                            // cloned to every exit, so duplicate declarations
+                            // would break TIR validation.
+                            | NodeKind::Assign | NodeKind::Typed | NodeKind::For
+                            | NodeKind::Match | NodeKind::Try
+                    ) || (!matches!(node.kind, NodeKind::Lambda | NodeKind::Function)
+                        && node.children.iter().any(unsupported_in_defer))
+                }
+                let Some(body) = node.children.first() else {
+                    tirdbg_reject(node); *out = false;
+                    return;
+                };
+                if unsupported_in_defer(body) {
+                    tirdbg_reject(body); *out = false;
+                    return;
+                }
+                for child in &node.children {
+                    visit(child, checked, source, locals, handles, out);
+                }
+            }
+            NodeKind::Use | NodeKind::Using
             | NodeKind::Function | NodeKind::Enum | NodeKind::Tagged
             | NodeKind::Accessor => {
                 tirdbg_reject(node); *out = false;
@@ -2673,11 +2733,15 @@ impl TirProgram {
                 declared_types: HashMap::new(),
                 classes: &classes,
                 lambda_vars: HashMap::new(),
+                future_rets: HashMap::new(),
+                future_var: HashMap::new(),
                 lambdas: &mut lambdas,
                 lambda_base,
                 globals: &globals,
                 wrote_global: &mut false,
                 pending: Vec::new(),
+                defer_flags: Vec::new(),
+                in_defer_body: false,
             };
             for child in &root.children {
                 if child.kind == NodeKind::Assign {
@@ -2785,6 +2849,14 @@ struct LowerCtx<'a> {
     classes: &'a ClassTable,
     /// Local slot -> (synthesized lambda function index, captured local slots).
     lambda_vars: HashMap<u16, (u32, Vec<u16>)>,
+    /// W-2026-11-26-ASYNCDEFER: synthesized `go` thunk index -> the *result*
+    /// type of the deferred expression (the thunk itself returns a boxed
+    /// handle typed `Obj`). Lets `wait` recover the static result type.
+    future_rets: HashMap<u32, TirTy>,
+    /// Local slot holding a future -> (thunk index, result type). Typeck gives
+    /// `go`/`wait` the opaque `Ty::Any`, so the slot is typed `Obj` and cannot
+    /// carry the thunk index in its `TirTy`; track it explicitly instead.
+    future_var: HashMap<u16, (u32, TirTy)>,
     /// Synthesized lambda functions (appended to the program after lowering).
     lambdas: &'a mut Vec<TirFn>,
     /// Index offset for synthesized lambdas in the final function list.
@@ -2797,6 +2869,15 @@ struct LowerCtx<'a> {
     /// which needs to bind its scrutinee/result locals before the expression
     /// that consumes the value). Flushed by `lower_block`.
     pending: Vec<TirStmt>,
+    /// Deferred bodies registered so far in this function, in registration
+    /// order: (Bool flag slot, lowered statements). Flushed in reverse at
+    /// function exits, mirroring the VM's LIFO `context::defers` drain in
+    /// `runtime::function::end_call`.
+    defer_flags: Vec<(u16, Vec<TirStmt>)>,
+    /// Suppresses defer registration/flush while lowering a deferred body.
+    /// Control flow that leaves a defer (`return`/`break`/`skip`/nested defer)
+    /// has no TIR representation and is kept on the VM path by `body_is_core`.
+    in_defer_body: bool,
 }
 
 fn lower_function<'a>(
@@ -2830,11 +2911,15 @@ fn lower_function<'a>(
             .collect(),
         classes,
         lambda_vars: HashMap::new(),
+        future_rets: HashMap::new(),
+        future_var: HashMap::new(),
         lambdas,
         lambda_base,
         globals,
         wrote_global,
         pending: Vec::new(),
+        defer_flags: Vec::new(),
+        in_defer_body: false,
     };
     for (i, (name, ty)) in fcheck.sig.param_names.iter().zip(&fcheck.sig.params).enumerate() {
         let tty = tir_ty_from_ty(classes, ty)
@@ -2853,6 +2938,9 @@ fn lower_function<'a>(
         .ok_or_else(|| "function without a body".to_string())?;
     let mut body = Vec::new();
     lower_block(body_node, &mut ctx, &mut body)?;
+    // Normal fall-through exit: run any registered defers, mirroring the VM's
+    // `function::end_call` drain. Explicit `return` statements flush earlier.
+    emit_defer_flushes(&ctx, &mut body);
     // Lower default expressions from the parameter list. `body_is_core` only
     // walks the body, so a non-core default makes the whole function ineligible.
     let mut defaults = vec![None; fcheck.sig.params.len()];
@@ -3070,6 +3158,7 @@ fn lower_stmt(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result
             Ok(())
         }
         NodeKind::Return => lower_return(node, ctx, out),
+        NodeKind::Defer => lower_defer(node, ctx, out),
         NodeKind::Break => {
             out.push(TirStmt::Break);
             Ok(())
@@ -3345,11 +3434,15 @@ fn synthesize_lambda(
         declared_types: HashMap::new(),
         classes: ctx.classes,
         lambda_vars: HashMap::new(),
+        future_rets: HashMap::new(),
+        future_var: HashMap::new(),
         lambdas: ctx.lambdas,
         lambda_base: ctx.lambda_base,
         globals: ctx.globals,
         wrote_global: ctx.wrote_global,
         pending: Vec::new(),
+        defer_flags: Vec::new(),
+        in_defer_body: false,
     };
     for (name, parent_slot) in captures.iter().zip(&capture_slots) {
         let tty = ctx.locals.get(*parent_slot as usize).copied().unwrap_or(TirTy::Int);
@@ -3402,6 +3495,180 @@ fn synthesize_lambda(
         body,
     };
     Ok(capture_slots)
+}
+
+/// Allocate an unnamed local slot (a hidden compiler temporary).
+fn fresh_local(ctx: &mut LowerCtx<'_>, ty: TirTy) -> u16 {
+    let slot = ctx.locals.len() as u16;
+    ctx.locals.push(ty);
+    slot
+}
+
+/// Record that `slot` holds the future produced by thunk `ty` when the
+/// lowered expression type is a synthesized `go` thunk. Typeck types `go` as
+/// `Ty::Any`, so the slot itself is `Obj` and cannot carry the index in its
+/// `TirTy`; this side table is what lets a later `wait slot` recover both the
+/// thunk and its result type.
+fn note_future(ctx: &mut LowerCtx<'_>, slot: u16, ty: CoreTy) {
+    if let CoreTy::Lambda(index) = ty {
+        if let Some(ret) = ctx.future_rets.get(&index).copied() {
+            ctx.future_var.insert(slot, (index, ret));
+        }
+    }
+}
+
+/// W-2026-11-26-ASYNCDEFER ??lower `go <expr>` to a deferred thunk.
+///
+/// The VM's `MAKE_FUTURE` snapshots the scope chain at fork time (D-063/D-080)
+/// and evaluates the synthetic proto only at `AWAIT`, memoizing the result.
+/// Reproduce that contract without a new ABI symbol or a thread:
+///
+/// * two captured cells are created at `go` time ??`flag: list[int]` with
+///   `[0]` (pending) and `value: list[any]` with one boxed placeholder;
+/// * a synthesized zero-argument function `__lambda_N` captures the cells and
+///   every enclosing local the operand mentions (capture-by-value, matching
+///   the fork-time snapshot). Its body runs the operand only when `flag == 0`,
+///   stores the boxed result into `value`, sets `flag = 1`, and finally returns
+///   the boxed value (the thunk's static return type is `Obj`);
+/// * `go` yields a `MakeClosure` (the future handle), and `wait` lowers to a
+///   `CallObj` on that handle, unboxing with the statically known result type.
+fn synthesize_go(node: &Node, ctx: &mut LowerCtx<'_>) -> Result<(TirExpr, CoreTy), String> {
+    let operand = node
+        .children
+        .first()
+        .ok_or_else(|| "go without operand".to_string())?;
+    let capture_names = lambda_captures(operand, &[], ctx);
+    let capture_slots: Vec<u16> = capture_names
+        .iter()
+        .map(|n| *ctx.slots.get(n).expect("capture is an enclosing local"))
+        .collect();
+    let capture_tys: Vec<TirTy> = capture_slots
+        .iter()
+        .map(|s| ctx.locals.get(*s as usize).copied().unwrap_or(TirTy::Int))
+        .collect();
+
+    // Hoisted so the cells are created at `go` time even in a nested expression.
+    let flag_slot = fresh_local(ctx, TirTy::ListInt);
+    ctx.pending
+        .push(TirStmt::Let(flag_slot, TirExpr::List(vec![TirExpr::Int(0)])));
+    let value_slot = fresh_local(ctx, TirTy::ListGen(ObjElem::Obj));
+    ctx.pending.push(TirStmt::Let(
+        value_slot,
+        TirExpr::List(vec![TirExpr::BoxObj(Box::new(TirExpr::Int(0)))]),
+    ));
+
+    let idx = ctx.lambdas.len() as u32;
+    let func_index = ctx.lambda_base + idx;
+
+    // Thunk context: cells first, then captured locals (like lambda captures).
+    let mut child = LowerCtx {
+        source: ctx.source,
+        checked: ctx.checked,
+        tir_index: ctx.tir_index,
+        call_names: ctx.call_names,
+        current_instance: ctx.current_instance.clone(),
+        instance_args: ctx.instance_args,
+        slots: HashMap::new(),
+        locals: Vec::new(),
+        declared_types: HashMap::new(),
+        classes: ctx.classes,
+        lambda_vars: HashMap::new(),
+        future_rets: HashMap::new(),
+        future_var: HashMap::new(),
+        defer_flags: Vec::new(),
+        in_defer_body: false,
+        lambdas: ctx.lambdas,
+        lambda_base: ctx.lambda_base,
+        globals: ctx.globals,
+        wrote_global: ctx.wrote_global,
+        pending: Vec::new(),
+    };
+    let flag_child = child.locals.len() as u16;
+    child.locals.push(TirTy::ListInt);
+    let value_child = child.locals.len() as u16;
+    child.locals.push(TirTy::ListGen(ObjElem::Obj));
+    for (name, ty) in capture_names.iter().zip(&capture_tys) {
+        let slot = child.locals.len() as u16;
+        child.slots.insert(name.clone(), slot);
+        child.locals.push(*ty);
+    }
+    let mut params = vec![TirTy::ListInt, TirTy::ListGen(ObjElem::Obj)];
+    params.extend(capture_tys);
+    let kinds: Vec<u8> = params.iter().copied().map(abi_kind).collect();
+    let defaults = vec![None; params.len()];
+
+    // Reserve the slot before lowering the operand (nested `go`/lambda append
+    // more synthesized functions), mirroring `synthesize_lambda`.
+    child.lambdas.push(TirFn {
+        name: format!("__lambda_{func_index}"),
+        proto_span: (node.start, node.length),
+        index: func_index as usize,
+        params: params.clone(),
+        defaults: defaults.clone(),
+        ret: Some(TirTy::Obj),
+        locals: Vec::new(),
+        body: Vec::new(),
+    });
+
+    let (expr, ty) = lower_expr(operand, &mut child)?;
+    let ret_ty = tir_ty_of(ty).unwrap_or(TirTy::Obj);
+    let val_slot = fresh_local(&mut child, ret_ty);
+
+    // Hoisted statements (e.g. a nested `go`'s cells) run at thunk execution.
+    let mut body = std::mem::take(&mut child.pending);
+    let flag_guard = TirExpr::Cmp(
+        TirCmp::Eq,
+        Box::new(TirExpr::ListGet(
+            Box::new(TirExpr::Local(flag_child)),
+            Box::new(TirExpr::Int(0)),
+        )),
+        Box::new(TirExpr::Int(0)),
+    );
+    body.push(TirStmt::If {
+        cond: flag_guard,
+        then_body: vec![
+            TirStmt::Let(val_slot, expr),
+            TirStmt::ListSet {
+                list: TirExpr::Local(value_child),
+                index: TirExpr::Int(0),
+                value: TirExpr::BoxObj(Box::new(TirExpr::Local(val_slot))),
+            },
+            TirStmt::ListSet {
+                list: TirExpr::Local(flag_child),
+                index: TirExpr::Int(0),
+                value: TirExpr::Int(1),
+            },
+        ],
+        else_body: Vec::new(),
+    });
+    body.push(TirStmt::Return(Some(TirExpr::ListGet(
+        Box::new(TirExpr::Local(value_child)),
+        Box::new(TirExpr::Int(0)),
+    ))));
+
+    child.lambdas[idx as usize] = TirFn {
+        name: format!("__lambda_{func_index}"),
+        proto_span: (node.start, node.length),
+        index: func_index as usize,
+        params,
+        defaults,
+        ret: Some(TirTy::Obj),
+        locals: child.locals.clone(),
+        body,
+    };
+    ctx.future_rets.insert(func_index, ret_ty);
+
+    let mut captures = vec![flag_slot, value_slot];
+    captures.extend(capture_slots);
+    Ok((
+        TirExpr::MakeClosure {
+            func_index,
+            captures,
+            kinds,
+            ret_kind: abi_kind(TirTy::Obj),
+        },
+        CoreTy::Lambda(func_index),
+    ))
 }
 
 fn infer_simple_ty(e: &TirExpr, locals: &[TirTy]) -> Option<TirTy> {
@@ -3504,10 +3771,12 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
             if let Some(slot) = slot_of(ctx, &name) {
                 ctx.lambda_vars.remove(&slot);
                 out.push(TirStmt::Set(slot, expr));
+                note_future(ctx, slot, ty);
             } else {
                 let tty = declared_slot_ty(ctx, &name, ty)?;
                 let slot = declare(ctx, &name, tty);
                 out.push(TirStmt::Let(slot, expr));
+                note_future(ctx, slot, ty);
             }
             Ok(())
         }
@@ -3524,10 +3793,12 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
             let (expr, ty) = lower_expr_expected(value, ctx, expected)?;
             if let Some(slot) = slot_of(ctx, &name) {
                 out.push(TirStmt::Set(slot, expr));
+                note_future(ctx, slot, ty);
             } else {
                 let tty = declared_slot_ty(ctx, &name, ty)?;
                 let slot = declare(ctx, &name, tty);
                 out.push(TirStmt::Let(slot, expr));
+                note_future(ctx, slot, ty);
             }
             Ok(())
         }
@@ -3975,13 +4246,73 @@ fn parse_range_call(
     }
 }
 
+/// Emit registered deferred bodies at a function exit, in reverse registration
+/// order. Each body is guarded by its Bool flag, so a defer that was never
+/// reached (e.g. positioned after an early return) does not run.
+fn emit_defer_flushes(ctx: &LowerCtx, out: &mut Vec<TirStmt>) {
+    for (slot, body) in ctx.defer_flags.iter().rev() {
+        out.push(TirStmt::If {
+            cond: TirExpr::Local(*slot),
+            then_body: body.clone(),
+            else_body: Vec::new(),
+        });
+    }
+}
+
+/// Lower `defer <body>`. The body shares the enclosing function's slots, so —
+/// like the VM's deferred proto — it observes the locals' values at exit time,
+/// not at registration time. A fresh Bool local records that the defer was
+/// reached; `emit_defer_flushes` appends the guarded bodies at every exit.
+fn lower_defer(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<(), String> {
+    let body_node = node
+        .children
+        .first()
+        .ok_or_else(|| "'defer' without a body".to_string())?;
+    let was_in_defer = ctx.in_defer_body;
+    ctx.in_defer_body = true;
+    let mut body = Vec::new();
+    lower_block(body_node, ctx, &mut body)?;
+    ctx.in_defer_body = was_in_defer;
+    // `Let` (not `Set`) so TIR validation sees a fresh, ordered Bool slot.
+    let slot = ctx.locals.len() as u16;
+    ctx.locals.push(TirTy::Bool);
+    out.push(TirStmt::Let(slot, TirExpr::Bool(true)));
+    ctx.defer_flags.push((slot, body));
+    Ok(())
+}
+
 fn lower_return(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result<(), String> {
-    match node.children.first() {
-        None => out.push(TirStmt::Return(None)),
+    // Without active defers keep the original lowering exactly as it was.
+    if ctx.in_defer_body || ctx.defer_flags.is_empty() {
+        return match node.children.first() {
+            None => {
+                out.push(TirStmt::Return(None));
+                Ok(())
+            }
+            Some(expr) => {
+                let (lowered, _) = lower_expr(expr, ctx)?;
+                out.push(TirStmt::Return(Some(lowered)));
+                Ok(())
+            }
+        };
+    }
+    // The VM evaluates the return value first and drains defers afterwards,
+    // so cache the value in a temp local before the flush.
+    let value_slot = match node.children.first() {
+        None => None,
         Some(expr) => {
-            let (lowered, _) = lower_expr(expr, ctx)?;
-            out.push(TirStmt::Return(Some(lowered)));
+            let (lowered, core) = lower_expr(expr, ctx)?;
+            let ty = tir_ty_of(core).unwrap_or(TirTy::Obj);
+            let slot = ctx.locals.len() as u16;
+            ctx.locals.push(ty);
+            out.push(TirStmt::Let(slot, lowered));
+            Some(slot)
         }
+    };
+    emit_defer_flushes(ctx, out);
+    match value_slot {
+        Some(slot) => out.push(TirStmt::Return(Some(TirExpr::Local(slot)))),
+        None => out.push(TirStmt::Return(None)),
     }
     Ok(())
 }
@@ -5202,6 +5533,48 @@ fn lower_expr_expected(
 }
 
 fn lower_unary(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), String> {
+    // `go`/`wait` lower the operand themselves (into a synthesized thunk and
+    // a closure call), so they must bypass the generic eager `lower_expr`
+    // below ??otherwise the operand would be lowered twice.
+    if node.op == Some(TokenType::Go) {
+        return synthesize_go(node, ctx);
+    }
+    if node.op == Some(TokenType::Wait) {
+        let operand = node
+            .children
+            .first()
+            .ok_or_else(|| "wait without operand".to_string())?;
+        let (callee, ty) = if operand.kind == NodeKind::Unary
+            && operand.op == Some(TokenType::Go)
+        {
+            synthesize_go(operand, ctx)?
+        } else {
+            lower_expr(operand, ctx)?
+        };
+        let ret = match ty {
+            CoreTy::Lambda(index) => ctx
+                .future_rets
+                .get(&index)
+                .copied()
+                .unwrap_or(TirTy::Obj),
+            _ => match &callee {
+                TirExpr::Local(slot) => ctx
+                    .future_var
+                    .get(slot)
+                    .map(|(_, r)| *r)
+                    .unwrap_or(TirTy::Obj),
+                _ => TirTy::Obj,
+            },
+        };
+        return Ok((
+            TirExpr::CallObj {
+                callee: Box::new(callee),
+                args: Vec::new(),
+                ret,
+            },
+            ret.into(),
+        ));
+    }
     let operand = node
         .children
         .first()
@@ -7469,11 +7842,15 @@ mod lower_call_tests {
             declared_types: HashMap::new(),
             classes: &classes,
             lambda_vars: HashMap::new(),
+            future_rets: HashMap::new(),
+            future_var: HashMap::new(),
             lambdas: &mut lambdas,
             lambda_base: 0,
             globals: &globals,
             wrote_global: &mut wrote_global,
             pending: Vec::new(),
+            defer_flags: Vec::new(),
+            in_defer_body: false,
         };
 
         let callee = Node::new(0, 1, NodeKind::Identifier); // `f`
@@ -7520,11 +7897,15 @@ mod lower_call_tests {
             declared_types: HashMap::new(),
             classes: &classes,
             lambda_vars: HashMap::new(),
+            future_rets: HashMap::new(),
+            future_var: HashMap::new(),
             lambdas: &mut lambdas,
             lambda_base: 0,
             globals: &globals,
             wrote_global: &mut wrote_global,
             pending: Vec::new(),
+            defer_flags: Vec::new(),
+            in_defer_body: false,
         };
 
         let callee = Node::new(0, 1, NodeKind::Identifier);
@@ -7611,11 +7992,15 @@ mod lower_call_tests {
             declared_types: HashMap::new(),
             classes: &classes,
             lambda_vars: HashMap::new(),
+            future_rets: HashMap::new(),
+            future_var: HashMap::new(),
             lambdas: &mut lambdas,
             lambda_base: 0,
             globals: &globals,
             wrote_global: &mut wrote_global,
             pending: Vec::new(),
+            defer_flags: Vec::new(),
+            in_defer_body: false,
         };
         assert!(expr_is_bytes(&TirExpr::Local(0), &ctx));
         assert!(!expr_is_bytes(&TirExpr::Local(1), &ctx));
