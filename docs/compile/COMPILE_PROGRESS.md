@@ -115,8 +115,8 @@
 - `scripts/differential.ps1`: 102 files 0 differences — **green**.
 - `scripts/unbc-roundtrip.ps1 -IncludeNegative`: positive 51/51 identical,
   negative 42 identical + 9 skipped(compile-rejected) — **green**.
-- `cargo test --release --workspace`: 391 passed (nrt 58 + nrt scheduler_spike 5 +
-  lib 296 + un bin 24 + playground 8), 0 failed — **green** (2026-11-26 재측정).
+- `cargo test --release --workspace`: 409 passed (nrt 76 + nrt scheduler_spike 5 +
+  lib 296 + un bin 24 + playground 8), 0 failed — **green** (2026-11-27 재측정).
 - `scripts/compile-check.ps1`: 42 passed, 0 failed.
 - `scripts/exe-diff.ps1`: 78 passed, 0 failed — `test/compile/*.un`을 `un build --embed`로
   링크한 exe가 `un run`과 stdout/stderr/exit code 바이트 동일인지, `test/compile/build/*.un`은

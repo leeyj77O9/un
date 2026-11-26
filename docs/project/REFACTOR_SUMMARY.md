@@ -72,12 +72,12 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
   exe contains no VM; `--embed` is the escape hatch for dynamic cases);
   `dict[int,int]`, `un lsp`, and the 6-lane benchmark suite.
 
-## Current baseline (verified 2026-11-26)
+## Current baseline (verified 2026-11-27)
 
 | Gate | Result |
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
-| `cargo test --release --workspace` | **391 passed / 0 failed** (nrt 58 + nrt scheduler_spike 5 + lib 296 + un bin 24 + playground 8; includes P05 scheduler 8 + P02B guard 8 unit tests) |
+| `cargo test --release --workspace` | **409 passed / 0 failed** (nrt 76 + nrt scheduler_spike 5 + lib 296 + un bin 24 + playground 8; includes P05 8 + P02B 8 + P03 9 + P04 9 unit tests) |
 | `scripts/test.ps1` | Positive **51 files / 1638 passed** / 0 failed / 0 crashed; Negative **51 matched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **102 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **51/51**; Negative compilable **42/42** identical (+ 9 compile-rejected skip) |
