@@ -3969,7 +3969,14 @@ fn emit_expr<M: Module>(
             }
         }
         TirExpr::NativeCallExpr { module: mod_name, member: member_name, args, ret } => {
-            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
+            // `("str", "get")` is a leaf runtime index operation, like the
+            // dedicated `ListGet` gate: pushing a call frame here would leave
+            // two frames at an uncaught index error and make NRT dump an extra
+            // `un: error trace` header that `un run` does not print. Skip the
+            // frame so stdout stays byte-identical on both success and error.
+            // No other member's frame behaviour changes.
+            let str_index_leaf = mod_name.as_ref() == "str" && member_name.as_ref() == "get";
+            if emitter.mode == NativeMode::Obj && emitter.needs_frame && !str_index_leaf {
                 if let Some(push) = emitter.nrt_push_frame {
                     let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
                     let np = builder.ins().symbol_value(types::I64, gv);
@@ -4009,7 +4016,7 @@ fn emit_expr<M: Module>(
             let res = builder.ins().call(call_ref, &[mod_ptr, mod_len, member_ptr, member_len, sp, argc]);
             let raw = builder.inst_results(res)[0];
             emit_error_gate(emitter, builder, module, raw);
-            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
+            if emitter.mode == NativeMode::Obj && emitter.needs_frame && !str_index_leaf {
                 if let Some(pop) = emitter.nrt_pop_frame {
                     let pr = module.declare_func_in_func(pop, builder.func);
                     let _ = builder.ins().call(pr, &[]);

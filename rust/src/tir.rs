@@ -5347,6 +5347,29 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                         CoreTy::Obj,
                     ))
                 }
+                CoreTy::Str => {
+                    // W-2026-11-26-STRINDEX2: `s[i]` returns a one-character
+                    // Str (typeck::check_index agrees: `Ty::Str => Ty::Str`),
+                    // so `ret` is `TirTy::Str`, not `Int`. The NRT plain-build
+                    // bridge serves `("str", "get")`; `un native` bails out of
+                    // TIR for Str-bearing functions and runs the VM instead.
+                    // Do not constrain the key type here: `s['1']` is accepted
+                    // by `un check` and must surface the VM's runtime
+                    // `invalid index type` traceback, not a TIR rejection.
+                    let (key, _kty) = lower_expr(key_node, ctx)?;
+                    Ok((
+                        TirExpr::Located {
+                            span: (node.start, node.length),
+                            inner: Box::new(TirExpr::NativeCallExpr {
+                                module: "str".into(),
+                                member: "get".into(),
+                                args: vec![target, key],
+                                ret: TirTy::Str,
+                            }),
+                        },
+                        CoreTy::Str,
+                    ))
+                }
                 _ => {
                     return Err(
                         "only list/dict indexing is supported in the core".to_string()

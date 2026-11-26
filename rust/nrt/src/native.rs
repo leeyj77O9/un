@@ -1062,6 +1062,12 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
         ("types", "f32") => match num_arg(args, 0) { Ok(v) => float(v as f32 as f64), Err(e) => e },
         ("types", "f64") => match num_arg(args, 0) { Ok(v) => float(v), Err(e) => e },
 
+        // W-2026-11-26-STRINDEX2: `s[i]` lowers to this member. ARC-00 approved
+        // adding the pair to the existing `unrt_call_native` dispatch only —
+        // no new `unrt_*`/`nrt_*` C symbol and no signature change. The UTF-16
+        // walk and both error messages live in `strings::str_get`.
+        ("str", "get") => crate::strings::str_get(args),
+
         _ => err(&format!("native module '{m}.{name}' is not supported in a no-VM executable")),
     }
 }
