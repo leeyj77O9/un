@@ -2662,6 +2662,7 @@ fn emit_stmt<M: Module>(
                 emitter.current_span = Some(*span);
                 let (value, ty) = emit_expr(inner, emitter, builder, module, f);
                 let obj = wrap_as_obj(value, ty, emitter, builder, module);
+                emit_call_frame(emitter, builder, module, f);
                 emit_set_error_site(emitter, builder, module);
                 emitter.current_span = prev;
                 let wid = emitter.unrt_write_error.expect("unrt import required");
@@ -2678,6 +2679,7 @@ fn emit_stmt<M: Module>(
             }
             let (value, ty) = emit_expr(expr, emitter, builder, module, f);
             let obj = wrap_as_obj(value, ty, emitter, builder, module);
+            emit_call_frame(emitter, builder, module, f);
             emit_set_error_site(emitter, builder, module);
             let wid = emitter.unrt_write_error.expect("unrt import required");
             let wref = module.declare_func_in_func(wid, builder.func);
@@ -2902,6 +2904,35 @@ fn list_elem_unbox<M: Module>(
         }
         _ => panic!("list method requires a list"),
     }
+}
+
+/// Record a trace frame named after the current function at
+/// `emitter.current_span`. Used where the VM pushes a call frame but the TIR
+/// lowering has no `NativeCallExpr` to do it: raise sites (`throw(...)` is
+/// lowered to `TirStmt::Throw`) and indirect class-method calls. The frame
+/// stays on the NRT stack on the propagate path so `unrt_dump_uncaught` sees
+/// it; on the caught path the handler's `unrt_take_error` clears the whole
+/// trace (W-2026-11-26-TRACEFRAMES).
+fn emit_call_frame<M: Module>(
+    emitter: &mut FnEmit<'_>,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    f: &TirFn,
+) {
+    if emitter.mode != NativeMode::Obj || !emitter.needs_frame {
+        return;
+    }
+    let Some(push) = emitter.nrt_push_frame else {
+        return;
+    };
+    let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
+    let np = builder.ins().symbol_value(types::I64, gv);
+    let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
+    let (start, len) = emitter.current_span.unwrap_or((0, 0));
+    let s = builder.ins().iconst(types::I64, start as i64);
+    let l = builder.ins().iconst(types::I64, len as i64);
+    let push_ref = module.declare_func_in_func(push, builder.func);
+    let _ = builder.ins().call(push_ref, &[np, nl, s, l]);
 }
 
 fn emit_set_error_site<M: Module>(
@@ -3766,6 +3797,17 @@ fn emit_expr<M: Module>(
                 let addr = builder.ins().stack_addr(types::I64, slot, (8 * i) as i32);
                 builder.ins().store(cranelift_codegen::ir::MemFlagsData::new(), v, addr, 0);
             }
+            // An indirect class-method call crosses a VM call boundary, so it
+            // needs the same caller frame as a direct call. Keep it pushed on
+            // the error path; pop only on success (the caught path's handler
+            // clears the whole trace via `unrt_take_error`).
+            let pushed = emitter.mode == NativeMode::Obj
+                && emitter.needs_frame
+                && emitter.nrt_push_frame.is_some()
+                && emitter.nrt_pop_frame.is_some();
+            if pushed {
+                emit_call_frame(emitter, builder, module, f);
+            }
             let gv = embed_str_bytes(emitter, module, builder, member.as_bytes());
             let nptr = builder.ins().symbol_value(types::I64, gv);
             let nlen = builder.ins().iconst(types::I64, member.as_bytes().len() as i64);
@@ -3776,6 +3818,11 @@ fn emit_expr<M: Module>(
             let res = builder.ins().call(call_ref, &[recv, nptr, nlen, ptr, argc]);
             let obj = builder.inst_results(res)[0];
             emit_error_gate_regular(emitter, builder, module, obj);
+            if pushed {
+                let pop = emitter.nrt_pop_frame.expect("pop import");
+                let pop_ref = module.declare_func_in_func(pop, builder.func);
+                let _ = builder.ins().call(pop_ref, &[]);
+            }
             let v = unbox_obj(obj, *ret, emitter, builder, module);
             (v, *ret)
         }

@@ -6484,14 +6484,21 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             return Err(format!("class method '{}' is not callable", member));
         };
         let field_ret = class_member_ty(ctx, ret)?;
+        // Keep the call span: native code needs it for the caller trace frame
+        // and the error caret, just like a lowered plain `Call` (W-2026-11-26-
+        // TRACEFRAMES).
         return Ok((
-            TirExpr::MethodCall {
-                receiver: Box::new(recv),
-                member: member.into_boxed_str(),
-                args,
-                // A method returning `none` has no TirTy; its value is always
-                // consumed as a discarded expression statement, so use Obj.
-                ret: tir_ty_of(field_ret).unwrap_or(TirTy::Obj),
+            TirExpr::Located {
+                span: (node.start, node.length),
+                inner: Box::new(TirExpr::MethodCall {
+                    receiver: Box::new(recv),
+                    member: member.into_boxed_str(),
+                    args,
+                    // A method returning `none` has no TirTy; its value is
+                    // always consumed as a discarded expression statement,
+                    // so use Obj.
+                    ret: tir_ty_of(field_ret).unwrap_or(TirTy::Obj),
+                }),
             },
             field_ret,
         ));
