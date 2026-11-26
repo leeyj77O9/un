@@ -1852,6 +1852,57 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
     let Some(body) = body_block_of(node) else {
         return false;
     };
+    // A class declaration nested in control flow enters the VM's class table
+    // only when its statement executes. Plain native builds register every
+    // class statically before `un_main`, which would diverge if the program can
+    // reference the class before (or without) executing that declaration.
+    // Keep such functions on the VM path whenever a nested class name is used
+    // as a value: plain build then rejects at the TIR entry gate instead of
+    // silently emitting an executable with different behavior.
+    fn nested_class_names(
+        node: &Node,
+        source: &Source,
+        out: &mut std::collections::HashSet<String>,
+    ) {
+        if node.kind == NodeKind::Class {
+            if let Some(name_node) = node.children.iter().find(|c| c.kind == NodeKind::Identifier) {
+                out.insert(source.span(name_node.start, name_node.length));
+            }
+            return;
+        }
+        for child in &node.children {
+            nested_class_names(child, source, out);
+        }
+    }
+    fn references_nested(
+        node: &Node,
+        source: &Source,
+        names: &std::collections::HashSet<String>,
+        out: &mut bool,
+    ) {
+        if node.kind == NodeKind::Class {
+            return;
+        }
+        if node.kind == NodeKind::Identifier {
+            let name = source.span(node.start, node.length);
+            if names.contains(&name) {
+                *out = true;
+                return;
+            }
+        }
+        for child in &node.children {
+            references_nested(child, source, names, out);
+        }
+    }
+    let mut nested: std::collections::HashSet<String> = std::collections::HashSet::new();
+    nested_class_names(body, source, &mut nested);
+    if !nested.is_empty() {
+        let mut referenced = false;
+        references_nested(body, source, &nested, &mut referenced);
+        if referenced {
+            return false;
+        }
+    }
     let mut locals: HashMap<String, ()> = HashMap::new();
     collect_locals(body, &mut locals, source, fcheck);
     for (name, _) in globals { locals.insert(name.clone(), ()); }
@@ -2231,8 +2282,17 @@ fn body_is_core(node: &Node, source: &Source, checked: &CheckedProgram, fcheck: 
                 }
             }
             NodeKind::Wildcard => {}
+            // A class declaration nested in control flow is a registration
+            // statement at VM runtime. Plain native builds register every
+            // class statically from `checked.classes` before `un_main` runs,
+            // so the declaration itself is a TIR no-op; its methods are lowered
+            // independently through `collect_fn_nodes`.
+            // The guard at the top of `body_is_core` keeps any function that
+            // actually *references* a nested class on the VM path, so static
+            // registration cannot silently change observable behavior.
+            NodeKind::Class => {}
             NodeKind::Use | NodeKind::Using | NodeKind::Defer
-            | NodeKind::Function | NodeKind::Class | NodeKind::Enum | NodeKind::Tagged
+            | NodeKind::Function | NodeKind::Enum | NodeKind::Tagged
             | NodeKind::Accessor => {
                 tirdbg_reject(node); *out = false;
             }
@@ -2297,6 +2357,9 @@ fn collect_binding_names(node: &Node, source: &Source, out: &mut HashMap<String,
             }
             return;
         }
+        // Class fields/methods are not locals of the enclosing function. Skip
+        // them so a nested class declaration does not allocate stray slots.
+        NodeKind::Class => {}
         _ => {
             for child in &node.children {
                 collect_binding_names(child, source, out);
@@ -3016,6 +3079,10 @@ fn lower_stmt(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result
             Ok(())
         }
         NodeKind::Block => lower_block(node, ctx, out),
+        // Nested class declarations are registered statically in the native
+        // driver (from TIR `class_names`), so they emit no runtime statement.
+        // Methods are lowered as ordinary standalone functions.
+        NodeKind::Class => Ok(()),
         NodeKind::Try => lower_try(node, ctx, out),
         NodeKind::Call => {
             if let Some(first) = node.children.first() {

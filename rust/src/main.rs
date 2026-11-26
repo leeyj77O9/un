@@ -590,6 +590,11 @@ fn inline_user_modules_text(code: &str, input: &str) -> Result<String, String> {
     let mut out = String::new();
     let mut aliases: Vec<(String, String)> = Vec::new();
     let mut appended = String::new();
+    // `use math {sqrt, floor}` binds the member names into the VM scope at
+    // runtime. The plain build skips `use` entirely and lowers native calls
+    // from the spelled `module.member(...)` shape, so collect the imported
+    // names here and rewrite their call sites to that shape below.
+    let mut native_members: Vec<(String, String)> = Vec::new();
     for line in code.lines() {
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix("use ") {
@@ -605,15 +610,76 @@ fn inline_user_modules_text(code: &str, input: &str) -> Result<String, String> {
                 if bits.len() == 2 { alias = Some(bits[1].trim().to_string()); }
             }
             let path_full = path.trim();
-            // Explicit member-import syntax and nested module `use` need the VM.
-            if path_full.contains('{') || path_full.contains('}') {
-                return Err(format!("module import '{}' needs `un build --embed`", path_full));
-            }
-            let first = path_full.split('.').next().unwrap_or(path_full);
+            // Detect a native module from the text before any `{` member list,
+            // so `use math {sqrt}` is recognised even without a space.
+            let path_head = spec
+                .split(|c: char| c.is_whitespace() || c == '{' || c == '}')
+                .next()
+                .unwrap_or("");
+            let first = path_head.split('.').next().unwrap_or(path_head);
             if native.iter().any(|name| name == first) {
+                if let Some(open) = spec.find('{') {
+                    let close = spec[open..].find('}').map(|i| open + i).ok_or_else(|| {
+                        format!("module import '{spec}' needs `un build --embed`")
+                    })?;
+                    let list = &spec[open + 1..close];
+                    let tail = spec[close + 1..].trim();
+                    // A module alias combined with member imports would need a
+                    // runtime module object; keep that on the VM path.
+                    if !tail.is_empty() {
+                        return Err(format!("module import '{spec}' needs `un build --embed`"));
+                    }
+                    if list.trim() == "*" {
+                        for (member, _) in
+                            unvm::runtime::world::native_members(first).unwrap_or_default()
+                        {
+                            upsert_native_member(
+                                &mut native_members,
+                                member.clone(),
+                                format!("{path_head}.{member}"),
+                            );
+                        }
+                    } else {
+                        for item in list.split(',') {
+                            let item = item.trim();
+                            let (local, member) = match item.split_once(" as ") {
+                                Some((a, b)) => (a.trim(), b.trim()),
+                                None => (item, item),
+                            };
+                            if !is_simple_ident(local) || !is_simple_ident(member) {
+                                return Err(format!(
+                                    "module import '{spec}' needs `un build --embed`"
+                                ));
+                            }
+                            upsert_native_member(
+                                &mut native_members,
+                                local.to_string(),
+                                format!("{path_head}.{member}"),
+                            );
+                        }
+                    }
+                    let indent = &line[..line.len() - trimmed.len()];
+                    let comment = rest
+                        .find('#')
+                        .map(|i| rest[i..].trim_end().to_string())
+                        .unwrap_or_default();
+                    out.push_str(indent);
+                    out.push_str("use ");
+                    out.push_str(path_head);
+                    if !comment.is_empty() {
+                        out.push(' ');
+                        out.push_str(&comment);
+                    }
+                    out.push('\n');
+                    continue;
+                }
                 out.push_str(line);
                 out.push('\n');
                 continue;
+            }
+            // Explicit member-import syntax and nested module `use` need the VM.
+            if path_full.contains('{') || path_full.contains('}') {
+                return Err(format!("module import '{}' needs `un build --embed`", path_full));
             }
             let alias = alias.unwrap_or_else(|| path_full.rsplit('.').next().unwrap_or(path_full).to_string());
             if native.iter().any(|name| name == &alias) || aliases.iter().any(|(a, _)| a == &alias) {
@@ -696,6 +762,9 @@ fn inline_user_modules_text(code: &str, input: &str) -> Result<String, String> {
     let mut rewritten = String::with_capacity(out.len() + appended.len() + 1);
     for line in out.lines() {
         let mut l = line.to_string();
+        if !native_members.is_empty() {
+            l = rewrite_native_member_calls(&l, &native_members);
+        }
         for (alias, _) in &aliases {
             l = replace_alias(&l, alias);
         }
@@ -706,6 +775,97 @@ fn inline_user_modules_text(code: &str, input: &str) -> Result<String, String> {
     let mut result = appended;
     result.push_str(&rewritten);
     Ok(result)
+}
+
+fn is_simple_ident(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+}
+
+/// Later `use` statements win, matching the VM scope behaviour.
+fn upsert_native_member(members: &mut Vec<(String, String)>, local: String, qualified: String) {
+    if let Some(entry) = members.iter_mut().find(|(name, _)| *name == local) {
+        entry.1 = qualified;
+    } else {
+        members.push((local, qualified));
+    }
+}
+
+/// Rewrite call sites of native members imported with `use m {a, b}` into the
+/// qualified `m.a(...)` form that the plain TIR/native lowering understands.
+/// Declarations, property accesses, strings and comments are left untouched.
+fn rewrite_native_member_calls(line: &str, members: &[(String, String)]) -> String {
+    let trimmed = line.trim_start();
+    let decl_name_at = ["fn ", "class ", "enum ", "type "].iter().find_map(|kw| {
+        trimmed
+            .strip_prefix(kw)
+            .map(|_| line.chars().count() - trimmed.chars().count() + kw.len())
+    });
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    let mut in_string = false;
+    let mut in_comment = false;
+    let mut escaped = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_comment {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '#' {
+            in_comment = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let name: String = chars[start..i].iter().collect();
+            let mut after = i;
+            while after < chars.len() && (chars[after] == ' ' || chars[after] == '\t') {
+                after += 1;
+            }
+            let is_call = after < chars.len() && chars[after] == '(';
+            let is_property = start > 0 && chars[start - 1] == '.';
+            if is_call && !is_property && decl_name_at != Some(start)
+                && !trimmed.starts_with("use ")
+            {
+                if let Some((_, qualified)) = members.iter().find(|(local, _)| *local == name) {
+                    out.push_str(qualified);
+                    continue;
+                }
+            }
+            out.push_str(&name);
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 fn mangle_line(line: &str, prefix: &str) -> String {
@@ -1245,20 +1405,7 @@ fn build_cmd(args: &[String]) {
         return;
     }
 
-    let (source, node) = parse_file(input);
-    fn has_class(node: &unvm::ast::Node) -> bool {
-        if node.kind == unvm::ast::NodeKind::Class {
-            return true;
-        }
-        node.children.iter().any(has_class)
-    }
-    let nested_class = node.children.iter().any(|c| {
-        c.kind != unvm::ast::NodeKind::Class && has_class(c)
-    });
-    if nested_class {
-        eprintln!("un build: class declarations nested inside control flow are not supported in a native executable yet; rebuild with `un build --embed`");
-        exit(1);
-    }
+    let (source, _node) = parse_file(input);
     let inline_code = match inline_user_modules_text(&source.code.iter().collect::<String>(), input) {
         Ok(code) => code,
         Err(message) => {
