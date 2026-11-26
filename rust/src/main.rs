@@ -1560,6 +1560,11 @@ fn build_cmd(args: &[String]) {
         d.push_str(&format!("    fn un_tir_{i}();\n"));
     }
     d.push_str("}\nfn main() -> std::process::ExitCode {\n");
+    if parallel {
+        // P07: plain-build flow/pool/atomic shims read this once at startup.
+        // `--embed` is rejected with `--parallel`, so no VM-mode branch.
+        d.push_str("    std::env::set_var(\"UN_PARALLEL\", \"1\");\n");
+    }
     let path_lit = format!("{:?}", input);
     let src_lit = format!("{:?}", inline_code);
     d.push_str(&format!(
