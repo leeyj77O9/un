@@ -72,18 +72,18 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
   exe contains no VM; `--embed` is the escape hatch for dynamic cases);
   `dict[int,int]`, `un lsp`, and the 6-lane benchmark suite.
 
-## Current baseline (verified 2026-11-23 at HEAD 660559b; repository HEAD has since advanced to f161f11)
+## Current baseline (verified 2026-11-26)
 
 | Gate | Result |
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
-| `cargo test --release --workspace` | **375 passed / 0 failed** (nrt 25 + lib 296 + un bin/LSP 24 + playground 8; includes 2 JIT + 3 sandbox regression guards added 2026-11-20) |
+| `cargo test --release --workspace` | **391 passed / 0 failed** (nrt 58 + nrt scheduler_spike 5 + lib 296 + un bin 24 + playground 8; includes P05 scheduler 8 + P02B guard 8 unit tests) |
 | `scripts/test.ps1` | Positive **51 files / 1638 passed** / 0 failed / 0 crashed; Negative **51 matched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **102 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **51/51**; Negative compilable **42/42** identical (+ 9 compile-rejected skip) |
 | `test/test_suite.un` | **109 passed / 0 failed** |
-| `scripts/compile-check.ps1` | **36 passed / 0 failed** |
-| `scripts/exe-diff.ps1` | **42 passed / 0 failed** |
+| `scripts/compile-check.ps1` | **42 passed / 0 failed** |
+| `scripts/exe-diff.ps1` | **78 passed / 0 failed** |
 | `scripts/bench.ps1 -Group all -Report` | 6 lanes (unvm/unjit/python/node/unnative/unbuild) self-validate; `BENCHMARK.md` regenerated per run (생성 시점 커밋 명시); Un JIT/Python geomean **3.688x** (`BENCHMARK.md`, 재생성 2026-11-25 18:51 +09:00, 커밋 180d3db 기준) |
 
 ## Intentionally not done / known limits
