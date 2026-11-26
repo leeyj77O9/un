@@ -32,7 +32,7 @@ Windows(GNU 툴체인)에서는 `rust\target\release\un.exe`가 생성됩니다.
 | `un check <file.un>` | **실험적**: 정적 타입 분석만 (compile mode) |
 | `un native <file.un>` | **실험적**: 정적 분석 + native 실행 (compile mode) |
 | `un obj <file.un|file.unbc> [-o out.obj] [--entry name]` | **실험적**: 소스/바이트코드를 재배치 가능한 오브젝트 파일(Windows/GNU는 COFF .obj)로 번역; `.unbc`는 core Int 부분집합만, 소스 경로는 Str/리스트/딕트/클래스/예외까지 네이티브 지원 |
-| `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic]` | **실험적**: 소스를 재배치 가능한 오브젝트로 컴파일해 독립 실행형으로 링크 (rustup self-contained mingw gcc 경유); `--embed`는 .unbc와 VM 런타임을 실행형에 구워 임의의 Un 프로그램을 단일 exe로 |
+| `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N] [--parallel]` | **실험적**: 소스를 재배치 가능한 오브젝트로 컴파일해 독립 실행형으로 링크 (rustup self-contained mingw gcc 경유); `--embed`는 .unbc와 VM 런타임을 실행형에 구워 임의의 Un 프로그램을 단일 exe로; `N=0|1|2|3|s|z`는 생성 드라이버의 rustc opt-level(기본 0); `--parallel`은 plain 전용(실제 `go`/`wait` 병렬, thread-backed `flow`/`atomic`)이며 `--embed`와 함께 쓰면 exit 2 |
 | `un dis <file.un>` | 라인 번호와 함께 스택 바이트코드 덤프 |
 | `un dis-reg <file.un>` | 바이트코드의 register-plan 형태 덤프 |
 | `un tokens <file.un>` | 토큰 스트림 출력 |
@@ -53,7 +53,7 @@ Windows(GNU 툴체인)에서는 `rust\target\release\un.exe`가 생성됩니다.
 |---|---|
 | 0 | 성공 |
 | 1 | 미처리 오류 (파싱/컴파일 오류, 런타임 오류, 스택 오버플로) |
-| 2 | 사용법 오류 (인자 오류, 예: 파일명 누락) |
+| 2 | 사용법 오류 (인자 오류, 예: 파일명 누락; `--parallel`과 `--embed` 동시 사용) |
 
 ## `un run <file.un>`
 
@@ -219,6 +219,7 @@ fold 하므로 단순한 프로그램은 영향이 없습니다.)
 | (없음) | 기본값: 적격 Int/Float 부분집합에 임베디드 Cranelift JIT 활성화 |
 | `UV_JIT=0` | 인터프리터만 사용 (`scripts/differential.ps1`이 JIT on/off를 바이트 단위로 비교할 때 사용) |
 | `UV_JIT=2` | strict canary: JIT 적격 proto가 하나라도 인터프리터로 fallback 되면 프로세스가 종료 코드 2로 죽는다 (CI의 JIT 회귀 감지용) |
+| `UN_PARALLEL=1` | plain `un build --parallel` 실행형이 생성 드라이버에서 `un_main` 호출 전에 설정한다. 실제 `go`/`wait` 병렬과 thread-backed `flow`/`pool`/`atomic` 핸들을 활성화한다. 기본 경로에서는 설정되지 않으며 deferred cooperative로 동작 |
 
 ## 실험적 (개발 중, 변경될 수 있음)
 
@@ -256,7 +257,7 @@ Windows/GNU는 COFF)로 되돌립니다. `un compile`이 생성한 `.unbc`를 �
 proto는 trap stub으로 정의되어 링크를 유지합니다(호출 시 트랩). 마일스톤은
 `docs/compile/OBJ_MILESTONES.md`를 참고하세요.
 
-### `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic]`
+### `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N] [--parallel]`
 
 소스에서 독립 실행형 네이티브 실행형까지 한 명령으로 수행합니다. 위 과정으로
 오브젝트 파일을 방출한 뒤, `un_main()`을 호출하고 i64 결과를 출력하는 작은
@@ -274,6 +275,23 @@ traceback을 네이티브로 실행합니다. 동적 `Any`/Union, 시간 기반 
 **모든 Un 프로그램**(class, collection, IO, 문자열 보간 등)에서 완전하게
 동작하며, 단일 자체 완결 실행형을 만듭니다. 자세한 것은
 `docs/compile/OBJ_MILESTONES.md`를 참고하세요.
+
+**`--parallel` (plain build 전용).** 이 플래그를 쓰면 생성된 드라이버가 `un_main`
+호출 전에 `UN_PARALLEL=1`을 설정합니다. `go`/`wait`가 실제 워커 스레드에서 실행되고
+`flow`/`pool`/`atomic` 핸들이 기본 `RefCell` shim 대신 thread-backed 형태를 씁니다.
+`un run`, `un native`, `--embed` 및 플래그 없는 plain build는 영향 없이 deferred
+cooperative 의미론을 유지합니다. `--embed`와 상호배제이며, 함께 쓰면
+`un build: --parallel requires a plain build; drop --embed` 메시지를 출력하고 exit 2로
+끝납니다.
+
+**빌드 캐시.** 성공한 빌드는 `%TEMP%\un-build-cache-v1`(OS temp 디렉터리; 저장소에는
+산출물을 추가하지 않음)에 캐시됩니다. 캐시 키에는 소스 바이트(인라인된 사용자 모듈 포함),
+입력 경로, `embed`/`allow-dynamic`/`opt-level` 플래그와 `parallel`/`cooperative` 마커,
+target triple, rustc·링커·`un.exe`·정적 런타임 라이브러리(`libnrt.a` / `libunvm.a`)의
+식별자가 포함됩니다. 캐시 hit는 요청한 출력 경로로 exe를 복사하고 miss 때 캡처한
+`skipped:` 경고와 rustc 진단을 재생하므로 stdout/stderr/exit code가 새 빌드와 같습니다.
+`UV_BUILD_CACHE=0`(또는 `off`, `false`)로 끄고 항상 재빌드할 수 있으며, 캐시 디렉터리를
+지워도 안전합니다.
 
 ### `un lsp`
 

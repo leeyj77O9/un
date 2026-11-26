@@ -8,13 +8,18 @@ in `docs/archive/` until 2026-11-16; those files were removed in the docs
 cleanup and remain in `git` history. This document describes *the state of the
 code as it stands now* and what was found.
 
+> **(2026-11-27 각주 — historical 스냅샷 보존)** 아래 수치·날짜·커밋은 감사 시점 값이며 현재값으로 덮어쓰지 않는다.
+> 현재 기준은 `cargo test` **430 passed**, `scripts/test.ps1` **51 files / 1638 passed / 0 failed / 0 crashed**,
+> `compile-check` **42/0**, `exe-diff` **78/0**, `differential` **102/0** (`docs/project/REFACTOR_SUMMARY.md` 참조).
+> GOWAIT opt-in 병렬은 D-099로 구현 완료(P08 `488bf0b`)했고 기본 deferred 계약은 유지된다.
+
 Related documents:
 
 - `docs/project/REFACTOR_SUMMARY.md` — the one-page index (commit timeline, baseline).
 - `docs/project/REFACTOR_LOG.md` — dated log of the changes that were actually applied.
 - `docs/spec/ARCHITECTURE.md` — how the implementation is put together.
 - `docs/project/TECHNICAL_DEBT.md` — the debt register (items deliberately left in place).
-- `docs/project/DECISIONS.md` — language/runtime decisions (D-001 … D-092).
+- `docs/project/DECISIONS.md` — language/runtime decisions (D-001 … D-099; 작성 시점에는 D-092까지였다).
 
 ## 1. Scope and method
 
@@ -165,7 +170,7 @@ symbol with exactly one occurrence in its own definition file is reported as
 | `core` round-trip | `vm/tests.rs::an_unbc_round_trip_preserves_behavior` runs source directly and then `source → .unbc file → read → run`, and asserts identical stdout and identical outcome kinds (audit-time: 79 files, 0 differences; **current: 102 files, 0 differences**) | `rust/src/vm/tests.rs`, `scripts/differential.ps1` |
 | JIT differential runner | `scripts/differential.ps1` runs every test-manifest file with `UV_JIT=0` and with the default JIT and diffs stdout + exit code (audit-time: 79 files; **current: 102 files, 0 differences**) | `scripts/differential.ps1` |
 | JIT test corpus | **resolved** — `test/jit/strict.un` (Int) and `test/jit/strict_float.un` (Float) are CI canaries under `UV_JIT=2` | `test/jit/`, `.github/workflows/build.yml` |
-| CI | **resolved** — `.github/workflows/build.yml` runs 12 steps including compile-check, exe-diff, edge-fuzz and two strict canaries; `rust-toolchain.toml` pins the toolchain | `.github/workflows/build.yml`, `rust-toolchain.toml` |
+| CI | **resolved** — `.github/workflows/build.yml` runs 12 steps(당시 스냅샷; 현재 스텝 구성은 파일 참조) including compile-check, exe-diff, edge-fuzz and strict canaries; `rust-toolchain.toml` pins the toolchain | `.github/workflows/build.yml`, `rust-toolchain.toml` |
 | `AGENTS.md` drift | **resolved** — counts and paths were refreshed to the 2026-11-23 measured state; the authoritative figures are in `docs/project/REFACTOR_SUMMARY.md` | `AGENTS.md`, `docs/project/REFACTOR_SUMMARY.md` |
 | `docs/project/DECISIONS.md` has duplicate IDs | `D-033` and `D-034` are each used twice | `docs/project/DECISIONS.md` — fixed in this pass: the second pair are now D-069/D-070 and `D-066` is reordered |
 

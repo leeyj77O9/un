@@ -1,13 +1,15 @@
 # GOWAIT_IMPLEMENTATION_PLAN.md — `go`/`wait` opt-in 병렬 구현 Work 분해
 
 > Work ID: W-2026-11-25-GOWAITPARALLEL / 역할: ARC-00 (Architecture / Integration Owner)
-> 작성일: 2026-11-25 / 상태: **설계·Work 분해만 완료. 코드·테스트·스크립트 변경 없음, 커밋 없음.**
+> 작성일: 2026-11-25 / 상태: **안 C 구현 반영 — P00~P08 구현·커밋 완료(P08 `488bf0b`), P09(문서 정리)만 잔여.** (HEAD `0d98743` 기준 확인)
+> (각주: 최초 작성 시점 상태는 "설계·Work 분해만 완료. 코드·테스트·스크립트 변경 없음, 커밋 없음"이었다.)
+> 인용된 `path:line`은 작성 시점(2026-11-25) 기준이며 현재 코드와 다를 수 있다 — 심볼명 기준으로 해석한다.
 >
 > 선행: `docs/project/GOWAIT_PARALLEL_RFC.md` 전체(특히 §5 추천안 C, §6 마일스톤, §7 체크리스트, §8 결론),
 > `AGENTS.md` MANDATORY(규칙 1~8), `docs/OPENCODE_SESSION_SYSTEM.md` §3.1 소유권 / §8 통합·검증,
-> `docs/project/DECISIONS.md` D-012 / D-054 / D-061 / D-062 / D-080(+ RFC §7.1이 요구하는 D-063),
+> `docs/project/DECISIONS.md` D-012 / D-054 / D-061 / D-062 / D-080(+ RFC §7.1이 요구하는 D-063) / D-099,
 > `docs/project/TECHNICAL_DEBT.md` TD-39, `docs/project/PROJECT_AUDIT.md` §3,
-> `docs/project/NATIVE_CONCURRENCY_DESIGN.md`, `docs/compile/COMPILER_LANGUAGE_ROADMAP.md` LANG2.
+> `docs/project/NATIVE_CONCURRENCY_DESIGN.md`, `docs/project/COMPILER_LANGUAGE_ROADMAP.md` LANG2.
 >
 > **승인 전제**: RFC §8의 "구현 착수 전 사용자 승인"은 사용자의 "남은거 전부 진행해" 지시로 갈음하였다.
 > 단, **RFC 추천안 C(기본 deferred 유지 + opt-in 병렬)** 만 착수 대상으로 하고 안 A(기본 병렬 전환)는 채택하지 않는다.
@@ -78,8 +80,10 @@ AGENTS.md MANDATORY의 §8 지시(**cooperative concurrency는 의도된 계약�
 | **W-25-P05** | M4 | NRT-06 | 신규 `rust/nrt/src/scheduler.rs` (단일 공유 큐) | P01 감사 완료. P02와 병렬 착수 가능(아래 P05s) | 기본 레인 무영향(새 모듈만 추가) | `std::thread::Builder`+`Arc<Mutex<VecDeque<Task>>>`+`Condvar`, graceful drain+join, `close()` 후 submit은 기존 `"pool is closed"` 유지, 자기 참조 wait의 inline fallback, 스파이크 단위 테스트 통과 | 2.5 |
 | **W-25-P06** | M5 | CMP-05 주 + ARC-00(`main.rs`) + NRT-06(ABI 등록) | `rust/src/{tir.rs, natcode.rs, unrt.rs, main.rs}`, `rust/nrt/src/{abi.rs, native.rs}` | P02~P05 | `unbc-roundtrip` / `compile-check` / strict canary 기본 무변경, opcode 0x63/0x64 유지(I3) | `Go`/`Wait` TIR variant + `expr_ok`/`stmt_ok`, `un build --parallel` 플래그(help 포함), 새 `unrt_*` 심볼 3개 등록, **기본 경로는 기존 deferred 분기로 계속 drop**, LANG2 거부를 opt-in에서만 해제 | 3.0 |
 | **W-25-P07** | M6 | NAT-07 주 + NRT-06 공동 | `rust/src/native/{flow.rs, atomic.rs}`, `rust/nrt/src/native.rs` | P05, P06 | `test/unit/runtime/async.un` **기대값 수정 금지**(I1; RFC §4의 타이밍 갱신 제안은 안 C에서 채택하지 않음) | opt-in에서만 실제 스레드 실행, `pool.map` 입력 순서 보장, `atomic`을 `AtomicI64`/`AtomicBool`로 재정의하되 값·`exchange`·`compare_and_swap`·`Clone`/`Copy`/`Entry`/`Exit` **오류 문구 동일** | 2.0 |
-| **W-25-P08** | M7 | QA-09 주 + TOOL-08(CI 스텝) | 신규 `scripts/gowait-parallel.ps1`, 신규 `test/parallel/manifest.txt`, `.github/workflows/build.yml` | P06, P07 | **기존 8개 게이트 스크립트의 default 분기 0개 변경**, 수치 유지. 새 게이트는 별도 | 새 게이트가 집합(`RESULT|`) 비교 + exit code + stderr 문구 검증, opt-in 케이스만 격리, CI 14번째 스텝 추가, 기존 스텝 전부 green 유지 | 1.5 |
-| **W-25-P09** | M8 | ARC-00 | `README.md`, `docs/README.ko.md`, `docs/spec/ARCHITECTURE.md`, `docs/guides/{CLI.md, CLI.ko.md, COMPILED_LANGUAGE.md, BENCHMARK_GUIDE.md}`, `docs/project/DECISIONS.md`(승인 문구 반영), `docs/project/TECHNICAL_DEBT.md` TD-39 각주 | P08 + 사용자 승인 | 문서 기준 수치는 실행 시점과 명령 함께 명시(SESSION_SYSTEM §9-10) | 한/영 쌍 동기, "기본 deferred + opt-in 예외" 문구 일관, 옵션 제거로 되돌리는 방법 명시 | 1.0 |
+| **W-25-P08** | M7 | QA-09 주 + TOOL-08(CI 스텝) | 신규 `scripts/gowait-parallel.ps1`, 신규 `test/parallel/manifest.txt`, `.github/workflows/build.yml` | P06, P07 | **기존 8개 게이트 스크립트의 default 분기 0개 변경**, 수치 유지. 새 게이트는 별도 | 새 게이트가 집합(`RESULT|`) 비교 + exit code + stderr 문구 검증, opt-in 케이스만 격리, `.github/workflows/build.yml`의 `Test (go/wait opt-in parallel gate)` 스텝 추가 완료(`488bf0b`; 스텝 번호는 파일 참조, 고정 숫자 없음), 기존 스텝 전부 green 유지 | 1.5 |
+| **W-25-P09** | M8 | ARC-00 | `README.md`, `docs/README.ko.md`, `docs/spec/ARCHITECTURE.md`, `docs/guides/{CLI.md, CLI.ko.md, COMPILED_LANGUAGE.md, BENCHMARK_GUIDE.md}`, `docs/project/DECISIONS.md`(승인 문구 반영), `docs/project/TECHNICAL_DEBT.md` TD-39 / TD-54~TD-56 각주 | P08(`488bf0b`) + 사용자 승인 | 문서 기준 수치는 실행 시점과 명령 함께 명시(SESSION_SYSTEM §9-10) | 한/영 쌍 동기, "기본 deferred + opt-in 예외" 문구 일관, 옵션 제거로 되돌리는 방법 명시 | 1.0 |
+
+> **Work 상태 (2026-11-27 갱신, HEAD `0d98743`)**: **P00 완료**(설계 문서 산출물, 별도 커밋 없음) · **P01 완료**(감사 산출물) · **P02 완료**(`3ae916a`, P02B 포함) · **P03 완료**(`a9d1d24`) · **P04 완료**(`d2f176c`) · **P05 완료**(`9d63c7f`; scheduler 스파이크 포함) · **P06 완료**(`a7b39ea` / `fc7e5f8` / `baaefba`) · **P07 완료**(`013858a` / `1b258b0`) · **P08 완료**(`488bf0b`; `scripts/gowait-parallel.ps1` + `test/parallel/manifest.txt` + `.github/workflows/build.yml`의 `Test (go/wait opt-in parallel gate)` 스텝) · **P09 잔여**(문서 정리; 본 Work W-2026-11-27-001 그룹 C가 일부 수행 — 아래 §3.5의 opt-in divergence 3건 포함). 표의 공수·완료 조건은 작성 시점 추정치로 보존한다.
 
 **합계 20.0 인일** (RFC 안 C 밴드 **16–22 인일**의 중앙값; W-00~W-09의 합). 리뷰/CI 시간 제외, 1인 기준.
 
@@ -124,12 +128,12 @@ P00 → P01 ─┬─→ P02 ─┬─→ P04 ─→ P06 ─→ P07 ─→ P08 �
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive 51/51 + Negative 42 identical(9 skip) | 변경 없음. opcode 0x63/0x64 유지(I3) 확인 | QA-09(무변경) |
 | `scripts/edge-fuzz.ps1` | 5레인 크로스 언어 `RESULT|` 비교 | **기본 5레인 무변경.** 병렬 레인은 새 게이트의 별도 케이스로만 추가 | QA-09(무변경) |
 | strict canary (`UV_JIT=2`) | 3스텝, 신규 task wrapper가 fallback stub 되면 exit 2 | 변경 없음. 새 wrapper가 JIT 대상 밖임을 확인하는 수준(무영향 확인만) | QA-09(무변경) |
-| `cargo test --release --workspace` | 352 passed (AGENTS.md; RFC는 314 표기 → 재확인) | 변경 없음, 새 경고 0 유지 | 각 소유 세션 |
+| `cargo test --release --workspace` | **430 passed (2026-11-27 실측)**; 과거 표기 352(AGENTS.md 당시)/314(RFC 당시)는 작성 시점 스냅샷 | 변경 없음, 새 경고 0 유지 | 각 소유 세션 |
 | **`scripts/gowait-parallel.ps1` (신규)** | 없음 | opt-in 전용: `un build --parallel` 산출 exe를 `test/parallel/manifest.txt`에 따라 실행 | QA-09 |
-| `.github/workflows/build.yml` | 13스텝 | **14번째 스텝 추가**(기존 스텝 하나도 약화·삭제 금지) | TOOL-08 + ARC-00 |
+| `.github/workflows/build.yml` | **스텝 수는 고정하지 않고 파일 자체를 기준으로 함** | `.github/workflows/build.yml`의 `Test (go/wait opt-in parallel gate)` 스텝 추가 완료(`488bf0b`); 기존 스텝 하나도 약화·삭제 금지 | TOOL-08 + ARC-00 |
 
-> 기준 수치의 71/0 ↔ 78/0, 314 ↔ 352 불일치는 문서 간 시점 차이다. OPENCODE_SESSION_SYSTEM §8.3 지시에 따라
-> **실제 게이트 실행 전 스크립트와 최신 AGENTS.md에서 다시 읽어 확정**한다. 이 계획은 숫자를 바꾸지 않는다.
+> 기준 수치의 71/0 ↔ 78/0, 314/352 ↔ 430 불일치는 문서 간 시점 차이다. OPENCODE_SESSION_SYSTEM §8.3 지시에 따라
+> **실제 게이트 실행 전 스크립트와 최신 AGENTS.md에서 다시 읽어 확정**한다. 위 표의 "현재" 열만 2026-11-27 실측값으로 갱신했고, 과거 수치는 각주로 보존했다(이 계획의 원래 숫자는 바꾸지 않음).
 
 ### 3.3 신규 게이트 `scripts/gowait-parallel.ps1` 설계
 
@@ -147,6 +151,14 @@ P00 → P01 ─┬─→ P02 ─┬─→ P04 ─→ P06 ─→ P07 ─→ P08 �
 ### 3.4 벤치마크
 
 `scripts/bench.ps1`의 6레인과 `BENCHMARK.md` geomean은 **현재 정의를 유지**한다. 병렬 측정은 `-Group parallel` 별도 그룹으로 추가하고, BENCH-10이 단일 소유자로 리포트를 생성한다(SESSION_SYSTEM §9-11). 비결정 병렬 레인을 기존 geomean에 섞지 않는다.
+
+### 3.5 opt-in 경로의 documented divergence와 잠재 이슈 (2026-11-27 관측, P09 문서화 잔여)
+
+P08(`488bf0b`) 완료 후 opt-in 전용 게이트가 관찰한 차이를 여기에 기록한다. **기본 deferred 경로와 byte-identical 게이트는 변하지 않는다.** 상세 항목은 `docs/project/TECHNICAL_DEBT.md` TD-54 / TD-55 / TD-56에 낮은 심각도로 등록했다.
+
+1. **TD-54 — future 결과 조회 API 차이 (documented divergence)**: 병렬 plain exe의 `pool.submit` future는 **`.value()`만 지원**하고, VM(`un run`)은 **`wait`만 지원**한다. opt-in 경로에서 `wait`를 쓰는 프로그램은 기본 경로와 동일하게 동작하지 않으므로, `--parallel` 문서화 시 이 차이를 명시해야 한다(P09 잔여).
+2. **TD-55 — task 내부 throw의 traceback 프레임 차이 (documented divergence)**: 병렬 task 안에서 throw된 예외는 `wait` 지점의 **error 메시지가 동일**하지만, VM의 traceback 프레임(`-> <module>`, `-> go`)이 **누락될 수 있다**. `scripts/gowait-parallel.ps1` 게이트는 error 문구만 검증하므로 프레임 차이는 회귀 실패로 잡히지 않는다(P09 잔여).
+3. **TD-56 — 스케줄러 lost-wakeup 가능성 (잠재 이슈, 확정 버그 아님)**: `rust/nrt/src/scheduler.rs`의 `cv.notify_all()`이 shared lock 없이 호출되고 `join_full`에 watchdog이 없다. **1회 30초 타임아웃이 관측됐으나 이후 100회 재현 시 재발하지 않았다.** 따라서 재현 조건이 확정된 버그가 아니라 잠재 이슈로만 기록한다(P09 잔여; 수정은 별도 Work/사용자 승인 대상 — 이번 작업은 문서화만).
 
 ---
 
@@ -206,7 +218,7 @@ P00 → P01 ─┬─→ P02 ─┬─→ P04 ─→ P06 ─→ P07 ─→ P08 �
 
 ### LANG2 완료 조건
 
-`docs/compile/COMPILER_LANGUAGE_ROADMAP.md`의 "안 B 완료 = AST 전체에서 `Go`/`Wait` 검출 → 명시 거부"를
+`docs/project/COMPILER_LANGUAGE_ROADMAP.md`의 "안 B 완료 = AST 전체에서 `Go`/`Wait` 검출 → 명시 거부"를
 **"기본은 명시 거부 유지, `un build --parallel`에서만 허용"** 으로 갱신한다(`compiler.rs:261-290`의
 `find_unsupported_async_node()` 거부 메시지 자체는 기본 경로에서 유지).
 
@@ -252,19 +264,20 @@ P00 → P01 ─┬─→ P02 ─┬─→ P04 ─→ P06 ─→ P07 ─→ P08 �
 ## 6. 사용자 재확인이 필요한 항목 체크리스트
 
 > RFC §7.3을 이 계획의 확정안 기준으로 갱신한 것이다. 미승인 항목이 하나라도 남으면 해당 Work는 `blocked`로 보고한다(§8.2).
+> **(2026-11-27 갱신)** 아래 12항목은 사용자 승인 갈음 + 구현 완료로 `[x]` 처리했다. `[x]`는 "승인되고 구현까지 반영됨"을 뜻하며, 미승인으로 확인한 항목(C-12)도 확인 완료 의미로 `[x]`다. 각주로 보존한 당시 표기는 `[ ]`였다.
 
-- [ ] **C-1 진입점 확정**: `un build --parallel` 단일 채택을 승인하는가. `go!` / `flow.parallel { }`는 이번 범위에서 보류해도 되는가. (보류 해제 시 FE-01 별도 Work)
-- [ ] **C-2 opt-in 범위**: plain native exe에만 적용하고 `un run` / `un native` / `--embed` / `un check`는 기본 deferred로 두는 것을 승인하는가.
-- [ ] **C-3 의존성**: crossbeam 미도입, `std::thread` + `Arc<Mutex>` + `Condvar`만 사용하는 방안을 승인하는가(§5.2 스파이크로 실측 예정).
-- [ ] **C-4 새 ABI 심볼**: `unrt_go` / `unrt_wait` / `unrt_trace`(초안 이름·시그니처) 3개 추가를 승인하는가. 기존 `unrt_*` 시그니처 변경은 금지 유지.
-- [ ] **C-5 CLI 옵션**: `--parallel` 추가(및 help 갱신)를 승인하는가 — AGENTS.md MANDATORY 규칙 6의 사전 승인 대상.
-- [ ] **C-6 결정 개정 문구**: §4의 D-012/D-054/D-061/D-062/D-080 + D-063 + LANG2 amendment 초안을 승인하는가(폐기/Supersede가 아닌 追加임을 확인).
-- [ ] **C-7 게이트 재정의 범위**: §3의 "기본 8게이트 무변경 + 신규 `gowait-parallel.ps1` only" 안을 승인하는가. 특히 기존 byte-identical 비교 강도를 **낮추지 않는다**는 점을 확인.
-- [ ] **C-8 기존 테스트 기대값**: `test/unit/runtime/async.un`의 타이밍/정렬 기대값을 **수정하지 않는다**는 방침을 승인하는가(RFC §4의 갱신 제안은 안 C에서 미채택).
-- [ ] **C-9 공수·순서**: 20.0 인일(밴드 16–22)과 P00→P01→{P02,P03,P05}→P04→P06→P07→P08→P09 순서, 첫 슬라이스(P01→P05s)를 승인하는가.
-- [ ] **C-10 worktree/Work ID 발급**: P02~P09를 별도 worktree에 분배하고 각 세션에 하위 Work ID를 발급해 주는가(§0 I7, 모두 커밋 없이 `review` 상태로 유지).
-- [ ] **C-11 기존 변경 보존**: 작업 디렉터리에 이미 수정 상태인 `AGENTS.md`, `rust/nrt/src/native.rs`, `rust/src/tir.rs`(특히 tir.rs는 CMP-05/ARC-00 공동 소유)를 이 작업의 일부로 간주하지 않고 **덮어쓰지 않도록** 소유자 확인을 해 주는가(§0 I6).
-- [ ] **C-12 안 A 전환 여부**: 사용자가 "기본을 진짜 병렬로 바꿔도 된다"는 별도 승인을 낼 경우에만 §3의 비교 완화가 전면 재정의 대상이 됨을 확인한다(현재는 미승인 상태).
+- [x] **C-1 진입점 확정**: `un build --parallel` 단일 채택을 승인하는가. `go!` / `flow.parallel { }`는 이번 범위에서 보류해도 되는가. (보류 해제 시 FE-01 별도 Work) — **승인·구현**: D-099가 단일 진입점으로 확정, P06(`a7b39ea`/`fc7e5f8`/`baaefba`)이 CLI·TIR·ABI 반영. `go!`/`flow.parallel { }` 보류 유지.
+- [x] **C-2 opt-in 범위**: plain native exe에만 적용하고 `un run` / `un native` / `--embed` / `un check`는 기본 deferred로 두는 것을 승인하는가. — **승인·구현**: D-099가 "plain 전용 opt-in, `--embed` 상호배제"로 확정, P06/P07이 기본 deferred 분기를 그대로 유지.
+- [x] **C-3 의존성**: crossbeam 미도입, `std::thread` + `Arc<Mutex>` + `Condvar`만 사용하는 방안을 승인하는가(§5.2 스파이크로 실측 예정). — **승인·구현**: P05(`9d63c7f`)가 `rust/nrt/src/scheduler.rs`에 `std::thread` + `Arc<Mutex<VecDeque>>` + `Condvar`로 구현, 외부 crate 추가 없음.
+- [x] **C-4 새 ABI 심볼**: `unrt_go` / `unrt_wait` / `unrt_trace`(초안 이름·시그니처) 3개 추가를 승인하는가. 기존 `unrt_*` 시그니처 변경은 금지 유지. — **승인·구현**: D-099가 새 C 심볼 3개를 명시 승인, P06이 NRT ABI에 등록. 기존 시그니처 변경 0건.
+- [x] **C-5 CLI 옵션**: `--parallel` 추가(및 help 갱신)를 승인하는가 — AGENTS.md MANDATORY 규칙 6의 사전 승인 대상. — **승인·구현**: D-099에 사전 승인 기록, P06에서 옵션·help 반영.
+- [x] **C-6 결정 개정 문구**: §4의 D-012/D-054/D-061/D-062/D-080 + D-063 + LANG2 amendment 초안을 승인하는가(폐기/Supersede가 아닌 追加임을 확인). — **승인·구현**: 초안대로 기존 조항을 수정·폐기하지 않고 **D-099 별도 append**로 갈음. D-012/D-054/D-061/D-062/D-063/D-080은 그대로 유지.
+- [x] **C-7 게이트 재정의 범위**: §3의 "기본 8게이트 무변경 + 신규 `gowait-parallel.ps1` only" 안을 승인하는가. 특히 기존 byte-identical 비교 강도를 **낮추지 않는다**는 점을 확인. — **승인·구현**: 기본 게이트 실측 430 / 51 files·1638 / 42-0 / 78-0으로 강도 유지, 신규 게이트는 P08(`488bf0b`)에서 별도 완료. 단 opt-in 전용 차이는 §3.5 / `TECHNICAL_DEBT.md` TD-54~TD-56에 문서화(게이트는 error 문구만 검증).
+- [x] **C-8 기존 테스트 기대값**: `test/unit/runtime/async.un`의 타이밍/정렬 기대값을 **수정하지 않는다**는 방침을 승인하는가(RFC §4의 갱신 제안은 안 C에서 미채택). — **승인·구현**: P07(`013858a`/`1b258b0`)에서 기대값 미수정 확인.
+- [x] **C-9 공수·순서**: 20.0 인일(밴드 16–22)과 P00→P01→{P02,P03,P05}→P04→P06→P07→P08→P09 순서, 첫 슬라이스(P01→P05s)를 승인하는가. — **승인·구현**: 승인된 순서대로 P00~P08 완료, P09 잔여.
+- [x] **C-10 worktree/Work ID 발급**: P02~P09를 별도 worktree에 분배하고 각 세션에 하위 Work ID를 발급해 주는가(§0 I7, 모두 커밋 없이 `review` 상태로 유지). — **승인·구현**: 세션별 worktree 분배 및 하위 Work ID 발급 완료(이 문서의 최초 `review` 표기는 작성 시점 기준으로 보존).
+- [x] **C-11 기존 변경 보존**: 작업 디렉터리에 이미 수정 상태인 `AGENTS.md`, `rust/nrt/src/native.rs`, `rust/src/tir.rs`(특히 tir.rs는 CMP-05/ARC-00 공동 소유)를 이 작업의 일부로 간주하지 않고 **덮어쓰지 않도록** 소유자 확인을 해 주는가(§0 I6). — **승인·구현**: 선행 변경을 덮어쓰지 않고 소유자 확인 후 작업 분배.
+- [x] **C-12 안 A 전환 여부**: 사용자가 "기본을 진짜 병렬로 바꿔도 된다"는 별도 승인을 낼 경우에만 §3의 비교 완화가 전면 재정의 대상이 됨을 확인한다(현재는 미승인 상태). — **확인 완료: 안 A 미채택 그대로 유지**, D-099도 기본 deferred 유지만 명시. `[x]`는 미승인 사실을 확인했다는 뜻이며 안 A를 수락했다는 뜻이 아니다.
 
 ---
 
@@ -273,12 +286,12 @@ P00 → P01 ─┬─→ P02 ─┬─→ P04 ─→ P06 ─→ P07 ─→ P08 �
 | 항목 | 내용 |
 |---|---|
 | **Work ID** | W-2026-11-25-GOWAITPARALLEL |
-| **역할** | ARC-00 (Architecture / Integration Owner) — 설계·Work 분해만 수행 |
-| **결과** | RFC 추천안 C 준수. opt-in 진입점 `un build --parallel` 확정. Work 10개(P00~P09) 분해, 게이트 분리안, 결정 개정 초안 5+1건, 공수 20.0 인일, 첫 슬라이스 P01→P05s 도출 |
-| **작성 파일** | `docs/project/GOWAIT_IMPLEMENTATION_PLAN.md` **1개만 신규 작성** (기존 문서 수정 없음, 코드/테스트/스크립트 수정 없음) |
+| **역할** | ARC-00 (Architecture / Integration Owner) — 설계·Work 분해 수행 + (2026-11-27 현재) 구현 통합 상태 반영 |
+| **결과** | RFC 추천안 C 준수. opt-in 진입점 `un build --parallel` 확정. Work 10개(P00~P09) 분해, 게이트 분리안, 결정 개정 초안 5+1건, 공수 20.0 인일, 첫 슬라이스 P01→P05s 도출. **(2026-11-27 갱신)** P00~P08 구현·커밋 완료, D-099 append, P09 잔여. 안 A 미채택 유지. |
+| **작성 파일** | `docs/project/GOWAIT_IMPLEMENTATION_PLAN.md` **1개만 신규 작성** (기존 문서 수정 없음, 코드/테스트/스크립트 수정 없음) — 최초 작성 시점 기준각주; 현재는 상태·체크리스트·링크를 갱신했다. |
 | **Work 분해** | P00 M0/ARC-00 1.0 · P01 M1/ARC-00+NRT-06+RT-03 1.5 · P02 M2a/NRT-06 3.0 · P03 M2b/NRT-06 2.0 · P04 M3/NRT-06 2.5 · P05 M4/NRT-06 2.5 · P06 M5/CMP-05+ARC-00+NRT-06 3.0 · P07 M6/NAT-07+NRT-06 2.0 · P08 M7/QA-09+TOOL-08 1.5 · P09 M8/ARC-00 1.0 |
-| **게이트 재정의안** | 기본 8게이트( differential 102/0, exe-diff 78/0, test 51 files/1638, compile-check 42/0, unbc-roundtrip 51/51+42, edge-fuzz 5레인, strict canary, cargo test ) **전부 무변경**. 신규 `scripts/gowait-parallel.ps1` + `test/parallel/manifest.txt` + CI 14스텝만 추가. 비교는 `RESULT|` 집합 + exit + 에러 문구, 시간/시작순서 제외 |
+| **게이트 재정의안** | 기본 8게이트( differential 102/0, exe-diff 78/0, test 51 files/1638, compile-check 42/0, unbc-roundtrip 51/51+42, edge-fuzz 5레인, strict canary, cargo test ) **전부 무변경**. 신규 `scripts/gowait-parallel.ps1` + `test/parallel/manifest.txt` + `.github/workflows/build.yml`의 `Test (go/wait opt-in parallel gate)` 스텝(`488bf0b`)만 추가. 비교는 `RESULT|` 집합 + exit + 에러 문구, 시간/시작순서 제외 |
 | **첫 슬라이스 추천** | P00은 본 보고서로 완료 간주 → **W-25-P01(무코드 Send 안전성 감사, 1.5 인일)** → **W-25-P05s(스케줄러 스파이크, 0.5 인일)**. P02/P03/P05는 별도 worktree에서 병렬 가능 |
 | **사용자 재확인** | C-1~C-12 (진입점, opt-in 범위, std 전용, ABI 3개, CLI 옵션, 결정 개정 문구, 게이트 범위, 테스트 기대값 무수정, 공수·순서, Work ID 발급, 기존 변경 보존, 안 A 미승인) |
-| **Git 상태** | **커밋 없음.** 작업 디렉터리에 선행 수정 3건(`M AGENTS.md`, `M rust/nrt/src/native.rs`, `M rust/src/tir.rs`)이 이미 존재하며 **일체 건드리지 않음**. 신규 파일만 추가됨 (`?? docs/project/GOWAIT_IMPLEMENTATION_PLAN.md`) |
-| **완료 판정** | `review` (설계 산출물 완성). 구현 착수는 C-1~C-12 승인 및 하위 Work ID 발급 후 — `merged` 아님 |
+| **Git 상태** | 최초 작성 시점: **커밋 없음.** 선행 수정 3건(`M AGENTS.md`, `M rust/nrt/src/native.rs`, `M rust/src/tir.rs`) 존재, 일체 건드리지 않음, 신규 파일만 추가(`?? docs/project/GOWAIT_IMPLEMENTATION_PLAN.md`). **(2026-11-27 현재)** P00~P08 구현이 각각 커밋됨(`9d63c7f`, `3ae916a`, `a9d1d24`, `d2f176c`, `a7b39ea`/`fc7e5f8`/`baaefba`, `013858a`/`1b258b0`, `488bf0b`); 본 문서-갱신 작업에서는 커밋 없음. |
+| **완료 판정** | 최초 작성 시점: `review` (설계 산출물 완성), 구현 착수는 C-1~C-12 승인 및 하위 Work ID 발급 후. **(2026-11-27 현재)** C-1~C-12 승인 갈음, P00~P08 구현 완료, P09(문서 정리)만 잔여. |

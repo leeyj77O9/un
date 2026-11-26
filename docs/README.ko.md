@@ -69,7 +69,7 @@ Un은 Rust로 작성되었다: 소스 파일을 렉싱/파싱한 뒤 최적화(�
 
 - 백그라운드에서 표현식을 실행하고 `Future`를 반환하는 `go`
 - `Future`를 대기하는 `wait`
-- map과 submit을 제공하는 `flow.spawn(n)` 풀 핸들 (Un은 협업적 싱글스레드 런타임이라 OS 스레드를 만들지 않고, pool.map은 인자마다 결과를 만들지만 호출자 스레드에서 인라인으로 실행됨)
+- map과 submit을 제공하는 `flow.spawn(n)` 풀 핸들 (기본은 협업적 싱글스레드 런타임이라 OS 스레드를 만들지 않고, pool.map은 인자마다 결과를 만들지만 호출자 스레드에서 인라인으로 실행됨; plain `un build --parallel`로 실제 병렬 실행 opt-in)
 
 ### 계획됨
 
@@ -309,7 +309,7 @@ Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일�
   경로는 `if`/`while`/`for` 루프까지 네이티브로 지원한다. core 부분집합만
   지원하며 `scripts\obj-demo.ps1`이 fib 예제를 링크해 실행까지 검증한다
   (`docs/compile/OBJ_MILESTONES.md`).
-- `un build <file.un> [-o out.exe]`는 위 과정을 명령 하나로 수행해 독립 실행형
+- `un build <file.un> [-o out.exe] [--parallel]`는 위 과정을 명령 하나로 수행해 독립 실행형
   `.exe`를 만든다 (rustup self-contained mingw gcc로 링크). **plain exe는 `fn main`만 실행한다**
   — 모듈 최상위 문장은 실행되지 않고 종료 코드는 `main()`의 반환값이다. 이에 반해
   `un run` / `un native` / `--embed`는 최상위 문장을 실행하고 `main()`은 파일이
@@ -330,6 +330,11 @@ Cranelift 네이티브 코드로 컴파일한다. Core 밖의 함수는 동일�
   `dict[str, ClassName]` 등)은 elem kind를 TIR에 명시해 plain build에서도 네이티브로
   컴파일된다. 중첩 리스트의 element는 불투명 핸들로 취급되어 내부 인덱싱·연산은
   lowering하지 않는다.
+- `un build --parallel <file.un> [-o out.exe]`는 plain build 전용 opt-in이다:
+   `go`/`wait`를 실제 워커 스레드에서 실행하고 `flow`/`pool`/`atomic` 핸들을
+   thread-backed로 승격한다(생성된 드라이버가 `UN_PARALLEL=1` 설정). 플래그가 없으면
+   deferred cooperative 의미론이 그대로 유지된다. `--embed`와 함께 쓰면 사용법 오류
+   (exit 2, 메시지 `--parallel requires a plain build; drop --embed`)다.
 - `un build`는 plain과 `--embed` 양쪽 모두 기본적으로 **fully typed mode**다.
   명시적 `any`/Union 어노테이션과 별칭, variadic·이름 없는 파라미터, 타입 없는 lambda
   파라미터는 진단과 함께 거부된다 — callable 파라미터는 `func(..) -> ..`를 쓸 것.
@@ -393,8 +398,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 ```
 
 `UV_JIT=2`는 strict canary다. JIT 후보가 하나라도 fallback stub이 되면 exit 2로 즉시
-종료해 회귀를 잡는다. Int용 `test/jit/strict.un`과 Float math intrinsic용
-`test/jit/strict_float.un`을 CI가 검증한다. `.unbc` 왕복 검증은 `un run`과
+종료해 회귀를 잡는다. CI는 5개 fixture — Int용 `test/jit/strict.un`, Float math
+intrinsic용 `strict_float.un`, 컬렉션·클래스·연산용 `strict_collections.un` /
+`strict_class.un` / `strict_ops.un` — 를 검증하며 2026-11-27 기준 5/5 green이다.
+`.unbc` 왕복 검증은 `un run`과
 `un compile` + `un run <file>.unbc`의 stdout/stderr/exit code를 바이트 비교한다.
 
 ```powershell
@@ -403,8 +410,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\unbc-roundtrip.ps1 -
 
 Compile Mode 교차 검증, no-VM exe 동치 검증, 크로스 레인 edge fuzz도 같은 방식으로
 실행한다(`scripts\compile-check.ps1`, `scripts\exe-diff.ps1`, `scripts\edge-fuzz.ps1`).
-CI(`.github/workflows/build.yml`)는 push/PR마다 release 빌드와 위 검증 스텝을 포함해
-총 12스텝을 실행한다.
+CI(`.github/workflows/build.yml`)는 push/PR마다 release 빌드와 위 검증 게이트를 실행한다.
+현재 스텝 구성은 해당 파일을 참조한다(고정 스텝 수는 쓰지 않는다).
 
 `test/KnownFailures.txt`에 있는 파일은 runner가 KNOWN FAIL로 기록하고,
 Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDivergent.txt`에 있는 파일은
@@ -414,14 +421,15 @@ Negative 51 checks 매칭 + 0 documented divergences, Known 0 파일이다. (202
 Rust 테스트는 `cargo test --release --workspace` 430 passed(nrt 92 + nrt scheduler_spike 5 +
 lib 301 + un bin 24 + playground 8)다. JIT differential 102 파일 / 0 차이, `.unbc` 왕복
 Positive 51/51 · Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 42/0,
-exe 동치 검증 78/0이다. (2026-11-27 재측정)
+exe 동치 검증 78/0, edge-fuzz 7 케이스 / 0 차이, JIT strict canary 5/5이다.
+(2026-11-27 재측정)
 
 벤치마크는 6레인(Un VM, Un JIT, Compile Mode, standalone exe, CPython, Node.js)을 같은
 입력·알고리즘·측정 절차로 반복 측정하고, 결과를
 `bench/results/<timestamp>/results.csv`, `results.json`, `results.md`에 저장한다.
 `scripts\bench-report.ps1`은 결과를 `bench/report.html`로 변환하고 `-Gate`로 회귀를 검사한다.
-현재 보고서의 Un JIT/Python 기하평균은 **4.434x**이며, 새 워크로드
-`dict_str5000`(문자열 키 dict 삽입·조회), `bytes_ops`(bytes 모듈 왕복),
+2026-11-25 18:57:42 +09:00(커밋 `088973b`)에 생성된 보고서의 Un JIT/Python 기하평균은
+**3.688x**이며, 새 워크로드 `dict_str5000`(문자열 키 dict 삽입·조회), `bytes_ops`(bytes 모듈 왕복),
 `slice_ops`(리스트 슬라이스 읽기·할당)이 포함되어 있다.
 
 ```powershell
@@ -621,10 +629,17 @@ a = go slow(5)
 io.write(wait a)    # 10
 ```
 
-`flow.spawn(n)`은 map과 submit을 제공하는 풀 핸들을 만든다. 다만 Un은 협업적 싱글스레드
-런타임이라 OS 스레드를 만들지 않는다. `pool.map`은 인자마다 결과를 만들고 `pool.submit`은
-`Future`를 돌려주지만, 실제 실행은 호출자 스레드에서 인라인으로 이루어진다. 공유 상태를 두고
-경쟁이 일어나지 않게 하려면 `atomic.int`/`atomic.bool`(예: `counter.inc()`)로 원자 연산을 할 수 있다.
+`flow.spawn(n)`은 map과 submit을 제공하는 풀 핸들을 만든다. 기본적으로 Un은 협업적
+싱글스레드 런타임이라 OS 스레드를 만들지 않는다. `pool.map`은 인자마다 결과를 만들고
+`pool.submit`은 `Future`를 돌려주지만, 실제 실행은 호출자 스레드에서 인라인으로 이루어진다.
+공유 상태를 두고 경쟁이 일어나지 않게 하려면 `atomic.int`/`atomic.bool`(예: `counter.inc()`)로
+원자 연산을 할 수 있다.
+
+기본 경로는 선점형 멀티스레딩이 아닌 단일 스레드 협업 모델이다. 예외는 opt-in plain
+`un build --parallel` 실행형뿐이다: `go`/`wait`를 실제 워커 스레드에서 실행하고
+`flow`/`pool`/`atomic` 핸들을 thread-backed 형태로 승격한다(생성된 드라이버가
+`UN_PARALLEL=1` 설정). `un run`, `un native`, `--embed`, 그리고 플래그 없는 plain build는
+기존 deferred cooperative 동작을 유지한다.
 
 ```un
 use atomic
@@ -681,7 +696,7 @@ work()    # start done
 
 | 모듈 | 주요 API |
 |---|---|
-| `atomic` | `atomic.int(initial?)`/`atomic.bool(initial?)` — `atomic_int`/`atomic_bool` 값 생성. `get`/`set`/`add`(int 전용)/`inc`/`dec`(int 전용)/`exchange`/`compare_and_swap` 제공. 싱글스레드 협업 런타임이라 `RefCell` 기반이며, `add`/`inc`/`dec`는 Un Int와 같은 i64 wrapping 동작 |
+| `atomic` | `atomic.int(initial?)`/`atomic.bool(initial?)` — `atomic_int`/`atomic_bool` 값 생성. `get`/`set`/`add`(int 전용)/`inc`/`dec`(int 전용)/`exchange`/`compare_and_swap` 제공. 기본 single-thread 협업 경로에서는 `RefCell` 기반이며 `un build --parallel`에서는 thread-backed로 전환된다. `add`/`inc`/`dec`는 Un Int와 같은 i64 wrapping 동작 |
 | `io` | `write`, `read`, `open`, `clear` |
 | `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
@@ -693,7 +708,7 @@ work()    # start done
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
 | `time` | `sleep`(int=ms, float=초)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` (`ms`·`ns` read-only 프로퍼티) |
-| `flow` | `spawn`(pool 핸들, 협업적 싱글스레드 — 호출자 스레드에서 인라인 실행)과 `lock` |
+| `flow` | `spawn`(pool 핸들, 기본은 협업적 싱글스레드 — 호출자 스레드에서 인라인 실행; `un build --parallel`에서는 thread-backed)과 `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options`, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
 | `types` | `u8`/`u16`/`u32`/`u64`, `i8`/`i16`/`i32`/`i64`, `f32`/`f64` — 고정 폭 정수/실수 변환 생성자. 범위 검사는 변환 시점에만 하고 벗어나면 잡을 수 없는 예외를 발생(출력은 `error: <메시지>`). 이후 연산은 일반 `int`/`float`과 동일(`u64`는 Un int가 i64라 `i64::MAX`까지만 담김). `use types` 필요 — import가 없는 모듈에서는 고정 폭 이름(`u32` 등 포함)이 알 수 없는 타입 어노테이션이 됨 |
@@ -798,7 +813,7 @@ Un/
 |                        obj-demo.ps1, exe-diff.ps1, edge-fuzz.ps1)
 |-- bench/               (벤치마크 스크립트, bench/{node,python}/, bench/results/ — gitignore)
 |-- docs/                (guides/, spec/, project/, compile/, audit/, README.md)
-`-- .github/workflows/build.yml  (GNU toolchain 빌드 + 12개 검증 스텝)
+`-- .github/workflows/build.yml  (GNU toolchain 빌드 + 검증 게이트; 스텝 목록은 해당 파일 참조)
 ```
 
 ## 예제
@@ -882,6 +897,8 @@ class Heap
 - 런타임 객체 모델과 타입 시스템
 - 표준 라이브러리 모듈
 - 비동기 실행과 워커 풀
+- plain build 전용 opt-in 병렬 실행 `un build --parallel`: 실제 `go`/`wait` 실행과
+  thread-backed `flow`/`atomic` 핸들(`UN_PARALLEL=1`); 기본은 deferred cooperative 유지
 - 클래스, 다중 상속, `enum`, 필드 목록을 받는 클래스(`class Point(x, y)`)
 - 클래스 Property 접근자(`get`/`set`, `field`, `value`)
 - 범위 연산자 `a..b`와 지연 평가 이터레이터 체이닝
@@ -898,7 +915,9 @@ class Heap
 
 - 더 강한 정적 타입 검사
 - 패키지 매니저
-- 컴파일 언어 잔여 항목(`docs/project/COMPILER_LANGUAGE_ROADMAP.md`): class/variant pattern AOT와 named field/spread, `func(..)` 반환 타입, 상속/`__is__` 타입 패턴, `go`/`wait` 진짜 병렬(RFC), 빌드 캐시
+- 컴파일 언어 잔여 항목(`docs/project/COMPILER_LANGUAGE_ROADMAP.md`): class/variant pattern AOT와
+  named field/spread, `func(..)` 반환 타입, 상속/`__is__` 타입 패턴, `go`/`wait` 진짜 병렬
+  (plain `un build --parallel` opt-in으로 구현; 기본 경로는 deferred 유지), 빌드 캐시
 
 ## 기여하기
 
@@ -910,7 +929,7 @@ class Heap
    `test/negative/manifest.txt`에 `path|expected exit|expected substring` 행으로 등록한다.
 5. 풀 리퀘스트를 연다. 커밋은 기여자가 직접 수행한다. 자동화 도구는 git에 푸시하지 않는다.
 
-코딩 컨벤션: Rust 2021 edition을 쓴다. 모듈은 `//!` 설명과 함께 파일 상단에 문서를 두고, `?` 연산자로 오류를 전파하며, 패턴 매칭을 적극적으로 쓴다. 외부 crate 의존성은 기본적으로 없고 표준 라이브러리만 쓴다. 예외로 `vendor/` 아래 패치된 `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`이 Cranelift JIT에 쓰인다 — GNU toolchain에 `dlltool.exe`가 없어 `windows-sys 0.52.0`을 빌드할 수 없기 때문에 raw kernel32 FFI로 패치한 사본이다.
+코딩 컨벤션: Rust 2021 edition을 쓴다. 모듈은 `//!` 설명과 함께 파일 상단에 문서를 두고, `?` 연산자로 오류를 전파하며, 패턴 매칭을 적극적으로 쓴다. 대부분의 코드는 표준 라이브러리만 쓰지만, `rust/Cargo.toml`은 crates.io의 Cranelift 6개 crate(`cranelift-codegen/-frontend/-jit/-module/-native/-object 0.137.1`)에 의존한다. `vendor/` 아래에는 패치된 `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`이 있다 — GNU toolchain에 `dlltool.exe`가 없어 `windows-sys 0.52.0`을 빌드할 수 없기 때문에 raw kernel32 FFI로 패치한 사본이다. 새 외부 crate는 정말 필요할 때만 추가한다.
 
 ## 라이선스
 

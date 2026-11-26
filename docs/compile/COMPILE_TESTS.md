@@ -4,16 +4,16 @@
 > 세 축으로 구성된다: (A) `un native`/`un check` 결과 테스트, (B) 결과면 안 되는 실패
 > 테스트, (C) 인터프리터 vs 컴파일 모드 cross-validation.
 
-## 현재 상태 (2026-11-23)
+## 현재 상태 (2026-11-27)
 
 | 구분 | 상태 |
 |---|---|
 | `un check` / `un native` 기존 회귀 (`scripts/test.ps1`) | **green** — Positive 51 files / 1638 passed / 0 failed / 0 crashed, Negative 51 matched / 0 documented divergences, Known 0 |
 | `scripts/differential.ps1` (UV_JIT=0 vs JIT 바이트 비교) | **green** — 102 files, 0 differences |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | **green** — positive 51/51 identical, 0 mismatched (negative 42 identical + 9 skipped(compile-rejected)) |
-| `cargo test --release --workspace` | **green** — 291 passed (nrt 4 + lib 246 + un bin/LSP 19 + playground 8), 0 failed |
-| `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 36 passed, 0 failed |
-| `scripts/exe-diff.ps1` (exe ↔ `un run` 바이트 비교) | **green** — 42 passed, 0 failed |
+| `cargo test --release --workspace` | **green** — 430 passed (nrt 92 + nrt scheduler_spike 5 + lib 301 + un bin 24 + playground 8), 0 failed |
+| `scripts/compile-check.ps1` (compile-mode cross-validation) | **green** — 42 passed, 0 failed |
+| `scripts/exe-diff.ps1` (exe ↔ `un run` 바이트 비교) | **green** — 78 passed, 0 failed |
 | `un native` 바이너리 정확성 (native 실행 vs interpreter 실행) | **검증됨** — typed_pass.un, loop/recursion/collatz 벤치필, div-zero·재귀 bail 경로 포함 |
 
 ## 실행 방법
@@ -53,7 +53,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 | `bench/native_int_ops.un` | `int_ops`의 core-compile 가능한 변형 — `for 1..n` + 정수 산술만 사용, `un native`/plain exe 양쪽에서 측정 |
 | `bench/native_loop.un` | `nested_sum_200`의 core-compile 가능한 변형 — 중첩 `for 1..size`, 700회 반복 평균 ms 출력 |
 | `test/assert.un` | 어설트 모듈 (`assert_eq` / `assert_true` / `summary()`) |
-| `test/compile/errors/*.un` | 거부가 예정된 프로그램 예제(19개) — `un check`/`un native` 양쪽이 exit 1이며 `manifest.txt`의 기대 부분문자열이 에러 출력에 있어야 하는 부정 케이스 (`member call on list/str`, `undefined name`, `unassignable property`, `return type mismatch`, `untyped params`, generic arg/bound, syntax error 등) | 
+| `test/compile/errors/*.un` | 거부가 예정된 프로그램 예제(22개) — `un check`/`un native` 양쪽이 exit 1이며 `manifest.txt`의 기대 부분문자열이 에러 출력에 있어야 하는 부정 케이스 (`member call on list/str`, `undefined name`, `unassignable property`, `return type mismatch`, `untyped params`, generic arg/bound, syntax error 등) |
 
 ## 알려진 차이 (문서화된, 의도적)
 
@@ -76,9 +76,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 
 ## 실패 테스트 프레임워크
 
-- 정식 negative manifest(`test/compile/errors/*.un` 19개 + `manifest.txt`)가 구현되어
+- 정식 negative manifest(`test/compile/errors/*.un` 22개 + `manifest.txt`)가 구현되어
   있다. `scripts/compile-check.ps1`이 각 픽스처가 `un check`/`un native` 양쪽에서
-  `exit 1`과 기대 진단 부분문자열을 내는지 검사한다(전체 36 passed, 0 failed).
+  `exit 1`과 기대 진단 부분문자열을 내는지 검사한다(전체 42 passed, 0 failed).
 - 어노테이션 누락 소스가 `requires a type annotation` 진단을 내는 것도 같은
   프레임워크에서 검사한다. 거부 케이스를 추가하려면 픽스처 + `manifest.txt` 한 행을
   더하면 된다.
@@ -87,10 +87,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 
 - **Vm 모드(`un native`)의 TIR core**에서는 class/closure/collection/union/`any`/
   native 호출/부동소수 함수(sqrt 등)가 네이티브화되지 않고 인터프리터가 실행한다
-  (의도된 동작, 버그 아님). 바이트코드 JIT(`jit_bc`) 대상도 마찬가지다.
+  (의도된 동작, 버그 아님). 이는 TIR core 기준이며, 바이트코드 JIT(`jit_bc`)는
+  class Int 필드 intrinsic·IntVec/IntDict·`math` Float intrinsic을 별도로 지원한다.
 - 반면 **plain `un build`**는 `libnrt.a`로 class/상속·예외·Str·list/dict·제너릭 타입
   컬렉션·closure(escape 포함)·기본값 인자·단순 모듈·부동소수 math·byte-identical
-  traceback을 네이티브 실행한다 (`OBJ_MILESTONES.md`, `scripts/exe-diff.ps1` 42 passed).
+  traceback을 네이티브 실행한다 (`OBJ_MILESTONES.md`, `scripts/exe-diff.ps1` 78 passed).
 - **수렴 검사(exhaustiveness)**는 구현됨 — bool/none는 해당 arm(또는 wildcard),
   그 외 타입은 `_` wildcard arm을 필수로 검사한다 (`COMPILE_FINDINGS.md` F-014,
   `test/compile/matches.un`).

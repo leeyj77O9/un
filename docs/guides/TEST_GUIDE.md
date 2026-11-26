@@ -1,8 +1,9 @@
 # Test Guide
 
 This document explains how the Un test suite is organized and how to run it.
-There is no unit-test runner in a build system: every test is an `.un` script
-executed by the interpreter, and the results are aggregated by a PowerShell runner.
+`.un` scripts are executed by the interpreter and their results are aggregated
+by the PowerShell runner (`scripts/test.ps1`); Rust-side unit and integration
+tests run separately via `cargo test --release --workspace`.
 
 ## Running the tests
 
@@ -70,13 +71,13 @@ test/
                           circular_main.un
 ```
 
-Counts (2026-11-23):
+Counts (2026-11-27; the 2026-11-23 baseline was 50 files / 1606 assertions):
 
 | Group | Files | Assertions |
 |---|---|---|
 | suite | 1 | 109 |
-| unit + integration + regression | 49 | (1606 - 109) |
-| **Positive total** | **50** | **1606** |
+| unit + integration + regression | 50 | (1638 - 109) |
+| **Positive total** | **51** | **1638** |
 | negative (exit-code checks) | 51 checks | 51 matched + 0 documented divergences |
 | known (documented defects) | 0 | none registered |
 | fixtures (not run directly) | 10 | n/a |
@@ -146,7 +147,8 @@ Known failures: 0 still failing, 0 unexpectedly passing
 Overall exit code: 0
 ```
 
-`cargo test --release --workspace` covers the Rust side (273 tests: nrt 4 + lib 246 + un bin/LSP 19 + playground 8, including
+`cargo test --release --workspace` covers the Rust side (430 tests as of 2026-11-27:
+nrt 92 + nrt scheduler_spike 5 + unvm lib 301 + un bin 24 + playground 8, including
 the JIT entry-map isolation, repeated-native-call, sandbox path-confinement, and
 generic-type semantic-token regression guards). Additional runners compare
 execution shapes: `scripts/differential.ps1` runs every manifest file with
@@ -154,9 +156,10 @@ execution shapes: `scripts/differential.ps1` runs every manifest file with
 `scripts/unbc-roundtrip.ps1 -IncludeNegative` byte-compares `un run` against
 `un compile` + `un run <file>.unbc` (Positive 51/51, compilable Negative 42
 identical + 9 compile-rejected skips); `scripts/compile-check.ps1` cross-checks
-Compile Mode (36 passed, 0 failed); and `scripts/exe-diff.ps1` byte-compares
-plain no-VM and `--embed` executables against `un run` (42 passed, 0 failed).
-`scripts/edge-fuzz.ps1` runs cross-lane edge cases across VM/JIT/Compile/Python/Node.
+Compile Mode (42 passed, 0 failed); and `scripts/exe-diff.ps1` byte-compares
+plain no-VM and `--embed` executables against `un run` (78 passed, 0 failed).
+`scripts/edge-fuzz.ps1` runs cross-lane edge cases across VM/JIT/Compile/Python/Node
+(7 cases, 0 mismatches); `UV_JIT=2` strict canary covers five JIT fixtures (5/5).
 
 All previously known failures are fixed: negative-step slicing, `upper_bound`,
 `lower_bound` past-the-end, set equality, dict equality, `2 in [1, 2, 3]`,

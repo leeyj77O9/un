@@ -21,8 +21,12 @@ and `docs/project/REFACTOR_LOG.md` records what landed.
                                                         native::* (io, fs, re, math, ...)
 ```
 
-The runtime is single-threaded and cooperative: `go`/`wait`, `pool` and `lock`
-all execute on the calling thread (see `docs/project/DECISIONS.md` D-012, D-054).
+The default runtime is single-threaded and cooperative: `go`/`wait`, `pool` and
+`lock` all execute on the calling thread (see `docs/project/DECISIONS.md`
+D-012, D-054). The opt-in `un build --parallel` (plain build only) is the sole
+exception: TIR `MakeClosure`/`Await` with `parallel = true` calls `unrt_go`/
+`unrt_wait` on a thread pool, while the default path keeps deferred cooperative
+execution. `flow`/`pool`/`atomic` parallel entry points are opt-in only.
 
 ## 2. Pipeline
 
@@ -35,6 +39,16 @@ all execute on the calling thread (see `docs/project/DECISIONS.md` D-012, D-054)
 | translate | `rust/src/vm/transfer.rs` | stack → register translation; register count is `locals + max_stack_depth + 1`, capped at 256 |
 | validate | `rust/src/bytecode/mod.rs` | opcode contract, register limit, source-map length invariant |
 | execute | `rust/src/vm/mod.rs` | register VM; `match` dispatch on `Op` |
+| typeck | `rust/src/typeck.rs` | Compile Mode: static checks, inference and diagnostics (`un check`) |
+| tir | `rust/src/tir.rs` | Compile Mode: typed IR, core eligibility, generic monomorphization |
+| natcode | `rust/src/natcode.rs` | Compile Mode: Cranelift native codegen; in-process entries in `jit_cache::TIR_FNS` |
+| objify | `rust/src/objify.rs` | `.unbc` → relocatable `.obj` (Int core subset) |
+| abi | `rust/src/unrt.rs`, `rust/nrt/` | `unrt_*`/`nrt_*` C ABI; `libnrt.a` is the no-VM runtime behind plain `un build` |
+
+Compile Mode's `parse → optimize → typeck → tir → natcode` pipeline and the
+`.obj`/no-VM executable path are documented in
+[`COMPILE_DESIGN.md`](../compile/COMPILE_DESIGN.md) and
+[`OBJ_MILESTONES.md`](../compile/OBJ_MILESTONES.md).
 
 ## 3. Object model
 
@@ -52,7 +66,7 @@ pub struct ObjData {
     pub parents: Vec<Obj>,
     pub members: Vec<(String, Obj)>,   // instance fields, in assignment order
     pub annotations: Vec<(String, Obj)>,
-    pub payload: Payload,        // 31 variants
+    pub payload: Payload,        // 32 variants
 }
 ```
 
@@ -60,9 +74,10 @@ pub struct ObjData {
   `-1024..100000`), `obj::str` → `world::str_pooled` (pool of ≤10,000 strings
   of ≤1,000 chars), `obj::boolean` → `world::bool_obj`.
 - `Payload` carries the value: `Int`, `Float`, `Str`, `Bool`, `Date`, `List`,
-  `Dict`, `Set`, `Tup`, `Stru`, `Enu`, `Json`, `Func`, `Property`, `FieldRef`,
-  `Iter`, `Future`, `Pool`, `Lock`, `AtomicInt`, `AtomicBool`, `Stream`,
-  `Random`, `HttpClient`, `WebSocket`, `TObj`, `Spread`, `Stopwatch`.
+  `Bytes(Vec<u8>)` (dedicated byte-string representation, D-098), `Dict`, `Set`,
+  `Tup`, `Stru`, `Enu`, `Json`, `Func`, `Property`, `FieldRef`, `Iter`, `Future`,
+  `Pool`, `Lock`, `AtomicInt`, `AtomicBool`, `Stream`, `Random`, `HttpClient`,
+  `WebSocket`, `TObj`, `Spread`, `Stopwatch`.
   `none` and `null` have no payload variant of
   their own — they are `Plain` objects distinguished by their `type_name`.
 - Attribute lookup: `get_attr_from` → instance members → bound method →
@@ -82,15 +97,15 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
 - **Locals live in the scope slot table**, not in registers. Registers hold
   expression temporaries only; the scratch area starts after the local slots
   (`transfer.rs:29`), so register pressure equals expression depth.
-- **Arguments live in a separate `ArgFrame` stack** (`vm/mod.rs:96-99`).
+- **Arguments live in a separate `ArgFrame` stack** (`vm::mod::ArgFrame`).
 - Closures capture the whole `Context`; there is no upvalue cell and
   `LoadUpv`/`StoreUpv` are ABI placeholders that are never emitted.
 - Exception handling uses a `TryEntry` stack. The recorded handler depth
   (`TryEntry.acc_depth`) is read on handler entry to truncate the argument
-  frame (`vm/mod.rs:346/354/371`) — TD-12 is resolved.
+  frame (`vm::mod` handler-entry `args.truncate`) — TD-12 is resolved.
 - `PLAN_CACHE` (thread-local) maps `program.id` → `(Rc<Program>, Rc<Plan>)`.
   It is bounded to 64 entries with FIFO eviction by first insertion
-  (`vm/mod.rs:1672`, `PLAN_CACHE_LIMIT = 64`); insert-beyond-limit drops the
+  (`PLAN_CACHE`, `PLAN_CACHE_LIMIT = 64`); insert-beyond-limit drops the
   oldest entry's `Rc<Program>`/`Rc<Plan>`, and a later hit recompiles from
   the program passed to `plan_for`. Keys are opaque monotone `Program.id`s,
   so a pointer collision cannot serve a stale plan (TD-03 resolved).
@@ -160,7 +175,7 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
     process, see TD-05). `clear_program(id)` frees exactly one program's
     native code and is what tests use.
   - `PLAN_CACHE` (thread-local) is bounded to `PLAN_CACHE_LIMIT = 64` entries
-    with FIFO eviction by first insertion (`vm/mod.rs:1672`); eviction drops
+    with FIFO eviction by first insertion; eviction drops
     the oldest entry's `Rc<Program>`/`Rc<Plan>` and a later hit recompiles
     from the program passed to `plan_for`. Keys are opaque monotone
     `Program.id`s, so a mis-keyed cache is impossible (TD-03 resolved). This
@@ -199,7 +214,9 @@ bucket-chained hash table, `docs/project/DECISIONS.md` D-065) which backs `dict`
 ## 6. Native modules
 
 `rust/src/native/` — `io`, `fs`, `re`, `math`, `iter`, `time`, `os`, `sys`,
-`random`, `http`, `ws`, `atomic`, `flow`, `inspect`, `builtin`, `members`.
+`random`, `http`, `ws`, `atomic`, `flow`, `inspect`, `builtin`, `members`,
+`bytes`, `codes`, `stream`, `net`, `stopwatch`, `types`, `date_members`,
+`messages`.
 
 Registration is explicit in `native::init`; there is no attribute-based
 discovery. `native/members.rs` is a large member table (the `x.m(...)`
@@ -215,9 +232,13 @@ them.
 | `test/KnownFailures.txt` | scripts that are expected to fail (currently empty) |
 | `test/KnownDivergent.txt` | documented divergences (currently none registered) |
 | `scripts/differential.ps1` | runs every manifest file with `UV_JIT=0` and default JIT, diffs stdout + exit code (102 files, 0 differences) |
-| `scripts/unbc-roundtrip.ps1` | `.unbc` round-trip byte comparison for Positive and compilable Negative files |
+| `scripts/unbc-roundtrip.ps1` | `.unbc` round-trip byte comparison for Positive and compilable Negative files (51/51 + 42 identical, 9 compile-rejected skips) |
+| `scripts/compile-check.ps1` | Compile Mode cross-validation — 42 checks, 0 failed (19 `test/compile/*.un` + 1 untyped + 22 `test/compile/errors/*.un`) |
+| `scripts/exe-diff.ps1` | no-VM/embed exe ↔ `un run` stdout/stderr/exit byte comparison (78 checks, 0 failed) |
+| `scripts/edge-fuzz.ps1` | cross-lane fuzz (VM/JIT/Compile/exe/Python/Node) — 7 checks, 0 failures |
+| `UV_JIT=2` strict canaries | 5 fixtures across 3 CI steps (`test/jit/strict*.un`: Int, Float, collections, class, ops), all pass |
 | `scripts/bench.ps1` | warm-up + repetitions + statistics (min/median/mean/max/stddev/ops) |
-| `cargo test --release --workspace` | 273 tests (nrt 4 + lib 246 + un bin/LSP 19 + playground 8; lexer, parser, compiler, runtime, VM, native, net/redirects + JIT/sandbox regression guards) |
+| `cargo test --release --workspace` | 430 tests (nrt 92 + nrt scheduler_spike 5 + lib 301 + un bin 24 + playground 8; lexer, parser, compiler, runtime, VM, native, net/redirects + JIT/sandbox regression guards) |
 
 The build is release-only and requires the GNU toolchain:
 
@@ -245,6 +266,6 @@ here, so a test or the WASM playground must restore what it changes.
 | --- | --- | --- |
 | `rust/src/runtime/obj.rs` (`un_instance_int_get` / `un_instance_int_ok` / `un_instance_int_ok_name` / `un_instance_int_set`) | direct member access for the JIT | documented `# Safety` contract, `catch_unwind`, name-checked for the class-layout intrinsic, bails to the interpreter on any mismatch |
 | `rust/src/runtime/int_dict.rs` | integer-keyed dictionaries for JIT-emitted code | `Mutex` arena (poison-tolerant lock); tables are freed at JIT exits via `un_dict_int_free`; the arena itself is process-lifetime, wiped by `jit_cache::clear()` |
-| `rust/src/jit_cache.rs:57` | `unsafe impl Send for JitEntry` | sound only because the vendored Cranelift backend leaks its allocations |
+| `rust/src/jit_cache.rs` (`unsafe impl Send for JitEntry`) | `unsafe impl Send for JitEntry` | sound only because the vendored Cranelift backend leaks its allocations |
 | `rust/src/vm/mod.rs` (`F1..F10`) | call into JIT-generated code | hidden result pointer + `param_tags` bitmask contract, arity asserted |
 | `rust/src/runtime/clock.rs` | WASM host imports | WASM-only |

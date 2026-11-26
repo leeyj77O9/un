@@ -23,7 +23,7 @@
 - **Un**: 들여쓰기 기반 문법, 패턴 매칭, `go`/`wait` 비동기 실행을 제공하는 동적 타입 스크립팅 언어.
 - **구현**: Rust 바이트코드 컴파일러 + 레지스터 기반 VM (`unvm`, 라이브러리 이름 `unvm`).
 - **파이프라인**: `Source -> Lexer -> Parser -> Optimizer (desugar+fold) -> Bytecode Compiler -> Register VM`
-- **규모**: Rust 113개 파일(target 제외; `rust/src` 90 + `rust/nrt/` 22 + `rust/playground/` 1) / 64,378줄(`rust/src` 57,383 + `rust/nrt/` 6,995), `test/` 아래 `.un` 스크립트 177개. (2026-11-23 재측정)
+- **규모**: Rust 125개 파일(target 제외; `rust/src` 94 + `rust/nrt/` 30 + `rust/playground/` 1) / 86,348줄(`rust/src` 71,577 + `rust/nrt/` 14,085 + `rust/playground/` 686), `test/` 아래 `.un` 스크립트 221개. (2026-11-27 재측정; git ls-files + `(Get-Content).Count` 실측)
 - **JIT 동작**: `jit_bc.rs`는 `.unbc`를 직접 번역하는 Cranelift JIT다. `vm::plan_for`가 프로그램을 읽을 때 Int 부분집합(i64 파라미터·지역변수, `iter.range` 루프, 정수 산술과 비트연산 `&` `|` `^`, `FusedIntMulAdd`)과 IntDict/IntVec/class intrinsic와 math Float intrinsic에 속하는 proto를 native로 컴파일하고 `jit_cache`에 등록한다. 결과는 hidden pointer로 (value, tag)를 기록하는데 tag=0 Int, tag=1 Float(IEEE-754 비트), tag=2는 런타임 bail(엔진 오류가 아니라 의미론 보존을 위한 인터프리터 fallback)이다. 나머지는 전부 인터프리터로 fallback. 0인자 사용자 함수도 JIT 대상이다(컴파일러 합성 proto는 제외). **클래스 메서드는 JIT 대상이다**: receiver는 hidden pointer 형태의 raw `Rc<ObjData>` 포인터로 전달되고, 클래스 메서드는 receiver를 local slot 0에 바인딩한다. `self.<Int필드>`의 직접 read/write는 layout 인덱스와 `[이름 == 필드이름, payload == Int]`를 **호출 시점에 name-checked**하는 intrinsic으로 수행하고, 검증 실패 시 bail → 인터프리터로 fallback한다. `UV_JIT=0`으로 런타임에 opt-out. `UV_JIT=2`는 strict canary로, JIT 후보가 하나라도 fallback stub이 되면 exit code 2로 즉시 죽는다(`.github/workflows/build.yml`의 strict canary 3스텝이 `test/jit/strict.un`(Int), `strict_float.un`(Float), `strict_{collections,class,ops}.un`(컬렉션·클래스·연산)으로 검증).
 - **기준 문서**: `docs/project/REFACTOR_SUMMARY.md`(전체 요약), `docs/project/PROJECT_AUDIT.md`(감사 결과), `docs/project/REFACTOR_LOG.md`(변경 이력), `docs/spec/ARCHITECTURE.md`(구조), `docs/project/TECHNICAL_DEBT.md`(부채 목록)가 현재 상태의 기준 문서다.
 - **이전 역사**: 원래 C#/.NET 8 트리 워킹 인터프리터로 구현되어 있었다. Rust 포트가
@@ -48,7 +48,7 @@ C:\dev\un/
 │  │  ├─ jit_cache.rs        # JIT 컴파일된 함수 전역 캐시/등록
 │  │  ├─ jit_bc.rs         # .unbc가 1:1 대응되는 Cranelift JIT (Int 부분집합 + IntVec/IntDict/class intrinsic + math Float intrinsic, Float poly-tag 반환)
 │  │  ├─ runtime/            # obj, collections, iters, function, world/(모듈 분할), scope, date, ...
-│  │  ├─ native/             # io, fs, re, math, iter, ... (`native::init`에서 명시적 등록)
+│  │  ├─ native/             # io, fs, re, math, iter, bytes, http, ws, ... (`native::init`에서 명시적 등록)
 │  │  └─ playground/         # WASM 진입점 (PlaygroundRunner.RunCode 대응)
 │  └─ target/               # 빌드 산출물 (gitignore)
 └─ main.un                 # 사용자의 스크래치 (git에 추적 중; 에이전트는 수정하지 않는다)
@@ -77,7 +77,7 @@ rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path ru
 # WASM 산출물 (un-playground용)
 rustup run stable-x86_64-pc-windows-gnu cargo build --release --target wasm32-unknown-unknown --manifest-path rust/Cargo.toml -p unvm-playground
 
-# Rust 테스트 (nrt 25 + lib 296 + LSP 24 + playground 8 = 375 passed)
+# Rust 테스트 (nrt 92 + nrt scheduler_spike 5 + unvm lib 301 + un bin 24 + playground 8 = 430 passed)
 rustup run stable-x86_64-pc-windows-gnu cargo test --release --workspace --manifest-path rust/Cargo.toml
 
 # 전체 테스트 runner ( Positive + Negative + KnownFailures + KnownDivergent 집계 )
@@ -112,7 +112,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```
 
 - Windows에서 `un.exe`는 `rust\target\release\`에 빌드된다. PATH에 추가해서 쓸 수 있다.
-- `.github/workflows/build.yml`은 push/PR마다 13스텝을 실행한다: checkout, GNU toolchain 설치, `cargo build --release`, `scripts/test.ps1`, `cargo test --release`, `scripts/compile-check.ps1`, `scripts/exe-diff.ps1`, `scripts/edge-fuzz.ps1`, `scripts/differential.ps1`(JIT on/off 바이트 비교), `scripts/unbc-roundtrip.ps1 -IncludeNegative`, `JIT strict canary (UV_JIT=2, test/jit/strict.un)`, `JIT Float strict canary (UV_JIT=2, strict_float.un)`, `JIT strict canary — collections / class / ops (strict_{collections,class,ops}.un)` (`rust-toolchain.toml`이 툴체인을 고정한다). 2026-11-17에 두 번 green (`build #1` 4m 0s, `build #2` 3m 28s)였고, 2026-11-23에 Compile Mode/exe-diff/edge-fuzz 스텝이 추가됐다.
+- `.github/workflows/build.yml`은 push/PR마다 release 빌드와 전체 검증 게이트(`scripts/test.ps1`, `cargo test`, compile-check, exe-diff, edge-fuzz, bench gate, differential, unbc-roundtrip, JIT strict canary 5종 포함)를 실행한다. 현재 스텝 구성은 `.github/workflows/build.yml`을 참조한다(고정 스텝 수는 쓰지 않는다; `rust-toolchain.toml`이 툴체인을 고정한다). 2026-11-17에 두 번 green (`build #1` 4m 0s, `build #2` 3m 28s)였고, 2026-11-23에 Compile Mode/exe-diff/edge-fuzz 스텝이 추가됐다.
 - `stable-x86_64-pc-windows-gnu` toolchain을 쓴다(MSVC linker가 없는 개발 머신).
 - `wasm32-unknown-unknown` 타겟도 같은 toolchain으로 빌드된다(link가 필요 없다).
 - 현재 `cargo build --release`는 오류 0개, 경고 0개로 끝난다. **새 경고를 추가하지 말 것.**
@@ -122,7 +122,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
 ```text
 C:\dev\un
 ├─ AGENTS.md                 # 이 문서 (에이전트용, 커밋 대상)
-├─ README.md / docs\README.md # 한국어/영어 문서 쌍
+├─ README.md / docs\README.ko.md # 영어/한국어 문서 쌍
 ├─ LICENSE
 ├─ rust/                     # Rust 구현 전체
 ├─ src/                      # 삭제됨(C# 포트; git 이력에만 보존)
@@ -188,7 +188,7 @@ C:\dev\un
   native에서 거부된다(`--embed`). `un native`(Vm 모드)는 클래스를 인터프리터로
   fallback시킨다.
   `.unbc` 경로는 Int 코어만 지원한다.
-  `un build <file.un> [-o out.exe]`는 소스 → .obj → 링크 → 실행형까지 단일 명령으로
+  `un build <file.un> [-o out.exe] [--parallel]`는 소스 → .obj → 링크 → 실행형까지 단일 명령으로
   수행한다 (rustup self-contained mingw gcc 경유 rustc). **plain exe는 VM을 전혀
   포함하지 않는다**: `rust/nrt/`(`libnrt.a`)의 독립 네이티브 런타임을 링크하고
   Int/Float/Bool/Str, list/dict, 클래스(필드·메서드·상속), try/catch, 네이티브 모듈
@@ -197,6 +197,10 @@ C:\dev\un
   거부하고 `--embed`를 안내한다.
   클래스는 TIR 메타데이터로 네이티브 등록하고 `<classes_init>` 바이트코드를 쓰지
   않는다. 약 5 MB exe이며, `un run`과 stdout/stderr/exit code가 바이트 단위로 같다.
+  `un build --parallel`은 plain 전용 opt-in이다: `go`/`wait`를 실제 스레드에서 실행하고
+  `flow`/`pool`/`atomic`을 thread-backed 핸들로 전환한다(생성된 드라이버가 `UN_PARALLEL=1`
+  설정). `--embed`와 함께 쓰면 exit 2(`--parallel requires a plain build; drop --embed`)로
+  거부된다. 플래그가 없으면 기본 deferred cooperative 경로가 그대로 유지된다.
   기본값 인자, lambda(캡처 + closure 객체로 escape/리스트 저장 포함), 단순 사용자
   모듈 import도 no-VM exe에서 동작한다: 기본값은 TIR 호출부에 채워지고, lambda는
   NRT closure 객체(tag 8)로 생성돼 간접 호출되며, 사용자 모듈은 빌드 시 텍스트로
@@ -228,7 +232,7 @@ C:\dev\un
 
 - Rust 2021 edition. 모듈은 `//!` 설명과 함께 파일 상단에 문서를 두고,
   `?` 연산자로 오류를 전파하며, `match`/`if let` 패턴 매칭을 적극적으로 쓴다.
-- **외부 crate 의존성**: 대부분의 코드는 표준 라이브러리만 쓰지만, `rust/Cargo.toml`은 crates.io에서 `cranelift-codegen/-frontend/-jit/-module/-native 0.137.1`을 가져오고, `vendor/` 아래 패치된
+- **외부 crate 의존성**: 대부분의 코드는 표준 라이브러리만 쓰지만, `rust/Cargo.toml`은 crates.io에서 Cranelift 6개 crate(`cranelift-codegen/-frontend/-jit/-module/-native/-object 0.137.1`)를 가져오고, `vendor/` 아래 패치된
   `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`이
   있다(Windows/GNU에서 `dlltool.exe` 부재로 `windows-sys 0.52.0`을 빌드할 수 없기 위해
   raw kernel32 FFI로 교체). 새 외부 crate는 정말 필요할 때만 추가하고 `vendor/`에 패치할
@@ -252,8 +256,9 @@ C:\dev\un
   stdout의 `N passed, M failed`를 집계한다. 정상 기준은 **Positive 51 files /
   1638 passed / 0 failed / 0 crashed**, Negative 51 checks 매칭 + 0 documented divergences,
   Known 0이다. runner는 `[FAIL]`이 증가하면 exit 1로 끝난다. (2026-11-23 재측정)
-  그 외 게이트: `cargo test --release --workspace` 375 passed, differential 102 파일 / 0 차이,
-  `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 42/0, exe-diff 78/0.
+  그 외 게이트(2026-11-27 실측): `cargo test --release --workspace` 430 passed, differential 102 파일 / 0 차이,
+  `.unbc` 왕복 Positive 51/51 + Negative 42 identical(9 skip), compile-check 42/0, exe-diff 78/0,
+   edge-fuzz 7 케이스 / 0 차이, JIT strict canary 5/5.
 - `test/negative/manifest.txt`는 `path|expected exit|expected substring` 행으로
   stderr와 exit code를 검증한다(파싱 오류, 미처리 예외, stack overflow 포함).
 - `test/KnownFailures.txt`의 파일은 runner가 KNOWN FAIL로 기록하고 Positive 집계에
@@ -269,7 +274,7 @@ C:\dev\un
   측정은 웜업 + 반복 + 통계(최솟값·중위값·평균·최댓값·표준편차·연산 수)를 사용한다.
   `-Group all`은 6레인(Un VM/Un JIT/Compile Mode/standalone exe/Python/Node)을 측정하고,
   `scripts/bench-report.ps1`이 `bench/report.html`을 생성하며 `-Gate`로 회귀를 검사한다.
-  `BENCHMARK.md`는 측정 시점 커밋을 명시하며(최근 2026-11-25 18:51, `088973b`,
+  `BENCHMARK.md`는 측정 시점 커밋을 명시하며(최근 2026-11-25 18:57:42 +09:00, `088973b`,
   Un JIT/Python geomean 3.688x), 결과와 측정 한계는 `docs/guides/BENCHMARK_GUIDE.md`를 참고한다.
 - 변경 후 최소한 다음을 수행한다.
   1. `rustup run stable-x86_64-pc-windows-gnu cargo build --release --manifest-path rust/Cargo.toml`
@@ -283,7 +288,7 @@ C:\dev\un
 - `World`는 프로세스 전역 정적 상태다. 테스트/플레이그라운드에서 상태를 바꾸면 반드시 복원한다.
 - `native::init` 호출 전에는 전역 함수(`panic` 등)가 등록되지 않는다.
 - 파일 경로는 `Global.PATH` 기준으로 해석된다. CLI는 현재 작업 디렉터리로 초기화한다.
-- 이 저장소는 외부 crate 의존성이 없다. 새 의존성은 정말 필요할 때만 추가한다.
+- 이 저장소에는 crates.io의 Cranelift 6개 crate(`cranelift-codegen`, `cranelift-frontend`, `cranelift-jit`, `cranelift-module`, `cranelift-native`, `cranelift-object`, 모두 0.137.1)가 외부 의존성으로 있다. 새 의존성은 정말 필요할 때만 추가한다.
 
 ## Git / 기여 규칙
 

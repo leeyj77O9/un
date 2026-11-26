@@ -160,15 +160,19 @@ Proto {
 
 ```text
 Constant = Int(i64) | Float(f64) | Str(String) | Bool(bool) | None | Null
+           | Bytes(Vec<u8>)   // kind tag 6 (D-098, b"..." 리터럴)
 NameTable: Vec<String>
 ```
 
 모듈 전역이며 `.unbc`에서 dedup한다. `MAGIC = *b"UNB1"`, `VERSION: u16 = 1`.
+`Bytes`는 가산 확장(tag 6)이며 기존 tag 0–5와 `VERSION` 값은 그대로다.
 
 ## 5. Source mapping
 
 instruction별 `(start, length)`로 오류 위치·trace를 복원한다.
 `.unbc` flags bit 0이 source 원문 포함 여부이며, `un compile`은 항상 포함한다.
+flags bit 1(`FLAG_DECLARED_RET`)은 각 proto 레코드 마지막에 선언 반환 타입의
+name 테이블 인덱스가 따라오는지를 나타내며, `un compile`은 항상 이 비트를 설정한다.
 `source path`는 컴파일 시 전달된 전체 경로를 그대로 저장해(D-072) `.unbc` 재실행 시
 모듈 해석이 direct run과 동일하게 동작하게 한다.
 
@@ -177,7 +181,7 @@ instruction별 `(start, length)`로 오류 위치·trace를 복원한다.
 ```text
 magic   "UNB1"        (4 bytes)
 version u16
-flags   u16              (bit 0: source embed)
+flags   u16              (bit 0: source embed, bit 1: declared_ret tail)
 source path   : length-prefixed UTF-8
 source        : length-prefixed UTF-8   (flags bit 0일 때만)
 name table    : count u32 + length-prefixed UTF-8 strings
@@ -193,10 +197,16 @@ proto table   : count u32 + protos
          source_map: count+(u32,u32),
          exc: count+(kind u8, start u32, end u32, handler u32, var_slot u32=NONE),
          patterns: count+entries,
-         ext_type: u32=NONE
+         ext_type: u32=NONE,
+         declared_ret: u32=NONE   // flags bit 1일 때만 존재
 ```
 
 모든 다바이트 필드는 little-endian이고 모든 테이블은 count-prefixed다.
+
+하위호환: 헤더 bit 1이 설정되지 않은 기존 이미지는 proto 마지막 필드를 읽지 않고
+`declared_ret = None`으로 로드한다. `VERSION`은 1로 유지되고 opcode 값도 바뀌지
+않는다. `declared_ret`는 `rust/src/runtime/function.rs`가 함수 객체의 선언 반환
+타입을 표시할 때 쓰는 name 테이블 인덱스이며, 로드 시 범위를 검증한다.
 
 ## 7. 검증 (load 시)
 
@@ -214,6 +224,8 @@ proto table   : count u32 + protos
    `5` Or, `6` Class, `7` Fields, `8` Type만 허용한다. `5`~`8`은 가산 확장이며
    `VERSION`은 그대로 1이다(기존 0~4 파일 호환). Fields의 name 플래그는 `0`
    positional, `1` named이고, named는 name 문자열 인덱스를 함께 읽는다.
+10. `declared_ret`가 존재하면(flags bit 1) name 테이블 범위 내여야 한다. 비트가
+    없는 이미지는 이 필드를 생략하고 `None`으로 읽는다.
 
 손상된 입력은 panic/abort가 아니라 exit 1 + 명확한 오류 메시지로 거부된다.
 `unbc-roundtrip.ps1 -IncludeNegative`가 Positive 51/51, compilable Negative 42 identical(9 compile-rejected skip)을 검증한다.
@@ -225,6 +237,11 @@ proto table   : count u32 + protos
   `jit_cache.rs`에서 **별도 맵**(`JIT_FNS` / `TIR_FNS`)에 저장된다(2026-11-20 수정).
   두 종류가 같은 맵을 공유하면 인자 있는 proto의 2회차 호출이 인터프리터로 조용히
   퇴화한다(AUDIT-001).
+- proto의 `declared_ret`는 flags bit 1로 표시되는 name 인덱스 직렬화이며 JIT
+  엔트리 등록 입력은 아니다(함수 타입 표시용 메타데이터). TIR 엔트리는
+  `jit_cache::get_tir_entry`로 조회되고 `UV_JIT` 설정을 우회한다 —
+  `try_call_jit`가 TIR 맵을 최우선 조회하므로 `UV_JIT=0`에서도 TIR 네이티브
+  경로가 유지된다. 바이트코드 JIT 엔트리만 `UV_JIT`에 따라 켜지고 꺼진다.
 
 ## 9. 확장 예약 영역
 

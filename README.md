@@ -341,6 +341,12 @@ runs in the interpreter with identical semantics.
   natively in a plain build by recording the element kind in TIR; elements of
   nested lists are opaque handles, so indexing/operations on them are not
   lowered.
+- `un build --parallel <file.un> [-o out.exe]` is a plain-build-only opt-in: it
+   runs `go`/`wait` on real worker threads and promotes `flow`/`pool`/`atomic`
+   handles to thread-backed variants (`UN_PARALLEL=1` in the generated driver).
+   Without the flag the deferred cooperative semantics are unchanged. Combining
+   `--parallel` with `--embed` is a usage error — exit 2 with the message
+   `--parallel requires a plain build; drop --embed`.
 - `un build` is **fully typed** by default (both plain and `--embed`): explicit
   `any`/union annotations and aliases, variadic or unnamed parameters, and
   untyped lambda parameters are rejected with a diagnostic — use
@@ -407,8 +413,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\differential.ps1
 ```
 
 `UV_JIT=2` is a strict canary: if any JIT candidate falls back to a stub, the
-process exits 2 immediately. CI checks `test/jit/strict.un` (Int) and
-`test/jit/strict_float.un` (Float math intrinsics). The `.unbc` round-trip check
+process exits 2 immediately. CI checks five fixtures — `test/jit/strict.un` (Int),
+`strict_float.un` (Float math intrinsics), and `strict_collections.un` /
+`strict_class.un` / `strict_ops.un` (collections, class and ops) — 5/5 green as of
+2026-11-27. The `.unbc` round-trip check
 byte-compares `un run` against `un compile` + `un run <file>.unbc`.
 
 ```powershell
@@ -418,25 +426,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\unbc-roundtrip.ps1 -
 Compile Mode cross-checks, no-VM exe equality checks, and cross-lane edge fuzzing
 use the same approach (`scripts\compile-check.ps1`, `scripts\exe-diff.ps1`,
 `scripts\edge-fuzz.ps1`). CI (`.github/workflows/build.yml`) runs a release build
-and all of the above gates (12 steps total) on every push and PR.
+and all of the above gates on every push and PR; see that file for the current
+step list (no fixed step count is documented here).
 
 Files listed in `test/KnownFailures.txt` are reported as KNOWN FAIL and are not
 counted in the Positive pass/fail totals. Files listed in `test/KnownDivergent.txt`
 are documented divergences between implementations and are not counted as failures.
 The current baseline is Positive 51 files / 1638 passed / 0 failed / 0 crashed,
 Negative 51 checks matched + 0 documented divergences, and Known 0 files
-(re-measured 2026-11-23). Rust tests: `cargo test --release --workspace` reports
-375 passed (nrt 25 + lib 296 + LSP 24 + playground 8). JIT differential: 102 files,
-0 differences. `.unbc` round-trip: Positive 51/51, Negative 42 identical
-(9 compile-rejected skips), Compile cross-check 42/0, exe equality 78/0.
+(re-measured 2026-11-23). Rust tests (2026-11-27): `cargo test --release --workspace` reports
+430 passed (nrt 92 + nrt scheduler_spike 5 + unvm lib 301 + un bin 24 +
+playground 8). JIT differential: 102 files, 0 differences. `.unbc` round-trip:
+Positive 51/51, Negative 42 identical (9 compile-rejected skips), Compile
+cross-check 42/0, exe equality 78/0, edge-fuzz 7 cases / 0 differences,
+JIT strict canary 5/5.
 
 Benchmarks measure 6 lanes (Un VM, Un JIT, Compile Mode, standalone exe, CPython,
 Node.js) with warmup and repeated runs; results go to
 `bench/results/<timestamp>/results.csv`, `results.json`, and `results.md`.
 `scripts\bench-report.ps1` renders `bench/report.html` and checks regressions with
-`-Gate`. The current report puts Un JIT at a **4.434x geomean over CPython** and
-includes three new workloads — `dict_str5000` (string-key dict inserts/lookups),
-`bytes_ops` (bytes module round-trips), and `slice_ops` (list slice read/assign).
+`-Gate`. The report generated 2026-11-25 18:57:42 +09:00 (commit `088973b`)
+puts Un JIT at a **3.688x geomean over CPython** and includes three new workloads —
+`dict_str5000` (string-key dict inserts/lookups), `bytes_ops` (bytes module round-trips),
+and `slice_ops` (list slice read/assign).
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bench.ps1 -Group all
@@ -643,16 +655,21 @@ a = go slow(5)
 io.write(wait a)    # 10
 ```
 
-`flow.spawn(n)` creates a pool handle, but Un is a cooperative single-thread runtime:
-`pool.map` produces one result per argument, and `pool.submit` hands back a `Future`; no OS
-threads are created. For shared state that must not race, use `atomic.int`/`atomic.bool`
+`flow.spawn(n)` creates a pool handle. By default Un is a cooperative single-thread
+runtime: `pool.map` produces one result per argument, and `pool.submit` hands back a
+`Future`; no OS threads are created on that path. For shared state that must not race,
+use `atomic.int`/`atomic.bool`
 (e.g. `counter.inc()`) — inside a single cooperative thread they hold a small
 `RefCell`-backed state, so they're correct for any interleaving Un can produce, and
 `atomic.add`/`inc`/`dec` wrap i64 the same way Un's Int arithmetic does (they will not
 panic in debug builds). Compare-and-swap is a flat compare-then-write on that cell.
 
-This is a single-thread model, not preemptive multithreading — `pool.map` runs inline with
-the caller, and there is no background worker doing parallel work.
+On the default path this is a single-thread cooperative model, not preemptive
+multithreading — `pool.map` runs inline with the caller, and on that path no background
+worker does parallel work. The exception is an opt-in plain `un build --parallel` executable: it
+runs `go`/`wait` on real worker threads and promotes `flow`/`pool`/`atomic` handles to
+thread-backed variants (the generated driver sets `UN_PARALLEL=1`). `un run`, `un native`,
+`--embed` and plain builds without the flag keep the deferred cooperative behaviour.
 
 ```un
 use atomic
@@ -709,7 +726,7 @@ work()    # start done
 
 | Module | Main API |
 |---|---|
-| `atomic` | `atomic.int(initial?)`/`atomic.bool(initial?)` create `atomic_int`/`atomic_bool`. Methods: `get`/`set`/`add` (int only)/`inc`/`dec` (int only)/`exchange`/`compare_and_swap`. Backed by `RefCell` (single-thread cooperative runtime) |
+| `atomic` | `atomic.int(initial?)`/`atomic.bool(initial?)` create `atomic_int`/`atomic_bool`. Methods: `get`/`set`/`add` (int only)/`inc`/`dec` (int only)/`exchange`/`compare_and_swap`. Backed by `RefCell` on the default single-thread cooperative path; thread-backed under `un build --parallel` |
 | `io` | `write`, `read`, `open`, `clear` |
 | `fs` | `read`/`write`/`append`/`touch`, `exists`/`file`/`dir`, `list`/`files`/`dirs`/`walk`, `copy`/`move`/`rename`/`delete`, `mkdir`/`rmdir`, `size`/`created`/`modified`/`accessed`, `join`/`parent`/`name`/`stem`/`ext`, `absolute`/`relative`/`normalize`, `cwd`/`chdir`, `temp`/`home`/`exe`/`app` |
 | `re` | `test`/`match`/`search`, `find_all`/`groups`, `replace`/`replace_all`/`split`/`escape` |
@@ -721,7 +738,7 @@ work()    # start done
 | `os` | `env`/`setenv`/`unsetenv`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`/`cpuCount`/`is64bit`/`hostname`/`username`, `args`/`exit`/`exec`, `sep`/`pathsep`/`linesep`/`tickCount` |
 | `sys` | `env`/`environ`/`expand_vars`, `pid`/`name`/`arch`/`version`, `getcalldepth`/`setcalldepth`/`getrecursionlimit`/`setrecursionlimit` |
 | `time` | `sleep` (int=ms, float=s)/`now`/`utc_now`/`epoch`/`epoch_ms`/`from_epoch`/`from_epoch_ms`/`monotonic`/`monotonic_ms`/`stopwatch` (with read-only `ms`/`ns` properties) |
-| `flow` | `spawn` (pool handle, cooperative single-thread: inline execution) and `lock` |
+| `flow` | `spawn` (pool handle, cooperative single-thread by default: inline execution; thread-backed under `un build --parallel`) and `lock` |
 | `http`/`ws` | `http.connect().get`/`post`/`put`/`patch`/`delete`/`head`/`options`, `ws.connect().send`/`receive`/`close`/`is_open` |
 | `inspect` | `attr`/`global`/`getattr`/`hasattr`/`setattr`/`delattr`/`meta` |
 | `types` | `u8`/`u16`/`u32`/`u64`, `i8`/`i16`/`i32`/`i64`, `f32`/`f64` — fixed-width integer/float constructors. Range checks happen at conversion time only; out-of-range values raise the uncatchable error panic (printed as `error: <message>`). Afterwards they behave like ordinary `int`/`float` (and `u64` is capped at `i64::MAX` because Un ints are signed 64-bit). `use types` is required — in a module without the import, all fixed-width names (including `u32` etc.) are unknown type annotations |
@@ -831,7 +848,7 @@ Un/
 |                        obj-demo.ps1, exe-diff.ps1, edge-fuzz.ps1)
 |-- bench/               (benchmark scripts, bench/{node,python}/, bench/results/ — gitignored)
 |-- docs/                (guides/, spec/, project/, compile/, audit/, README.md)
-`-- .github/workflows/build.yml  (GNU toolchain build + 12 verification steps)
+`-- .github/workflows/build.yml  (GNU toolchain build + verification gates; see the file for the step list)
 ```
 
 ## Examples
@@ -915,6 +932,9 @@ Implemented:
 - Runtime object model and type system
 - Standard library modules
 - Asynchronous execution and worker pools
+- Opt-in plain-build parallelism via `un build --parallel`: real `go`/`wait` execution and
+  thread-backed `flow`/`atomic` handles (`UN_PARALLEL=1`); default builds keep deferred
+  cooperative semantics
 - Classes, multiple inheritance, `enum`, and classes with a field list (`class Point(x, y)`)
 - Class property accessors (`get`/`set`, `field`, `value`)
 - The range operator `a..b` and lazy iterator chaining
@@ -931,7 +951,11 @@ Planned:
 
 - Stronger static type checking
 - Package manager
-- Remaining compiler-language work tracked in `docs/project/COMPILER_LANGUAGE_ROADMAP.md`: class/variant pattern AOT and named field/spread, `func(..)` return types, inherited/`__is__` type patterns, real `go`/`wait` parallelism (RFC), and the build cache
+- Remaining compiler-language work tracked in `docs/project/COMPILER_LANGUAGE_ROADMAP.md`:
+  class/variant pattern AOT and named field/spread, `func(..)` return types,
+  inherited/`__is__` type patterns, real `go`/`wait` parallelism (implemented as the
+  opt-in plain `un build --parallel`; the default path stays deferred cooperative),
+  and the build cache
 
 ## Contributing
 
@@ -943,7 +967,7 @@ Planned:
    with a `path|expected exit|expected substring` row in `test/negative/manifest.txt`.
 5. Open a pull request. Commits are made by the contributor; automated tooling does not push to git.
 
-Coding conventions: Rust 2021 edition. Modules carry a `//!` doc comment at the top, errors propagate with `?`, and pattern matching is used liberally. No external crate dependencies by default; the exception is the Cranelift JIT stack under `vendor/` (patched `region 3.0.2`, `cranelift-jit 0.137.1`, `wasmtime-internal-jit-icache-coherence 50.0.1`, raw kernel32 FFI because the GNU toolchain lacks `dlltool.exe`), used for the numeric-subset Cranelift JIT.
+Coding conventions: Rust 2021 edition. Modules carry a `//!` doc comment at the top, errors propagate with `?`, and pattern matching is used liberally. Most code uses only the standard library; `rust/Cargo.toml` does depend on six Cranelift crates from crates.io (`cranelift-codegen/-frontend/-jit/-module/-native/-object 0.137.1`), with patched copies of `region`, `cranelift-jit` and `wasmtime-internal-jit-icache-coherence` under `vendor/` (raw kernel32 FFI because the GNU toolchain lacks `dlltool.exe`). New dependencies are added only when necessary.
 
 ## License
 

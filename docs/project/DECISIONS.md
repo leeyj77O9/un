@@ -1453,3 +1453,20 @@ inner 문자열만 저장하고 CLI는 `System.ArgumentOutOfRangeException: {mes
 - VM의 타입 패턴(`Pattern::Type`)은 `class_tobj(name)` → `is_obj` → `Types::accepts`의 **이름 매칭**만 수행한다. `obj_is`의 `__is__` 디스패치는 non-TObj RHS에서만 도달하며 타입 패턴에서는 호출되지 않는다(`vm/mod.rs:1714-1720, 2087-2097`, `test/unit/runtime/classes.un:110-116`).
 - 따라서 위 §4의 "`__is__` 포함" 기술은 실제와 달랐다. plain 미지원 분기에서 NRT가 `__is__`를 호출해 VM과 불일치(및 typed `__is__`에서 0xC0000005 crash)가 발생 → NRT의 `user_is` 디스패치 제거로 정렬.
 - 상속客户关系도 VM `Types::accepts`가 부모를 포함하지 않아 `c is Base`가 false. `TirProgram.class_parents`는 수집하되 driver에 배선하지 않음(배선 시 plain만 true가 되어 byte-identical 위반).
+
+## D-099 | 기본 `go`/`wait` deferred 유지 + `un build --parallel` opt-in 병렬 | Accepted
+
+- **배경**: `GOWAIT_PARALLEL_RFC.md` §5에서 안 C(기본 deferred 유지 + opt-in 병렬)를 추천했고,
+  `GOWAIT_IMPLEMENTATION_PLAN.md` §6의 C-1~C-12 12행 승인으로 안 A(기본 병렬 전환) 없이 안 C만 착수했다.
+  기존 결정(D-012/D-054/D-061/D-062/D-063/D-080)은 **수정·폐기·supersede하지 않고** 이 결정 하나로 예외만 덧붙인다.
+- **결정**:
+  1. 기본 `go`/`wait`는 D-012/D-054/D-063의 **deferred cooperative** 계약을 그대로 유지한다. 값·캡처(fork-time deep snapshot)·순서·에러 문구가 변하지 않는다.
+  2. **`un build --parallel`(plain native exe 전용)에서만 opt-in으로 실제 OS 스레드 병렬을 허용한다.** `un run`(VM), `un native`(Vm 모드), `un build --embed`, `un check`는 영향 없음. **`--embed`와 상호배제**하며(함께 쓰면 exit 2, `--parallel requires a plain build; drop --embed`; 생성 드라이버는 `UN_PARALLEL=1`을 설정), 플래그 제거로 완전히 되돌릴 수 있다.
+  3. `flow`/`pool`/`atomic`도 **opt-in 경로에서만** 실제 병렬 스케줄링·원자 동작을 사용하고, 기본 경로는 기존 cooperative shim(D-054/D-061/D-062)을 유지한다.
+  4. `Op`의 `MakeFuture=0x63` / `Await=0x64` 포함 모든 discriminant는 **불변**이다. `.unbc` 왕복 호환성을 유지한다.
+  5. **새 C 심볼 3개(`unrt_go` / `unrt_wait` / `unrt_trace`)를 승인한다.** 기존 `unrt_*` / `nrt_*` 시그니처 변경은 금지한다.
+  6. 안 A(기본 의미론을 진짜 병렬로 전환)는 **미승인·미채택 유지**다. byte-identical 게이트의 비교 강도를 낮추지 않는다.
+- **영향 파일**: `rust/src/{main.rs,tir.rs,natcode.rs,unrt.rs}`, `rust/nrt/src/{scheduler.rs,abi.rs,native.rs,...}`, `rust/src/native/{flow.rs,atomic.rs}`, `scripts/gowait-parallel.ps1`, `test/parallel/manifest.txt`, `.github/workflows/build.yml`.
+- **검증**: `cargo test --release --workspace` 430, `scripts/test.ps1` 51 files / 1638 / 0 / 0, `differential` 102/0, `compile-check` 42/0, `exe-diff` 78/0. 기본 8게이트 무변경, opt-in 게이트는 별도 비교(`RESULT|` 집합 + exit + error 문구).
+- **구현 상태**: P00~P08 완료(P05 `9d63c7f`, P02B `3ae916a`, P03 `a9d1d24`, P04 `d2f176c`, P06 `a7b39ea`/`fc7e5f8`/`baaefba`, P07 `013858a`/`1b258b0`, P08 `488bf0b`). **P09(문서 정리) 잔여** — opt-in documented divergence는 `TECHNICAL_DEBT.md` TD-54/TD-55, 잠재 이슈는 TD-56 참조.
+- **근거**: `docs/project/GOWAIT_PARALLEL_RFC.md` §5/§8, `docs/project/GOWAIT_IMPLEMENTATION_PLAN.md` §0 I1~I5/§3.5/§6, `docs/project/GOWAIT_THREAD_SAFETY_AUDIT.md`, `AGENTS.md` MANDATORY 규칙 6·8.

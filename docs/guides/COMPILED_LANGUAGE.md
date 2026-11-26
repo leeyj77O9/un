@@ -23,9 +23,11 @@
 
 - 근거: `docs/guides/CLI.md:229-287`, `docs/compile/OBJ_MILESTONES.md:30-38`, `AGENTS.md` 빌드/링크 항목.
 - 네이티브 산출물의 핵심 보증은 `un run`과 stdout/stderr/exit code **byte-identical**이며,
-  회귀 게이트는 `scripts/exe-diff.ps1`(현재 42/0)이다(`docs/compile/OBJ_MILESTONES.md:71-74`).
-- 게이트 수치는 문서마다 차이가 있다(예: `COMPILER_LANGUAGE_ROADMAP.md:23`의 workspace 273 vs `AGENTS.md`의 261).
-  정확한 현재값은 실행 시 재측정 — **확인 필요**.
+  회귀 게이트는 `scripts/exe-diff.ps1`(2026-11-27 기준 현재 78/0)이다(`docs/compile/OBJ_MILESTONES.md:71-74`).
+- (과정 기록) 게이트 수치는 문서마다 차이가 있었다(예: `COMPILER_LANGUAGE_ROADMAP.md:23`의
+  workspace 273 vs `AGENTS.md`의 261). 2026-11-27 실측 **현재값**: `cargo test --release
+  --workspace` 430 passed, compile-check 42/0, exe-diff 78/0. 아래 표의 예전 수치는 과정
+  기록으로 보존한다.
 
 ## 1. 공개 ABI 계약
 
@@ -229,8 +231,13 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 | 기본 생성자 인자를 가진 base class | 명시 거부 | 예 | `main.rs:1027-1036` |
 | 타입 없는 computed property / getter | 거부 | 예 | `main.rs:2341`, `tir.rs:3358` 부근, `AGENTS.md` |
 | Int/Float/Bool/Str, list/dict, 클래스·상속, 예외, closure, 기본값 인자, 단순 모듈 | 지원 | 불필요 | `tir.rs:606-612`, `OBJ_MILESTONES.md:36` |
-| `go`/`wait` (호출되지 않는 함수 포함) | 명시적 진단으로 거부 | 예 | `compiler.rs::find_unsupported_async_node`, `main.rs`, `NATIVE_CONCURRENCY_DESIGN.md` 안 B |
-| `flow`/`atomic` 네이티브 호출 | 거부 | 예 | `tir.rs::native_call_ok` |
+| `go`/`wait` (호출되지 않는 함수 포함) | **지원** — 기본은 deferred cooperative thunk, `un build --parallel`에서는 실제 워커 스레드 병렬 | 기본 경로는 불필요; 실제 병렬이 필요하면 `--parallel` | `tir.rs`(`synthesize_go` / opt-in `Go`·`Wait` lowering), `natcode.rs`, `UN_PARALLEL=1` |
+| `flow`/`atomic` 네이티브 호출 | **지원** — 기본은 협업적 `RefCell` shim, `un build --parallel`에서는 thread-backed 핸들 | 실제 병렬이 필요하면 `--parallel` | `tir.rs::native_call_ok`, `rust/nrt/src/{native,parallel}.rs` |
+
+> 과정 기록(2026-11-24, LANG2 안 B): 당시 plain build는 `go`/`wait`와 `flow`/`atomic`을
+> 명시적 진단으로 거부했다(`compiler.rs::find_unsupported_async_node`,
+> `NATIVE_CONCURRENCY_DESIGN.md` 안 B). 현재는 기본 deferred cooperative 경로가 허용되고,
+> opt-in `un build --parallel` 병렬 경로가 추가되었다(기본 경로의 deferred 의미론은 불변).
 
 ### 4.4 권장 마이그레이션 절차
 
@@ -273,9 +280,9 @@ fn add(a, b)                      # compile error: parameter 'a' requires a type
 ## 부록 B. `확인 필요` 항목 모음
 
 1. 분석 보고 원본 `docs/project/COMPILER_LANGUAGE_GAPS.md` 부재 — ROADMAP 인용만 확인됨.
-2. `go`/`wait`는 plain build에서 빌드 시 거부된다 (LANG2 완료, 2026-11-24 — 안 B).
+2. `go`/`wait`는 plain build에서 빌드 시 거부된다 (LANG2 완료, 2026-11-24 — 안 B). 현재 상태(2026-11-27): 기본 deferred cooperative 실행은 허용되고, `un build --parallel`이 실제 병렬을 opt-in한다 — §4.3 표 참조.
 3. 언어/ABI 버전 정책의 존재 여부(3.2는 전부 제안).
 4. Cranelift 디버그 심볼/DWARF 출력 지원 여부.
 5. Windows/GNU·wasm32 외 크로스 컴파일 타깃 지원 여부.
 6. NRT arena 해제/장기 실행 정책(별도 RFC 보류).
-7. 게이트 정확한 현재 수치(문서 간 254/261, compile-check 33/36 차이).
+7. 게이트 정확한 현재 수치(과정 기록: 문서 간 254/261, compile-check 33/36 차이). 2026-11-27 실측 현재값: workspace 430 passed, compile-check 42/0, exe-diff 78/0, differential 102/0, unbc 51/51 + 42 identical, edge-fuzz 7/0, strict canary 5/5.

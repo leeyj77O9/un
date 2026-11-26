@@ -3,7 +3,7 @@
 > 세션이 끊겨도 이 파일과 `COMPILE_DESIGN.md`, `COMPILE_FINDINGS.md`만 읽으면
 > 이어서 작업할 수 있어야 한다. 각 단계 완료 시 갱신한다.
 
-## 마지막 갱신: 2026-11-23 (v2 마무리: list[class] + exe-diff 하네스; 제네릭/데이터 enum/CI 편입 반영)
+## 마지막 갱신: 2026-11-27 (v2 마무리: list[class] + exe-diff 하네스; 제네릭/데이터 enum/CI 편입 + 기준 게이트 재측정 반영)
 
 ## 단계별 상태
 
@@ -109,7 +109,7 @@
 - `un native <file.un>`: 분석 + TIR 변환 + Cranelift 네이티브 등록 + VM 실행.
 - `un run`/`un compile`: **변경 없음**.
 
-### 검증 (2026-11-23 재측정)
+### 검증 (2026-11-27 재측정)
 - `scripts/test.ps1`: Positive 51 files / 1638 passed / 0 failed / 0 crashed,
   Negative 51 matched / 0 documented divergences, Known 0 — **baseline 유지**.
 - `scripts/differential.ps1`: 102 files 0 differences — **green**.
@@ -125,8 +125,8 @@
 - `test/test_suite.un`: 109 passed, 0 failed.
 - `scripts/bench.ps1 -Group all`: 6 lanes (Un VM / Un JIT / Compile Mode / standalone
   exe / Python / Node); `scripts/bench-report.ps1`이 `bench/report.html` 생성.
-  전체 결과는 루트 `BENCHMARK.md`(2026-11-24 14:36 +09:00, 180d3db 재생성;
-  Un JIT/Python geomean 4.424x) 참조. `scripts/compile-bench.ps1`은 상세 비교용.
+  전체 결과는 루트 `BENCHMARK.md`(2026-11-25 18:57:42 +09:00, 088973b 재생성;
+  Un JIT/Python geomean 3.688x) 참조. `scripts/compile-bench.ps1`은 상세 비교용.
 
 ## 진행 로그
 

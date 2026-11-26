@@ -23,10 +23,12 @@ Three workloads still have no compile variant: `rle1994` (character indexing),
 `dict5000` uses `codes.hex(...)` string keys because core dicts are `dict[str, int]`;
 its compile numbers include key-conversion overhead.
 
-The table below lists the 24 independent triplets. `bench.ps1` reports one extra
-row, `native_fib24`: it is the annotated `bench/native_fib.un` fixture (shared with
+The table below lists the 24 independent three-language triplets plus three
+Un-only workloads (`dict_str5000`, `bytes_ops`, `slice_ops` — Python/Node columns
+are `N/A` in `BENCHMARK.md`). `bench.ps1` reports one extra row, `native_fib24`:
+it is the annotated `bench/native_fib.un` fixture (shared with
 `scripts/compile-bench.ps1`) and reuses the `fib24` Node/Python scripts, so it is
-not a 25th independent workload.
+not a 28th independent workload.
 
 ## Running benchmarks
 
@@ -107,6 +109,9 @@ implements the same algorithm on the same input with the same expected values:
 | `enum10000` | Enum | enum value dispatch over 10000 values | 10000 iterations |
 | `modimport2000` | Modules | cross-function call chain over 2000 values | 2000 iterations |
 | `nanbox20000` | Float | mixed float/int arithmetic over 20000 values | 20000 iterations |
+| `dict_str5000` | Collections | 5000 string-key dict inserts + lookups (Un-only; no Python/Node triplet) | 10000 operations |
+| `bytes_ops` | Binary | bytes module round-trips (Un-only; no Python/Node triplet) | 10000 operations |
+| `slice_ops` | Collections | list slice read/assign (Un-only; no Python/Node triplet) | 4000 operations |
 
 Input generation is identical across the three languages:
 `s = (s * 1103515245 + 12345) % 100000`.
@@ -195,9 +200,12 @@ counts code points).
 - **Process startup**: each script is a fresh process; the timer covers steady
   state, and absolute times include startup overhead in each language equally.
 - **GC/JIT internals**: not available from Un.
-- **Multithreading**: `pool`/`go` remain single-threaded cooperative shims by
-  design (`DECISIONS.md` D-054/D-061; TD-39 was resolved 2026-11-19), so they
-  are not benchmarked.
+- **Multithreading**: by default `pool`/`go` remain single-threaded cooperative shims
+  (`DECISIONS.md` D-054/D-061; TD-39 was resolved 2026-11-19), so they are not part of
+  the six timing lanes. A plain `un build --parallel` exe (`UN_PARALLEL=1`) does run real
+  `go`/`wait` and thread-backed `flow`/`atomic` work; those non-deterministic results are
+  kept out of the reported geomean. The opt-in path has its own gate,
+  `scripts/gowait-parallel.ps1` (P08), which is not part of the six-lane benchmark.
 - **`%` and `//` in JIT**: integer div/mod are JIT-eligible only with a constant
   integer divisor; `i % 4 == 0` in a tight loop still measures interpreter work
   unless the divisor is constant.

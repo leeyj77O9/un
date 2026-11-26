@@ -84,7 +84,7 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
 | `test/test_suite.un` | **109 passed / 0 failed** |
 | `scripts/compile-check.ps1` | **42 passed / 0 failed** |
 | `scripts/exe-diff.ps1` | **78 passed / 0 failed** |
-| `scripts/bench.ps1 -Group all -Report` | 6 lanes (unvm/unjit/python/node/unnative/unbuild) self-validate; `BENCHMARK.md` regenerated per run (생성 시점 커밋 명시); Un JIT/Python geomean **3.688x** (`BENCHMARK.md`, 재생성 2026-11-25 18:51 +09:00, 커밋 180d3db 기준) |
+| `scripts/bench.ps1 -Group all -Report` | 6 lanes (unvm/unjit/python/node/unnative/unbuild) self-validate; `BENCHMARK.md` regenerated per run (생성 시점 커밋 명시); Un JIT/Python geomean **3.688x** (`BENCHMARK.md`, 재생성 **2026-11-25 18:57:42 +09:00**, 커밋 **088973b** 기준; 과거 표기 18:51/`180d3db`는 당시 스냅샷) |
 
 ## Intentionally not done / known limits
 
@@ -98,13 +98,16 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
   external crates remain off-limits.
 - `bench/results/` is gitignored (history shows it was committed early,
   un-tracked later).
-- CI (`.github/workflows/build.yml`) runs on every push/PR to `main` (12 steps):
-  checkout, install GNU toolchain, `cargo build --release`, `scripts/test.ps1`,
-  `cargo test`, `scripts/compile-check.ps1`, `scripts/exe-diff.ps1`,
-  `scripts/edge-fuzz.ps1`, `scripts/differential.ps1`,
-  `scripts/unbc-roundtrip.ps1 -IncludeNegative`, and the two strict-canary
-  steps (`UV_JIT=2`, `test/jit/strict.un` Int + `test/jit/strict_float.un`
-  Float). The local runner sequence above remains the fast feedback loop.
+- CI (`.github/workflows/build.yml`) runs on every push/PR to `main`.
+  **The step count is intentionally not pinned here — the workflow file is the authority**
+  (P08 `488bf0b` added `Test (go/wait opt-in parallel gate)`; earlier docs quoted 12/13/14 steps
+  as writing-time snapshots). Steps include: checkout, install GNU toolchain,
+  `cargo build --release`, `scripts/test.ps1`, `cargo test`, `scripts/compile-check.ps1`,
+  `scripts/exe-diff.ps1`, `scripts/edge-fuzz.ps1`, the standalone-exe perf gate,
+  `scripts/differential.ps1`, `scripts/unbc-roundtrip.ps1 -IncludeNegative`,
+  the `UV_JIT=2` strict-canary steps (`test/jit/strict.un` Int, `strict_float.un` Float,
+  `strict_{collections,class,ops}.un`, and the opt-in parallel gate).
+  The local runner sequence above remains the fast feedback loop.
 - `test/KnownDivergent.txt` documents deliberate implementation differences
   (currently none registered); `test/KnownFailures.txt` is empty.
 
@@ -117,7 +120,7 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
 | `docs/project/PROJECT_AUDIT.md` | Audit findings (S1/S2/S3) with fix mapping |
 | `docs/project/REFACTOR_LOG.md` | Per-pass verification records |
 | `docs/project/TECHNICAL_DEBT.md` | Debt register (open items + closed summary) |
-| `docs/project/DECISIONS.md` | D-001 … D-092, append-only |
+| `docs/project/DECISIONS.md` | D-001 … D-099, append-only (D-099 = 기본 deferred 유지 + `un build --parallel` opt-in 병렬) |
 | `docs/spec/BYTECODE.md` | `.unbc` format specification |
 | `docs/guides/TEST_GUIDE.md` | Test authoring and runner guide |
 | `docs/guides/BENCHMARK_GUIDE.md` | Benchmark methodology and caveats |

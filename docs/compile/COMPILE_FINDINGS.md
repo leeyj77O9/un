@@ -10,7 +10,7 @@
 
 ## F-001. 기존 CLI와의 충돌 — `un compile`은 이미 `.unbc` 산출이다
 
-- 사실: `main.rs:318 print_help() unpacks`, `compile()` (main.rs:318)은 `.unbc` 파일을 쓴다 (`runner::compile_source` → `unbc::write`).
+- 사실: `main.rs`의 `print_help` / `compile` 구현(`compile()`)은 `.unbc` 파일을 쓴다 (`runner::compile_source` → `unbc::write`).
 - 결정: Compile Mode는 **`un native`** (실행) + **`un check`** (검사만) 두 개의 새 명령으로 추가. `un compile`의 기존 의미를 바꾸지 않는다. (`COMPILE_DESIGN.md` §2)
 
 ## F-002. 반환 타입 어노테이션은 파서가 AST에 보관하지만 컴파일러는 완전히 무시한다
@@ -37,7 +37,7 @@
 
 ## F-006. `/`는 항상 float를, `//`는 항상 int를, `%`는 int%int만 int를 반환한다
 
-- 사실: `int_int_binop` (obj.rs:1635): `Div` → `float(a as f64 / b as f64)`, `IDiv` → `int(a.wrapping_div(b))`, `Mod` → int. Float 배치 경로도 `IDiv` → `cast_long`, `Mod` → `float`.
+- 사실: `runtime/obj.rs::int_int_binop`: `Div` → `float(a as f64 / b as f64)`, `IDiv` → `int(a.wrapping_div(b))`, `Mod` → int. Float 배치 경로도 `IDiv` → `cast_long`, `Mod` → `float`.
 - 결정: typeck의 연산 규칙을 여기에 맞춘다. `int / int → float`은 네이티브에서 `fdiv`로 내릴 수 있는 신호가 아니라 **승격**이다 (피연산자 int→f64 후 fdiv). TIR 코드젠은 피연산자 종류에 따라 fcvt 삽입.
 
 ## F-007. int `//`/`%`는 truncated(C 의미), 0 나누기는 panic 객체
@@ -60,6 +60,7 @@
 - 사실: `try_call_jit`는 `Payload::Int`/`Payload::List`만 받아들이고 나머지는 decline → 인터프리터. Float/Bool 인자는 항상 인터프리터로 빠진다.
 - 결정: Compile Mode에서 TIR 엔트리를 위해 일반화한다: `JitEntry`에 `arg_kinds: Vec<ArgKind>` 추가. `Unbc`(기존 시맨틱스) / `Int` / `Float` / `Bool`. 기대 타입과 payload가 어긋나면 decline(인터프리터). Float 기대 & Int 인자 → `f64` 비트로 승격해 전달. `call_proto`(Op::Call 경유)와 `fn_call`(host 경유) 양쪽에서 동작. VM에는 숨겨진 분기 외 변경 없음.
 - 위험: `JitEntry` 확장은 jit_bc 엔트리 생성 코드(`register_jit_entry` 호출부 2곳)도 함께 수정해야 함.
+- **해결 (2026-11-27)**: `JitEntry.arg_kinds: Vec<ArgKind>`(`Unbc`/`Int`/`Float`/`Bool`)가 구현되어 Float/Bool 인자도 TIR core 엔트리로 전달된다 (`jit_cache.rs`, `jit_fast.rs`). 이 절의 위 사실·결정·위험 항목은 당시 기록으로 보존한다.
 
 ## F-011. class 메서드는 `vm/mod.rs call_proto` 경로로는 jit에 못 들어간다 (원래 동작)
 
@@ -67,6 +68,7 @@
 - 결정: Compile Mode의 Vm 경로(`un native`)와 바이트코드 JIT에서는 이 동작을 바꾸지 않는다.
   TIR core 대상에서 class/메서드는 네이티브 제외다. 다만 **plain `un build`는 별개 경로**로,
   `libnrt.a`가 클래스 생성·필드·메서드·상속을 기계어로 실행한다 (`OBJ_MILESTONES.md`).
+- **해결 (2026-11-27)**: `jit_bc`가 class Int 필드 name-checked intrinsic으로 클래스 메서드를 JIT 대상으로 지원한다(VM `call_proto` 경로 자체의 동작은 동일). 이 절의 위 사실·결정 항목은 당시 기록으로 보존한다.
 
 ## F-012. Proto에는 span이 없다 — TIR↔proto 매칭 수단 필요
 
@@ -173,4 +175,6 @@
 - **해결 (커밋 `edeabff`)**: `vm::tests::a_cleared_jit_program_runs_identically`가
   전역 `clear()` 대신 `jit_cache::clear_program(program_id)`로 격리되고, `JIT_FNS`와
   `TIR_FNS`가 분리되었다. 전역 `clear()`를 쓰는 `a_full_clear_lets_jit_run_again`은
-  의도된 테스트로 유지한다. 현재 기준 `cargo test --release --workspace` 273 passed.
+  의도된 테스트로 유지한다. 해결 시점 기준 `cargo test --release --workspace` 273 passed.
+  (현재값 각주: 2026-11-27 재측정 430 passed — nrt 92 + nrt scheduler_spike 5 +
+  lib 301 + un bin 24 + playground 8.)

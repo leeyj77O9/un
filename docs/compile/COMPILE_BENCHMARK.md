@@ -22,8 +22,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compile-bench.ps1
 
 ## 측정 결과 (median of 7, ms — 2026-11-19/20 원측정, 역사적 수치)
 
-현재 전체 벤치마크는 저장소 루트 `BENCHMARK.md`를 참조한다. 2026-11-25 18:51 +09:00에
-`scripts/bench.ps1 -Group all -Report`로 재생성(commit 180d3db)되었고, 6개 레인
+현재 전체 벤치마크는 저장소 루트 `BENCHMARK.md`를 참조한다. 2026-11-25 18:57:42 +09:00에
+`scripts/bench.ps1 -Group all -Report`로 재생성(commit 088973b)되었고, 6개 레인
 (Un VM / Un JIT / Compile Mode / standalone exe / Python / Node)을 비교한다.
 Un JIT 대비 Python geomean은 **3.688x**다.
 
@@ -43,7 +43,7 @@ plain exe는 Cranelift가 fib를 직접 네이티브 코드로 만든 결과로 
 fib 자체 타이밍을 프로세스 7회 실행 median으로 낸 값이며, 루트 `BENCHMARK.md`의
 Exe 열도 동일한 방식이다(`scripts/bench.ps1`, `scripts/compile-bench.ps1` 공통).
 단위가 다른 것이 아니라 **측정 시점**이 다르다(이 표는 2026-11-20 원측정,
-`BENCHMARK.md`는 2026-11-23 재생성). 공식 수치는 `BENCHMARK.md`, 방법론은
+`BENCHMARK.md`는 2026-11-25 재생성). 공식 수치는 `BENCHMARK.md`, 방법론은
 `docs/guides/BENCHMARK_GUIDE.md`가 기준이다.
 
 ## 주의사항

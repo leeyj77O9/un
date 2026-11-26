@@ -32,7 +32,7 @@ Add that directory to `PATH` if you want to run `un` from anywhere.
 | `un check <file.un>` | **experimental**: static type analysis only (compile mode) |
 | `un native <file.un>` | **experimental**: static analysis + native execution (compile mode) |
 | `un obj <file.un|file.unbc> [-o out.obj] [--entry name]` | **experimental**: translate source/bytecode to a relocatable object file (COFF .obj on Windows/GNU); `.unbc` is Int core only, source path also compiles Str/list/dict/classes/exceptions natively |
-| `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N]` | **experimental**: compile source to a relocatable object and link it into a standalone executable (via rustup's self-contained mingw gcc); `--embed` bakes the .unbc + VM runtime into a self-contained exe supporting any Un program; `N=0|1|2|3|s|z` controls rustc opt-level for the generated driver (default 0) |
+| `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N] [--parallel]` | **experimental**: compile source to a relocatable object and link it into a standalone executable (via rustup's self-contained mingw gcc); `--embed` bakes the .unbc + VM runtime into a self-contained exe supporting any Un program; `N=0|1|2|3|s|z` controls rustc opt-level for the generated driver (default 0); `--parallel` is plain-build only (real `go`/`wait` parallelism, thread-backed `flow`/`atomic`), and combining it with `--embed` exits 2 |
 | `un dis <file.un>` | dump stack bytecode with line numbers |
 | `un dis-reg <file.un>` | dump the register-plan form of the bytecode |
 | `un tokens <file.un>` | print the token stream |
@@ -53,7 +53,7 @@ Directory modules load either `mod.un` or every `.un` file in the directory.
 |---|---|
 | 0 | success |
 | 1 | uncaught error (parse/compile error, runtime error, stack overflow) |
-| 2 | usage error (wrong arguments, e.g. missing filename) |
+| 2 | usage error (wrong arguments, e.g. missing filename; `--parallel` combined with `--embed`) |
 
 ## `un run <file.un>`
 
@@ -220,6 +220,7 @@ Same program translated to the register plan the VM actually executes
 | (unset) | default: the embedded Cranelift JIT is enabled for the eligible Int/Float subset |
 | `UV_JIT=0` | interpreter only (used by `scripts/differential.ps1` to compare JIT on/off byte-for-byte) |
 | `UV_JIT=2` | strict canary: the process exits with code 2 if any JIT-eligible proto falls back to the interpreter (used in CI to catch JIT regressions) |
+| `UN_PARALLEL=1` | set by the generated driver of a plain `un build --parallel` exe before `un_main`: enables real `go`/`wait` parallelism and thread-backed `flow`/`pool`/`atomic` handles. Unset on the default path (deferred cooperative) |
 
 ## Experimental (in development, may change)
 
@@ -257,7 +258,7 @@ All un values are lowered as i64. Protos outside the subset are skipped with a
 become trap stubs (a call to one traps at runtime instead of returning
 garbage). See `docs/compile/OBJ_MILESTONES.md` for milestones.
 
-### `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N]`
+### `un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N] [--parallel]`
 
 One command from source to a standalone native executable: emits the object
 file as above, then links it against a generated driver and `libnrt.a` (the
@@ -286,10 +287,19 @@ runtime statically). Embed mode works for **any** Un program — classes,
 collections, IO, string interpolation — and produces a single self-contained
 executable. See `docs/compile/OBJ_MILESTONES.md`.
 
+**`--parallel` (plain builds only).** With this flag the generated plain-exe
+driver sets `UN_PARALLEL=1` before `un_main`: `go`/`wait` run on real worker
+threads, and `flow`/`pool`/`atomic` handles use thread-backed variants instead of
+the default `RefCell` shim. `un run`, `un native`, `--embed` and plain builds
+without the flag are unaffected and keep deferred cooperative semantics. The
+flag is mutually exclusive with `--embed`: using both prints
+`un build: --parallel requires a plain build; drop --embed` and exits 2.
+
 **Build cache (TOOL1).** Successful builds are cached under
 `%TEMP%\un-build-cache-v1` (the OS temp directory; no build artifacts are
 added to the repository). The key is the source bytes (including inlined user
-modules), input path, `embed`/`allow-dynamic`/`opt-level` flags, target triple,
+modules), input path, `embed`/`allow-dynamic`/`opt-level` flags plus a `parallel`
+vs `cooperative` marker, target triple,
 and the identity of rustc, the linker, `un.exe` and the static runtime library
 (`libnrt.a` / `libunvm.a`). A hit copies the cached exe to the requested output
 and replays the `skipped:` warnings and rustc diagnostics captured on the miss,

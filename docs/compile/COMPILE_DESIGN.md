@@ -30,7 +30,7 @@ Un은 하나의 언어를 두 가지 실행 모드로 제공한다.
 
 기존 CLI(`run`, `compile`, `tokens`, `ast`, `desugar`, `opt`, `dis`, `dis-reg`,
 `help`)를 분석한 결과, `un compile`은 이미 **`.unbc` 바이트코드 산출**을 의미한다
-(`main.rs:318-348`). 기존 규칙을 우선해 그 의미를 유지하고, 컴파일 모드에는
+(`main.rs`의 `compile` / `print_help` 구현). 기존 규칙을 우선해 그 의미를 유지하고, 컴파일 모드에는
 새 동사를 추가한다.
 
 | 명령 | 동작 |
@@ -312,8 +312,9 @@ arm0: param_tags: i64  // bit p=0/1: arg p = Int(0)/IntVec handle(1) (기존)
 args...: i64 (Int value / Float bits / Bool / Rc 포인터)
 ```
 
-반환 tag: `0=Int, 1=Float(bits), 3=Bool, 4=None, 2=Bail` (2는 진입 가드 불일치
-시 설정되어 인터프리터 재실행). 기존 TAG 값과 동일.
+반환 tag: `0=Int, 1=Float(bits), 2=Bail, 3=Bool, 5=None` (`4`는 미사용).
+2는 진입 가드 불일치 시 설정되어 인터프리터 재실행에 넘긴다
+(`jit_cache.rs::TAG_*`). 기존 TAG 값과 동일.
 
 core 함수는 진입 시 **가드를 한 번만** 둔다: `param_tags`의 Float/Bool 비트와
 기대 타입을 대조하고, Int 인자에 대해선 태그가 Int이므로 무조건 수용. 불일치 시
@@ -412,8 +413,11 @@ TIR 내부 호출은 완전한 정적 타입 직접 호출이므로 태그 검�
 
 ### 미구현/제외 (범위)
 
-- 바이트코드 JIT(`jit_bc`) 대상에서는 classes, closures, collections, union,
-  `any`, 네이티브 호출, float math intrinsics, match가 여전히 인터프리터 폴백이다.
+- 위 core 제한과 폴백 목록은 **Vm 모드(`un native`)의 in-process TIR 엔트리
+  기준**이다. 바이트코드 JIT(`jit_bc`)는 범위가 달라서 class Int 필드
+  name-checked intrinsic, IntVec/IntDict, `math` Float intrinsic을 네이티브로
+  지원한다. closures, union, `any`, 일반 네이티브 호출, match는 두 경로 모두
+  인터프리터 폴백이다.
   다만 **plain `un build` 경로**에서는 classes/상속, exceptions, Str, list/dict,
   제너릭 타입 컬렉션, closure, 기본값 인자, 단순 모듈, byte-identical traceback이
   `libnrt.a`로 네이티브 실행된다 (`OBJ_MILESTONES.md`).
@@ -423,7 +427,7 @@ TIR 내부 호출은 완전한 정적 타입 직접 호출이므로 태그 검�
   `scripts/compile-bench.ps1`은 상세 비교용으로 남아 있다. 전체 결과는 루트
   `BENCHMARK.md` 참조.
 - `test/compile/errors/` negative manifest — 구현됨 (`manifest.txt` 기반,
-  `compile-check.ps1`가 34 passed 검증; §8).
+  `compile-check.ps1`가 42 passed 검증; §8).
 
 ### 배운 것 (요약)
 

@@ -2150,3 +2150,60 @@ HEAD `b45ebd5`까지 2026-11-24에 통합된 Work를 시간순으로 정리한�
   fully typed 경계를 반영. 이 로그에 Work-ID별 요약 추가.
 - 검증: 문서 전용 변경이라 빌드 불필요. 한영 README의 섹션 제목·목록/표 항목 수가
   대응되는지 확인. 커밋/푸시 없음.
+
+---
+
+## 2026-11-27 — W-2026-11-27-001 (그룹 C): GOWAIT 문서 검수 + P00~P08 구현 요약
+
+> 각주: 이 로그의 기존 항목은 **작성 시점 순서(오름차순)**로 유지한다. "newest-first"라는
+> 오래된 주장과 실제 배열이 다르므로, 새 섹션은 맨末尾에 append하고 기존 섹션은 다시 쓰지 않았다.
+> 본 작업은 문서 전용이며 **커밋/푸시 없음**, 코드 수정 없음.
+
+### 구현 요약 (P00~P08 커밋 ID)
+
+- **P00/P01**: `GOWAIT_IMPLEMENTATION_PLAN.md` 설계·Work 분해, `GOWAIT_THREAD_SAFETY_AUDIT.md`
+  무코드 감사(P01 자체는 커밋 없음 — historical 스냅샷 보존).
+- **P05** `9d63c7f`: 신규 `rust/nrt/src/scheduler.rs` — `std::thread` + `Arc<Mutex<VecDeque<Task>>>`
+  + `Condvar`, graceful drain/join.
+- **P02B** `3ae916a`: NRT `static mut`/`&'static mut` 제거(클래스 캐시·arena·obj/list/dict/net),
+  handle table + `Mutex`/`AtomicUsize`.
+- **P03** `a9d1d24`: `globals`/`closure`/`abi`의 `Send` 경계 정리, 기존 `unrt_*` 시그니처 유지.
+- **P04** `d2f176c`: traceback task-local화 + `unrt_wait` 결과 직렬화.
+- **P06** `a7b39ea` / `fc7e5f8` / `baaefba`: `Go`/`Wait` TIR variant, `un build --parallel` CLI,
+  새 C 심볼 `unrt_go`/`unrt_wait`/`unrt_trace`. opcode `0x63`/`0x64` 불변, `--embed` 상호배제.
+- **P07** `013858a` / `1b258b0`: `flow`/`pool`/`atomic` opt-in 병렬, 입력 순서 보장,
+  `test/unit/runtime/async.un` 기대값 미수정.
+- **P08** `488bf0b`: `scripts/gowait-parallel.ps1` + `test/parallel/manifest.txt` +
+  `.github/workflows/build.yml`의 `Test (go/wait opt-in parallel gate)` 스텝.
+- **D-099** append: 기본 deferred 유지 + plain 전용 opt-in 병렬, 안 A 미승인, 새 C 심볼 3개 승인.
+  기존 D-012/D-054/D-061/D-062/D-063/D-080은 수정·폐기하지 않음.
+
+### 문서 검수 (그룹 C 허용 파일)
+
+- `GOWAIT_IMPLEMENTATION_PLAN.md`: 상태를 "설계만 완료" → "P00~P08 완료/P09 잔여"로 갱신,
+  Work 표 각주, C-1~C-12 `[x]`(안 A 미채택 유지), 깨진 링크 2곳
+  `docs/compile/COMPILER_LANGUAGE_ROADMAP.md` → `docs/project/...`, cargo 430,
+  CI 스텝은 `build.yml` 참조(고정 숫자 없음), §3.5 opt-in divergence.
+- `GOWAIT_PARALLEL_RFC.md` / `GOWAIT_THREAD_SAFETY_AUDIT.md`: 안 C 구현 완료 각주,
+  승인 12행 갈음, A-01~A-07/A-09/A-11~A-16/A-18 `resolved` + 커밋 ID,
+  A-10 opt-in 문서화 잔여, P01 자체 한정 각주.
+- `DECISIONS.md` D-099 append, `COMPILER_LANGUAGE_ROADMAP.md` 현재 기준 430/42-0/78-0,
+  `TECHNICAL_DEBT.md` TD-39 각주 + D-098 구현 완료 + **TD-54/TD-55/TD-56 3건 추가**.
+- `REFACTOR_SUMMARY.md`: BENCHMARK 18:57:42/`088973b`, CI 고정 스텝 수 제거, D-099 반영.
+- historical 스냅샷(`PROJECT_AUDIT.md`, `AUDIT_REVIEW.md`, `SESSION_ARCHITECTURE.md`)은 보존하고
+  상단에 2026-11-27 현재값 각주만 추가. `NATIVE_CONCURRENCY_DESIGN.md`는 안 B 권장 이후
+  RFC §5에서 안 C 채택·구현됨 각주.
+
+### P09 잔여(문서화만 선택)
+
+- `pool.submit` future API 차이(`.value()` vs `wait`) — TD-54.
+- 병렬 task throw의 VM traceback 프레임 누락(게이트는 error 문구만 검증) — TD-55.
+- scheduler lost-wakeup 가능성(1회 30초 타임아웃 관측, 이후 100회 재현 실패; `cv.notify_all()`
+  무-lock 호출 + `join_full` watchdog 부재) — **잠재 이슈로만 기록, 확정 버그 아님** — TD-56.
+- 위 3건은 기본 deferred 경로의 byte-identical 게이트에 영향 없음. 코드 수정은 별도 Work/승인 대상.
+
+### Result
+
+- 검증: `git diff --check`, 금지된 stale 수치/링크 재검색, D-099 상충 여부 육안 확인.
+  본 세션은 테스트를 실행하지 않았으므로 게이트 통과로 보고하지 않는다(430 등 수치는
+  상위 세션 실측값을 인용한 문서 갱신). 커밋 없음.

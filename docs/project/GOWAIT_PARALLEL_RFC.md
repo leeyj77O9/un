@@ -1,11 +1,18 @@
 # GOWAIT_PARALLEL_RFC.md — `go`/`wait` 진짜 병렬 실행 RFC
 
 > Work ID: W-2026-11-24-GOWAITRFC / 역할: ARC-00 (Architecture subagent)
-> 작성일: 2026-11-24 / 상태: **제안(Proposal) — 구현 없음, 커밋 없음**
+> 작성일: 2026-11-24 / 상태: **제안(Proposal) — 구현 없음, 커밋 없음** (작성 시점 스냅샷, 보존)
+>
+> **(2026-11-27 각주)** 제안된 **안 C는 구현·커밋 완료**됐다: P00~P08 완료, P08 `488bf0b`,
+> 새 ADR `docs/project/DECISIONS.md` D-099. 아래 "구현 없음/커밋 없음" 문구는 2026-11-24
+> 작성 시점 한정이며 지금은 적용되지 않는다. 안 A는 여전히 미승인·미채택이다.
 >
 > 이 문서는 **설계 문서 하나만** 수정한 결과다. `rust/**`, `test/**`, `scripts/**`,
 > `bench/**`, 기존 문서와 소스는 일체 변경하지 않았다. 인용된 줄은 작성 시점에
 > 실제 파일을 정적 확인한 결과다(번호는 확인 시점 기준; 과거 문서의 번호와 다를 수 있다).
+> 게이트 수치도 작성 시점 스냅샷이다 — 2026-11-27 현재값은 `cargo test` 430,
+> `test.ps1` 51 files / 1638, `compile-check` 42/0, `exe-diff` 78/0
+> (`docs/project/REFACTOR_SUMMARY.md` "Current baseline").
 >
 > 선행 문서: `docs/project/NATIVE_CONCURRENCY_DESIGN.md`(안 A/B 최초 검토, LANG2),
 > `docs/project/COMPILER_LANGUAGE_ROADMAP.md:14`(LANG2 = 안 B 완료),
@@ -170,6 +177,13 @@ Scheduler = {
 | traceback 결정성 | 전역 `FRAME_DEPTH`/`FRAME_SLOTS`/`ERROR_SITE`가 스레드 간 섞임 | task-local trace → 결과 버퍼 → `wait` 스레드에서 출력(직렬화). 이게 byte-identical 유지의 핵심 |
 | 타이밍 | `test/unit/runtime/async.un:41-46`의 `slow()`(50 ms)가 실제 병렬이 되면 전체 실행 시간이 줄지만 값은 동일 | 스톱워치 출력을 기대값에 포함하지 않도록 테스트 갱신(테스트 변경은 구현 단계에서 별도 승인) |
 
+> **(2026-11-27 관측 각주 — opt-in documented divergence / 잠재 이슈)** 위 표는 설계 시점 예측이다. 실제 P08(`488bf0b`) 완료 후 관측된 차이는
+> `docs/project/GOWAIT_IMPLEMENTATION_PLAN.md` §3.5 및 `docs/project/TECHNICAL_DEBT.md` TD-54/TD-55/TD-56에 기록했다:
+> ① 병렬 plain exe의 `pool.submit` future는 `.value()`만 지원하고 VM(`un run`)은 `wait`만 지원(documented divergence),
+> ② 병렬 task 내부 throw는 `wait` 지점 error 메시지가 동일하나 VM traceback 프레임(`-> <module>`, `-> go`)이 누락될 수 있고 게이트는 error 문구만 검증(documented divergence),
+> ③ `rust/nrt/src/scheduler.rs`의 `cv.notify_all()` 무-lock 호출 및 `join_full` watchdog 부재 — 1회 30초 타임아웃 관측, 이후 100회 재현 실패 → **잠재 이슈로만 기록, 확정 버그 아님**.
+> 세 항목 모두 P09 문서화 잔여이며 기본 deferred 경로의 byte-identical 게이트에는 영향이 없다.
+
 ---
 
 ## 5. 대안 3개 비교
@@ -228,7 +242,7 @@ NRT 스레드 풀로 병렬 실행한다.
 
 - B(현재 상태)는 이미 완료: 추가 공수 0.5–1 인일(문서 한 줄 보강 수준).
 - 각 단계는 `cargo build --release` 0 errors/0 warnings, `cargo test --release --workspace`
-  314 passed를 통과해야 다음 단계로 넘어간다(새 경고 금지).
+  314 passed(작성 시점 스냅샷; **2026-11-27 실측은 430 passed**)를 통과해야 다음 단계로 넘어간다(새 경고 금지).
 - M2의 `unsafe` 제거 누락 한 곳이 전체 crate 안전성을 무효화하므로 M1 감사를 게이트화한다.
 
 ---
@@ -271,6 +285,8 @@ NRT 스레드 풀로 병렬 실행한다.
 - [ ] opt-in 문법 선택: `go!` / `flow.parallel { }` / `un build --parallel` 중 확정.
 - [ ] 구현 착수 시점(이 RFC 승인 후 별도 Work ID 발급) 확정.
 
+> **(2026-11-27 각주)** 위 체크리스트의 승인은 `docs/project/GOWAIT_IMPLEMENTATION_PLAN.md` §6의 **C-1~C-12 12행**으로 갈음했다(안 C 확정, `go!`/`flow.parallel { }` 보류, 안 A 미승인). 그 결과 P00~P08이 구현·커밋 완료됐다. 위 `[ ]`는 작성 시점 상태로 보존한다.
+
 ---
 
 ## 8. 결론
@@ -281,6 +297,8 @@ NRT 스레드 풀로 병렬 실행한다.
 커밋은 모두 하지 않았다. 사용자가 §7.3 체크리스트를 승인하고 별도 Work를 발급하기
 전까지는 `rust/**`, `test/**`, `scripts/**`, `bench/**`를 건드리지 않는다.
 승인 없이 진행 가능한 유일한 후속 작업은 이 RFC의 문구 보완(설계 문서만)이다.
+
+> **(2026-11-27 각주)** 위 결론은 2026-11-24 작성 시점 한정이다. 사용자가 승인을 갈음한 뒤 안 C가 구현·커밋 완료됐으므로(P08 `488bf0b`, D-099), 현재 잔여는 **P09 문서 정리**(§4 각주의 TD-54/TD-55/TD-56 포함)뿐이다. 본 RFC는 historical 제안 문서로 보존한다.
 
 ---
 

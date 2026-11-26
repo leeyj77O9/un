@@ -12,6 +12,12 @@
 > P3/SUSPECTED), WASM 동적 confine(BLOCKED)뿐이다. 숫자를 현재값으로 덮어쓰지
 > 않고 "당시 → 현재" 대비로 보존한다. 현재 기준은 `docs/project/REFACTOR_SUMMARY.md`
 > 및 아래 Part V를 참조한다.
+>
+> **(2026-11-27 각주 — historical 스냅샷 보존)** Part I~IV의 표와 위 2026-11-23 상태는 당시 값으로 그대로 둔다.
+> 현재 기준은 `cargo test` **430 passed**, `scripts/test.ps1` **51 files / 1638 passed / 0 failed / 0 crashed**,
+> `compile-check` **42/0**, `exe-diff` **78/0**, `differential` **102/0**
+> (`docs/project/REFACTOR_SUMMARY.md` "Current baseline"). GOWAIT opt-in 병렬은 D-099/P08 `488bf0b`로 완료,
+> 기본 deferred는 유지. opt-in 차이는 `TECHNICAL_DEBT.md` TD-54/TD-55/TD-56 참조.
 
 ## 0. 요약
 

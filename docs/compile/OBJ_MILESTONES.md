@@ -62,16 +62,20 @@ plain `un build`도 임의의 annotated 클래스를 지원한다(클래스는 T
 반환한다. 오브젝트 심볼은 `llvm-nm`으로 확인할 수 있다: `un_main`(export),
 `un_proto_<i>`/`un_tir_<i>`(Local).
 
-`scripts\compile-check.ps1`도 함께 쓴다 — `test/compile/*.un` 픽스처 13개가 `un run`/`un native` 바이트 동일 + exit 0인지,
+`scripts\compile-check.ps1`도 함께 쓴다 — `test/compile/*.un` 픽스처 19개가 `un run`/`un native` 바이트 동일 + exit 0인지,
 그리고 `test/compile/errors/*.un` 부정 픽스처가
 `un check`/`un native` 양쪽에서 exit 1 + 기대 진단 문자열을 내는지 검사한다
-(errors/* 19개, compile-check 33 passed). 거부 케이스를 추가하려면 픽스처 + `test/compile/errors/manifest.txt`
+(errors/* 22개, compile-check 42 passed). 거부 케이스를 추가하려면 픽스처 + `test/compile/errors/manifest.txt`
 한 행만 추가하면 된다.
+
+2026-11-27 기준 재측정: compile-check 42 passed / 0 failed
+(`test/compile/*.un` 19 + untyped 1 + `test/compile/errors/*.un` 22),
+exe-diff 78 passed / 0 failed, `cargo test --release --workspace` 430 passed.
 
 `scripts\exe-diff.ps1`은 **exe 검증**을 담당한다 — `test/compile/*.un`을 `un build --embed`로
 링크한 exe와, `test/compile/build/*.un`(plain native 빌드 가능 프로그램만 두는 디렉터리)을
 plain `un build`로 링크한 exe가 각각 `un run`과 stdout/stderr/exit code 바이트 동일한지
-검사한다 (현재 42 passed). Part B는 바이트
+검사한다 (현재 78 passed). Part B는 바이트
 동일성만 확인하므로, Part C가 `bare_for.un`에서 no-VM 마커와 exe 크기(<10 MB)를
 별도로 검증한다. 새 기능을 지원할 때마다 이 디렉터리에 빌드 가능 픽스처를 추가하면
 plain exe 회귀를 잡을 수 있다.
@@ -84,6 +88,11 @@ plain exe 회귀를 잡을 수 있다.
 (`nrt/abi.rs::call_native_typed`)으로 지원된다. 남은 제한은 동적 타입
   (`Any`/Union), 시간 시드 `random`, 모듈 최상위 부수 효과(이제 명시적 거부),
 기본값이 있는 base 클래스 ctor 파라미터의 인자 순서, 메서드 오버라이드 시 기본값 선택이다.
+- `un build --parallel`(plain build 전용, opt-in): TIR `MakeClosure`/`Await`의
+  `parallel = true`일 때만 `unrt_go`/`unrt_wait`를 호출해 스레드 풀에서 실행한다.
+  기본 lowering은 `parallel = false`로 deferred cooperative 경로를 유지하며,
+  `flow`/`pool`/`atomic`의 병렬 진입점도 opt-in 전용이다. `un run`/`un native`에는
+  병렬 옵션이 없다.
 - `list[int]`/`list[float]`: 리터럴(`[1, 2, 3]`), 파라미터/렛/대입, `for v in xs` 또는
   `for v in [1, 2, 3]`(리터럴 직접 반복),
   호출 인자/반환(`-> list[int]`), `io.write(xs)` 네이티브 출력까지 지원한다.
