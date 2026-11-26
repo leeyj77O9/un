@@ -1,8 +1,17 @@
 //! Source locations, call frames and traceback formatting for no-VM executables.
 //! Mirrors `runtime/context.rs::trace_string` and `error.rs::LangError::display`.
+//!
+//! Thread-safety (W-2026-11-26-P04, A-13..A-16): all mutable trace/error state is
+//! task-local (`thread_local!`). A native task runs from entry to result on one
+//! worker thread, so a worker's frames, error site and pending error cannot be
+//! observed by another worker. [`snapshot`] copies that state into an owned,
+//! `Send` [`TraceSnapshot`] which P06 attaches to the task result; the wait
+//! thread then serializes it with [`write_traceback`]. The default (single
+//! threaded) path is unchanged: [`dump_uncaught_from`] snapshots its own
+//! thread and prints exactly the same bytes as before.
 
+use std::cell::Cell;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::obj::display;
@@ -13,38 +22,60 @@ struct SourceInfo {
     line_starts: Vec<usize>,
 }
 
+// A-17 (won't-fix): registered once before any task runs, read-only afterwards.
 static SOURCE: Mutex<Option<SourceInfo>> = Mutex::new(None);
-// Lock-free call frames. Each slot holds (name pointer, name length, start,
-// source length). Relaxed atomic stores on the slots compile to plain `mov`
-// on x86; the depth counter is a plain cell because plain no-VM executables
-// are single-threaded. Together this removes both the mutex and the two
-// atomic RMWs that used to run on every function call.
-const MAX_FRAMES: usize = 512;
-// Plain executables are single-threaded (no `go`/`wait` in the NRT subset), so
-// the depth counter does not need an atomic read-modify-write on every function
-// call. The two RMWs per call used to dominate recursive benchmarks (fib24).
-// Access is through raw pointers to a `static mut` so no reference to the
-// static is ever created (avoids `static_mut_refs` and keeps the `Sync`
-// question moot: nothing can observe it from another thread).
-static mut FRAME_DEPTH: usize = 0;
-#[inline(always)]
-fn frame_depth() -> usize {
-    unsafe { std::ptr::addr_of_mut!(FRAME_DEPTH).read() }
-}
-#[inline(always)]
-fn set_frame_depth(d: usize) {
-    unsafe { std::ptr::addr_of_mut!(FRAME_DEPTH).write(d) }
-}
-static FRAME_SLOTS: std::sync::OnceLock<Vec<[AtomicU64; 4]>> = std::sync::OnceLock::new();
 
-fn frame_slots() -> &'static Vec<[AtomicU64; 4]> {
-    FRAME_SLOTS.get_or_init(|| {
+const MAX_FRAMES: usize = 512;
+
+thread_local! {
+    // A-14: replaces the former raw-pointer read-modify-write on a process-global
+    // depth cell. `Cell` is a plain load/store — the recursion benchmark keeps
+    // the no-atomic-RMW property, and there is no shared alias to race on.
+    static FRAME_DEPTH: Cell<usize> = const { Cell::new(0) };
+
+    // A-15: replaces the process-global 512-slot atomic table. Plain `Cell<u64>`
+    // slots are sufficient because only the owning thread ever reads/writes
+    // them; the relaxed atomics existed solely to make the global table memory
+    // safe and are no longer needed.
+    static FRAME_SLOTS: Vec<[Cell<u64>; 4]> = {
         (0..MAX_FRAMES)
-            .map(|_| std::array::from_fn(|_| AtomicU64::new(0)))
+            .map(|_| std::array::from_fn(|_| Cell::new(0)))
             .collect()
-    })
+    };
+
+    // A-16: replaces the single global error-site mutex.
+    static ERROR_SITE: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+
+    // A-13: replaces obj.rs's process-global `PENDING` atomic. The C ABI
+    // (`unrt_write_error` / `unrt_take_error` / `unrt_dump_uncaught`) is
+    // unchanged; only its backing cell moves here so each task owns its error.
+    static PENDING_ERROR: Cell<u64> = const { Cell::new(0) };
 }
-static ERROR_SITE: Mutex<Option<(usize, usize)>> = Mutex::new(None);
+
+/// Owned copy of one call frame, safe to move to another thread.
+#[derive(Debug, Clone)]
+struct FrameSnap {
+    name: String,
+    start: usize,
+}
+
+/// Task-local trace + error state captured at a task boundary.
+///
+/// All fields are owned (no raw pointers, no `Rc`), so a snapshot is `Send` and
+/// can be placed in a scheduler result slot for the wait thread to serialize.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TraceSnapshot {
+    frames: Vec<FrameSnap>,
+    error_site: Option<(usize, usize)>,
+    pending_error: u64,
+}
+
+// Compile-time proof that a snapshot may cross a thread boundary (P06 needs
+// this when attaching it to `scheduler::TaskResult`).
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<TraceSnapshot>();
+};
 
 fn str_from(ptr: *const u8, len: usize) -> String {
     if ptr.is_null() || len == 0 {
@@ -118,70 +149,108 @@ pub extern "C" fn nrt_register_source(
 
 #[no_mangle]
 pub extern "C" fn nrt_push_frame(name_ptr: *const u8, name_len: usize, start: usize, len: usize) {
-    let d = frame_depth();
-    set_frame_depth(d + 1);
+    let d = FRAME_DEPTH.with(|c| {
+        let d = c.get();
+        c.set(d + 1);
+        d
+    });
     if d < MAX_FRAMES {
-        let slot = &frame_slots()[d];
-        // Relaxed atomic stores compile to plain `mov` on x86; keeping them
-        // preserves the existing slot representation used by `traceback`.
-        slot[0].store(name_ptr as u64, Ordering::Relaxed);
-        slot[1].store(name_len as u64, Ordering::Relaxed);
-        slot[2].store(start as u64, Ordering::Relaxed);
-        slot[3].store(len as u64, Ordering::Relaxed);
+        FRAME_SLOTS.with(|slots| {
+            let slot = &slots[d];
+            slot[0].set(name_ptr as u64);
+            slot[1].set(name_len as u64);
+            slot[2].set(start as u64);
+            slot[3].set(len as u64);
+        });
     }
 }
 
 #[no_mangle]
 pub extern "C" fn nrt_pop_frame() {
-    set_frame_depth(frame_depth().saturating_sub(1));
+    FRAME_DEPTH.with(|c| c.set(c.get().saturating_sub(1)));
 }
 
+/// Clear the current thread's frame depth (kept as an exported symbol for ABI
+/// compatibility; `take_error` is the internal all-in-one reset).
 #[no_mangle]
 pub extern "C" fn nrt_clear_trace() {
-    set_frame_depth(0);
+    FRAME_DEPTH.with(|c| c.set(0));
 }
 
 #[no_mangle]
 pub extern "C" fn nrt_set_error_site(start: usize, len: usize) {
-    *ERROR_SITE.lock().unwrap() = Some((start, len));
+    ERROR_SITE.with(|c| c.set(Some((start, len))));
 }
 
 #[no_mangle]
 pub extern "C" fn nrt_take_error_site() -> u64 {
-    let site = ERROR_SITE.lock().unwrap().take();
-    match site {
+    match ERROR_SITE.with(|c| c.take()) {
         Some((s, l)) => ((s as u64) << 32) | (l as u64),
         None => 0,
     }
 }
 
-pub(crate) fn traceback(message: &str) {
+/// Set the current task's pending error handle (replaces `PENDING.store`).
+pub(crate) fn pending_error_set(e: u64) {
+    PENDING_ERROR.with(|c| c.set(e));
+}
+
+/// Take and reset the current task's pending error handle (replaces
+/// `PENDING.swap(0, ..)`).
+pub(crate) fn pending_error_take() -> u64 {
+    PENDING_ERROR.with(|c| c.replace(0))
+}
+
+/// Reset all task-local trace/error state and return the previous pending
+/// error. This is the exact sequence the old `unrt_take_error` performed
+/// (`nrt_clear_trace` + `clear_pending_site` + `PENDING.swap(0)`), and is also
+/// the hook P06 calls when a worker starts a new task.
+pub(crate) fn take_error() -> u64 {
+    FRAME_DEPTH.with(|c| c.set(0));
+    clear_pending_site();
+    pending_error_take()
+}
+
+/// Snapshot the current thread's trace/error state into an owned, `Send` value.
+/// Called by the default traceback path and by P06 when a task finishes.
+pub(crate) fn snapshot() -> TraceSnapshot {
+    let depth = FRAME_DEPTH.with(|c| c.get().min(MAX_FRAMES));
+    let frames = FRAME_SLOTS.with(|slots| {
+        (0..depth)
+            .map(|i| {
+                let s = &slots[i];
+                FrameSnap {
+                    name: str_from(s[0].get() as *const u8, s[1].get() as usize),
+                    start: s[2].get() as usize,
+                }
+            })
+            .collect()
+    });
+    TraceSnapshot {
+        frames,
+        error_site: ERROR_SITE.with(|c| c.get()),
+        pending_error: PENDING_ERROR.with(|c| c.get()),
+    }
+}
+
+/// Serialize a traceback from a captured snapshot. This is the wait-thread
+/// entry point: the bytes are identical to formatting the originating task's
+/// own thread-local state.
+pub(crate) fn format_traceback(message: &str, snap: &TraceSnapshot) -> String {
     let src = SOURCE.lock().unwrap();
-    let depth = frame_depth().min(MAX_FRAMES);
-    let slots = frame_slots();
-    let frames: Vec<(usize, usize, usize, usize)> = (0..depth)
-        .map(|i| {
-            let s = &slots[i];
-            (
-                s[0].load(Ordering::Relaxed) as usize,
-                s[1].load(Ordering::Relaxed) as usize,
-                s[2].load(Ordering::Relaxed) as usize,
-                s[3].load(Ordering::Relaxed) as usize,
-            )
-        })
-        .collect();
-    let site = *ERROR_SITE.lock().unwrap();
+    let frames = &snap.frames;
+    let site = snap.error_site;
     let nl = if cfg!(windows) { "\r\n" } else { "\n" };
+    let mut out = String::new();
 
     if frames.len() > 1 {
         let mut rows: Vec<(String, usize, String)> = Vec::new();
-        for (name_ptr, name_len, start, _) in frames.iter() {
-            let name = str_from(*name_ptr as *const u8, *name_len);
+        for frame in frames.iter() {
             let (line, text) = match src.as_ref() {
-                Some(s) => (line_of(s, *start), line_text(s, *start)),
+                Some(s) => (line_of(s, frame.start), line_text(s, frame.start)),
                 None => (0, String::new()),
             };
-            rows.push((frame_name(&name), line, text));
+            rows.push((frame_name(&frame.name), line, text));
         }
         // Collapse consecutive identical rows.
         let mut collapsed: Vec<(String, usize, String, usize)> = Vec::new();
@@ -197,7 +266,7 @@ pub(crate) fn traceback(message: &str) {
         let width = collapsed.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
         let frame_rows = collapsed.iter().filter(|r| r.3 == 0).count();
         let compact = frame_rows > 10;
-        let mut out = format!("un: error trace{nl}");
+        out.push_str(&format!("un: error trace{nl}"));
         for (name, line, text, repeated) in &collapsed {
             let file = src.as_ref().map(|s| format!("<{}>", s.stem)).unwrap_or_default();
             out.push_str(&format!("    -> {name:<width$}  {file}, line [{line}]{nl}"));
@@ -207,10 +276,9 @@ pub(crate) fn traceback(message: &str) {
                 out.push_str(&format!("         {text}{nl}"));
             }
         }
-        print!("{out}");
     }
 
-    if site.is_some() || frames.len() <= 1 { print!("{nl}"); }
+    if site.is_some() || frames.len() <= 1 { out.push_str(nl); }
     let (file, line, col, text, caret) = match (src.as_ref(), site) {
         (Some(s), Some((start, len))) => {
             let line = line_of(s, start);
@@ -229,18 +297,209 @@ pub(crate) fn traceback(message: &str) {
         (None, _) => (String::new(), 0, 0, String::new(), String::new()),
     };
     if !text.is_empty() {
-        print!("{file}, line [{line}], column [{col}]{nl}");
-        print!("    {text}{nl}");
-        print!("    {caret}{nl}");
+        out.push_str(&format!("{file}, line [{line}], column [{col}]{nl}"));
+        out.push_str(&format!("    {text}{nl}"));
+        out.push_str(&format!("    {caret}{nl}"));
     }
-    print!("error: {message}{nl}");
+    out.push_str(&format!("error: {message}{nl}"));
+    out
+}
+
+/// Print a serialized traceback. The default path goes through
+/// [`dump_uncaught_from`]; P06 calls this with a result snapshot on the wait
+/// thread.
+pub(crate) fn write_traceback(message: &str, snap: &TraceSnapshot) {
+    let out = format_traceback(message, snap);
+    print!("{out}");
     let _ = std::io::stdout().flush();
 }
 
+/// Print an uncaught error from a captured snapshot, then exit(1).
+///
+/// Mirrors `unrt_dump_uncaught` but sources the message handle and trace from a
+/// snapshot, so P06 can rethrow a failed task's error on the wait thread while
+/// keeping the I5 error text and frame bytes unchanged. A panic (tag 10)
+/// suppresses the source caret exactly as in the original path.
+pub(crate) fn dump_uncaught_from(snap: &TraceSnapshot) -> ! {
+    let e = snap.pending_error;
+    let msg = if e == 0 { "unknown error".to_string() } else { error_message(e) };
+    let effective = if e != 0 && unsafe { crate::obj::obj(e).tag == 10 } {
+        let mut s = snap.clone();
+        s.error_site = None;
+        s
+    } else {
+        snap.clone()
+    };
+    write_traceback(&msg, &effective);
+    std::process::exit(1)
+}
+
 pub(crate) fn clear_pending_site() {
-    *ERROR_SITE.lock().unwrap() = None;
+    ERROR_SITE.with(|c| c.set(None));
 }
 
 pub(crate) fn error_message(p: u64) -> String {
     display(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    fn name(s: &str) -> (*const u8, usize) {
+        (s.as_bytes().as_ptr(), s.len())
+    }
+
+    #[test]
+    fn a14_frame_depth_is_task_local() {
+        take_error();
+        let (p, n) = name("main");
+        nrt_push_frame(p, n, 0, 1);
+        nrt_push_frame(p, n, 10, 1);
+        assert_eq!(snapshot().frames.len(), 2);
+        let worker = thread::spawn(|| {
+            take_error();
+            assert_eq!(snapshot().frames.len(), 0, "new thread starts at depth 0");
+            let (p, n) = name("worker");
+            nrt_push_frame(p, n, 20, 1);
+            assert_eq!(snapshot().frames.len(), 1);
+            take_error();
+        });
+        worker.join().unwrap();
+        assert_eq!(snapshot().frames.len(), 2, "parent depth is unaffected");
+        take_error();
+    }
+
+    #[test]
+    fn a15_frame_slots_are_task_local() {
+        take_error();
+        let (p, n) = name("parent");
+        nrt_push_frame(p, n, 1, 1);
+        let worker = thread::spawn(|| {
+            take_error();
+            let (p, n) = name("worker");
+            nrt_push_frame(p, n, 2, 1);
+            let snap = snapshot();
+            assert_eq!(snap.frames.len(), 1);
+            assert_eq!(snap.frames[0].name, "worker");
+            assert_eq!(snap.frames[0].start, 2);
+            take_error();
+        });
+        worker.join().unwrap();
+        let snap = snapshot();
+        assert_eq!(snap.frames.len(), 1);
+        assert_eq!(snap.frames[0].name, "parent");
+        assert_eq!(snap.frames[0].start, 1);
+        take_error();
+    }
+
+    #[test]
+    fn a16_error_site_is_task_local() {
+        take_error();
+        nrt_set_error_site(7, 3);
+        assert_eq!(snapshot().error_site, Some((7, 3)));
+        let worker = thread::spawn(|| {
+            take_error();
+            assert_eq!(snapshot().error_site, None);
+            nrt_set_error_site(99, 1);
+            assert_eq!(snapshot().error_site, Some((99, 1)));
+            take_error();
+        });
+        worker.join().unwrap();
+        assert_eq!(snapshot().error_site, Some((7, 3)), "parent site is unaffected");
+        assert_eq!(nrt_take_error_site(), (7u64 << 32) | 3);
+        take_error();
+    }
+
+    #[test]
+    fn take_error_clears_all_task_local_state() {
+        take_error();
+        let (p, n) = name("f");
+        nrt_push_frame(p, n, 5, 1);
+        nrt_set_error_site(11, 2);
+        pending_error_set(77);
+        let snap = snapshot();
+        assert_eq!(snap.frames.len(), 1);
+        assert_eq!(snap.error_site, Some((11, 2)));
+        assert_eq!(snap.pending_error, 77);
+
+        assert_eq!(take_error(), 77, "returns the pending handle");
+        let cleared = snapshot();
+        assert!(cleared.frames.is_empty(), "depth reset hides all frames");
+        assert_eq!(cleared.error_site, None);
+        assert_eq!(cleared.pending_error, 0);
+        assert_eq!(nrt_take_error_site(), 0, "site cell is empty after take_error");
+    }
+
+    #[test]
+    fn pop_frame_and_clear_trace_reset_depth_without_panicking() {
+        take_error();
+        nrt_pop_frame(); // saturating_sub at depth 0
+        assert_eq!(snapshot().frames.len(), 0);
+        nrt_clear_trace();
+        assert_eq!(snapshot().frames.len(), 0);
+        let (p, n) = name("f");
+        nrt_push_frame(p, n, 3, 1);
+        nrt_clear_trace();
+        assert!(snapshot().frames.is_empty(), "nrt_clear_trace resets depth");
+        take_error();
+    }
+
+    #[test]
+    fn format_traceback_is_stable_for_the_same_snapshot() {
+        take_error();
+        let snap = snapshot();
+        let first = format_traceback("boom", &snap);
+        let second = format_traceback("boom", &snap);
+        assert_eq!(first, second, "serialization must be deterministic");
+        assert!(first.ends_with("error: boom\n") || first.ends_with("error: boom\r\n"));
+        take_error();
+    }
+
+    #[test]
+    fn snapshot_is_owned_and_survives_task_state_reset() {
+        take_error();
+        let (p, n) = name("task_frame");
+        nrt_push_frame(p, n, 42, 1);
+        nrt_set_error_site(42, 3);
+        pending_error_set(1234);
+        let snap = snapshot();
+        // Worker boundary clears all task-local state (mirrors P06's hook).
+        assert_eq!(take_error(), 1234);
+        // The snapshot is an owned copy, not an alias into the thread-local cell.
+        assert_eq!(snap.frames.len(), 1);
+        assert_eq!(snap.frames[0].name, "task_frame");
+        assert_eq!(snap.frames[0].start, 42);
+        assert_eq!(snap.error_site, Some((42, 3)));
+        assert_eq!(snap.pending_error, 1234);
+    }
+
+    #[test]
+    fn frame_name_maps_module_and_lambda() {
+        take_error();
+        assert_eq!(frame_name(""), "<module>");
+        assert_eq!(frame_name("lambda"), "<lambda>");
+        assert_eq!(frame_name("f"), "f");
+        take_error();
+    }
+
+    #[test]
+    fn a13_pending_error_is_task_local() {
+        take_error();
+        pending_error_set(42);
+        assert_eq!(snapshot().pending_error, 42);
+        let worker = thread::spawn(|| {
+            take_error();
+            assert_eq!(pending_error_take(), 0);
+            pending_error_set(99);
+            assert_eq!(snapshot().pending_error, 99);
+            assert_eq!(pending_error_take(), 99);
+            take_error();
+        });
+        worker.join().unwrap();
+        assert_eq!(snapshot().pending_error, 42, "parent error is unaffected");
+        assert_eq!(take_error(), 42, "take_error returns the pending handle");
+        assert_eq!(snapshot().pending_error, 0);
+    }
 }

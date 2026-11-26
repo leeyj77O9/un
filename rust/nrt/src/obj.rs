@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 #[derive(Clone, Copy)]
@@ -46,10 +45,10 @@ static SMALL_INT_OBJS: [NObj; SMALL_INTS as usize] = {
 // Objects are intentionally leaked: the process is short-lived, so there is
 // no need to track allocations for deallocation.
 //
-// P01 A-13 / U-02: `PENDING` is atomic (memory-safe) but a single global error
-// cell. Task-local error reporting is P04's scope; P02 leaves this cell
-// untouched (read-only for this Work).
-static PENDING: AtomicU64 = AtomicU64::new(0);
+// P01 A-13: the former process-global `PENDING: AtomicU64` error cell moved to
+// a task-local cell in `trace.rs` (P04). The three `unrt_*` error ABI functions
+// below keep their exact signatures and behavior; only their backing storage
+// is now per-task so parallel workers cannot overwrite each other's errors.
 
 pub(crate) unsafe fn alloc(o: NObj) -> u64 {
     Box::into_raw(Box::new(o)) as u64
@@ -493,30 +492,23 @@ fn name_of_cstr(ptr: *const u8, len: usize) -> String {
 }
 #[no_mangle]
 pub extern "C" fn unrt_take_error() -> u64 {
-    crate::trace::nrt_clear_trace();
-    crate::trace::clear_pending_site();
-    PENDING.swap(0, Ordering::Relaxed)
+    // Same three operations as before (clear depth, clear site, take+reset the
+    // pending error), now on this task's thread-local state.
+    crate::trace::take_error()
 }
 #[no_mangle]
 pub extern "C" fn unrt_write_error(e: u64) -> u64 {
-    PENDING.store(e, Ordering::Relaxed);
+    crate::trace::pending_error_set(e);
     0
 }
 #[no_mangle]
 pub extern "C" fn unrt_dump_uncaught() -> ! {
-    let e = PENDING.swap(0, Ordering::Relaxed);
-    let msg = if e == 0 {
-        "unknown error".to_string()
-    } else {
-        crate::trace::error_message(e)
-    };
-    let is_panic = e != 0 && unsafe { obj(e).tag == 10 };
-    if is_panic {
-        // Panics carry no source caret in the VM, but still print the call trace.
-        crate::trace::clear_pending_site();
-    }
-    crate::trace::traceback(&msg);
-    std::process::exit(1)
+    // Snapshot first so the pending error handle survives in the snapshot;
+    // resetting the task-local cell afterwards mirrors the old `swap(0, ..)`.
+    // Frame/site bytes are identical because nothing mutates them in between.
+    let snap = crate::trace::snapshot();
+    crate::trace::pending_error_take();
+    crate::trace::dump_uncaught_from(&snap)
 }
 #[no_mangle]
 pub extern "C" fn unrt_make_int_div_zero() -> u64 {
