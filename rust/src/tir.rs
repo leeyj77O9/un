@@ -646,6 +646,15 @@ pub enum TirExpr {
     },
     /// Call a callable value (closure object) held in a local or container.
     CallObj { callee: Box<TirExpr>, args: Vec<TirExpr>, ret: TirTy },
+    /// `wait <operand>`: verify at runtime that the operand is a future handle
+    /// before invoking it, and raise the VM's exact error when it is not.
+    /// Keeping this distinct from `CallObj` avoids dereferencing an unboxed
+    /// scalar (which crashed the plain exe) and preserves the error text.
+    Await {
+        operand: Box<TirExpr>,
+        ret: TirTy,
+        span: (usize, usize),
+    },
     /// Read a process-global slot (inlined module state).
     GlobalGet(u16),
     /// The `none` value (boxed by NRT as a proper object handle).
@@ -857,6 +866,7 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
             TirExpr::MemberGet { receiver, .. } => expr_ok(receiver),
             TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) | TirExpr::EmptyCollection { .. } => true,
             TirExpr::CallObj { callee, args, .. } => expr_ok(callee) && args.iter().all(expr_ok),
+            TirExpr::Await { operand, .. } => expr_ok(operand),
             TirExpr::Located { inner, .. } => expr_ok(inner),
             TirExpr::Slice { list, start, end, step } => {
                 expr_ok(list)
@@ -1239,7 +1249,7 @@ fn expr_uses_native(e: &TirExpr) -> bool {
         | TirExpr::DictGet(_, x) | TirExpr::ListGet(_, x)
         | TirExpr::MemberGet { receiver: x, .. }
         | TirExpr::DictKeys(x) | TirExpr::DictValues(x)
-        | TirExpr::Located { inner: x, .. } => expr_uses_native(x),
+        | TirExpr::Located { inner: x, .. } | TirExpr::Await { operand: x, .. } => expr_uses_native(x),
         TirExpr::Select { cond, then_expr, else_expr } => {
             expr_uses_native(cond) || expr_uses_native(then_expr) || expr_uses_native(else_expr)
         }
@@ -1385,6 +1395,7 @@ fn expr_uses_classes(e: &TirExpr) -> bool {
             expr_uses_classes(inner)
         }
         TirExpr::Located { inner, .. } => expr_uses_classes(inner),
+        TirExpr::Await { operand, .. } => expr_uses_classes(operand),
         TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) | TirExpr::NoneValue => false,
         TirExpr::CallObj { callee, args, .. } => expr_uses_classes(callee) || args.iter().any(expr_uses_classes),
         TirExpr::Select { cond, then_expr, else_expr } => {
@@ -1522,6 +1533,7 @@ fn expr_uses_heap(e: &TirExpr) -> bool {
         TirExpr::Promote(inner)
         | TirExpr::Un(_, inner) => expr_uses_heap(inner),
         TirExpr::Located { inner, .. } => expr_uses_heap(inner),
+        TirExpr::Await { operand, .. } => expr_uses_heap(operand),
         TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) | TirExpr::NoneValue => true,
         TirExpr::CallObj { callee, args, .. } => expr_uses_heap(callee) || args.iter().any(expr_uses_heap),
         TirExpr::Select { cond, then_expr, else_expr } => {
@@ -1607,6 +1619,7 @@ fn expr_uses_str(e: &TirExpr) -> bool {
         | TirExpr::ClassNew { .. } | TirExpr::MemberGet { .. } | TirExpr::MethodCall { .. } => false,
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Local(_) | TirExpr::NoneValue => false,
         TirExpr::Located { inner, .. } => expr_uses_str(inner),
+        TirExpr::Await { operand, .. } => expr_uses_str(operand),
         TirExpr::MakeClosure { .. } | TirExpr::GlobalGet(_) => false,
         TirExpr::CallObj { callee, args, .. } => expr_uses_str(callee) || args.iter().any(expr_uses_str),
         TirExpr::ListRepeat { .. } => false,
@@ -2512,6 +2525,7 @@ impl TirProgram {
                     pad_expr(callee, program, class_names);
                     for a in args { pad_expr(a, program, class_names); }
                 }
+                TirExpr::Await { operand, .. } => pad_expr(operand, program, class_names),
                 TirExpr::Call(index, args) => {
                     for a in args.iter_mut() { pad_expr(a, program, class_names); }
                     if let Some(callee) = program.get(*index as usize) {
@@ -3076,6 +3090,7 @@ fn expr_uses_local(e: &TirExpr) -> bool {
         TirExpr::ClassNew { args, .. } | TirExpr::MethodCall { args, .. } => args.iter().any(expr_uses_local),
         TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_) => false,
         TirExpr::Located { inner, .. } => expr_uses_local(inner),
+        TirExpr::Await { operand, .. } => expr_uses_local(operand),
         TirExpr::MakeClosure { captures, .. } => captures.iter().any(|s| expr_uses_local(&TirExpr::Local(*s))),
         TirExpr::CallObj { callee, args, .. } => expr_uses_local(callee) || args.iter().any(expr_uses_local),
         TirExpr::Slice { list, start, end, step } => {
@@ -3722,7 +3737,7 @@ fn infer_simple_ty(e: &TirExpr, locals: &[TirTy]) -> Option<TirTy> {
         TirExpr::Un(TirUnOp::Neg, a) => infer_simple_ty(a, locals),
         TirExpr::Located { inner, .. } => infer_simple_ty(inner, locals),
         TirExpr::List(_) => Some(TirTy::ListInt),
-        TirExpr::CallObj { ret, .. } => Some(*ret),
+        TirExpr::CallObj { ret, .. } | TirExpr::Await { ret, .. } => Some(*ret),
         _ => None,
     }
 }
@@ -5597,10 +5612,10 @@ fn lower_unary(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Str
             },
         };
         return Ok((
-            TirExpr::CallObj {
-                callee: Box::new(callee),
-                args: Vec::new(),
+            TirExpr::Await {
+                operand: Box::new(callee),
                 ret,
+                span: (node.start, node.length),
             },
             ret.into(),
         ));
@@ -7001,7 +7016,7 @@ fn expr_ty(expr: &TirExpr, f: &TirFn, program: &TirProgram, locals: &[TirTy]) ->
     match expr {
         TirExpr::Located { inner, .. } => expr_ty(inner, f, program, locals),
         TirExpr::MakeClosure { func_index, .. } => Ok(TirTy::Lambda(*func_index)),
-        TirExpr::CallObj { ret, .. } => Ok(*ret),
+        TirExpr::CallObj { ret, .. } | TirExpr::Await { ret, .. } => Ok(*ret),
         TirExpr::GlobalGet(_) => Ok(TirTy::Int),
         TirExpr::NoneValue => Ok(TirTy::Str),
         TirExpr::BoxObj(inner) => {
@@ -7779,7 +7794,7 @@ fn validate_stmt(
                     TirExpr::Located { inner, .. } => inner.as_ref(),
                     other => other,
                 };
-                if !matches!(inner, TirExpr::Call(..) | TirExpr::MethodCall { .. } | TirExpr::CallObj { .. }) {
+                if !matches!(inner, TirExpr::Call(..) | TirExpr::MethodCall { .. } | TirExpr::CallObj { .. } | TirExpr::Await { .. }) {
                     return Err("expression statement must be a call".to_string());
                 }
                 let _ = expr_ty(expr, f, program, locals)?;

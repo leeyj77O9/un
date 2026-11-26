@@ -14,7 +14,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use cranelift_native;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NativeMode {
@@ -180,7 +180,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
     let mut internal_fids: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
     let mut ffi_fids: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
     for f in &tir.functions {
-        let internal_sig = internal_signature(&module, f, NativeMode::Vm);
+        let internal_sig = internal_signature(&module, f, NativeMode::Vm, false);
         match module.declare_function(
             &format!("tir_core_{}", f.index),
             Linkage::Export,
@@ -222,7 +222,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
             if let (Some(_), Some(ffi)) = (internal_fids.get(&f.index), ffi_fids.get(&f.index)) {
                 let ffi_sig = ffi_signature(&module, f);
                 emit_bail_ffi(&mut module, *ffi, &ffi_sig);
-                let internal_sig = internal_signature(&module, f, NativeMode::Vm);
+                let internal_sig = internal_signature(&module, f, NativeMode::Vm, false);
                 let internal_fid = *internal_fids.get(&f.index).unwrap();
                 let _ = emit_internal_bail(&mut module, f, internal_fid, &internal_sig);
             }
@@ -231,10 +231,10 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
         let (Some(internal), Some(ffi)) = (internal_fids.get(&f.index), ffi_fids.get(&f.index)) else {
             continue;
         };
-        let internal_sig = internal_signature(&module, f, NativeMode::Vm);
+        let internal_sig = internal_signature(&module, f, NativeMode::Vm, false);
         let ffi_sig = ffi_signature(&module, f);
         let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            emit_internal(f, &mut module, &internal_fids, *internal, &internal_sig, &tir.functions, NativeMode::Vm, true)
+            emit_internal(f, &mut module, &internal_fids, *internal, &internal_sig, &tir.functions, NativeMode::Vm, true, false, &HashSet::new())
         }));
         if std::env::var_os("UV_TIR_DEBUG").is_some() {
             match &guard {
@@ -364,8 +364,9 @@ fn emit_trap_stub(
     module: &mut ObjectModule,
     f: &TirFn,
     fid: cranelift_module::FuncId,
+    propagate_error: bool,
 ) -> Result<(), String> {
-    let sig = internal_signature(module, f, NativeMode::Obj);
+    let sig = internal_signature(module, f, NativeMode::Obj, propagate_error);
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
     ctx.func.name = UserFuncName::user(0, fid.as_u32());
@@ -449,6 +450,25 @@ pub fn obj_compile(
         .map_err(|e| format!("object builder: {e:?}"))?;
     let mut module = ObjectModule::new(object_builder);
 
+    // Direct-call error propagation (W-2026-11-26-CROSSTHROW). Plain functions
+    // gain a trailing i64 error flag so a compiled caller can route a callee's
+    // error into its own catch handler instead of letting the callee dump an
+    // uncaught trace. `un_main` keeps the public `() -> i64` ABI; lambdas and
+    // class methods remain single-result because NRT calls them indirectly and
+    // would ignore the extra flag.
+    let method_names: HashSet<&str> = tir
+        .class_methods
+        .iter()
+        .flat_map(|m| m.keys().map(String::as_str))
+        .collect();
+    let propagate: HashSet<usize> = (0..tir.functions.len())
+        .filter(|&i| {
+            i != entry_index
+                && !tir.functions[i].name.starts_with("__lambda_")
+                && !method_names.contains(tir.functions[i].name.as_str())
+        })
+        .collect();
+
     let mut fids: HashMap<usize, cranelift_module::FuncId> = HashMap::new();
     let mut skipped: Vec<String> = Vec::new();
     for (i, f) in tir.functions.iter().enumerate() {
@@ -461,7 +481,7 @@ pub fn obj_compile(
         // Method pointers are referenced from the generated driver, so every
         // emitted function must be link-visible, not just the entry point.
         let linkage = Linkage::Export;
-        let sig = internal_signature(&module, f, NativeMode::Obj);
+        let sig = internal_signature(&module, f, NativeMode::Obj, propagate.contains(&i));
         match module.declare_function(&symbol, linkage, &sig) {
             Ok(fid) => {
                 fids.insert(i, fid);
@@ -477,16 +497,16 @@ pub fn obj_compile(
             skipped.push(format!("{}: declaration failed", f.name));
             continue;
         };
-        let sig = internal_signature(&module, f, NativeMode::Obj);
+        let sig = internal_signature(&module, f, NativeMode::Obj, propagate.contains(&i));
         let needs_frame = error_free.get(i).copied().map(|p| !p).unwrap_or(true);
         let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            emit_internal(f, &mut module, &fids, fid, &sig, &tir.functions, NativeMode::Obj, needs_frame)
+            emit_internal(f, &mut module, &fids, fid, &sig, &tir.functions, NativeMode::Obj, needs_frame, propagate.contains(&i), &propagate)
         }));
         match guard {
             Ok(Ok(())) => emitted.push(f.name.clone()),
             _ => {
                 skipped.push(format!("{}: emission failed (trap stub emitted)", f.name));
-                let _ = emit_trap_stub(&mut module, f, fid);
+                let _ = emit_trap_stub(&mut module, f, fid, propagate.contains(&i));
             }
         }
     }
@@ -549,7 +569,7 @@ fn declare_import<M: Module>(
     module.declare_function(name, Linkage::Import, &sig).map_err(|_| ())
 }
 
-fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cranelift_codegen::ir::Signature {
+fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode, propagate_error: bool) -> cranelift_codegen::ir::Signature {
     let mut sig = module.make_signature();
     for t in &f.params {
         sig.params.push(AbiParam::new(match t {
@@ -573,6 +593,11 @@ fn internal_signature<M: Module>(module: &M, f: &TirFn, mode: NativeMode) -> cra
     }
     if mode == NativeMode::Vm {
         sig.returns.push(AbiParam::new(types::I8));
+    } else if propagate_error {
+        // Internal Obj-mode convention: a trailing i64 flag lets a compiled
+        // caller route a callee's error to its own catch handler. The public
+        // `un_main` symbol and NRT-called lambdas/methods never take this path.
+        sig.returns.push(AbiParam::new(types::I64));
     }
     sig
 }
@@ -652,10 +677,22 @@ struct FnEmit<'a> {
     fid_exit: Option<cranelift_module::FuncId>,
     acquired: Variable,
     bail_blk: Block,
-    /// Shared landing block for errors that propagate out of this function.
-    /// Reached only from no-handler error sites; drains defers before dumping
-    /// the uncaught error, mirroring the VM's `end_call` on `Flow::Propagate`.
+    /// Shared landing block for errors that cannot be caught here.
+    /// Reached only from panic sites and from the top-level entry: it drains
+    /// defers and dumps the uncaught error, mirroring the VM's `end_call`.
     defer_drain_blk: Block,
+    /// Landing block for catchable errors with no local handler in a compiled
+    /// callee. Drains this function's defers, then returns the error flag to
+    /// the caller so the caller's own handler (or its drain) can take it.
+    /// Equals `defer_drain_blk` when `propagate_error` is false.
+    error_route_blk: Block,
+    /// True for plain Obj-mode functions that return an extra i64 error flag
+    /// (0 = clean return, 1 = propagating error). The entry `un_main`, lambdas
+    /// and class methods keep their public single-result ABI and still dump.
+    propagate_error: bool,
+    /// Direct-call targets compiled with the extra error flag. Lambdas and
+    /// class methods are indirect through NRT and therefore excluded.
+    propagate_targets: &'a HashSet<usize>,
     /// Defer bodies in LIFO order, extracted from the tail of `f.body`.
     defer_flushes: Vec<(u16, Vec<TirStmt>)>,
     loop_breaks: Vec<Block>,
@@ -771,6 +808,39 @@ fn embed_str_bytes<M: Module>(
     module.declare_data_in_func(data_id, builder.func)
 }
 
+/// Run the function's defers in LIFO order, mirroring the VM's `end_call`
+/// drain on `Flow::Propagate`. The caller supplies the terminal action (dump
+/// for panics / the top-level entry, or an error-flag return for propagation).
+fn emit_defer_drain_seq<M: Module>(
+    emitter: &mut FnEmit<'_>,
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    f: &TirFn,
+) {
+    let drain = emitter.defer_flushes.clone();
+    for (slot, body) in &drain {
+        let flag = builder.use_var(emitter.vars[*slot as usize]);
+        let run_blk = builder.create_block();
+        let skip_blk = builder.create_block();
+        builder.ins().brif(flag, run_blk, &[], skip_blk, &[]);
+        builder.switch_to_block(run_blk);
+        // Clear the flag before running the body so a nested error that
+        // re-enters the drain cannot run this defer twice. The VM's
+        // `pop_defer` likewise removes a defer before executing it.
+        let zero = builder.ins().iconst(types::I8, 0);
+        builder.def_var(emitter.vars[*slot as usize], zero);
+        emitter.terminated = false;
+        let terminated = emit_block(body, emitter, builder, module, f);
+        if !terminated {
+            builder.ins().jump(skip_blk, &[]);
+        }
+        builder.seal_block(run_blk);
+        builder.switch_to_block(skip_blk);
+        builder.seal_block(skip_blk);
+    }
+    emitter.terminated = false;
+}
+
 fn emit_internal<M: Module>(
     f: &TirFn,
     module: &mut M,
@@ -780,6 +850,8 @@ fn emit_internal<M: Module>(
     fns: &[TirFn],
     mode: NativeMode,
     needs_frame: bool,
+    propagate_error: bool,
+    propagate_targets: &HashSet<usize>,
 ) -> Result<(), ()> {
     let fid_enter = if mode == NativeMode::Vm {
         Some(
@@ -1314,12 +1386,16 @@ fn emit_internal<M: Module>(
             None,
             true,
             mode,
+            propagate_error,
+            None,
         );
         builder.seal_block(bail_entry);
     }
 
     let bail_blk = builder.create_block();
     let defer_drain_blk = builder.create_block();
+    let propagate_blk = builder.create_block();
+    let error_route_blk = if propagate_error { propagate_blk } else { defer_drain_blk };
     let defer_flushes = collect_defer_flushes(f);
 
     builder.switch_to_block(body_entry);
@@ -1332,6 +1408,9 @@ fn emit_internal<M: Module>(
         acquired,
         bail_blk,
         defer_drain_blk,
+        error_route_blk,
+        propagate_error,
+        propagate_targets,
         defer_flushes,
         loop_breaks: Vec::new(),
         loop_skips: Vec::new(),
@@ -1427,6 +1506,8 @@ fn emit_internal<M: Module>(
                 None,
                 false,
                 mode,
+                propagate_error,
+                None,
             ),
             Some(_) => emit_internal_return(
                 f,
@@ -1437,39 +1518,19 @@ fn emit_internal<M: Module>(
                 None,
                 true,
                 mode,
+                propagate_error,
+                None,
             ),
         }
     }
     builder.seal_block(body_entry);
 
-    // Exception propagation out of this function: mirror the VM's
-    // `runtime::function::end_call` drain on `Flow::Propagate`. This block is
-    // reached only from error sites with no active handler; a caught error
-    // jumps straight to its handler and reaches its defers at normal exit.
+    // Panic / top-level error path: drain defers, then dump the uncaught error
+    // exactly as the interpreter's `report()` does. Panics never reach a catch
+    // handler, including one in a compiled caller.
     builder.switch_to_block(defer_drain_blk);
     if emitter.mode == NativeMode::Obj {
-        let drain = emitter.defer_flushes.clone();
-        for (slot, body) in &drain {
-            let flag = builder.use_var(emitter.vars[*slot as usize]);
-            let run_blk = builder.create_block();
-            let skip_blk = builder.create_block();
-            builder.ins().brif(flag, run_blk, &[], skip_blk, &[]);
-            builder.switch_to_block(run_blk);
-            // Clear the flag before running the body so a nested error that
-            // re-enters the drain cannot run this defer twice. The VM's
-            // `pop_defer` likewise removes a defer before executing it.
-            let zero = builder.ins().iconst(types::I8, 0);
-            builder.def_var(emitter.vars[*slot as usize], zero);
-            emitter.terminated = false;
-            let terminated = emit_block(body, &mut emitter, &mut builder, module, f);
-            if !terminated {
-                builder.ins().jump(skip_blk, &[]);
-            }
-            builder.seal_block(run_blk);
-            builder.switch_to_block(skip_blk);
-            builder.seal_block(skip_blk);
-        }
-        emitter.terminated = false;
+        emit_defer_drain_seq(&mut emitter, &mut builder, module, f);
         let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
         let d_ref = module.declare_func_in_func(d_id, builder.func);
         let _ = builder.ins().call(d_ref, &[]);
@@ -1482,6 +1543,30 @@ fn emit_internal<M: Module>(
     }
     builder.seal_block(defer_drain_blk);
 
+    // Catchable errors with no handler inside a compiled callee: drain this
+    // function's defers (the VM's `end_call` on `Flow::Propagate`) and hand the
+    // error back to the caller via the trailing flag. The error itself stays in
+    // NRT's pending slot so the caller's handler can take it with its trace and
+    // source site intact.
+    if propagate_error {
+        builder.switch_to_block(propagate_blk);
+        emit_defer_drain_seq(&mut emitter, &mut builder, module, f);
+        let one = builder.ins().iconst(types::I64, 1);
+        emit_internal_return(
+            f,
+            &mut builder,
+            module,
+            fid_exit,
+            acquired,
+            None,
+            false,
+            mode,
+            true,
+            Some(one),
+        );
+        builder.seal_block(propagate_blk);
+    }
+
     builder.switch_to_block(bail_blk);
     emit_internal_return(
         f,
@@ -1492,6 +1577,8 @@ fn emit_internal<M: Module>(
         None,
         true,
         mode,
+        propagate_error,
+        None,
     );
     builder.seal_block(bail_blk);
 
@@ -1517,6 +1604,8 @@ fn emit_internal_return<M: Module>(
     result: Option<cranelift_codegen::ir::Value>,
     bail: bool,
     mode: NativeMode,
+    propagate_error: bool,
+    error_flag: Option<cranelift_codegen::ir::Value>,
 ) {
     if let Some(fid_exit) = fid_exit {
         let acquired_v = builder.use_var(acquired);
@@ -1557,6 +1646,9 @@ fn emit_internal_return<M: Module>(
             builder.ins().iconst(types::I8, 0)
         };
         returns.push(bail_v);
+    } else if propagate_error {
+        let flag = error_flag.unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+        returns.push(flag);
     }
     builder.ins().return_(&returns);
 }
@@ -1695,7 +1787,7 @@ fn emit_no_match_case<M: Module>(
         }
         None => {
             // Propagating out: the shared drain block runs defers first.
-            builder.ins().jump(emitter.defer_drain_blk, &[]);
+            builder.ins().jump(emitter.error_route_blk, &[]);
         }
     }
     emitter.terminated = true;
@@ -2332,6 +2424,8 @@ fn emit_stmt<M: Module>(
                 Some(value),
                 false,
                 emitter.mode,
+                emitter.propagate_error,
+                None,
             );
             emitter.terminated = true;
             true
@@ -2346,6 +2440,8 @@ fn emit_stmt<M: Module>(
                 None,
                 false,
                 emitter.mode,
+                emitter.propagate_error,
+                None,
             );
             emitter.terminated = true;
             true
@@ -2575,7 +2671,7 @@ fn emit_stmt<M: Module>(
                     builder.ins().jump(handler, &[]);
                 } else {
                     // Propagating out: drain defers before dumping.
-                    builder.ins().jump(emitter.defer_drain_blk, &[]);
+                    builder.ins().jump(emitter.error_route_blk, &[]);
                 }
                 emitter.terminated = true;
                 return true;
@@ -2590,7 +2686,7 @@ fn emit_stmt<M: Module>(
                 builder.ins().jump(handler, &[]);
             } else {
                 // Propagating out: drain defers before dumping.
-                builder.ins().jump(emitter.defer_drain_blk, &[]);
+                builder.ins().jump(emitter.error_route_blk, &[]);
             }
             emitter.terminated = true;
             true
@@ -2715,7 +2811,7 @@ fn expr_preserves_list_len(e: &TirExpr) -> bool {
         // captured/global one), so never assume it preserves list length.
         TirExpr::NativeCallExpr { .. } | TirExpr::ClassNew { .. }
         | TirExpr::Math(..) | TirExpr::Call(..)
-        | TirExpr::CallObj { .. } | TirExpr::MethodCall { .. } => false,
+        | TirExpr::CallObj { .. } | TirExpr::Await { .. } | TirExpr::MethodCall { .. } => false,
         TirExpr::MakeClosure { .. } => true,
     }
 }
@@ -2853,7 +2949,7 @@ fn emit_self_return_gate<M: Module>(
         }
         None => {
             // Propagating out: drain defers in the shared landing block.
-            builder.ins().jump(emitter.defer_drain_blk, &[]);
+            builder.ins().jump(emitter.error_route_blk, &[]);
         }
     }
     builder.seal_block(err_blk);
@@ -2892,7 +2988,7 @@ fn emit_error_gate_regular<M: Module>(
         }
         None => {
             // Propagating out: drain defers in the shared landing block.
-            builder.ins().jump(emitter.defer_drain_blk, &[]);
+            builder.ins().jump(emitter.error_route_blk, &[]);
         }
     }
     builder.seal_block(err_blk);
@@ -2952,7 +3048,7 @@ fn emit_error_gate<M: Module>(
             let wref = module.declare_func_in_func(wid, builder.func);
             let _ = builder.ins().call(wref, &[obj]);
             // Propagating out: drain defers in the shared landing block.
-            builder.ins().jump(emitter.defer_drain_blk, &[]);
+            builder.ins().jump(emitter.error_route_blk, &[]);
         }
     }
     builder.seal_block(err_blk);
@@ -2985,7 +3081,7 @@ fn emit_int_zero_guard<M: Module>(
             builder.ins().jump(handler, &[]);
         } else {
             // Propagating out: drain defers before dumping.
-            builder.ins().jump(emitter.defer_drain_blk, &[]);
+            builder.ins().jump(emitter.error_route_blk, &[]);
         }
         builder.seal_block(fail_blk);
         builder.switch_to_block(ok_blk);
@@ -3057,7 +3153,7 @@ fn emit_math_sqrt_guard<M: Module>(
             builder.ins().jump(handler, &[]);
         } else {
             // Propagating out: drain defers before dumping.
-            builder.ins().jump(emitter.defer_drain_blk, &[]);
+            builder.ins().jump(emitter.error_route_blk, &[]);
         }
     } else {
         let bail_blk = emitter.bail_blk;
@@ -3093,7 +3189,7 @@ fn emit_math_log_guard<M: Module>(
             builder.ins().jump(handler, &[]);
         } else {
             // Propagating out: drain defers before dumping.
-            builder.ins().jump(emitter.defer_drain_blk, &[]);
+            builder.ins().jump(emitter.error_route_blk, &[]);
         }
     } else {
         let bail_blk = emitter.bail_blk;
@@ -3303,6 +3399,85 @@ fn emit_expr<M: Module>(
             let r = module.declare_func_in_func(id, builder.func);
             let call = builder.ins().call(r, &[index, cap_ptr, cap_len]);
             (builder.inst_results(call)[0], TirTy::Lambda(*func_index))
+        }
+        TirExpr::Await { operand, ret, span } => {
+            // W-2026-11-26-WAITGUARD: a non-future operand used to be passed to
+            // `unrt_call_obj` unboxed (a raw scalar read as a pointer -> SIGSEGV)
+            // or reported as `value is not callable`. Both differ from the VM.
+            // Box the operand, check it is a future handle (go lowers to a
+            // synthesized closure), and emit the VM's exact error otherwise.
+            let prev_span = emitter.current_span;
+            emitter.current_span = Some(*span);
+            let (raw, ty) = emit_expr(operand, emitter, builder, module, f);
+            let obj = wrap_as_obj(raw, ty, emitter, builder, module);
+
+            let type_id = emitter.unrt_obj_type_name.expect("unrt_obj_type_name import required for wait");
+            let name_gv = embed_str_bytes(emitter, module, builder, b"func");
+            let name_ptr = builder.ins().symbol_value(types::I64, name_gv);
+            let name_len = builder.ins().iconst(types::I64, 4);
+            let type_ref = module.declare_func_in_func(type_id, builder.func);
+            let check = builder.ins().call(type_ref, &[obj, name_ptr, name_len]);
+            let is_future = builder.inst_results(check)[0];
+
+            let ok_blk = builder.create_block();
+            let err_blk = builder.create_block();
+            builder.ins().brif(is_future, ok_blk, &[], err_blk, &[]);
+
+            builder.switch_to_block(err_blk);
+            emit_set_error_site(emitter, builder, module);
+            let msg = b"'wait' requires Future";
+            let msg_gv = embed_str_bytes(emitter, module, builder, msg);
+            let msg_ptr = builder.ins().symbol_value(types::I64, msg_gv);
+            let msg_len = builder.ins().iconst(types::I64, msg.len() as i64);
+            let str_id = emitter.unrt_str_new.expect("unrt_str_new import required for wait error");
+            let str_ref = module.declare_func_in_func(str_id, builder.func);
+            let made = builder.ins().call(str_ref, &[msg_ptr, msg_len]);
+            let err_obj = builder.inst_results(made)[0];
+            let write_id = emitter.unrt_write_error.expect("unrt_write_error import required for wait error");
+            let write_ref = module.declare_func_in_func(write_id, builder.func);
+            let _ = builder.ins().call(write_ref, &[err_obj]);
+            // The VM's Await error is a catchable LangError: honor an active
+            // handler before falling back to the uncaught-error drain.
+            if let Some(&handler) = emitter.active_handlers.last() {
+                builder.ins().jump(handler, &[]);
+            } else {
+                builder.ins().jump(emitter.defer_drain_blk, &[]);
+            }
+            builder.seal_block(err_blk);
+
+            builder.switch_to_block(ok_blk);
+            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
+                if let Some(push) = emitter.nrt_push_frame {
+                    let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
+                    let np = builder.ins().symbol_value(types::I64, gv);
+                    let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
+                    let (start, len) = emitter.current_span.unwrap_or((0, 0));
+                    let s = builder.ins().iconst(types::I64, start as i64);
+                    let l = builder.ins().iconst(types::I64, len as i64);
+                    let push_ref = module.declare_func_in_func(push, builder.func);
+                    let _ = builder.ins().call(push_ref, &[np, nl, s, l]);
+                }
+            }
+            let slot = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                8,
+                8,
+            ));
+            let ap = builder.ins().stack_addr(types::I64, slot, 0);
+            let ac = builder.ins().iconst(types::I64, 0);
+            let call_id = emitter.unrt_call_obj.expect("closure call import required");
+            let call_ref = module.declare_func_in_func(call_id, builder.func);
+            let call = builder.ins().call(call_ref, &[obj, ap, ac]);
+            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
+                if let Some(pop) = emitter.nrt_pop_frame {
+                    let pop_ref = module.declare_func_in_func(pop, builder.func);
+                    let _ = builder.ins().call(pop_ref, &[]);
+                }
+            }
+            let result = builder.inst_results(call)[0];
+            emit_error_gate(emitter, builder, module, result);
+            emitter.current_span = prev_span;
+            (unbox_obj(result, *ret, emitter, builder, module), *ret)
         }
         TirExpr::CallObj { callee, args, ret } => {
             let (cv, _) = emit_expr(callee, emitter, builder, module, f);
@@ -4138,53 +4313,91 @@ fn emit_expr<M: Module>(
             emit_cmp(*op, a, a_ty, b, b_ty, emitter, builder, module)
         }
         TirExpr::Call(index, args) => {
-            let calleefid = emitter.internal_fids[&(*index as usize)];
-            let callee_ret = emitter.fns[*index as usize].ret;
-            let param_tys = emitter.fns[*index as usize].params.clone();
+            let callee_index = *index as usize;
+            let calleefid = emitter.internal_fids[&callee_index];
+            let callee_ret = emitter.fns[callee_index].ret;
+            let param_tys = emitter.fns[callee_index].params.clone();
             let mut arg_vals = Vec::with_capacity(args.len());
             for (arg, param_ty) in args.iter().zip(param_tys.iter()) {
                 let (v, ty) = emit_expr(arg, emitter, builder, module, f);
                 arg_vals.push(coerce_value(v, ty, *param_ty, emitter, builder, module));
             }
+            let callee_propagates = emitter.mode == NativeMode::Obj
+                && emitter.propagate_targets.contains(&callee_index);
             // Record the call site so a deeper error can print a trace frame.
             // Error-free functions never contribute an observable frame, so
             // skip the two FFI round trips entirely for them.
-            if emitter.mode == NativeMode::Obj && emitter.needs_frame {
-                if let (Some(push), Some(pop)) = (emitter.nrt_push_frame, emitter.nrt_pop_frame) {
-                    let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
-                    let np = builder.ins().symbol_value(types::I64, gv);
-                    let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
-                    let (start, len) = emitter.current_span.unwrap_or((0, 0));
-                    let s = builder.ins().iconst(types::I64, start as i64);
-                    let l = builder.ins().iconst(types::I64, len as i64);
-                    let push_ref = module.declare_func_in_func(push, builder.func);
-                    let _ = builder.ins().call(push_ref, &[np, nl, s, l]);
-                    let call = {
-                        let callee_ref = module.declare_func_in_func(calleefid, builder.func);
-                        builder.ins().call(callee_ref, &arg_vals)
+            let pushed = emitter.mode == NativeMode::Obj
+                && emitter.needs_frame
+                && emitter.nrt_push_frame.is_some()
+                && emitter.nrt_pop_frame.is_some();
+            if pushed {
+                let push = emitter.nrt_push_frame.expect("push import");
+                let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
+                let np = builder.ins().symbol_value(types::I64, gv);
+                let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
+                let (start, len) = emitter.current_span.unwrap_or((0, 0));
+                let s = builder.ins().iconst(types::I64, start as i64);
+                let l = builder.ins().iconst(types::I64, len as i64);
+                let push_ref = module.declare_func_in_func(push, builder.func);
+                let _ = builder.ins().call(push_ref, &[np, nl, s, l]);
+            }
+            let call = {
+                let callee_ref = module.declare_func_in_func(calleefid, builder.func);
+                builder.ins().call(callee_ref, &arg_vals)
+            };
+            let mut results = builder.inst_results(call).to_vec();
+
+            if emitter.mode == NativeMode::Obj {
+                if callee_propagates {
+                    let flag = results.pop().expect("propagating callee returns error flag");
+                    let zero64 = builder.ins().iconst(types::I64, 0);
+                    let has_error = builder.ins().icmp(IntCC::NotEqual, flag, zero64);
+                    let ok_blk = builder.create_block();
+                    let err_blk = builder.create_block();
+                    builder.ins().brif(has_error, err_blk, &[], ok_blk, &[]);
+                    builder.seal_block(ok_blk);
+                    builder.seal_block(err_blk);
+
+                    builder.switch_to_block(err_blk);
+                    match emitter.active_handlers.last().copied() {
+                        Some(handler) => {
+                            // A caught error pops this call frame; the handler's
+                            // `unrt_take_error` clears the trace anyway.
+                            if pushed {
+                                let pop = emitter.nrt_pop_frame.expect("pop import");
+                                let pop_ref = module.declare_func_in_func(pop, builder.func);
+                                let _ = builder.ins().call(pop_ref, &[]);
+                            }
+                            builder.ins().jump(handler, &[]);
+                        }
+                        None => {
+                            // On further propagation keep the frame pushed so
+                            // the final uncaught traceback matches the old
+                            // dump-inside-callee output byte for byte.
+                            builder.ins().jump(emitter.error_route_blk, &[]);
+                        }
+                    }
+
+                    builder.switch_to_block(ok_blk);
+                    if pushed {
+                        let pop = emitter.nrt_pop_frame.expect("pop import");
+                        let pop_ref = module.declare_func_in_func(pop, builder.func);
+                        let _ = builder.ins().call(pop_ref, &[]);
+                    }
+                    return match callee_ret {
+                        Some(t) => (results[0], t),
+                        None => (builder.ins().iconst(types::I8, 0), TirTy::Bool),
                     };
+                }
+                if pushed {
+                    let pop = emitter.nrt_pop_frame.expect("pop import");
                     let pop_ref = module.declare_func_in_func(pop, builder.func);
                     let _ = builder.ins().call(pop_ref, &[]);
-                    let results = builder.inst_results(call).to_vec();
-                    if emitter.mode == NativeMode::Obj {
-                        return match callee_ret {
-                            Some(t) => (results[0], t),
-                            None => (builder.ins().iconst(types::I8, 0), TirTy::Bool),
-                        };
-                    }
-                    unreachable!()
                 }
-            }
-            let callee_ref = module.declare_func_in_func(calleefid, builder.func);
-            let call = builder.ins().call(callee_ref, &arg_vals);
-            let results = builder.inst_results(call).to_vec();
-            if emitter.mode == NativeMode::Obj {
                 return match callee_ret {
                     Some(t) => (results[0], t),
-                    None => {
-                        let zero = builder.ins().iconst(types::I8, 0);
-                        (zero, TirTy::Bool)
-                    }
+                    None => (builder.ins().iconst(types::I8, 0), TirTy::Bool),
                 };
             }
             let bail = results[results.len() - 1];
