@@ -19,5 +19,8 @@ mod net;
 mod net_native;
 mod obj;
 mod regex;
+// Opt-in parallel scheduler (W-2026-11-26-P05). Compiled into libnrt.a but no
+// thread is spawned unless the opt-in path constructs a `Scheduler`.
+pub mod scheduler;
 mod trace;
 mod strings;
