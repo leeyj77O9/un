@@ -411,8 +411,8 @@ Positive 집계의 통과·실패 수에 포함하지 않는다. `test/KnownDive
 구현 간 동작이 의도적으로 다른 문서화된 차이로 기록되어 Positive/Negative 집계의 실패 수에
 포함하지 않는다. 현재 기준은 Positive 51 파일 / 1638 passed / 0 failed / 0 crashed,
 Negative 51 checks 매칭 + 0 documented divergences, Known 0 파일이다. (2026-11-23 재측정)
-Rust 테스트는 `cargo test --release --workspace` 409 passed(nrt 76 + nrt scheduler_spike 5 +
-lib 296 + un bin 24 + playground 8)다. JIT differential 102 파일 / 0 차이, `.unbc` 왕복
+Rust 테스트는 `cargo test --release --workspace` 423 passed(nrt 85 + nrt scheduler_spike 5 +
+lib 301 + un bin 24 + playground 8)다. JIT differential 102 파일 / 0 차이, `.unbc` 왕복
 Positive 51/51 · Negative 42 identical(9 compile-rejected skip), Compile 교차 검증 42/0,
 exe 동치 검증 78/0이다. (2026-11-27 재측정)
 
