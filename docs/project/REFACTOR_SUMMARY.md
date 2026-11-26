@@ -77,7 +77,7 @@ fix mapping in `docs/project/PROJECT_AUDIT.md`; the register of remaining debt i
 | Gate | Result |
 | --- | --- |
 | `cargo build --release` | 0 errors, **0 warnings** |
-| `cargo test --release --workspace` | **369 passed / 0 failed** (nrt 25 + lib 296 + un bin/LSP 24 + playground 8; includes 2 JIT + 3 sandbox regression guards added 2026-11-20) |
+| `cargo test --release --workspace` | **372 passed / 0 failed** (nrt 25 + lib 296 + un bin/LSP 24 + playground 8; includes 2 JIT + 3 sandbox regression guards added 2026-11-20) |
 | `scripts/test.ps1` | Positive **51 files / 1638 passed** / 0 failed / 0 crashed; Negative **51 matched / 0 divergences**; Known **0**; exit **0** |
 | `scripts/differential.ps1` | **102 files, 0 differences** (JIT on vs off, byte-identical) |
 | `scripts/unbc-roundtrip.ps1 -IncludeNegative` | Positive **51/51**; Negative compilable **42/42** identical (+ 9 compile-rejected skip) |
