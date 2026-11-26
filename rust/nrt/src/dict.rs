@@ -5,6 +5,7 @@
 use crate::obj::{alloc, eq_obj, err, obj, NObj};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::sync::{Arc, Mutex};
 
 /// Deterministic, allocation-free hasher for the internal integer-keyed
 /// indexes. `RandomState`'s SipHash setup dominates short dict lookups; the
@@ -106,26 +107,31 @@ fn splitmix64(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
-/// P01 A-06 (S2): aliases the boxed dict payload as `&'static mut`, safe only
-/// while the plain exe is single-threaded. Conversion to a lock-backed handle
-/// is deferred with A-04/A-05 (same ownership boundary; no caller outside this
-/// file depends on the exact signature, but a guard would change `find`'s
-/// reentrancy and must be done together with the others).
-unsafe fn data(p: u64) -> &'static mut DictData {
-    &mut *(obj(p).b as *mut DictData)
+// P01 A-06 (S2): the payload used to be aliased as `&'static mut` through a raw
+// pointer in `NObj.b`. It now lives in a handle-indexed table of
+// `Mutex<DictData>` cells; `with_data` hands out a lock-scoped `&mut` and no
+// `'static` alias escapes. `NObj.b` carries an opaque table index instead of a
+// pointer — every C ABI handle is still a `u64` and all values stay identical.
+static DICT_DATA: Mutex<Vec<Arc<Mutex<DictData>>>> = Mutex::new(Vec::new());
+
+fn with_data<R>(p: u64, f: impl FnOnce(&mut DictData) -> R) -> R {
+    let idx = unsafe { obj(p).b as usize };
+    let cell = DICT_DATA.lock().unwrap()[idx].clone();
+    let mut guard = cell.lock().unwrap();
+    f(&mut guard)
 }
 pub(crate) fn len(p: u64) -> i64 {
-    unsafe { data(p).pairs.len() as i64 }
+    with_data(p, |d| d.pairs.len() as i64)
 }
 pub(crate) fn display_dict(p: u64) -> String {
-    unsafe {
-        let parts: Vec<String> = data(p)
-            .pairs
-            .iter()
-            .map(|(k, v)| format!("{}:{}", crate::obj::display(*k), crate::obj::display(*v)))
-            .collect();
-        format!("{{{}}}", parts.join(", "))
-    }
+    // Snapshot under the lock, then release before `display` can re-enter a
+    // nested dict handle.
+    let pairs = with_data(p, |d| d.pairs.clone());
+    let parts: Vec<String> = pairs
+        .iter()
+        .map(|(k, v)| format!("{}:{}", crate::obj::display(*k), crate::obj::display(*v)))
+        .collect();
+    format!("{{{}}}", parts.join(", "))
 }
 fn dict_new(pairs_vec: Vec<(u64, u64)>) -> u64 {
     let mut index: FastIndex = HashMap::default();
@@ -141,33 +147,47 @@ fn dict_new(pairs_vec: Vec<(u64, u64)>) -> u64 {
             int_only = false;
         }
     }
-    let d = Box::new(DictData { pairs: pairs_vec, index, class_counts, int_map, int_only });
-    unsafe { alloc(NObj { tag: 7, a: 0, b: Box::into_raw(d) as i64 }) }
+    let idx = {
+        let mut table = DICT_DATA.lock().unwrap();
+        let idx = table.len();
+        table.push(Arc::new(Mutex::new(DictData {
+            pairs: pairs_vec,
+            index,
+            class_counts,
+            int_map,
+            int_only,
+        })));
+        idx
+    };
+    unsafe { alloc(NObj { tag: 7, a: 0, b: idx as i64 }) }
 }
 
 /// Find the first entry matching `key`; returns (pair index, hash).
-unsafe fn find(d: u64, key: u64) -> Option<(usize, u64)> {
+/// The cell lock is released before returning; callers re-acquire it only for
+/// the value read, keeping the previous single-threaded read/write order.
+fn find(p: u64, key: u64) -> Option<(usize, u64)> {
     let h = hash_obj(key);
-    let d = data(d);
-    if let Some(candidates) = d.index.get(&h) {
-        for &i in candidates {
-            if eq_obj(d.pairs[i].0, key) {
-                return Some((i, h));
+    with_data(p, |d| {
+        if let Some(candidates) = d.index.get(&h) {
+            for &i in candidates {
+                if eq_obj(d.pairs[i].0, key) {
+                    return Some((i, h));
+                }
             }
         }
-    }
-    // `cmp_obj` treats cross-type keys as equal in several cases. Only pay for
-    // the linear fallback when the dict actually contains another key class;
-    // homogeneous dicts (the common case) stay O(1).
-    let cls = key_class(key);
-    if (0..3).any(|c| c != cls && d.class_counts[c] > 0) {
-        for (i, (k, _)) in d.pairs.iter().enumerate() {
-            if eq_obj(*k, key) {
-                return Some((i, h));
+        // `cmp_obj` treats cross-type keys as equal in several cases. Only pay
+        // for the linear fallback when the dict actually contains another key
+        // class; homogeneous dicts (the common case) stay O(1).
+        let cls = key_class(key);
+        if (0..3).any(|c| c != cls && d.class_counts[c] > 0) {
+            for (i, (k, _)) in d.pairs.iter().enumerate() {
+                if eq_obj(*k, key) {
+                    return Some((i, h));
+                }
             }
         }
-    }
-    None
+        None
+    })
 }
 
 #[no_mangle]
@@ -195,14 +215,14 @@ pub extern "C" fn unrt_dict_get(dict: u64, key: u64) -> u64 {
         if key == 0 {
             return err("unrt: dict key is not an object");
         }
-        if data(dict).int_only && obj(key).tag == 0 {
-            return match data(dict).int_map.get(&obj(key).a).copied() {
+        if with_data(dict, |d| d.int_only) && obj(key).tag == 0 {
+            return match with_data(dict, |d| d.int_map.get(&obj(key).a).copied()) {
                 Some((v, _)) => crate::obj::unrt_obj_int(v),
                 None => err(&format!("key '{}' not found in dictionary", crate::obj::display(key))),
             };
         }
         match find(dict, key) {
-            Some((i, _)) => data(dict).pairs[i].1,
+            Some((i, _)) => with_data(dict, |d| d.pairs[i].1),
             None => err(&format!(
                 "key '{}' not found in dictionary",
                 crate::obj::display(key)
@@ -229,10 +249,10 @@ pub extern "C" fn unrt_dict_get_int(dict: u64, key: i64, err_out: *mut u64) -> i
         // Same handle the boxed path receives from `wrap_as_obj(Int)`, so
         // `display()` produces a byte-identical message for missing keys.
         let key_h = crate::obj::unrt_obj_int(key);
-        let found = if data(dict).int_only {
-            data(dict).int_map.get(&key).copied().map(|(v, _)| v)
+        let found = if with_data(dict, |d| d.int_only) {
+            with_data(dict, |d| d.int_map.get(&key).copied().map(|(v, _)| v))
         } else {
-            find(dict, key_h).map(|(i, _)| crate::obj::int_of(data(dict).pairs[i].1))
+            find(dict, key_h).map(|(i, _)| with_data(dict, |d| crate::obj::int_of(d.pairs[i].1)))
         };
         match found {
             Some(v) => {
@@ -260,26 +280,25 @@ pub extern "C" fn unrt_dict_get_int(dict: u64, key: i64, err_out: *mut u64) -> i
 /// produces an error object (the generated call site relies on this contract).
 #[no_mangle]
 pub extern "C" fn unrt_dict_set_int(dict: u64, key: i64, value: i64) -> u64 {
-    unsafe {
-    if data(dict).int_only {
-        let d = data(dict);
-        if let Some(&(_, i)) = d.int_map.get(&key) {
-            d.pairs[i].1 = crate::obj::unrt_obj_int(value);
-            d.int_map.insert(key, (value, i));
-        } else {
-            let idx = d.pairs.len();
-            let key_h = crate::obj::unrt_obj_int(key);
-            let value_h = crate::obj::unrt_obj_int(value);
-            // `int_map` is authoritative for int-only dicts; `pairs` only
-            // backs len()/display(), so the hash bucket index is unnecessary.
-            d.pairs.push((key_h, value_h));
-            d.int_map.insert(key, (value, idx));
-        }
+    if with_data(dict, |d| d.int_only) {
+        with_data(dict, |d| {
+            if let Some(&(_, i)) = d.int_map.get(&key) {
+                d.pairs[i].1 = crate::obj::unrt_obj_int(value);
+                d.int_map.insert(key, (value, i));
+            } else {
+                let idx = d.pairs.len();
+                let key_h = crate::obj::unrt_obj_int(key);
+                let value_h = crate::obj::unrt_obj_int(value);
+                // `int_map` is authoritative for int-only dicts; `pairs` only
+                // backs len()/display(), so the hash bucket index is unnecessary.
+                d.pairs.push((key_h, value_h));
+                d.int_map.insert(key, (value, idx));
+            }
+        });
     } else {
         unrt_dict_set(dict, crate::obj::unrt_obj_int(key), crate::obj::unrt_obj_int(value));
     }
     dict
-    }
 }
 
 /// Snapshot the dict keys into a new list, in insertion order. Mirrors the
@@ -290,7 +309,7 @@ pub extern "C" fn unrt_dict_keys(dict: u64) -> u64 {
         if obj(dict).tag != 7 {
             return err("unrt: keys target is not a dict");
         }
-        let keys: Vec<u64> = data(dict).pairs.iter().map(|(k, _)| *k).collect();
+        let keys: Vec<u64> = with_data(dict, |d| d.pairs.iter().map(|(k, _)| *k).collect());
         crate::list::unrt_list_from_elems(keys.as_ptr(), keys.len() as i64)
     }
 }
@@ -303,7 +322,7 @@ pub extern "C" fn unrt_dict_values(dict: u64) -> u64 {
         if obj(dict).tag != 7 {
             return err("unrt: values target is not a dict");
         }
-        let values: Vec<u64> = data(dict).pairs.iter().map(|(_, v)| *v).collect();
+        let values: Vec<u64> = with_data(dict, |d| d.pairs.iter().map(|(_, v)| *v).collect());
         crate::list::unrt_list_from_elems(values.as_ptr(), values.len() as i64)
     }
 }
@@ -316,13 +335,14 @@ pub extern "C" fn unrt_dict_clear(dict: u64) -> u64 {
         if obj(dict).tag != 7 {
             return err("unrt: clear target is not a dict");
         }
-        let d = data(dict);
-        d.pairs.clear();
-        d.index.clear();
-        d.class_counts = [0; 3];
-        d.int_map.clear();
-        // Keep `int_only`: it is a property of the dict's key/value types, not
-        // of its current contents, and the fast paths rely on it.
+        with_data(dict, |d| {
+            d.pairs.clear();
+            d.index.clear();
+            d.class_counts = [0; 3];
+            d.int_map.clear();
+            // Keep `int_only`: it is a property of the dict's key/value types,
+            // not of its current contents, and the fast paths rely on it.
+        });
     }
     dict
 }
@@ -337,19 +357,91 @@ pub extern "C" fn unrt_dict_set(dict: u64, key: u64, value: u64) -> u64 {
             return err("unrt: dict key or value is not an object");
         }
         if let Some((i, _)) = find(dict, key) {
-            data(dict).pairs[i].1 = value;
+            with_data(dict, |d| d.pairs[i].1 = value);
         } else {
-            let d = data(dict);
-            let idx = d.pairs.len();
-            let h = hash_obj(key);
-            d.pairs.push((key, value));
-            d.index.entry(h).or_default().push(idx);
-            d.class_counts[key_class(key)] += 1;
+            with_data(dict, |d| {
+                let idx = d.pairs.len();
+                let h = hash_obj(key);
+                d.pairs.push((key, value));
+                d.index.entry(h).or_default().push(idx);
+                d.class_counts[key_class(key)] += 1;
+            });
         }
-        if data(dict).int_only && obj(key).tag == 0 && obj(value).tag == 0 {
-            let idx = data(dict).pairs.len() - 1;
-            data(dict).int_map.insert(obj(key).a, (obj(value).a, idx));
+        if with_data(dict, |d| d.int_only) && obj(key).tag == 0 && obj(value).tag == 0 {
+            let idx = with_data(dict, |d| d.pairs.len() - 1);
+            with_data(dict, |d| {
+                d.int_map.insert(obj(key).a, (obj(value).a, idx));
+            });
         }
     }
     dict
+}
+
+/// W-2026-11-26-P02B A-06: direct tests of the `with_data` guard. The lock
+/// protects `pairs`/`index`/`int_map` without exposing a `&'static mut`, and
+/// every ABI-visible value stays byte-identical.
+#[cfg(test)]
+mod p02b_tests {
+    use super::*;
+    use crate::obj::{display, int_of, unrt_obj_int};
+    use std::thread;
+
+    fn empty_dict() -> u64 {
+        let pairs = vec![unrt_obj_int(0), unrt_obj_int(0)];
+        let d = unrt_dict_from_pairs(pairs.as_ptr(), 1);
+        unrt_dict_clear(d);
+        d
+    }
+
+    #[test]
+    fn a06_with_data_preserves_pairs_index_and_int_map() {
+        let d = empty_dict();
+        unrt_dict_set(d, unrt_obj_int(1), unrt_obj_int(10));
+        unrt_dict_set_int(d, 2, 20);
+        assert_eq!(len(d), 2);
+        assert_eq!(display(d), "{1:10, 2:20}");
+        assert_eq!(int_of(unrt_dict_get(d, unrt_obj_int(1))), 10);
+        assert_eq!(unrt_dict_get_int(d, 2, std::ptr::null_mut()), 20);
+
+        with_data(d, |data| {
+            assert_eq!(data.pairs.len(), 2);
+            assert!(data.int_only);
+            assert_eq!(data.int_map.get(&1).map(|v| v.0), Some(10));
+            assert_eq!(data.int_map.get(&2).map(|v| v.0), Some(20));
+        });
+        assert_eq!(display(unrt_dict_keys(d)), "[1, 2]");
+        assert_eq!(display(unrt_dict_values(d)), "[10, 20]");
+
+        unrt_dict_clear(d);
+        assert_eq!(len(d), 0);
+        assert_eq!(display(d), "{}");
+        with_data(d, |data| assert!(data.index.is_empty() && data.int_map.is_empty()));
+    }
+
+    #[test]
+    fn a06_with_data_serializes_concurrent_writers() {
+        let d = empty_dict();
+        let threads: Vec<_> = (0..4)
+            .map(|base| {
+                let d = d;
+                thread::spawn(move || {
+                    for i in 0..100 {
+                        unrt_dict_set_int(d, base * 100 + i, i);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(len(d), 400);
+        with_data(d, |data| {
+            for base in 0..4 {
+                for i in 0..100 {
+                    let key = base * 100 + i;
+                    assert_eq!(data.int_map.get(&key).map(|v| v.0), Some(i));
+                }
+            }
+        });
+    }
 }

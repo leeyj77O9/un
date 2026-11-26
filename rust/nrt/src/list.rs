@@ -1,21 +1,35 @@
 //! List operations.
 
+use std::sync::{Arc, Mutex};
+
 use crate::obj::{
-    alloc, cmp_obj, eq_obj, err, obj, obj_mut, seq_len, unrt_obj_float, unrt_obj_int,
-    unrt_obj_none, NObj,
+    alloc, cmp_obj, eq_obj, err, obj, seq_len, unrt_obj_float, unrt_obj_int, unrt_obj_none, NObj,
 };
 
-/// P01 A-05 (S2): aliases the boxed list payload as `&'static mut`, safe only
-/// while the plain exe is single-threaded. Converting it to a lock-backed
-/// handle needs call-site changes in `bytes_native.rs` / `native.rs`, which are
-/// outside P02's file ownership — deferred to a follow-up Work.
-pub(crate) unsafe fn items(p: u64) -> &'static mut Vec<u64> {
-    &mut *(obj(p).b as *mut Vec<u64>)
+// P01 A-05 (S2): the payload used to be aliased as `&'static mut` through a raw
+// pointer stored in `NObj.b`. It now lives in a handle-indexed table of
+// `Mutex<Vec<u64>>` cells; `with_list` hands out a lock-scoped `&mut` and no
+// `'static` alias escapes. `NObj.a` still mirrors the length and `NObj.b` now
+// carries an opaque table index, so the C ABI handle stays a plain `u64`.
+static LIST_DATA: Mutex<Vec<Arc<Mutex<Vec<u64>>>>> = Mutex::new(Vec::new());
+
+/// Mutate the elements of a list handle under its cell's lock. Callers must
+/// check the tag first; the closure cannot escape with a borrowed reference.
+pub(crate) fn with_list<R>(p: u64, f: impl FnOnce(&mut Vec<u64>) -> R) -> R {
+    let idx = unsafe { obj(p).b as usize };
+    let cell = LIST_DATA.lock().unwrap()[idx].clone();
+    let mut guard = cell.lock().unwrap();
+    f(&mut guard)
 }
 pub(crate) fn list_new(items: Vec<u64>) -> u64 {
     let len = items.len() as i64;
-    let v = Box::into_raw(Box::new(items));
-    unsafe { alloc(NObj { tag: 3, a: len, b: v as i64 }) }
+    let idx = {
+        let mut table = LIST_DATA.lock().unwrap();
+        let idx = table.len();
+        table.push(Arc::new(Mutex::new(items)));
+        idx
+    };
+    unsafe { alloc(NObj { tag: 3, a: len, b: idx as i64 }) }
 }
 fn index(v: &[u64], idx: i64) -> Option<usize> {
     let i = if idx < 0 { v.len() as i64 + idx } else { idx };
@@ -50,22 +64,19 @@ pub extern "C" fn unrt_list_new() -> u64 {
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_push(list: u64, item: u64) -> u64 {
-    unsafe {
-        let v = items(list);
+    with_list(list, |v| {
         v.push(item);
-        obj_mut(list).a = v.len() as i64;
-    }
+        let len = v.len() as i64;
+        crate::obj::with_obj_mut(list, |o| o.a = len);
+    });
     list
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_get(list: u64, idx: i64) -> u64 {
-    unsafe {
-        let v = items(list);
-        match index(v, idx) {
-            Some(i) => v[i],
-            None => err("list index out of range"),
-        }
-    }
+    with_list(list, |v| match index(v, idx) {
+        Some(i) => v[i],
+        None => err("list index out of range"),
+    })
 }
 /// ARC-00: sequence probes for nested pattern matching. Mirrors the VM's
 /// `obj::unpack_items` (lists and tuples are both sequences); invalid inputs
@@ -85,14 +96,8 @@ pub extern "C" fn unrt_match_seq_len(value: u64) -> i64 {
 pub extern "C" fn unrt_match_seq_get(value: u64, idx: i64) -> u64 {
     unsafe {
         match obj(value).tag {
-            3 => {
-                let v = items(value);
-                index(v, idx).map_or(0, |i| v[i])
-            }
-            14 => {
-                let v = crate::obj::seq_items(value);
-                index(v, idx).map_or(0, |i| v[i])
-            }
+            3 => with_list(value, |v| index(v, idx).map_or(0, |i| v[i])),
+            14 => crate::obj::with_seq_items(value, |v| index(v, idx).map_or(0, |i| v[i])),
             _ => 0,
         }
     }
@@ -103,28 +108,24 @@ pub extern "C" fn unrt_match_seq_get(value: u64, idx: i64) -> u64 {
 /// runtime reports at exit just like the boxed path.
 #[no_mangle]
 pub extern "C" fn unrt_list_get_int(list: u64, idx: i64) -> i64 {
-    unsafe {
-        let v = items(list);
-        match index(v, idx) {
-            Some(i) => crate::obj::int_of(v[i]),
-            None => {
-                crate::obj::unrt_write_error(err("list index out of range"));
-                0
-            }
+    with_list(list, |v| match index(v, idx) {
+        Some(i) => crate::obj::int_of(v[i]),
+        None => {
+            crate::obj::unrt_write_error(err("list index out of range"));
+            0
         }
-    }
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn unrt_list_set(list: u64, idx: i64, value: u64) -> u64 {
-    unsafe {
-        let v = items(list);
-        match index(v, idx) {
-            Some(i) => v[i] = value,
-            None => return crate::obj::err("list index out of range"),
-        }
+    match with_list(list, |v| match index(v, idx) {
+        Some(i) => { v[i] = value; Ok(()) }
+        None => Err(crate::obj::err("list index out of range")),
+    }) {
+        Ok(()) => list,
+        Err(e) => e,
     }
-    list
 }
 
 /// Raw-i64 write for statically typed `list[int]`: boxes the value once and
@@ -133,74 +134,72 @@ pub extern "C" fn unrt_list_set(list: u64, idx: i64, value: u64) -> u64 {
 /// `unrt_list_set` ("list index out of range").
 #[no_mangle]
 pub extern "C" fn unrt_list_set_int(list: u64, idx: i64, value: i64) -> u64 {
-    unsafe {
-        let v = items(list);
-        match index(v, idx) {
-            Some(i) => v[i] = crate::obj::unrt_obj_int(value),
-            None => return err("list index out of range"),
-        }
+    match with_list(list, |v| match index(v, idx) {
+        Some(i) => { v[i] = crate::obj::unrt_obj_int(value); Ok(()) }
+        None => Err(err("list index out of range")),
+    }) {
+        Ok(()) => list,
+        Err(e) => e,
     }
-    list
 }
 
 #[no_mangle]
 pub extern "C" fn unrt_list_pop(list: u64) -> u64 {
-    unsafe {
-        let v = items(list);
+    with_list(list, |v| {
         let res = v.pop().unwrap_or_else(|| err("list index out of range"));
-        obj_mut(list).a = v.len() as i64;
+        let len = v.len() as i64;
+        crate::obj::with_obj_mut(list, |o| o.a = len);
         res
-    }
+    })
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_pop_at(list: u64, idx: i64) -> u64 {
-    unsafe {
-        let v = items(list);
-        match index(v, idx) {
-            Some(i) => {
-                let res = v.remove(i);
-                obj_mut(list).a = v.len() as i64;
-                res
-            }
-            None => err("list index out of range"),
+    with_list(list, |v| match index(v, idx) {
+        Some(i) => {
+            let res = v.remove(i);
+            let len = v.len() as i64;
+            crate::obj::with_obj_mut(list, |o| o.a = len);
+            res
         }
-    }
+        None => err("list index out of range"),
+    })
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_insert(list: u64, item: u64, idx: i64) -> u64 {
-    unsafe {
-        let v = items(list);
+    with_list(list, |v| {
         let i = if idx < 0 { v.len() as i64 + idx } else { idx };
         let i = i.clamp(0, v.len() as i64) as usize;
         v.insert(i, item);
-        obj_mut(list).a = v.len() as i64;
-    }
+        let len = v.len() as i64;
+        crate::obj::with_obj_mut(list, |o| o.a = len);
+    });
     list
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_reverse(list: u64) -> u64 {
-    unsafe { items(list).reverse(); }
+    with_list(list, |v| v.reverse());
     list
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_sort(list: u64) -> u64 {
-    unsafe { items(list).sort_by(|a, b| cmp_obj(*a, *b)); }
+    // Snapshot, sort outside the lock, then write back: `cmp_obj` can re-enter
+    // NRT helpers and must never run while this cell is locked.
+    let mut sorted = with_list(list, |v| v.clone());
+    sorted.sort_by(|a, b| cmp_obj(*a, *b));
+    with_list(list, |v| *v = sorted);
     list
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_contains(list: u64, item: u64) -> i64 {
-    unsafe {
-        if items(list).iter().any(|p| eq_obj(*p, item)) { 1 } else { 0 }
-    }
+    let mine = with_list(list, |v| v.clone());
+    if mine.iter().any(|p| eq_obj(*p, item)) { 1 } else { 0 }
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_index_of(list: u64, item: u64) -> i64 {
-    unsafe {
-        items(list)
-            .iter()
-            .position(|p| eq_obj(*p, item))
-            .map_or(-1, |i| i as i64)
-    }
+    with_list(list, |v| v.clone())
+        .iter()
+        .position(|p| eq_obj(*p, item))
+        .map_or(-1, |i| i as i64)
 }
 #[no_mangle]
 pub extern "C" fn unrt_list_from_ints(ptr: *const i64, len: i64) -> u64 {
@@ -344,7 +343,7 @@ pub(crate) fn slice(list: u64, start: u64, end: u64, step: u64) -> u64 {
         if obj(list).tag != 3 {
             return err(&format!("unsupported slice for '{}'", crate::dynops::type_name(list)));
         }
-        let mine = items(list).clone();
+        let mine = with_list(list, |v| v.clone());
         let len = mine.len() as i64;
         let (a, b, st) = match slice_indices(len, start, end, step) {
             Ok(v) => v,
@@ -361,7 +360,7 @@ pub(crate) fn slice(list: u64, start: u64, end: u64, step: u64) -> u64 {
 fn rhs_snapshot(value: u64) -> Option<Vec<u64>> {
     unsafe {
         match obj(value).tag {
-            3 => Some(items(value).clone()),
+            3 => Some(with_list(value, |v| v.clone())),
             6 => Some(
                 crate::strings::str_of(value)
                     .chars()
@@ -377,43 +376,45 @@ fn rhs_snapshot(value: u64) -> Option<Vec<u64>> {
 /// The RHS is snapshotted before any mutation, so `xs[1:3] = xs` is safe.
 /// Identity is preserved: the same `list` handle is returned on success.
 pub(crate) fn set_slice(list: u64, value: u64, start: u64, end: u64, step: u64) -> u64 {
-    unsafe {
-        if obj(list).tag != 3 {
-            return err("slice assignment only supports list");
-        }
-        let count = items(list).len() as i64;
-        let (a, mut b, st) = match slice_indices(count, start, end, step) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let rhs = match rhs_snapshot(value) {
-            Some(v) => v,
-            None => return err("slice assignment value must be list"),
-        };
+    if unsafe { obj(list).tag } != 3 {
+        return err("slice assignment only supports list");
+    }
+    let count = with_list(list, |v| v.len() as i64);
+    let (a, mut b, st) = match slice_indices(count, start, end, step) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    // Snapshot the RHS before locking the destination, so `xs[1:3] = xs`
+    // cannot re-enter the same cell.
+    let rhs = match rhs_snapshot(value) {
+        Some(v) => v,
+        None => return err("slice assignment value must be list"),
+    };
 
-        if st != 1 {
-            // Extended slices may not change the list length; exactly as many
-            // values as selected positions must be supplied.
-            let positions = slice_positions(count, a, b, st);
-            if positions.len() != rhs.len() {
-                return err(&format!(
-                    "attempt to assign sequence of size {} to extended slice of size {}",
-                    rhs.len(),
-                    positions.len()
-                ));
-            }
-            let v = items(list);
+    if st != 1 {
+        // Extended slices may not change the list length; exactly as many
+        // values as selected positions must be supplied.
+        let positions = slice_positions(count, a, b, st);
+        if positions.len() != rhs.len() {
+            return err(&format!(
+                "attempt to assign sequence of size {} to extended slice of size {}",
+                rhs.len(),
+                positions.len()
+            ));
+        }
+        with_list(list, |v| {
             for (idx, item) in positions.into_iter().zip(rhs) {
                 v[idx] = item;
             }
-            return list;
-        }
+        });
+        return list;
+    }
 
-        // A reversed range is an empty insertion point, not an error.
-        if b < a { b = a; }
-        let slice_len = b - a;
-        let common = slice_len.min(rhs.len() as i64);
-        let v = items(list);
+    // A reversed range is an empty insertion point, not an error.
+    if b < a { b = a; }
+    let slice_len = b - a;
+    let common = slice_len.min(rhs.len() as i64);
+    with_list(list, |v| {
         for i in 0..common {
             v[(a + i) as usize] = rhs[i as usize];
         }
@@ -425,21 +426,20 @@ pub(crate) fn set_slice(list: u64, value: u64, start: u64, end: u64, step: u64) 
         for _ in rhs.len() as i64..slice_len {
             if remove_from < v.len() { v.remove(remove_from); }
         }
-        obj_mut(list).a = v.len() as i64;
-        list
-    }
+        let len = v.len() as i64;
+        crate::obj::with_obj_mut(list, |o| o.a = len);
+    });
+    list
 }
 
 /// Replica of `dict_clear`-style member helpers: empties a list in place and
 /// returns the same handle. Never raises for a genuine list.
 pub(crate) fn clear(list: u64) -> u64 {
-    unsafe {
-        if obj(list).tag != 3 {
-            return err("unrt: clear target is not a list");
-        }
-        items(list).clear();
-        obj_mut(list).a = 0;
+    if unsafe { obj(list).tag } != 3 {
+        return err("unrt: clear target is not a list");
     }
+    with_list(list, |v| v.clear());
+    crate::obj::with_obj_mut(list, |o| o.a = 0);
     list
 }
 
@@ -473,7 +473,7 @@ mod tests {
         list_new(values.iter().map(|v| unrt_obj_int(*v)).collect())
     }
     fn elems(p: u64) -> Vec<i64> {
-        unsafe { items(p).iter().map(|v| int_of(*v)).collect() }
+        with_list(p, |v| v.iter().map(|v| int_of(*v)).collect())
     }
     fn none() -> u64 { unrt_obj_none() }
     fn assert_err(p: u64, msg: &str) {
@@ -630,5 +630,53 @@ mod tests {
             display(crate::strings::unrt_str_concat(a, unrt_obj_int(1))),
             "unrt: str concat needs two Str",
         );
+    }
+
+    /// W-2026-11-26-P02B A-05: `with_list` returns a lock-scoped `&mut`; the
+    /// element values and the mirrored length word are unchanged.
+    #[test]
+    fn a05_with_list_preserves_values_and_len_mirror() {
+        let xs = unrt_list_new();
+        unrt_list_push(xs, unrt_obj_int(10));
+        unrt_list_push(xs, unrt_obj_int(20));
+        assert_eq!(with_list(xs, |v| v.clone()).len(), 2);
+        assert_eq!(unsafe { obj(xs).a }, 2, "NObj.a length mirror");
+        assert_eq!(unrt_list_get_int(xs, 0), 10);
+        assert_eq!(unrt_list_get_int(xs, 1), 20);
+
+        crate::list::with_list(xs, |v| v[0] = unrt_obj_int(99));
+        unrt_list_set(xs, 1, unrt_obj_int(77));
+        unrt_list_insert(xs, unrt_obj_int(5), 0);
+        assert_eq!(unrt_list_len(xs), 3);
+        assert_eq!(unrt_list_pop_at(xs, 1), unrt_obj_int(99));
+        assert_eq!(display(xs), "[5, 77]");
+        unrt_list_reverse(xs);
+        assert_eq!(display(xs), "[77, 5]");
+        unrt_list_pop(xs);
+        assert_eq!(unrt_list_len(xs), 1);
+        clear(xs);
+        assert_eq!(unrt_list_len(xs), 0);
+        assert_eq!(with_list(xs, |v| v.len()), 0);
+    }
+
+    #[test]
+    fn a05_with_list_serializes_concurrent_push() {
+        let xs = unrt_list_new();
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let xs = xs;
+                std::thread::spawn(move || {
+                    for _ in 0..100 {
+                        unrt_list_push(xs, unrt_obj_int(1));
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(unrt_list_len(xs), 400);
+        assert_eq!(with_list(xs, |v| v.len()), 400);
+        assert_eq!(display(xs).matches('1').count(), 400);
     }
 }

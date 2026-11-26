@@ -52,11 +52,11 @@ fn as_bytes_like(p: u64) -> Option<Vec<u8>> {
             // `bytes.*` helpers deliberately accept Str as a convenience.
             3 => {
                 let mut out = Vec::new();
-                for item in crate::list::items(p) {
-                    if obj(*item).tag != 0 {
+                for item in crate::list::with_list(p, |v| v.clone()) {
+                    if obj(item).tag != 0 {
                         return None;
                     }
-                    let v = obj(*item).a;
+                    let v = obj(item).a;
                     if !(0..=255).contains(&v) {
                         return None;
                     }
@@ -86,11 +86,11 @@ fn as_bytes(p: u64) -> Option<Vec<u8>> {
             6 => Some(crate::strings::str_of(p).as_bytes().to_vec()),
             3 => {
                 let mut out = Vec::new();
-                for item in crate::list::items(p) {
-                    if obj(*item).tag != 0 {
+                for item in crate::list::with_list(p, |v| v.clone()) {
+                    if obj(item).tag != 0 {
                         return None;
                     }
-                    let v = obj(*item).a;
+                    let v = obj(item).a;
                     if !(0..=255).contains(&v) {
                         return None;
                     }
@@ -198,10 +198,10 @@ pub fn dispatch(m: &str, name: &str, args: &[u64]) -> Option<u64> {
                     bytes_obj(unsafe { bytes_slice(p) }.to_vec())
                 }
                 Some(p) if unsafe { obj(p).tag } == 3 => {
-                    from_handles(unsafe { crate::list::items(p) }.clone())
+                    from_handles(crate::list::with_list(p, |v| v.clone()))
                 }
                 Some(p) if unsafe { obj(p).tag } == 14 => {
-                    from_handles(unsafe { crate::obj::seq_items(p) }.clone())
+                    from_handles(crate::obj::with_seq_items(p, |v| v.clone()))
                 }
                 _ => err("expected 'values' is list"),
             })

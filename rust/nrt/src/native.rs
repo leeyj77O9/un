@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Write;
 
 use crate::obj::{
-    display, err, obj, obj_mut, unrt_obj_bool, unrt_obj_float, unrt_obj_int, unrt_obj_none, NObj,
+    display, err, obj, unrt_obj_bool, unrt_obj_float, unrt_obj_int, unrt_obj_none, NObj,
 };
 
 /// Format shared by `sys.version()` and `os.version()`. The VM builds these
@@ -79,9 +79,11 @@ fn num_arg(args: &[u64], i: usize) -> Result<f64, u64> {
 const TYPE_OBJ_MARKER: i64 = i64::MIN; // ordinary Str objects always keep `b == 0`
 
 fn type_obj(name: &str) -> u64 {
-    let p = crate::strings::str_new(format!("<type: {name}>"));
-    unsafe { obj_mut(p).b = TYPE_OBJ_MARKER };
-    p
+    // Build the marker into the object at allocation time instead of taking an
+    // `&'static mut` alias afterwards (P01 A-04). Byte layout is unchanged:
+    // tag 6 Str, `a` = leaked String pointer, `b` = TYPE_OBJ_MARKER.
+    let s = Box::new(format!("<type: {name}>"));
+    unsafe { crate::obj::alloc(NObj { tag: 6, a: Box::into_raw(s) as i64, b: TYPE_OBJ_MARKER }) }
 }
 
 fn is_type_obj(p: u64) -> bool {
@@ -148,7 +150,7 @@ fn go_future_of(p: u64) -> bool {
         if !is_cell(flag) || !is_cell(value) {
             return false;
         }
-        let f = crate::list::items(flag)[0];
+        let f = crate::list::with_list(flag, |v| v[0]);
         obj(f).tag == 0 && (obj(f).a == 0 || obj(f).a == 1)
     }
 }
@@ -291,7 +293,7 @@ fn flow_type_name(p: u64) -> Option<&'static str> {
 /// plain trailing handles. Flatten both shapes before invoking the closure.
 fn flow_values(args: &[u64]) -> Vec<u64> {
     if args.len() == 1 && unsafe { obj(args[0]).tag == 14 } {
-        unsafe { crate::obj::seq_items(args[0]).clone() }
+        crate::obj::with_seq_items(args[0], |v| v.clone())
     } else {
         args.to_vec()
     }
@@ -433,7 +435,7 @@ pub(crate) fn flow_method(handle: u64, member: &str, args: &[u64]) -> Option<u64
                     let mut out = Vec::with_capacity(values.len());
                     for value in values {
                         let call_args = if unsafe { obj(value).tag == 14 } {
-                            unsafe { crate::obj::seq_items(value).clone() }
+                            crate::obj::with_seq_items(value, |v| v.clone())
                         } else { vec![value] };
                         let r = flow_call(f, &call_args);
                         if crate::obj::unrt_obj_is_err(r) != 0 { return Some(r); }
@@ -651,7 +653,7 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
                 && unsafe { obj(args[1]).tag == 3 }
             {
                 let f = args[0];
-                let items = unsafe { crate::list::items(args[1]).clone() };
+                let items = crate::list::with_list(args[1], |v| v.clone());
                 let mut out = Vec::new();
                 for item in items {
                     let r = crate::closure::unrt_call_obj(f, &item, 1);
@@ -670,7 +672,7 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
         }
         ("iter", "min") | ("iter", "max") => {
             let items: Vec<u64> = if args.len() == 1 && unsafe { obj(args[0]).tag == 3 } {
-                unsafe { crate::list::items(args[0]).clone() }
+                crate::list::with_list(args[0], |v| v.clone())
             } else {
                 args.to_vec()
             };
@@ -685,7 +687,7 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
         }
         ("iter", "sum") => {
             let items: Vec<u64> = if args.len() == 1 && unsafe { obj(args[0]).tag == 3 } {
-                unsafe { crate::list::items(args[0]).clone() }
+                crate::list::with_list(args[0], |v| v.clone())
             } else { args.to_vec() };
             let mut total = 0.0;
             let mut is_int = true;
@@ -696,7 +698,7 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
         }
         ("iter", "sorted") => {
             let items: Vec<u64> = if args.len() == 1 && unsafe { obj(args[0]).tag == 3 } {
-                unsafe { crate::list::items(args[0]).clone() }
+                crate::list::with_list(args[0], |v| v.clone())
             } else { args.to_vec() };
             let mut v = items;
             v.sort_by(|a, b| crate::obj::cmp_obj(*a, *b));
@@ -704,7 +706,7 @@ fn dispatch(m: &str, name: &str, args: &[u64]) -> u64 {
         }
         ("iter", "reverse") => {
             let items: Vec<u64> = if args.len() == 1 && unsafe { obj(args[0]).tag == 3 } {
-                unsafe { crate::list::items(args[0]).clone() }
+                crate::list::with_list(args[0], |v| v.clone())
             } else { args.to_vec() };
             let mut v = items;
             v.reverse();

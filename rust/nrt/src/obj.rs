@@ -1,7 +1,9 @@
 //! Core object model and scalar/error bridges.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -14,10 +16,9 @@ pub(crate) struct NObj {
     pub(crate) b: i64,
 }
 
-// Tagged sequence objects (Tuple/Set) follow the boxed-payload pattern used by
-// Str and Error: `a` is a `Box::into_raw` pointer to `Vec<u64>` and `b` is the
-// element count. Nothing else in NRT inspects `a`/`b` generically for these
-// tags, so the layout is private to the helpers below.
+// Tagged sequence objects (Tuple/Set) store an opaque handle in `a` and the
+// element count in `b`. Nothing else in NRT inspects `a`/`b` generically for
+// these tags, so the layout is private to the helpers below.
 pub(crate) const TAG_TUP: i64 = 14;
 pub(crate) const TAG_SET: i64 = 15;
 
@@ -56,25 +57,52 @@ pub(crate) unsafe fn alloc(o: NObj) -> u64 {
 pub(crate) unsafe fn obj(p: u64) -> &'static NObj {
     &*(p as *const NObj)
 }
-// P01 A-04 (S2): `obj_mut` aliases a leaked `NObj` as `&'static mut`. It stays
-// safe only while the plain exe is single-threaded. Converting this to a
-// lock-backed handle requires changing call sites in `native.rs` (W-ASYNCflow
-// owned, read-only for P02) and would add `unused_unsafe` warnings there, so
-// the conversion is deferred to a follow-up Work with those owners.
-pub(crate) unsafe fn obj_mut(p: u64) -> &'static mut NObj {
-    &mut *(p as *mut NObj)
+// P01 A-04 (S2): `obj_mut` used to alias a leaked `NObj` as `&'static mut`.
+// Mutation now goes through `with_obj_mut`: a per-handle lock is held only for
+// the duration of a closure, so no `&mut NObj` escapes the call. The registry
+// itself is a short-lived `Mutex` used only to look up (and clone) the handle's
+// `Arc`, so nested calls on *distinct* handles cannot deadlock on the registry.
+// A-08 invariant: `SMALL_INT_OBJS` is immutable and never passed here; every
+// handle reaching `with_obj_mut` comes from `alloc` and is never freed.
+static OBJ_LOCKS: LazyLock<Mutex<HashMap<u64, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn obj_lock(p: u64) -> Arc<Mutex<()>> {
+    let mut locks = OBJ_LOCKS.lock().unwrap();
+    locks.entry(p).or_insert_with(|| Arc::new(Mutex::new(()))).clone()
+}
+
+/// Mutate the `NObj` behind `p` under a per-handle lock. The closure may only
+/// write scalar fields; it must not call back into helpers that read the same
+/// object (all current callers only update a length/marker word).
+pub(crate) fn with_obj_mut<R>(p: u64, f: impl FnOnce(&mut NObj) -> R) -> R {
+    debug_assert_ne!(p, 0, "null object handle passed to with_obj_mut");
+    let lock = obj_lock(p);
+    let _guard = lock.lock().unwrap();
+    // SAFETY: `p` is a leaked `Box<NObj>` (never a small-int slot), the
+    // per-handle lock excludes concurrent mutations, and the guard keeps the
+    // `&mut` confined to this stack frame.
+    f(unsafe { &mut *(p as *mut NObj) })
 }
 
 // ---- Tag 14 (Tuple) / 15 (Set) -------------------------------------------
 // Replicas of the VM's `collections::tup` / `collections::set` value model:
 // elements are opaque boxed handles, stored in first-occurrence order.
 
-/// Boxed element vector of a Tuple/Set handle. Callers must check the tag.
-///
-/// P01 A-07 (S2): same single-thread-only `&'static mut` alias as A-04. The
-/// conversion is deferred together with A-04 (see above).
-pub(crate) unsafe fn seq_items(p: u64) -> &'static mut Vec<u64> {
-    &mut *(obj(p).a as *mut Vec<u64>)
+// P01 A-07 (S2): the element vector used to be aliased as `&'static mut` via a
+// raw pointer in `NObj.a`. It now lives in a handle-indexed table of
+// `Mutex<Vec<u64>>` cells; `with_seq_items` hands out a lock-scoped `&mut` and
+// never exposes a `'static` alias. `NObj.b` still mirrors the length, so the C
+// ABI handle (a `u64` index encoded as `i64`) and all output stay unchanged.
+static SEQ_DATA: Mutex<Vec<Arc<Mutex<Vec<u64>>>>> = Mutex::new(Vec::new());
+
+/// Mutate the element vector of a Tuple/Set handle under its cell's lock.
+/// Callers must check the tag first; no `&'static mut` escapes this call.
+pub(crate) fn with_seq_items<R>(p: u64, f: impl FnOnce(&mut Vec<u64>) -> R) -> R {
+    let idx = unsafe { obj(p).a as usize };
+    let cell = SEQ_DATA.lock().unwrap()[idx].clone();
+    let mut guard = cell.lock().unwrap();
+    f(&mut guard)
 }
 /// Element count mirrored in `b` so callers can avoid dereferencing `a`.
 pub(crate) unsafe fn seq_len(p: u64) -> i64 {
@@ -82,8 +110,13 @@ pub(crate) unsafe fn seq_len(p: u64) -> i64 {
 }
 fn seq_new(tag: i64, items: Vec<u64>) -> u64 {
     let len = items.len() as i64;
-    let ptr = Box::into_raw(Box::new(items));
-    unsafe { alloc(NObj { tag, a: ptr as i64, b: len }) }
+    let idx = {
+        let mut table = SEQ_DATA.lock().unwrap();
+        let idx = table.len();
+        table.push(Arc::new(Mutex::new(items)));
+        idx
+    };
+    unsafe { alloc(NObj { tag, a: idx as i64, b: len }) }
 }
 pub(crate) fn tuple_new(items: Vec<u64>) -> u64 {
     seq_new(TAG_TUP, items)
@@ -169,8 +202,8 @@ pub(crate) fn eq_obj(a: u64, b: u64) -> bool {
             // when their type names differ (`bytes` vs `list`). This keeps
             // `unrt_obj_eq` byte-identical for both bytes representations.
             (3, 3) => {
-                let left = crate::list::items(a).clone();
-                let right = crate::list::items(b).clone();
+                let left = crate::list::with_list(a, |v| v.clone());
+                let right = crate::list::with_list(b, |v| v.clone());
                 left.len() == right.len()
                     && left.iter().zip(right.iter()).all(|(x, y)| eq_obj(*x, *y))
             }
@@ -183,7 +216,10 @@ pub(crate) fn eq_obj(a: u64, b: u64) -> bool {
 /// elements and join with ", " — unlike `list_to_str`, they do **not** quote
 /// Str elements (`("a", 1)` prints as `(a, 1)` in `un run`).
 fn display_seq(p: u64, open: char, close: char) -> String {
-    let parts: Vec<String> = unsafe { seq_items(p) }.iter().map(|v| display(*v)).collect();
+    // Snapshot under the lock, then release before recursing into `display`
+    // (a nested Tuple/Set would otherwise try to lock its own cell here).
+    let items = with_seq_items(p, |v| v.clone());
+    let parts: Vec<String> = items.iter().map(|v| display(*v)).collect();
     format!("{}{}{}", open, parts.join(", "), close)
 }
 
@@ -200,7 +236,9 @@ pub(crate) fn display(p: u64) -> String {
                 }
             }
             3 => {
-                let parts: Vec<String> = crate::list::items(p).iter().map(|v| {
+                // Snapshot before recursing into `display` on the elements.
+                let elems = crate::list::with_list(p, |v| v.clone());
+                let parts: Vec<String> = elems.iter().map(|v| {
                     if obj(*v).tag == 6 {
                         format!("'{}'", display(*v))
                     } else {
@@ -500,24 +538,24 @@ pub extern "C" fn unrt_make_math_sqrt_neg() -> u64 {
 /// Replica of `collections::tup_get_item`: negative indices wrap once, then
 /// out-of-range is the VM's exact error.
 pub(crate) fn tuple_get(tup: u64, idx: i64) -> u64 {
-    unsafe {
-        if obj(tup).tag != TAG_TUP { return err("tuple get expects a tuple"); }
-        let items = seq_items(tup);
+    if unsafe { obj(tup).tag } != TAG_TUP { return err("tuple get expects a tuple"); }
+    with_seq_items(tup, |items| {
         let i = if idx < 0 { items.len() as i64 + idx } else { idx };
         if i >= 0 && (i as usize) < items.len() { items[i as usize] }
         else { err("tuple index out of range") }
-    }
+    })
 }
 
 /// Replica of `collections::set_get_item`: returns the stored key handle or
 /// the VM's `"key {k} not found in set"` error.
 pub(crate) fn set_get(set: u64, key: u64) -> u64 {
-    unsafe {
-        if obj(set).tag != TAG_SET { return err("set get expects a set"); }
-        match seq_items(set).iter().find(|p| set_key_eq(**p, key)) {
-            Some(found) => *found,
-            None => err(&format!("key {} not found in set", display(key))),
-        }
+    if unsafe { obj(set).tag } != TAG_SET { return err("set get expects a set"); }
+    let found = with_seq_items(set, |items| {
+        items.iter().find(|p| set_key_eq(**p, key)).copied()
+    });
+    match found {
+        Some(handle) => handle,
+        None => err(&format!("key {} not found in set", display(key))),
     }
 }
 
@@ -537,7 +575,7 @@ pub(crate) fn set_get(set: u64, key: u64) -> u64 {
 pub(crate) fn collections_dispatch(module: &str, member: &str, args: &[u64]) -> Option<u64> {
     let list_elems = |p: u64| -> Option<Vec<u64>> {
         if unsafe { obj(p).tag } == 3 {
-            Some(unsafe { crate::list::items(p) }.clone())
+            Some(crate::list::with_list(p, |v| v.clone()))
         } else {
             None
         }
@@ -809,5 +847,82 @@ mod type_is_tests {
         let _ = fixture();
         assert!(!matches(unrt_obj_int(0), "NrtUnrelated"));
         assert!(!matches(unrt_obj_bool(0), "NrtUnrelated"));
+    }
+}
+
+/// W-2026-11-26-P02B: direct tests of the A-04/A-07 safe guard APIs. Values,
+/// tags and handles are unchanged from the pre-conversion `&'static mut`
+/// implementation; the only difference is that no mutable reference escapes.
+#[cfg(test)]
+mod p02b_guard_tests {
+    use super::*;
+    use std::thread;
+
+    #[test]
+    fn a04_with_obj_mut_updates_word_without_escaping_reference() {
+        let p = unrt_obj_int(123_456); // outside the immutable small-int window
+        assert_eq!(unsafe { obj(p).a }, 123_456);
+        with_obj_mut(p, |o| {
+            o.a += 1;
+            o.b = 7;
+        });
+        let o = unsafe { obj(p) };
+        assert_eq!(o.tag, 0, "tag is unchanged");
+        assert_eq!(o.a, 123_457);
+        assert_eq!(o.b, 7);
+        // A-08 invariant: small integers remain immutable.
+        let small = unrt_obj_int(5);
+        assert_eq!(unsafe { obj(small).a }, 5);
+    }
+
+    #[test]
+    fn a04_with_obj_mut_serializes_concurrent_writers() {
+        let p = unrt_obj_int(1_000_000);
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let p = p;
+                thread::spawn(move || {
+                    for _ in 0..500 {
+                        with_obj_mut(p, |o| o.a += 1);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(unsafe { obj(p).a }, 1_002_000, "no lost updates");
+    }
+
+    #[test]
+    fn a07_with_seq_items_preserves_tuple_and_set_values() {
+        let tup = tuple_new(vec![unrt_obj_int(1), unrt_obj_int(2), unrt_obj_int(3)]);
+        assert_eq!(unsafe { obj(tup).tag }, TAG_TUP);
+        assert_eq!(unsafe { seq_len(tup) }, 3);
+        assert_eq!(with_seq_items(tup, |v| v.clone()).len(), 3);
+        assert_eq!(display(tup), "(1, 2, 3)");
+        assert_eq!(int_of(tuple_get(tup, -1)), 3);
+
+        // Set dedup keeps first occurrence; the safe API reads the same words.
+        let set = set_new(vec![unrt_obj_int(3), unrt_obj_int(1), unrt_obj_int(3)]);
+        assert_eq!(unsafe { obj(set).tag }, TAG_SET);
+        assert_eq!(with_seq_items(set, |v| v.clone()).len(), 2);
+        assert_eq!(display(set), "{3, 1}");
+        assert_eq!(int_of(set_get(set, unrt_obj_int(1))), 1);
+    }
+
+    #[test]
+    fn a07_with_seq_items_allows_concurrent_reads() {
+        let tup = tuple_new(vec![unrt_obj_int(7), unrt_obj_int(8)]);
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                thread::spawn(move || {
+                    (display(tup), int_of(tuple_get(tup, 1)), with_seq_items(tup, |v| v.len()))
+                })
+            })
+            .collect();
+        for t in threads {
+            assert_eq!(t.join().unwrap(), ("(7, 8)".to_string(), 8, 2));
+        }
     }
 }
