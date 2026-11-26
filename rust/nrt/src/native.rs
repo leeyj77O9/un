@@ -5,6 +5,11 @@
 use std::cell::RefCell;
 use std::fs;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use crate::parallel;
+use crate::scheduler::{FutureId, Task};
 
 use crate::obj::{
     display, err, obj, unrt_obj_bool, unrt_obj_float, unrt_obj_int, unrt_obj_none, NObj,
@@ -269,9 +274,31 @@ enum FlowState {
     Future(RefCell<Option<u64>>),
     AtomicInt(RefCell<i64>),
     AtomicBool(RefCell<bool>),
+    // W-2026-11-27-P07: opt-in variants. Only constructed when the exe was
+    // built with `un build --parallel`; the five variants above are untouched
+    // on the default (cooperative) path.
+    ParallelLock(Mutex<bool>),
+    ParallelPool(AtomicBool),
+    ParallelFuture { id: FutureId },
+    ParallelAtomicInt(AtomicI64),
+    ParallelAtomicBool(AtomicBool),
+}
+
+/// Promote a freshly built cooperative handle to its thread-safe counterpart
+/// on the opt-in path. Every default-path constructor line stays verbatim;
+/// this is the single choke point that switches the representation.
+fn promote_flow_state(state: FlowState) -> FlowState {
+    match state {
+        FlowState::Lock(held) => FlowState::ParallelLock(Mutex::new(*held.borrow())),
+        FlowState::Pool(pool) => FlowState::ParallelPool(AtomicBool::new(pool.borrow().closed)),
+        FlowState::AtomicInt(cell) => FlowState::ParallelAtomicInt(AtomicI64::new(*cell.borrow())),
+        FlowState::AtomicBool(cell) => FlowState::ParallelAtomicBool(AtomicBool::new(*cell.borrow())),
+        other => other,
+    }
 }
 
 fn flow_new(kind: i64, state: FlowState) -> u64 {
+    let state = if parallel::parallel_enabled() { promote_flow_state(state) } else { state };
     let ptr = Box::into_raw(Box::new(state));
     unsafe { crate::obj::alloc(NObj { tag: TAG_FLOW, a: kind, b: ptr as i64 }) }
 }
@@ -306,6 +333,190 @@ fn flow_values(args: &[u64]) -> Vec<u64> {
 
 fn flow_call(f: u64, values: &[u64]) -> u64 {
     crate::closure::unrt_call_obj(f, values.as_ptr(), values.len())
+}
+
+// ---- W-2026-11-27-P07: opt-in parallel flow/pool/atomic -------------------
+//
+// Only reached for `Parallel*` FlowState variants, which `promote_flow_state`
+// creates exclusively when the exe sets `UN_PARALLEL=1`. The cooperative
+// branches below are never entered for those handles, and vice versa.
+
+struct FlowTaskCtx {
+    func: u64,
+    values: Vec<u64>,
+}
+
+extern "C-unwind" fn flow_task_entry(ptr: *mut u8) -> u64 {
+    // SAFETY: `ptr` is `Arc::as_ptr(&task.ctx)`; the queued `Task` keeps the
+    // allocation alive until `run_task` returns (scheduler.rs contract).
+    let ctx = unsafe { &*(ptr as *const FlowTaskCtx) };
+    let value = flow_call(ctx.func, &ctx.values);
+    if crate::obj::unrt_obj_is_err(value) != 0 {
+        // Park the error on the worker so `run_task` carries it into `join`.
+        crate::obj::unrt_write_error(value);
+    }
+    value
+}
+
+/// Submit one closure invocation to the P06 scheduler.
+fn submit_flow_task(func: u64, values: Vec<u64>) -> Result<FutureId, u64> {
+    let ctx = Arc::new(FlowTaskCtx { func, values });
+    let task = Task::new(flow_task_entry, ctx);
+    parallel::submit_flow_task(task).map(|(id, _)| id).map_err(err)
+}
+
+fn parallel_future(id: FutureId) -> u64 {
+    flow_new(FLOW_FUTURE, FlowState::ParallelFuture { id })
+}
+
+/// Join a parallel future, delivering the worker's value or its error object.
+fn join_parallel_future(id: FutureId) -> u64 {
+    match parallel::join_flow_task(id) {
+        Ok(result) => if result.error != 0 { result.error } else { result.value },
+        Err(failure) => {
+            if failure.error != 0 { failure.error } else { err(&failure.kind.to_string()) }
+        }
+    }
+}
+
+/// `pool.map`: submit every input first, then join in submission order. The
+/// result list is index-stable regardless of task completion order (RFC §3.2).
+fn parallel_pool_map(func: u64, values: Vec<u64>) -> u64 {
+    let mut ids = Vec::with_capacity(values.len());
+    for value in values {
+        let call_args = if unsafe { obj(value).tag == 14 } {
+            crate::obj::with_seq_items(value, |v| v.clone())
+        } else {
+            vec![value]
+        };
+        match submit_flow_task(func, call_args) {
+            Ok(id) => ids.push(id),
+            Err(e) => return e,
+        }
+    }
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let value = join_parallel_future(id);
+        if crate::obj::unrt_obj_is_err(value) != 0 {
+            return value;
+        }
+        out.push(value);
+    }
+    list(out)
+}
+
+/// Dispatch on opt-in variants. `None` falls through to the original match,
+/// which ignores these variants (its arms all bind the cooperative states).
+fn parallel_flow_method(
+    handle: u64,
+    kind: i64,
+    state: &FlowState,
+    member: &str,
+    args: &[u64],
+) -> Option<u64> {
+    match (kind, state) {
+        (FLOW_LOCK, FlowState::ParallelLock(held)) => match member {
+            "acquire" => { *held.lock().unwrap() = true; Some(handle) }
+            "try_acquire" => {
+                let mut h = held.lock().unwrap();
+                if *h { Some(boolean(false)) } else { *h = true; Some(boolean(true)) }
+            }
+            "release" => {
+                let mut h = held.lock().unwrap();
+                if !*h { Some(err("lock not held")) } else { *h = false; Some(handle) }
+            }
+            "dispose" => { *held.lock().unwrap() = false; Some(none()) }
+            _ => None,
+        },
+        (FLOW_POOL, FlowState::ParallelPool(closed)) => match member {
+            "submit" | "map" => {
+                if closed.load(Ordering::SeqCst) { return Some(err("pool is closed")); }
+                let Some(&f) = args.first() else {
+                    return Some(err("expected 'fn' argument to be of type 'func'"));
+                };
+                if crate::closure::unrt_is_callable(f) == 0 {
+                    return Some(err("expected 'fn' argument to be of type 'func'"));
+                }
+                let values = flow_values(&args[1..]);
+                if member == "submit" {
+                    match submit_flow_task(f, values) {
+                        Ok(id) => Some(parallel_future(id)),
+                        Err(e) => Some(e),
+                    }
+                } else {
+                    Some(parallel_pool_map(f, values))
+                }
+            }
+            "close" => { closed.store(true, Ordering::SeqCst); Some(none()) }
+            _ => None,
+        },
+        (FLOW_FUTURE, FlowState::ParallelFuture { id, .. }) => match member {
+            "value" | "wait" => Some(join_parallel_future(*id)),
+            _ => None,
+        },
+        (FLOW_ATOMIC_INT, FlowState::ParallelAtomicInt(cell)) => {
+            parallel_atomic_int(cell, member, args)
+        }
+        (FLOW_ATOMIC_BOOL, FlowState::ParallelAtomicBool(cell)) => {
+            parallel_atomic_bool(cell, member, args)
+        }
+        _ => None,
+    }
+}
+
+fn parallel_atomic_int(cell: &AtomicI64, member: &str, args: &[u64]) -> Option<u64> {
+    match member {
+        "get" => Some(int(cell.load(Ordering::SeqCst))),
+        "set" => match atomic_int_arg(args, 0, "value") {
+            Ok(a) => { cell.store(a, Ordering::SeqCst); Some(none()) }
+            Err(e) => Some(e),
+        },
+        "add" => match atomic_int_arg(args, 0, "value") {
+            Ok(a) => {
+                let previous = cell.fetch_add(a, Ordering::SeqCst);
+                Some(int(previous.wrapping_add(a)))
+            }
+            Err(e) => Some(e),
+        },
+        "inc" => {
+            let previous = cell.fetch_add(1, Ordering::SeqCst);
+            Some(int(previous.wrapping_add(1)))
+        }
+        "dec" => {
+            let previous = cell.fetch_sub(1, Ordering::SeqCst);
+            Some(int(previous.wrapping_sub(1)))
+        }
+        "exchange" => match atomic_int_arg(args, 0, "value") {
+            Ok(a) => Some(int(cell.swap(a, Ordering::SeqCst))),
+            Err(e) => Some(e),
+        },
+        "compare_and_swap" => {
+            let expected = match atomic_int_arg(args, 0, "expected") { Ok(v) => v, Err(e) => return Some(e) };
+            let new_value = match atomic_int_arg(args, 1, "new_value") { Ok(v) => v, Err(e) => return Some(e) };
+            Some(boolean(cell.compare_exchange(expected, new_value, Ordering::SeqCst, Ordering::SeqCst).is_ok()))
+        }
+        _ => None,
+    }
+}
+
+fn parallel_atomic_bool(cell: &AtomicBool, member: &str, args: &[u64]) -> Option<u64> {
+    match member {
+        "get" => Some(boolean(cell.load(Ordering::SeqCst))),
+        "set" => match atomic_bool_arg(args, 0) {
+            Ok(a) => { cell.store(a, Ordering::SeqCst); Some(none()) }
+            Err(e) => Some(e),
+        },
+        "exchange" => match atomic_bool_arg(args, 0) {
+            Ok(a) => Some(boolean(cell.swap(a, Ordering::SeqCst))),
+            Err(e) => Some(e),
+        },
+        "compare_and_swap" => {
+            let expected = match atomic_bool_arg(args, 0) { Ok(v) => v, Err(e) => return Some(e) };
+            let new_value = match atomic_bool_arg(args, 1) { Ok(v) => v, Err(e) => return Some(e) };
+            Some(boolean(cell.compare_exchange(expected, new_value, Ordering::SeqCst, Ordering::SeqCst).is_ok()))
+        }
+        _ => None,
+    }
 }
 
 fn atomic_int_arg(args: &[u64], i: usize, label: &str) -> Result<i64, u64> {
@@ -399,6 +610,12 @@ pub(crate) fn flow_method(handle: u64, member: &str, args: &[u64]) -> Option<u64
         (o.a, o.b as *const FlowState)
     };
     let state = unsafe { &*ptr };
+    // Opt-in parallel variants are handled before the original cooperative
+    // match; that match's arms only bind the five original variants and is
+    // left byte-for-byte unchanged.
+    if let Some(result) = parallel_flow_method(handle, kind, state, member, args) {
+        return Some(result);
+    }
     match (kind, member) {
         (FLOW_LOCK, "acquire") => match state {
             FlowState::Lock(held) => { *held.borrow_mut() = true; Some(handle) }
@@ -1348,5 +1565,239 @@ mod tests {
         assert_eq!(display(dispatch("flow", "atomic_bool.get", &[cell])), "true");
         let default_bool = dispatch("atomic", "bool", &[]);
         assert_eq!(display(dispatch("flow", "atomic_bool.get", &[default_bool])), "false");
+    }
+
+    // ---- W-2026-11-27-P07: opt-in parallel shim ----------------------------
+    //
+    // The opt-in signal is read once per process, so these tests construct the
+    // `Parallel*` states directly (the exact states `promote_flow_state`
+    // produces under `UN_PARALLEL=1`). That keeps them in one process while
+    // still exercising the same dispatch path the opt-in exe uses.
+
+    use std::sync::atomic::{AtomicBool as TestAtomicBool, AtomicI64 as TestAtomicI64};
+    use std::sync::{Arc as TestArc, Mutex as TestMutex};
+
+    fn parallel_pool() -> u64 {
+        super::flow_new(super::FLOW_POOL, super::FlowState::ParallelPool(TestAtomicBool::new(false)))
+    }
+
+    fn parallel_int(initial: i64) -> u64 {
+        super::flow_new(
+            super::FLOW_ATOMIC_INT,
+            super::FlowState::ParallelAtomicInt(TestAtomicI64::new(initial)),
+        )
+    }
+
+    fn parallel_bool(initial: bool) -> u64 {
+        super::flow_new(
+            super::FLOW_ATOMIC_BOOL,
+            super::FlowState::ParallelAtomicBool(TestAtomicBool::new(initial)),
+        )
+    }
+
+    #[test]
+    fn flow_parallel_pool_map_preserves_input_order() {
+        let pool = parallel_pool();
+        let f = flow_lambda(9501, flow_double);
+        assert_eq!(
+            display(dispatch("flow", "pool.map", &[pool, f, int(10), int(20), int(30)])),
+            "[20, 40, 60]"
+        );
+        assert_eq!(display(dispatch("flow", "pool.map", &[pool, f, int(7)])), "[14]");
+        // A tuple rest-arg flattens to the same index-stable list.
+        let tup = crate::obj::tuple_new(vec![int(3), int(1), int(2)]);
+        assert_eq!(display(dispatch("flow", "pool.map", &[pool, f, tup])), "[6, 2, 4]");
+    }
+
+    #[test]
+    fn flow_parallel_concurrent_submit_results() {
+        let pool = parallel_pool();
+        let f = flow_lambda(9502, flow_add_one);
+        let futures: Vec<u64> = (1..=8)
+            .map(|i| dispatch("flow", "pool.submit", &[pool, f, int(i)]))
+            .collect();
+        for fut in &futures {
+            assert_eq!(display(dispatch("types", "type", &[*fut])), "<type: future>");
+        }
+        let values: Vec<String> = futures
+            .iter()
+            .enumerate()
+            .map(|(i, fut)| {
+                let member = if i % 2 == 0 { "future.wait" } else { "future.value" };
+                display(dispatch("flow", member, &[*fut]))
+            })
+            .collect();
+        assert_eq!(values, ["2", "3", "4", "5", "6", "7", "8", "9"]);
+        // Re-wait is memoized.
+        assert_eq!(display(dispatch("flow", "future.value", &[futures[0]])), "2");
+    }
+
+    #[test]
+    fn flow_parallel_pool_map_runs_on_a_worker_thread() {
+        static MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
+        static RAN_ON_WORKER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        extern "C" fn record_thread(x: i64) -> i64 {
+            let main = MAIN_THREAD.get_or_init(|| std::thread::current().id());
+            RAN_ON_WORKER.store(
+                std::thread::current().id() != *main,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            x
+        }
+        MAIN_THREAD.set(std::thread::current().id()).unwrap();
+        let pool = parallel_pool();
+        let f = flow_lambda(9504, record_thread);
+        // Submit here but wait on another thread: the P05 scheduler's inline
+        // fallback applies only to the submitting thread / a running task, so
+        // this arrangement guarantees execution by an actual worker.
+        let fut = dispatch("flow", "pool.submit", &[pool, f, int(42)]);
+        let waiter = std::thread::spawn(move || dispatch("flow", "future.value", &[fut]));
+        assert_eq!(display(waiter.join().unwrap()), "42");
+        assert!(
+            RAN_ON_WORKER.load(std::sync::atomic::Ordering::SeqCst),
+            "opt-in pool tasks must run on a scheduler worker"
+        );
+    }
+
+    #[test]
+    fn flow_parallel_atomic_int_matches_cooperative_step_by_step() {
+        let coop = dispatch("flow", "atomic", &[int(5)]);
+        let par = parallel_int(5);
+        let steps: Vec<(&str, Vec<u64>)> = vec![
+            ("atomic_int.add", vec![int(3)]),
+            ("atomic_int.get", vec![]),
+            ("atomic_int.exchange", vec![int(2)]),
+            ("atomic_int.compare_and_swap", vec![int(2), int(9)]),
+            ("atomic_int.get", vec![]),
+            ("atomic_int.compare_and_swap", vec![int(2), int(0)]),
+            ("atomic_int.inc", vec![]),
+            ("atomic_int.dec", vec![]),
+            ("atomic_int.set", vec![int(4)]),
+            ("atomic_int.get", vec![]),
+        ];
+        for (member, extra) in steps {
+            let mut a = vec![coop];
+            a.extend(extra.iter().copied());
+            let mut b = vec![par];
+            b.extend(extra.iter().copied());
+            assert_eq!(
+                display(dispatch("flow", member, &a)),
+                display(dispatch("flow", member, &b)),
+                "parallel vs cooperative mismatch on {member}"
+            );
+        }
+        // Wrapping arithmetic must match Un Int in both modes.
+        let coop_max = dispatch("atomic", "int", &[int(i64::MAX)]);
+        let par_max = parallel_int(i64::MAX);
+        assert_eq!(
+            display(dispatch("flow", "atomic_int.inc", &[coop_max])),
+            display(dispatch("flow", "atomic_int.inc", &[par_max]))
+        );
+    }
+
+    #[test]
+    fn flow_parallel_atomic_cas_concurrency_is_exactly_once() {
+        let cell = parallel_int(0);
+        let winners = TestArc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let winners = TestArc::clone(&winners);
+                std::thread::spawn(move || {
+                    if display(dispatch("flow", "atomic_int.compare_and_swap", &[cell, int(0), int(1)])) == "true" {
+                        winners.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(winners.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(display(dispatch("flow", "atomic_int.get", &[cell])), "1");
+    }
+
+    #[test]
+    fn flow_parallel_atomic_inc_concurrency_is_lost_update_free() {
+        let cell = parallel_int(0);
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    for _ in 0..500 {
+                        dispatch("flow", "atomic_int.inc", &[cell]);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(display(dispatch("flow", "atomic_int.get", &[cell])), "4000");
+    }
+
+    #[test]
+    fn flow_parallel_error_strings_match_cooperative() {
+        let coop_i = dispatch("flow", "atomic", &[int(1)]);
+        let par_i = parallel_int(1);
+        let int_errors: Vec<(&str, Vec<u64>)> = vec![
+            ("atomic_int.set", vec![string("x")]),
+            ("atomic_int.add", vec![string("x")]),
+            ("atomic_int.exchange", vec![string("x")]),
+            ("atomic_int.compare_and_swap", vec![string("x"), int(1)]),
+            ("atomic_int.compare_and_swap", vec![int(1), string("x")]),
+            // Clone/Copy/Entry/Exit are not native flow members in either
+            // mode; the unsupported-module string must stay byte-identical.
+            ("atomic_int.Clone", vec![]),
+            ("atomic_int.Copy", vec![]),
+            ("atomic_int.Entry", vec![]),
+            ("atomic_int.Exit", vec![]),
+        ];
+        for (member, extra) in int_errors {
+            let mut a = vec![coop_i];
+            a.extend(extra.iter().copied());
+            let mut b = vec![par_i];
+            b.extend(extra.iter().copied());
+            assert_eq!(display(dispatch("flow", member, &a)), display(dispatch("flow", member, &b)), "{member}");
+        }
+
+        let coop_b = dispatch("atomic", "bool", &[]);
+        let par_b = parallel_bool(false);
+        let bool_errors: Vec<(&str, Vec<u64>)> = vec![
+            ("atomic_bool.set", vec![int(1)]),
+            ("atomic_bool.exchange", vec![string("x")]),
+            ("atomic_bool.compare_and_swap", vec![string("x"), boolean(true)]),
+            ("atomic_bool.compare_and_swap", vec![boolean(false), int(0)]),
+            ("atomic_bool.Clone", vec![]),
+            ("atomic_bool.Exit", vec![]),
+        ];
+        for (member, extra) in bool_errors {
+            let mut a = vec![coop_b];
+            a.extend(extra.iter().copied());
+            let mut b = vec![par_b];
+            b.extend(extra.iter().copied());
+            assert_eq!(display(dispatch("flow", member, &a)), display(dispatch("flow", member, &b)), "{member}");
+        }
+
+        let coop_lock = dispatch("flow", "lock", &[]);
+        let par_lock = super::flow_new(super::FLOW_LOCK, super::FlowState::ParallelLock(TestMutex::new(false)));
+        for member in ["lock.try_acquire", "lock.try_acquire", "lock.release", "lock.release", "lock.release", "lock.dispose"] {
+            assert_eq!(
+                display(dispatch("flow", member, &[coop_lock])),
+                display(dispatch("flow", member, &[par_lock])),
+                "{member}"
+            );
+        }
+
+        let coop_pool = dispatch("flow", "spawn", &[]);
+        let par_pool = parallel_pool();
+        assert_eq!(display(dispatch("flow", "pool.close", &[coop_pool])), "none");
+        assert_eq!(display(dispatch("flow", "pool.close", &[par_pool])), "none");
+        let f = flow_lambda(9503, flow_add_one);
+        for member in ["pool.submit", "pool.map"] {
+            assert_eq!(
+                display(dispatch("flow", member, &[coop_pool, f, int(1)])),
+                display(dispatch("flow", member, &[par_pool, f, int(1)])),
+                "{member} after close"
+            );
+        }
     }
 }

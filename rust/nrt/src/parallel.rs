@@ -39,7 +39,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::closure::unrt_call_obj;
 use crate::obj::obj;
 use crate::scheduler::{
-    FutureId, JoinError, Scheduler, SchedulerHandle, TagMode, Task, TaskSlot,
+    FutureId, JoinError, JoinFailure, Scheduler, SchedulerHandle, TagMode, Task, TaskResult,
+    TaskSlot,
 };
 use crate::trace::TraceSnapshot;
 
@@ -61,6 +62,44 @@ fn globals() -> &'static Globals {
         let handle = scheduler.handle();
         Globals { scheduler: Mutex::new(scheduler), handle }
     })
+}
+
+// ---- W-2026-11-27-P07: opt-in signal for flow/pool/atomic ------------------
+//
+// `un build --parallel` is the single opt-in entry point (plan §1.1). The
+// generated plain-exe driver sets `UN_PARALLEL=1` before calling `un_main`;
+// NRT reads it exactly once, on the first flow/atomic handle construction.
+// No new C ABI symbol is needed: the existing `unrt_call_native` bridge is the
+// only path the flow shim uses, and P06's three symbols stay unchanged.
+//
+// A build that never sets the variable keeps the cooperative `RefCell` shim
+// byte-for-byte, so every default gate (exe-diff, test.ps1, ...) is untouched.
+static FLOW_PARALLEL: OnceLock<bool> = OnceLock::new();
+
+/// Whether this exe was built with `un build --parallel`.
+pub(crate) fn parallel_enabled() -> bool {
+    *FLOW_PARALLEL.get_or_init(|| {
+        std::env::var("UN_PARALLEL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+/// Submit a task from the P07 flow shim. Returns the future id plus a clone of
+/// the shared output slot; the shim currently joins by id (which also
+/// installs the worker's trace on the waiter) and ignores the slot clone.
+pub(crate) fn submit_flow_task(
+    task: Task,
+) -> Result<(FutureId, Arc<Mutex<TaskSlot>>), &'static str> {
+    let out = Arc::clone(&task.out);
+    let id = globals().scheduler.lock().unwrap().submit_task(task)?;
+    Ok((id, out))
+}
+
+/// Join a P07 flow task. Memoized: repeated joins reuse the same result, and
+/// the producing worker's trace/error state is installed on the waiter.
+pub(crate) fn join_flow_task(id: FutureId) -> Result<TaskResult, JoinFailure> {
+    globals().handle.join_full(id)
 }
 
 #[derive(Clone)]
