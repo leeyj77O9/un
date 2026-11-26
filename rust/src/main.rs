@@ -63,7 +63,7 @@ fn print_help() {
     print!("  un check <file.un>    (compile mode: static type analysis only){}", nl());
     print!("  un native <file.un>   (compile mode: static analysis + native execution){}", nl());
     print!("  un obj <file.un|file.unbc> [-o out.obj] [--entry name]  (emit a relocatable object file){}", nl());
-    print!("  un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N]  (N=0|1|2|3|s|z; fully typed by default){}", nl());
+    print!("  un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N] [--parallel]  (N=0|1|2|3|s|z; fully typed by default; --parallel is plain-build only){}", nl());
     print!("  un lsp                (run the language server over stdio for the VS Code extension){}", nl());
 }
 fn read_source(path: &str) -> Source {
@@ -1071,6 +1071,7 @@ fn build_cache_key(
     embed: bool,
     allow_dynamic: bool,
     opt_level: &str,
+    parallel: bool,
 ) -> Option<String> {
     let identity = build_toolchain_identity(embed)?;
     let text = String::from_utf8_lossy(source_bytes);
@@ -1095,6 +1096,7 @@ fn build_cache_key(
     }
     cache_push(&mut buf, if embed { "embed" } else { "plain" });
     cache_push(&mut buf, if allow_dynamic { "dynamic" } else { "typed" });
+    cache_push(&mut buf, if parallel { "parallel" } else { "cooperative" });
     cache_push(&mut buf, opt_level);
     cache_push(&mut buf, "x86_64-pc-windows-gnu");
     cache_push(&mut buf, &identity);
@@ -1189,19 +1191,23 @@ fn build_cmd(args: &[String]) {
     let mut embed = false;
     let mut allow_dynamic = false;
     let mut opt_level: Option<String> = None;
+    let mut parallel = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "-o" | "--output" => {
                 i += 1;
                 let Some(path) = args.get(i) else {
-                    eprintln!("usage: un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N]");
+                    eprintln!("usage: un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--opt-level N] [--parallel]");
                     exit(2);
                 };
                 output = Some(path.clone());
             }
             "--embed" => {
                 embed = true;
+            }
+            "--parallel" => {
+                parallel = true;
             }
             "--allow-dynamic" => {
                 allow_dynamic = true;
@@ -1229,9 +1235,13 @@ fn build_cmd(args: &[String]) {
         i += 1;
     }
     let Some(input) = input else {
-        eprintln!("usage: un build <file.un> [-o out.exe] [--embed] [--allow-dynamic]");
+        eprintln!("usage: un build <file.un> [-o out.exe] [--embed] [--allow-dynamic] [--parallel]");
         exit(2);
     };
+    if parallel && embed {
+        eprintln!("un build: --parallel requires a plain build; drop --embed");
+        exit(2);
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     native::init(cwd.to_str().unwrap_or("."));
     let output = output.unwrap_or_else(|| {
@@ -1248,7 +1258,7 @@ fn build_cmd(args: &[String]) {
     } else {
         std::fs::read(source_path_of(input))
             .ok()
-            .and_then(|bytes| build_cache_key(input, &bytes, embed, allow_dynamic, opt_level))
+            .and_then(|bytes| build_cache_key(input, &bytes, embed, allow_dynamic, opt_level, parallel))
     };
     if let Some(ref key) = key {
         if build_cache_restore(key, &output) {
@@ -1465,7 +1475,13 @@ fn build_cmd(args: &[String]) {
         exit(1);
     }
     let global_names = collect_global_names(&inline_code);
-    let lowered = match unvm::tir::TirProgram::lower(&source, &root, &checked, &global_names) {
+    let lowered = match unvm::tir::TirProgram::lower_with_options(
+        &source,
+        &root,
+        &checked,
+        &global_names,
+        parallel,
+    ) {
         Ok(program) => program,
         Err(error) => {
             eprintln!("tir: {error}");
@@ -1530,7 +1546,7 @@ fn build_cmd(args: &[String]) {
         declared.insert(*tir_i);
     }
     let lambda_indices: Vec<usize> = lowered.functions.iter().enumerate()
-        .filter(|(_, f)| f.name.starts_with("__lambda_"))
+        .filter(|(_, f)| f.name.starts_with("__lambda_") || f.name.starts_with("__task_"))
         .map(|(i, _)| i)
         .collect();
     if !lambda_indices.is_empty() {
