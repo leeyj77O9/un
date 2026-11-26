@@ -1139,3 +1139,89 @@ pub extern "C" fn unrt_call_obj(callable: u64, args: *const u64, argc: usize) ->
         crate::runtime::obj::call_args(&c, &crate::runtime::function::Args::positional(values));
     to_raw(result)
 }
+
+// ---------------------------------------------------------------------------
+// W-2026-11-27-P06-CMP — `--parallel` link-safety provision for `--embed`.
+//
+// `un build --parallel` is plain-native-only (ARC-00 rejects it on the embed
+// path), so `--embed` never emits these calls: its `go`/`wait` keeps the
+// deferred cooperative semantics of the VM. The symbols are still defined
+// here so that an object linked against `libunvm.a` always resolves. When a
+// task *is* registered (Rust-side only, see `register_inline_task`) it is run
+// immediately on the calling thread — the "inline fallback" — and its result
+// is memoized like the real scheduler's.
+// ---------------------------------------------------------------------------
+
+type InlineTask = Box<dyn FnOnce(&[u64]) -> (u64, u64) + Send>;
+
+static INLINE_TASKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<i64, InlineTask>>> =
+    std::sync::OnceLock::new();
+static INLINE_RESULTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, (u64, u64)>>> =
+    std::sync::OnceLock::new();
+static NEXT_INLINE_HANDLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Rust-only registration hook for an inline task body (never used by the
+/// VM's deferred lowering; kept so the fallback can actually execute a task
+/// if a future embed path registers one).
+pub fn register_inline_task(index: i64, task: InlineTask) {
+    INLINE_TASKS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(index, task);
+}
+
+#[no_mangle]
+pub extern "C" fn unrt_go(func_index: i64, caps: *const u64, cap_count: usize) -> u64 {
+    let args: Vec<u64> = if caps.is_null() || cap_count == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(caps, cap_count) }.to_vec()
+    };
+    let task = INLINE_TASKS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap()
+        .remove(&func_index);
+    let Some(task) = task else {
+        store_pending(to_raw(crate::runtime::obj::err(
+            "unrt_go: parallel tasks require a plain native build",
+        )));
+        return 0;
+    };
+    let (value, tag) = task(&args);
+    let handle = NEXT_INLINE_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    INLINE_RESULTS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(handle, (value, tag));
+    handle
+}
+
+#[no_mangle]
+pub extern "C" fn unrt_wait(handle: u64, out_value: *mut u64, out_tag: *mut u64) -> i64 {
+    let result = INLINE_RESULTS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap()
+        .remove(&handle);
+    let Some((value, tag)) = result else {
+        store_pending(to_raw(crate::runtime::obj::err("unrt_wait: unknown future handle")));
+        return 3; // unknown
+    };
+    if !out_value.is_null() {
+        unsafe { *out_value = value };
+    }
+    if !out_tag.is_null() {
+        unsafe { *out_tag = tag };
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn unrt_trace(_handle: u64, _buf: *mut u8, _cap: usize) -> u64 {
+    // The VM's deferred path already builds tracebacks inline; there is no
+    // worker trace to serialize here.
+    0
+}

@@ -234,7 +234,7 @@ pub fn native_compile(program_id: u64, program: &Program, tir: &TirProgram) -> V
         let internal_sig = internal_signature(&module, f, NativeMode::Vm, false);
         let ffi_sig = ffi_signature(&module, f);
         let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            emit_internal(f, &mut module, &internal_fids, *internal, &internal_sig, &tir.functions, NativeMode::Vm, true, false, &HashSet::new())
+            emit_internal(f, &mut module, &internal_fids, *internal, &internal_sig, &tir.functions, NativeMode::Vm, true, false, &HashSet::new(), false)
         }));
         if std::env::var_os("UV_TIR_DEBUG").is_some() {
             match &guard {
@@ -421,6 +421,88 @@ fn emit_internal_bail<M: Module>(
     module.define_function(fid, &mut ctx).map_err(|e| format!("internal bail: {e:?}"))
 }
 
+/// True only when the opt-in lowering actually produced parallel `go`/`wait`
+/// nodes. Used to gate the three new `unrt_*` imports so a default build emits
+/// exactly the same object code as before.
+fn tir_has_parallel_ops(tir: &TirProgram) -> bool {
+    fn expr_has(e: &TirExpr) -> bool {
+        match e {
+            TirExpr::MakeClosure { parallel, .. } | TirExpr::Await { parallel, .. } => *parallel,
+            TirExpr::Promote(a) | TirExpr::BoxObj(a) | TirExpr::Un(_, a) | TirExpr::CastInt(a)
+            | TirExpr::CastFloat(a) | TirExpr::Len(a) | TirExpr::ListPop(a)
+            | TirExpr::ListPopAt(a, _) | TirExpr::ListContains(a, _) | TirExpr::ListIndexOf(a, _)
+            | TirExpr::ListRemove(a, _) | TirExpr::DictKeys(a) | TirExpr::DictValues(a)
+            | TirExpr::ListGet(a, _) | TirExpr::DictGet(a, _) | TirExpr::MemberGet { receiver: a, .. }
+            | TirExpr::CallObj { callee: a, .. } | TirExpr::Located { inner: a, .. } => expr_has(a),
+            TirExpr::Select { cond, then_expr, else_expr } => {
+                expr_has(cond) || expr_has(then_expr) || expr_has(else_expr)
+            }
+            TirExpr::Bin(_, a, b) | TirExpr::Cmp(_, a, b)
+            | TirExpr::ListRepeat { value: a, len: b, .. } => expr_has(a) || expr_has(b),
+            TirExpr::List(elems) | TirExpr::Call(_, elems) | TirExpr::Math(_, elems)
+            | TirExpr::NativeCallExpr { args: elems, .. } | TirExpr::ClassNew { args: elems, .. }
+            | TirExpr::MethodCall { args: elems, .. } => elems.iter().any(expr_has),
+            TirExpr::Dict(entries) => entries.iter().any(|(k, v)| expr_has(k) || expr_has(v)),
+            TirExpr::Slice { list, start, end, step } => {
+                expr_has(list)
+                    || start.as_ref().is_some_and(|e| expr_has(e))
+                    || end.as_ref().is_some_and(|e| expr_has(e))
+                    || step.as_ref().is_some_and(|e| expr_has(e))
+            }
+            TirExpr::Int(_) | TirExpr::Float(_) | TirExpr::Bool(_) | TirExpr::Str(_)
+            | TirExpr::Local(_) | TirExpr::GlobalGet(_) | TirExpr::NoneValue
+            | TirExpr::EmptyCollection { .. } => false,
+        }
+    }
+    fn stmt_has(s: &TirStmt) -> bool {
+        match s {
+            TirStmt::Let(_, e) | TirStmt::Set(_, e) | TirStmt::ExprStmt(e)
+            | TirStmt::Throw(e) | TirStmt::GlobalSet(_, e) | TirStmt::Return(Some(e)) => expr_has(e),
+            TirStmt::If { cond, then_body, else_body } => {
+                expr_has(cond) || then_body.iter().any(stmt_has) || else_body.iter().any(stmt_has)
+            }
+            TirStmt::While { cond, body } | TirStmt::ForEach { collection: cond, body, .. } => {
+                expr_has(cond) || body.iter().any(stmt_has)
+            }
+            TirStmt::ForRange { start, end, step, body, .. } => {
+                expr_has(start) || expr_has(end) || expr_has(step) || body.iter().any(stmt_has)
+            }
+            TirStmt::ListSet { list, index, value } | TirStmt::DictSet { dict: list, key: index, value } => {
+                expr_has(list) || expr_has(index) || expr_has(value)
+            }
+            TirStmt::MemberSet { receiver, value, .. } => expr_has(receiver) || expr_has(value),
+            TirStmt::ListAdd { receiver, arg } | TirStmt::ListInsert { receiver, arg, .. } => {
+                expr_has(receiver) || expr_has(arg)
+            }
+            TirStmt::ListReverse { receiver } | TirStmt::ListSort { receiver }
+            | TirStmt::ListClear { receiver } | TirStmt::DictClear { receiver } => expr_has(receiver),
+            TirStmt::Try { body, catch_body, finally_body, .. } => {
+                body.iter().any(stmt_has)
+                    || catch_body.iter().any(stmt_has)
+                    || finally_body.as_ref().is_some_and(|b| b.iter().any(stmt_has))
+            }
+            TirStmt::Match { scrutinee, arms, result, .. } => {
+                let _ = (scrutinee, result);
+                arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_has) || arm.body.iter().any(stmt_has)
+                })
+            }
+            TirStmt::SetSlice { list, value, start, end, step } => {
+                expr_has(list)
+                    || expr_has(value)
+                    || start.as_ref().is_some_and(|e| expr_has(e))
+                    || end.as_ref().is_some_and(|e| expr_has(e))
+                    || step.as_ref().is_some_and(|e| expr_has(e))
+            }
+            TirStmt::NativeCall { args, .. } => args.iter().any(expr_has),
+            TirStmt::Return(None) | TirStmt::Break | TirStmt::Skip => false,
+        }
+    }
+    tir.functions.iter().any(|f| {
+        f.body.iter().any(stmt_has) || f.defaults.iter().flatten().any(expr_has)
+    })
+}
+
 pub fn obj_compile(
     _program_id: u64,
     tir: &TirProgram,
@@ -431,6 +513,7 @@ pub fn obj_compile(
         return Err("no core functions found (nothing is eligible for native code)".to_string());
     }
     let entry_name = entry.unwrap_or("main");
+    let parallel = tir_has_parallel_ops(tir);
     let entry_index = tir
         .functions
         .iter()
@@ -500,7 +583,7 @@ pub fn obj_compile(
         let sig = internal_signature(&module, f, NativeMode::Obj, propagate.contains(&i));
         let needs_frame = error_free.get(i).copied().map(|p| !p).unwrap_or(true);
         let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            emit_internal(f, &mut module, &fids, fid, &sig, &tir.functions, NativeMode::Obj, needs_frame, propagate.contains(&i), &propagate)
+            emit_internal(f, &mut module, &fids, fid, &sig, &tir.functions, NativeMode::Obj, needs_frame, propagate.contains(&i), &propagate, parallel)
         }));
         match guard {
             Ok(Ok(())) => emitted.push(f.name.clone()),
@@ -753,6 +836,13 @@ struct FnEmit<'a> {
     nrt_pop_frame: Option<cranelift_module::FuncId>,
     unrt_obj_closure: Option<cranelift_module::FuncId>,
     unrt_call_obj: Option<cranelift_module::FuncId>,
+    /// Opt-in `un build --parallel` symbols: only declared when the TIR
+    /// actually contains a parallel `go`/`wait`; `None` everywhere else so
+    /// the default object stream is unchanged.
+    unrt_go: Option<cranelift_module::FuncId>,
+    unrt_wait: Option<cranelift_module::FuncId>,
+    /// Mirrors `emit_internal`'s opt-in flag; gates the two emission branches.
+    parallel: bool,
     unrt_global_get: Option<cranelift_module::FuncId>,
     unrt_global_set: Option<cranelift_module::FuncId>,
     unrt_take_error: Option<cranelift_module::FuncId>,
@@ -873,6 +963,7 @@ fn emit_internal<M: Module>(
     needs_frame: bool,
     propagate_error: bool,
     propagate_targets: &HashSet<usize>,
+    parallel: bool,
 ) -> Result<(), ()> {
     let fid_enter = if mode == NativeMode::Vm {
         Some(
@@ -1136,6 +1227,35 @@ fn emit_internal<M: Module>(
         Some(declare_import(
             module,
             "unrt_call_obj",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else { None };
+    // W-2026-11-27-P06-CMP: the opt-in C ABI. `uintptr_t` is I64 on the single
+    // supported target (x86_64). Declared only for the parallel path.
+    let unrt_go = if mode == NativeMode::Obj && parallel {
+        Some(declare_import(
+            module,
+            "unrt_go",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else { None };
+    let unrt_wait = if mode == NativeMode::Obj && parallel {
+        Some(declare_import(
+            module,
+            "unrt_wait",
+            vec![types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?)
+    } else { None };
+    // `unrt_trace` is part of the agreed ABI and is registered for the
+    // parallel object, but the compiler never calls it: NRT serializes the
+    // worker trace into `unrt_wait`'s thread-local error buffer instead.
+    let _unrt_trace = if mode == NativeMode::Obj && parallel {
+        Some(declare_import(
+            module,
+            "unrt_trace",
             vec![types::I64, types::I64, types::I64],
             Some(types::I64),
         )?)
@@ -1478,6 +1598,9 @@ fn emit_internal<M: Module>(
         nrt_pop_frame,
         unrt_obj_closure,
         unrt_call_obj,
+        unrt_go,
+        unrt_wait,
+        parallel,
         unrt_global_get,
         unrt_global_set,
         unrt_take_error,
@@ -3401,6 +3524,25 @@ fn unbox_obj<M: Module>(
     }
 }
 
+/// Convert the raw u64 slot written by `unrt_wait` into the CLIF type for the
+/// statically known TIR result type (the parallel ABI returns bits, not an
+/// NRT boxed handle, so `unbox_obj` does not apply).
+fn raw_value_for_ty(
+    raw: cranelift_codegen::ir::Value,
+    ty: TirTy,
+    builder: &mut FunctionBuilder,
+) -> cranelift_codegen::ir::Value {
+    match ty {
+        TirTy::Int | TirTy::Bytes | TirTy::Str | TirTy::ListInt | TirTy::ListFloat
+        | TirTy::ListClass(_) | TirTy::DictStrInt | TirTy::DictStrFloat | TirTy::DictIntInt
+        | TirTy::Class(_) | TirTy::ErrorObj | TirTy::Lambda(_) | TirTy::ListLambda
+        | TirTy::Obj | TirTy::ListGen(_) | TirTy::DictGen(_, _) | TirTy::SetGen(_)
+        | TirTy::TupleGen(_) => raw,
+        TirTy::Float => builder.ins().bitcast(types::F64, MemFlagsData::new(), raw),
+        TirTy::Bool => builder.ins().ireduce(types::I8, raw),
+    }
+}
+
 fn emit_expr<M: Module>(
     expr: &TirExpr,
     emitter: &mut FnEmit,
@@ -3434,7 +3576,7 @@ fn emit_expr<M: Module>(
             let (v, ty) = emit_expr(inner, emitter, builder, module, f);
             (wrap_as_obj(v, ty, emitter, builder, module), TirTy::Obj)
         }
-        TirExpr::MakeClosure { func_index, captures, .. } => {
+        TirExpr::MakeClosure { func_index, captures, parallel, .. } => {
             let index = builder.ins().iconst(types::I64, *func_index as i64);
             let slot = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
                 cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
@@ -3453,19 +3595,131 @@ fn emit_expr<M: Module>(
             }
             let cap_ptr = builder.ins().stack_addr(types::I64, slot, 0);
             let cap_len = builder.ins().iconst(types::I64, captures.len() as i64);
-            let id = emitter.unrt_obj_closure.expect("closure import required");
-            let r = module.declare_func_in_func(id, builder.func);
-            let call = builder.ins().call(r, &[index, cap_ptr, cap_len]);
-            (builder.inst_results(call)[0], TirTy::Lambda(*func_index))
+            if emitter.parallel && *parallel {
+                // Opt-in task path: the returned u64 is an opaque future
+                // handle, not an NRT closure object. The thunk is registered
+                // under `func_index` (`nrt_register_lambda`) by the driver.
+                let id = emitter.unrt_go.expect("parallel go import required");
+                let r = module.declare_func_in_func(id, builder.func);
+                let call = builder.ins().call(r, &[index, cap_ptr, cap_len]);
+                // Statically `Obj`: the slot carries the raw handle and only
+                // `Await { parallel: true }` consumes it.
+                (builder.inst_results(call)[0], TirTy::Obj)
+            } else {
+                let id = emitter.unrt_obj_closure.expect("closure import required");
+                let r = module.declare_func_in_func(id, builder.func);
+                let call = builder.ins().call(r, &[index, cap_ptr, cap_len]);
+                (builder.inst_results(call)[0], TirTy::Lambda(*func_index))
+            }
         }
-        TirExpr::Await { operand, ret, span } => {
+        TirExpr::Await { operand, ret, span, parallel } => {
+            let prev_span = emitter.current_span;
+            emitter.current_span = Some(*span);
+            if emitter.parallel && *parallel {
+                // Opt-in `un build --parallel`: the operand is a raw future
+                // handle produced by `unrt_go` (not an NRT closure object), and
+                // the scheduler does the waiting on worker threads.
+                let (handle, _) = emit_expr(operand, emitter, builder, module, f);
+                if emitter.mode == NativeMode::Obj && emitter.needs_frame {
+                    if let Some(push) = emitter.nrt_push_frame {
+                        let gv = embed_str_bytes(emitter, module, builder, f.name.as_bytes());
+                        let np = builder.ins().symbol_value(types::I64, gv);
+                        let nl = builder.ins().iconst(types::I64, f.name.as_bytes().len() as i64);
+                        let (start, len) = emitter.current_span.unwrap_or((0, 0));
+                        let s = builder.ins().iconst(types::I64, start as i64);
+                        let l = builder.ins().iconst(types::I64, len as i64);
+                        let push_ref = module.declare_func_in_func(push, builder.func);
+                        let _ = builder.ins().call(push_ref, &[np, nl, s, l]);
+                    }
+                }
+                let out_slot = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot, 8, 8,
+                ));
+                let value_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+                let tag_slot = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot, 8, 8,
+                ));
+                let tag_ptr = builder.ins().stack_addr(types::I64, tag_slot, 0);
+                let wait_id = emitter.unrt_wait.expect("parallel wait import required");
+                let wait_ref = module.declare_func_in_func(wait_id, builder.func);
+                let wait_call = builder.ins().call(wait_ref, &[handle, value_ptr, tag_ptr]);
+                let status = builder.inst_results(wait_call)[0];
+                // The frame pushed above is popped on the success path. On the
+                // failure path `unrt_wait` has installed the worker's trace
+                // frames; popping here would discard one of them before
+                // `dump_uncaught` snapshots them.
+
+                let result_ty = match *ret {
+                    TirTy::Float => types::F64,
+                    TirTy::Bool => types::I8,
+                    _ => types::I64,
+                };
+                let done_blk = builder.create_block();
+                builder.append_block_param(done_blk, result_ty);
+                let wait_ok_blk = builder.create_block();
+                let wait_err_blk = builder.create_block();
+                let is_ok = builder.ins().icmp_imm_u(IntCC::Equal, status, 0);
+                builder.ins().brif(is_ok, wait_ok_blk, &[], wait_err_blk, &[]);
+
+                // Failure: `unrt_wait` restored the waiter's thread-local
+                // error/trace. Route it through the same gate as every other
+                // NRT call (panic bypasses handlers, regular error is catchable).
+                builder.switch_to_block(wait_err_blk);
+                // `unrt_wait` writes the worker's error object into `out_value`
+                // and installs its trace frames on this thread. Do NOT call
+                // `unrt_take_error` here: it clears the installed frames/site,
+                // which would lose the worker's traceback. Feed the object
+                // straight into the normal gate, which re-parks it in the
+                // thread-local pending cell for `emit_error_dispatch`.
+                let taken = builder.ins().load(types::I64, MemFlagsData::new(), value_ptr, 0);
+                let gate_blk = builder.create_block();
+                builder.append_block_param(gate_blk, types::I64);
+                let synth_blk = builder.create_block();
+                let is_null = builder.ins().icmp_imm_u(IntCC::Equal, taken, 0);
+                builder.ins().brif(is_null, synth_blk, &[], gate_blk, &[taken.into()]);
+                builder.switch_to_block(synth_blk);
+                let msg = b"'wait' failed";
+                let msg_gv = embed_str_bytes(emitter, module, builder, msg);
+                let msg_ptr = builder.ins().symbol_value(types::I64, msg_gv);
+                let msg_len = builder.ins().iconst(types::I64, msg.len() as i64);
+                let str_id = emitter.unrt_str_new.expect("unrt_str_new import required for wait error");
+                let str_ref = module.declare_func_in_func(str_id, builder.func);
+                let made_call = builder.ins().call(str_ref, &[msg_ptr, msg_len]);
+                let made = builder.inst_results(made_call)[0];
+                builder.ins().jump(gate_blk, &[made.into()]);
+                builder.seal_block(synth_blk);
+                builder.switch_to_block(gate_blk);
+                let err_obj = builder.block_params(gate_blk)[0];
+                emit_error_gate(emitter, builder, module, err_obj);
+                // The gate normally transfers control; if it falls through,
+                // produce a neutral value so the block is well formed.
+                let zero = builder.ins().iconst(types::I64, 0);
+                let zero_val = raw_value_for_ty(zero, *ret, builder);
+                builder.ins().jump(done_blk, &[zero_val.into()]);
+                builder.seal_block(wait_err_blk);
+
+                builder.switch_to_block(wait_ok_blk);
+                if emitter.mode == NativeMode::Obj && emitter.needs_frame {
+                    if let Some(pop) = emitter.nrt_pop_frame {
+                        let pop_ref = module.declare_func_in_func(pop, builder.func);
+                        let _ = builder.ins().call(pop_ref, &[]);
+                    }
+                }
+                let raw = builder.ins().load(types::I64, MemFlagsData::new(), value_ptr, 0);
+                let val = raw_value_for_ty(raw, *ret, builder);
+                builder.ins().jump(done_blk, &[val.into()]);
+                builder.seal_block(wait_ok_blk);
+
+                builder.switch_to_block(done_blk);
+                emitter.current_span = prev_span;
+                return (builder.block_params(done_blk)[0], *ret);
+            }
+
             // W-2026-11-26-WAITGUARD: a non-future operand used to be passed to
             // `unrt_call_obj` unboxed (a raw scalar read as a pointer -> SIGSEGV)
             // or reported as `value is not callable`. Both differ from the VM.
             // Box the operand, check it is a future handle (go lowers to a
             // synthesized closure), and emit the VM's exact error otherwise.
-            let prev_span = emitter.current_span;
-            emitter.current_span = Some(*span);
             let (raw, ty) = emit_expr(operand, emitter, builder, module, f);
             let obj = wrap_as_obj(raw, ty, emitter, builder, module);
 
@@ -4931,7 +5185,62 @@ fn emit_bail_ffi(
     let _ = module.define_function(ffi_fid, &mut func_ctx);
 }
 
+#[cfg(test)]
+mod parallel_codegen_tests {
+    use super::*;
 
+    fn program(parallel: bool, op_parallel: bool) -> TirProgram {
+        TirProgram {
+            functions: vec![TirFn {
+                name: "main".into(),
+                proto_span: (0, 0),
+                index: 0,
+                params: vec![],
+                defaults: vec![],
+                ret: None,
+                locals: vec![],
+                body: vec![
+                    TirStmt::Let(0, TirExpr::MakeClosure {
+                        func_index: 0,
+                        captures: vec![],
+                        kinds: vec![],
+                        ret_kind: 3,
+                        parallel: op_parallel,
+                    }),
+                    TirStmt::ExprStmt(TirExpr::Await {
+                        operand: Box::new(TirExpr::Local(0)),
+                        ret: TirTy::Int,
+                        span: (0, 1),
+                        parallel: op_parallel,
+                    }),
+                ],
+            }],
+            class_names: vec![],
+            class_fields: vec![],
+            class_methods: vec![],
+            class_setters: vec![],
+            class_field_order: vec![],
+            class_parents: vec![],
+            has_global_write: false,
+            parallel,
+        }
+    }
 
+    /// Builder-level proof that the default object stream cannot request the
+    /// new `unrt_go`/`unrt_wait`/`unrt_trace` symbols: neither the program flag
+    /// nor the per-expression flags are set, so `emit_internal` sees `None`.
+    #[test]
+    fn default_tir_never_requests_parallel_symbols() {
+        assert!(!tir_has_parallel_ops(&program(false, false)));
+        // Even a stale program flag must not emit parallel calls unless the
+        // TIR actually carries a parallel node.
+        assert!(!tir_has_parallel_ops(&program(true, false)));
+    }
 
+    #[test]
+    fn parallel_tir_requests_parallel_symbols() {
+        assert!(tir_has_parallel_ops(&program(false, true)));
+        assert!(tir_has_parallel_ops(&program(true, true)));
+    }
+}
 

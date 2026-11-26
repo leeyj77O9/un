@@ -638,11 +638,16 @@ pub enum TirExpr {
     /// Source location attached to an error-producing expression.
     Located { span: (usize, usize), inner: Box<TirExpr> },
     /// Allocate a first-class closure value from a synthesized lambda.
+    /// `parallel: true` is only produced by `lower_with_options(parallel=true)`
+    /// (`un build --parallel`): natcode emits `unrt_go` instead of
+    /// `unrt_obj_closure` for that branch. The default deferred path always
+    /// lowers with `parallel: false` and does not change.
     MakeClosure {
         func_index: u32,
         captures: Vec<u16>,
         kinds: Vec<u8>,
         ret_kind: u8,
+        parallel: bool,
     },
     /// Call a callable value (closure object) held in a local or container.
     CallObj { callee: Box<TirExpr>, args: Vec<TirExpr>, ret: TirTy },
@@ -654,6 +659,9 @@ pub enum TirExpr {
         operand: Box<TirExpr>,
         ret: TirTy,
         span: (usize, usize),
+        /// `true` only for a future produced by the opt-in `--parallel` path;
+        /// natcode then calls `unrt_wait` instead of the deferred `unrt_call_obj`.
+        parallel: bool,
     },
     /// Read a process-global slot (inlined module state).
     GlobalGet(u16),
@@ -804,6 +812,10 @@ pub struct TirProgram {
     pub class_parents: Vec<(String, String)>,
     /// True if any function writes a global (VM uses different semantics).
     pub has_global_write: bool,
+    /// Opt-in `un build --parallel`: `go`/`wait` lower to the `unrt_go` /
+    /// `unrt_wait` task path. Always `false` via `TirProgram::lower`, so every
+    /// existing (byte-identical) entry point keeps the deferred cooperative path.
+    pub parallel: bool,
 }
 
 /// True when every function can be emitted against the standalone native
@@ -2747,7 +2759,23 @@ impl TirProgram {
         }
     }
 
+    /// Default entry point: always lowers `go`/`wait` to the deferred
+    /// cooperative thunk. Existing callers (`un run`, `un native`, `un check`,
+    /// `un obj`, `--embed`) use this wrapper unchanged.
     pub fn lower(source: &Source, root: &Node, checked: &CheckedProgram, global_names: &[String]) -> Result<TirProgram, TirError> {
+        Self::lower_with_options(source, root, checked, global_names, false)
+    }
+
+    /// Opt-in lowering used by `un build --parallel` (plain native exe only).
+    /// The only behavioural difference is the `go`/`wait` synthesis branch;
+    /// with `parallel = false` the output is identical to `lower`.
+    pub fn lower_with_options(
+        source: &Source,
+        root: &Node,
+        checked: &CheckedProgram,
+        global_names: &[String],
+        parallel: bool,
+    ) -> Result<TirProgram, TirError> {
         let debug_trace = std::env::var_os("UV_TIR_DEBUG").is_some();
         let expanded = expand_generics(checked);
         let checked = &expanded.checked;
@@ -2821,7 +2849,7 @@ impl TirProgram {
                 continue;
             };
             let fcheck = &checked.functions[*fn_index];
-            let lowered = lower_function(node, source, fcheck, checked, tir_i, &tir_index, call_names, &expanded.instance_args, &classes, &mut lambdas, lambda_base, &globals, &mut any_global_write)
+            let lowered = lower_function(node, source, fcheck, checked, tir_i, &tir_index, call_names, &expanded.instance_args, &classes, &mut lambdas, lambda_base, &globals, &mut any_global_write, parallel)
                 .map_err(|e| TirError(format!("{}: {}", fcheck.sig.name, e)))?;
             functions.push(lowered);
         }
@@ -2833,6 +2861,7 @@ impl TirProgram {
                 checked,
                 tir_index: &tir_index,
                 call_names,
+                parallel,
                 current_instance: String::new(),
                 instance_args: &expanded.instance_args,
                 slots: HashMap::new(),
@@ -2878,6 +2907,7 @@ impl TirProgram {
             class_field_order: classes.field_order.clone(),
             class_parents: classes.parents.clone(),
             has_global_write: any_global_write,
+            parallel,
         };
         program.pad_default_args();
         program.validate()?;
@@ -2943,6 +2973,10 @@ struct LowerCtx<'a> {
     tir_index: &'a HashMap<usize, usize>,
     /// Call node start -> mangled callee name for generic instantiations.
     call_names: &'a HashMap<usize, String>,
+    /// Opt-in `un build --parallel`. When true, `go` synthesizes an `__task_N`
+    /// thunk and `MakeClosure`/`Await` carry `parallel: true`; otherwise the
+    /// original deferred cooperative thunk is produced byte-for-byte.
+    parallel: bool,
     /// Name of the function currently being lowered; dependency markers resolve through it.
     current_instance: String,
     /// Mangled instance name -> (original name, concrete type args).
@@ -2956,14 +2990,14 @@ struct LowerCtx<'a> {
     classes: &'a ClassTable,
     /// Local slot -> (synthesized lambda function index, captured local slots).
     lambda_vars: HashMap<u16, (u32, Vec<u16>)>,
-    /// W-2026-11-26-ASYNCDEFER: synthesized `go` thunk index -> the *result*
-    /// type of the deferred expression (the thunk itself returns a boxed
-    /// handle typed `Obj`). Lets `wait` recover the static result type.
-    future_rets: HashMap<u32, TirTy>,
-    /// Local slot holding a future -> (thunk index, result type). Typeck gives
+    /// Synthesized `go` thunk index -> (result type, parallel). The deferred
+    /// thunk returns a boxed handle typed `Obj`; the parallel `__task_N`
+    /// returns the operand's natural type. Lets `wait` recover both facts.
+    future_rets: HashMap<u32, (TirTy, bool)>,
+    /// Local slot holding a future -> (thunk index, result type, parallel). Typeck gives
     /// `go`/`wait` the opaque `Ty::Any`, so the slot is typed `Obj` and cannot
     /// carry the thunk index in its `TirTy`; track it explicitly instead.
-    future_var: HashMap<u16, (u32, TirTy)>,
+    future_var: HashMap<u16, (u32, TirTy, bool)>,
     /// Synthesized lambda functions (appended to the program after lowering).
     lambdas: &'a mut Vec<TirFn>,
     /// Index offset for synthesized lambdas in the final function list.
@@ -3001,12 +3035,14 @@ fn lower_function<'a>(
     lambda_base: u32,
     globals: &'a std::collections::HashMap<String, u16>,
     wrote_global: &'a mut bool,
+    parallel: bool,
 ) -> Result<TirFn, String> {
     let mut ctx = LowerCtx {
         source,
         checked,
         tir_index,
         call_names,
+        parallel,
         current_instance: fcheck.sig.name.clone(),
         instance_args,
         slots: HashMap::new(),
@@ -3552,6 +3588,7 @@ fn synthesize_lambda(
         checked: ctx.checked,
         tir_index: ctx.tir_index,
         call_names: ctx.call_names,
+        parallel: ctx.parallel,
         current_instance: ctx.current_instance.clone(),
         instance_args: ctx.instance_args,
         slots: HashMap::new(),
@@ -3636,8 +3673,8 @@ fn fresh_local(ctx: &mut LowerCtx<'_>, ty: TirTy) -> u16 {
 /// thunk and its result type.
 fn note_future(ctx: &mut LowerCtx<'_>, slot: u16, ty: CoreTy) {
     if let CoreTy::Lambda(index) = ty {
-        if let Some(ret) = ctx.future_rets.get(&index).copied() {
-            ctx.future_var.insert(slot, (index, ret));
+        if let Some((ret, parallel)) = ctx.future_rets.get(&index).copied() {
+            ctx.future_var.insert(slot, (index, ret, parallel));
         }
     }
 }
@@ -3658,6 +3695,12 @@ fn note_future(ctx: &mut LowerCtx<'_>, slot: u16, ty: CoreTy) {
 /// * `go` yields a `MakeClosure` (the future handle), and `wait` lowers to a
 ///   `CallObj` on that handle, unboxing with the statically known result type.
 fn synthesize_go(node: &Node, ctx: &mut LowerCtx<'_>) -> Result<(TirExpr, CoreTy), String> {
+    // Opt-in `un build --parallel` takes a completely separate synthesis path.
+    // Keeping the deferred body below verbatim guarantees the default build is
+    // byte-for-byte unchanged.
+    if ctx.parallel {
+        return synthesize_go_parallel(node, ctx);
+    }
     let operand = node
         .children
         .first()
@@ -3691,6 +3734,7 @@ fn synthesize_go(node: &Node, ctx: &mut LowerCtx<'_>) -> Result<(TirExpr, CoreTy
         checked: ctx.checked,
         tir_index: ctx.tir_index,
         call_names: ctx.call_names,
+        parallel: ctx.parallel,
         current_instance: ctx.current_instance.clone(),
         instance_args: ctx.instance_args,
         slots: HashMap::new(),
@@ -3781,7 +3825,7 @@ fn synthesize_go(node: &Node, ctx: &mut LowerCtx<'_>) -> Result<(TirExpr, CoreTy
         locals: child.locals.clone(),
         body,
     };
-    ctx.future_rets.insert(func_index, ret_ty);
+    ctx.future_rets.insert(func_index, (ret_ty, false));
 
     let mut captures = vec![flag_slot, value_slot];
     captures.extend(capture_slots);
@@ -3791,6 +3835,102 @@ fn synthesize_go(node: &Node, ctx: &mut LowerCtx<'_>) -> Result<(TirExpr, CoreTy
             captures,
             kinds,
             ret_kind: abi_kind(TirTy::Obj),
+            parallel: false,
+        },
+        CoreTy::Lambda(func_index),
+    ))
+}
+
+/// Opt-in counterpart of [`synthesize_go`] for `un build --parallel`.
+///
+/// There is no memo cell: `unrt_go` submits the task immediately, so a
+/// `__task_N` thunk just runs the operand once with its captured locals and
+/// returns the natural value. `unrt_wait` memoizes the result (RFC §3.2), so
+/// repeated `wait` still yields the same value without re-execution.
+fn synthesize_go_parallel(node: &Node, ctx: &mut LowerCtx<'_>) -> Result<(TirExpr, CoreTy), String> {
+    let operand = node
+        .children
+        .first()
+        .ok_or_else(|| "go without operand".to_string())?;
+    let capture_names = lambda_captures(operand, &[], ctx);
+    let capture_slots: Vec<u16> = capture_names
+        .iter()
+        .map(|n| *ctx.slots.get(n).expect("capture is an enclosing local"))
+        .collect();
+    let capture_tys: Vec<TirTy> = capture_slots
+        .iter()
+        .map(|s| ctx.locals.get(*s as usize).copied().unwrap_or(TirTy::Int))
+        .collect();
+
+    let idx = ctx.lambdas.len() as u32;
+    let func_index = ctx.lambda_base + idx;
+    let mut child = LowerCtx {
+        source: ctx.source,
+        checked: ctx.checked,
+        tir_index: ctx.tir_index,
+        call_names: ctx.call_names,
+        parallel: true,
+        current_instance: ctx.current_instance.clone(),
+        instance_args: ctx.instance_args,
+        slots: HashMap::new(),
+        locals: Vec::new(),
+        declared_types: HashMap::new(),
+        classes: ctx.classes,
+        lambda_vars: HashMap::new(),
+        future_rets: HashMap::new(),
+        future_var: HashMap::new(),
+        lambdas: ctx.lambdas,
+        lambda_base: ctx.lambda_base,
+        globals: ctx.globals,
+        wrote_global: ctx.wrote_global,
+        pending: Vec::new(),
+        defer_flags: Vec::new(),
+        in_defer_body: false,
+    };
+    for (name, ty) in capture_names.iter().zip(&capture_tys) {
+        let slot = child.locals.len() as u16;
+        child.slots.insert(name.clone(), slot);
+        child.locals.push(*ty);
+    }
+    let params = capture_tys.clone();
+    let kinds: Vec<u8> = params.iter().copied().map(abi_kind).collect();
+    let defaults = vec![None; params.len()];
+    let symbol = format!("__task_{func_index}");
+
+    // Reserve the slot before lowering the operand (nested go/lambda append
+    // further synthesized functions), exactly like `synthesize_lambda`.
+    child.lambdas.push(TirFn {
+        name: symbol.clone(),
+        proto_span: (node.start, node.length),
+        index: func_index as usize,
+        params: params.clone(),
+        defaults: defaults.clone(),
+        ret: Some(TirTy::Obj),
+        locals: Vec::new(),
+        body: Vec::new(),
+    });
+    let (expr, ty) = lower_expr(operand, &mut child)?;
+    let ret_ty = tir_ty_of(ty).unwrap_or(TirTy::Obj);
+    let mut body = std::mem::take(&mut child.pending);
+    body.push(TirStmt::Return(Some(expr)));
+    child.lambdas[idx as usize] = TirFn {
+        name: symbol,
+        proto_span: (node.start, node.length),
+        index: func_index as usize,
+        params,
+        defaults,
+        ret: Some(ret_ty),
+        locals: child.locals.clone(),
+        body,
+    };
+    ctx.future_rets.insert(func_index, (ret_ty, true));
+    Ok((
+        TirExpr::MakeClosure {
+            func_index,
+            captures: capture_slots,
+            kinds,
+            ret_kind: abi_kind(ret_ty),
+            parallel: true,
         },
         CoreTy::Lambda(func_index),
     ))
@@ -3880,7 +4020,7 @@ fn lower_assign(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Resu
                     let r = f.ret.map_or(3, abi_kind);
                     (k, r)
                 };
-                let closure = TirExpr::MakeClosure { func_index, captures: captures.clone(), kinds, ret_kind };
+                let closure = TirExpr::MakeClosure { func_index, captures: captures.clone(), kinds, ret_kind, parallel: false };
                 if let Some(slot) = slot_of(ctx, &name) {
                     ctx.lambda_vars.insert(slot, (func_index, captures));
                     out.push(TirStmt::Set(slot, closure));
@@ -5662,6 +5802,7 @@ fn lower_expr(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
                         captures: vec![],
                         kinds,
                         ret_kind,
+                        parallel: false,
                     },
                     CoreTy::Lambda(absolute_index),
                 ));
@@ -5751,19 +5892,19 @@ fn lower_unary(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Str
         } else {
             lower_expr(operand, ctx)?
         };
-        let ret = match ty {
+        let (ret, parallel) = match ty {
             CoreTy::Lambda(index) => ctx
                 .future_rets
                 .get(&index)
                 .copied()
-                .unwrap_or(TirTy::Obj),
+                .unwrap_or((TirTy::Obj, false)),
             _ => match &callee {
                 TirExpr::Local(slot) => ctx
                     .future_var
                     .get(slot)
-                    .map(|(_, r)| *r)
-                    .unwrap_or(TirTy::Obj),
-                _ => TirTy::Obj,
+                    .map(|(_, r, p)| (*r, *p))
+                    .unwrap_or((TirTy::Obj, false)),
+                _ => (TirTy::Obj, false),
             },
         };
         return Ok((
@@ -5771,6 +5912,7 @@ fn lower_unary(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Str
                 operand: Box::new(callee),
                 ret,
                 span: (node.start, node.length),
+                parallel,
             },
             ret.into(),
         ));
@@ -6271,6 +6413,7 @@ fn lower_args(nodes: &[&Node], ctx: &mut LowerCtx) -> Result<Vec<TirExpr>, Strin
                 captures,
                 kinds,
                 ret_kind,
+                parallel: false,
             });
             continue;
         }
@@ -8091,6 +8234,7 @@ mod abi_tests {
             class_field_order: vec![],
             class_parents: vec![],
             has_global_write: false,
+            parallel: false,
         }
     }
 
@@ -8132,6 +8276,7 @@ mod lower_call_tests {
             checked: &checked,
             tir_index: &tir_index,
             call_names: &call_names,
+            parallel: false,
             current_instance: String::new(),
             instance_args: &instance_args,
             slots: HashMap::from([("f".to_string(), 0u16)]),
@@ -8187,6 +8332,7 @@ mod lower_call_tests {
             checked: &checked,
             tir_index: &tir_index,
             call_names: &call_names,
+            parallel: false,
             current_instance: String::new(),
             instance_args: &instance_args,
             slots: HashMap::from([("f".to_string(), 0u16)]),
@@ -8282,6 +8428,7 @@ mod lower_call_tests {
             checked: &checked,
             tir_index: &tir_index,
             call_names: &call_names,
+            parallel: false,
             current_instance: String::new(),
             instance_args: &instance_args,
             slots: HashMap::new(),
@@ -8309,6 +8456,158 @@ mod lower_call_tests {
         };
         assert!(expr_is_bytes(&native, &ctx));
         assert!(!expr_is_bytes(&TirExpr::Int(1), &ctx));
+    }
+}
+
+#[cfg(test)]
+mod parallel_lower_tests {
+    use super::*;
+
+    struct CtxFixture {
+        source: Source,
+        checked: CheckedProgram,
+        classes: ClassTable,
+        lambdas: Vec<TirFn>,
+        wrote_global: bool,
+        tir_index: HashMap<usize, usize>,
+        call_names: HashMap<usize, String>,
+        instance_args: HashMap<String, (String, Vec<Ty>)>,
+        globals: HashMap<String, u16>,
+    }
+
+    fn fixture() -> CtxFixture {
+        let checked = CheckedProgram::default();
+        CtxFixture {
+            source: Source::new("parallel.un", "f12345"),
+            classes: ClassTable::new(&checked),
+            checked,
+            lambdas: Vec::new(),
+            wrote_global: false,
+            tir_index: HashMap::new(),
+            call_names: HashMap::new(),
+            instance_args: HashMap::new(),
+            globals: HashMap::new(),
+        }
+    }
+
+    fn make_ctx<'a>(fx: &'a mut CtxFixture, parallel: bool, slots: HashMap<String, u16>, locals: Vec<TirTy>) -> LowerCtx<'a> {
+        LowerCtx {
+            source: &fx.source,
+            checked: &fx.checked,
+            tir_index: &fx.tir_index,
+            call_names: &fx.call_names,
+            parallel,
+            current_instance: String::new(),
+            instance_args: &fx.instance_args,
+            slots,
+            locals,
+            declared_types: HashMap::new(),
+            classes: &fx.classes,
+            lambda_vars: HashMap::new(),
+            future_rets: HashMap::new(),
+            future_var: HashMap::new(),
+            lambdas: &mut fx.lambdas,
+            lambda_base: 0,
+            globals: &fx.globals,
+            wrote_global: &mut fx.wrote_global,
+            pending: Vec::new(),
+            defer_flags: Vec::new(),
+            in_defer_body: false,
+        }
+    }
+
+    fn go_node() -> Node {
+        let operand = Node::new(2, 1, NodeKind::Integer).with_value(Const::Int(7));
+        Node::with_children(0, 5, NodeKind::Unary, Some(TokenType::Go), vec![operand])
+    }
+
+    /// Builder-level proof that the default `go` synthesis is untouched: two
+    /// memo cells, an `__lambda_` thunk, `parallel: false` on every new field.
+    #[test]
+    fn default_go_keeps_deferred_memo_shape() {
+        let mut fx = fixture();
+        let mut ctx = make_ctx(&mut fx, false, HashMap::new(), Vec::new());
+        let (expr, ty) = synthesize_go(&go_node(), &mut ctx).expect("deferred go must lower");
+        match expr {
+            TirExpr::MakeClosure { func_index, captures, ret_kind, parallel, .. } => {
+                assert!(!parallel, "default lowering must not opt into parallel");
+                assert_eq!(captures.len(), 2, "flag + value memo cells are unchanged");
+                assert_eq!(ret_kind, abi_kind(TirTy::Obj));
+                assert!(matches!(ctx.future_rets.get(&func_index), Some((TirTy::Int, false))));
+            }
+            other => panic!("expected deferred MakeClosure, got {other:?}"),
+        }
+        assert!(ty == CoreTy::Lambda(0));
+        let thunk = &fx.lambdas[0];
+        assert!(thunk.name.starts_with("__lambda_"), "deferred thunk name changed");
+        assert!(!thunk.name.starts_with("__task_"));
+        assert_eq!(thunk.params.len(), 2, "flag/value cells must stay leading params");
+        assert!(thunk.body.iter().any(|s| matches!(s, TirStmt::If { .. })), "memo guard lost");
+    }
+
+    /// Opt-in smoke test: no memo cells, `__task_N`, natural return type and
+    /// `parallel: true` recorded end-to-end (go -> future_rets -> wait).
+    #[test]
+    fn parallel_go_lowers_task_without_memo_cells() {
+        let mut fx = fixture();
+        let mut ctx = make_ctx(&mut fx, true, HashMap::new(), Vec::new());
+        let (expr, ty) = synthesize_go(&go_node(), &mut ctx).expect("parallel go must lower");
+        match expr {
+            TirExpr::MakeClosure { func_index, captures, parallel, .. } => {
+                assert!(parallel);
+                assert!(captures.is_empty(), "a zero-capture go must not allocate memo cells");
+                assert!(matches!(ctx.future_rets.get(&func_index), Some((TirTy::Int, true))));
+            }
+            other => panic!("expected parallel MakeClosure, got {other:?}"),
+        }
+        assert!(ty == CoreTy::Lambda(0));
+        let task = &fx.lambdas[0];
+        assert_eq!(task.name, "__task_0");
+        assert!(task.params.is_empty());
+        assert_eq!(task.ret, Some(TirTy::Int));
+        assert_eq!(task.body.len(), 1, "task body is just the operand");
+        assert!(matches!(&task.body[0], TirStmt::Return(Some(TirExpr::Int(7)))));
+
+        // `wait <local>` recovers the parallel flag through `future_var`.
+        let mut ctx2 = make_ctx(&mut fx, true, HashMap::from([("f".to_string(), 0u16)]), vec![TirTy::Obj]);
+        ctx2.future_var.insert(0, (0, TirTy::Int, true));
+        let callee = Node::new(0, 1, NodeKind::Identifier);
+        let wait = Node::with_children(0, 3, NodeKind::Unary, Some(TokenType::Wait), vec![callee]);
+        let (awaited, ret) = lower_unary(&wait, &mut ctx2).expect("wait must lower");
+        match awaited {
+            TirExpr::Await { ret, parallel, .. } => {
+                assert!(parallel, "wait must inherit the future's parallel flag");
+                assert_eq!(ret, TirTy::Int);
+            }
+            other => panic!("expected Await, got {other:?}"),
+        }
+        assert!(ret == CoreTy::Int);
+    }
+
+    /// The core gate admits the new flag values; `parallel: false` remains
+    /// indistinguishable from the original TIR for `nrt_supported`.
+    #[test]
+    fn nrt_supported_admits_both_await_flavours() {
+        let mut program = TirProgram {
+            functions: vec![TirFn {
+                name: "main".into(), proto_span: (0, 0), index: 0,
+                params: vec![], defaults: vec![], ret: None, locals: vec![], body: vec![],
+            }],
+            class_names: vec![], class_fields: vec![], class_methods: vec![],
+            class_setters: vec![], class_field_order: vec![], class_parents: vec![],
+            has_global_write: false, parallel: false,
+        };
+        for flag in [false, true] {
+            program.functions[0].body = vec![
+                TirStmt::Let(0, TirExpr::MakeClosure {
+                    func_index: 0, captures: vec![], kinds: vec![], ret_kind: 0, parallel: flag,
+                }),
+                TirStmt::ExprStmt(TirExpr::Await {
+                    operand: Box::new(TirExpr::Local(0)), ret: TirTy::Int, span: (0, 1), parallel: flag,
+                }),
+            ];
+            assert!(nrt_supported(&program), "flag={flag} must be core-accepted");
+        }
     }
 }
 
