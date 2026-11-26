@@ -15,6 +15,10 @@ mod globals;
 mod list;
 mod math_native;
 mod native;
+// Opt-in parallel ABI (W-2026-11-27-P06-NRT). Defining the module compiles the
+// three new `unrt_go`/`unrt_wait`/`unrt_trace` symbols into libnrt.a; no thread
+// is created until `unrt_go` is actually called.
+mod parallel;
 mod net;
 mod net_native;
 mod obj;

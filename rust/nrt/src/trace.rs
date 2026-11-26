@@ -53,21 +53,23 @@ thread_local! {
 }
 
 /// Owned copy of one call frame, safe to move to another thread.
-#[derive(Debug, Clone)]
-struct FrameSnap {
-    name: String,
-    start: usize,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FrameSnap {
+    pub(crate) name: String,
+    pub(crate) start: usize,
 }
 
 /// Task-local trace + error state captured at a task boundary.
 ///
 /// All fields are owned (no raw pointers, no `Rc`), so a snapshot is `Send` and
 /// can be placed in a scheduler result slot for the wait thread to serialize.
-#[derive(Debug, Clone, Default)]
+/// `Eq` is required because `scheduler::TaskSlot` derives `Eq` and now carries
+/// a snapshot in both its `Ready` and `Panicked` variants.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TraceSnapshot {
-    frames: Vec<FrameSnap>,
-    error_site: Option<(usize, usize)>,
-    pending_error: u64,
+    pub(crate) frames: Vec<FrameSnap>,
+    pub(crate) error_site: Option<(usize, usize)>,
+    pub(crate) pending_error: u64,
 }
 
 // Compile-time proof that a snapshot may cross a thread boundary (P06 needs
@@ -231,6 +233,54 @@ pub(crate) fn snapshot() -> TraceSnapshot {
         error_site: ERROR_SITE.with(|c| c.get()),
         pending_error: PENDING_ERROR.with(|c| c.get()),
     }
+}
+
+/// Reinstall a worker snapshot into the *calling* thread's task-local state.
+///
+/// `unrt_wait` calls this so the error raised inside a task is rethrown at the
+/// wait point with the originating task's frames, error site and pending error
+/// handle. The frame name bytes are leaked for the process lifetime (the same
+/// policy as every other NRT allocation) because `FRAME_SLOTS` stores raw
+/// pointers, and the original code pointer may belong to a worker that has
+/// already moved on to the next task.
+pub(crate) fn install(snap: &TraceSnapshot) {
+    let depth = snap.frames.len().min(MAX_FRAMES);
+    FRAME_SLOTS.with(|slots| {
+        for (i, frame) in snap.frames.iter().take(MAX_FRAMES).enumerate() {
+            let leaked: &'static str = Box::leak(frame.name.clone().into_boxed_str());
+            let slot = &slots[i];
+            slot[0].set(leaked.as_ptr() as u64);
+            slot[1].set(leaked.len() as u64);
+            slot[2].set(frame.start as u64);
+            // `len` is recorded by `nrt_push_frame` but never read by the
+            // formatter; zero keeps the reinstalled slot well-defined.
+            slot[3].set(0);
+        }
+    });
+    FRAME_DEPTH.with(|cell| cell.set(depth));
+    error_site_set(snap.error_site);
+    pending_error_set(snap.pending_error);
+}
+
+/// Set the calling thread's error site from a snapshot or an explicit value.
+pub(crate) fn error_site_set(site: Option<(usize, usize)>) {
+    ERROR_SITE.with(|cell| cell.set(site));
+}
+
+/// Serialize a snapshot exactly as `dump_uncaught_from` would, including the
+/// panic (tag 10) error-site suppression. `unrt_trace` uses this so the bytes
+/// returned to the caller are identical to the default-path traceback.
+pub(crate) fn traceback_text(snap: &TraceSnapshot) -> String {
+    let e = snap.pending_error;
+    let message = if e == 0 { "unknown error".to_string() } else { error_message(e) };
+    let effective = if e != 0 && unsafe { crate::obj::obj(e).tag == 10 } {
+        let mut copy = snap.clone();
+        copy.error_site = None;
+        copy
+    } else {
+        snap.clone()
+    };
+    format_traceback(&message, &effective)
 }
 
 /// Serialize a traceback from a captured snapshot. This is the wait-thread
@@ -501,5 +551,46 @@ mod tests {
         assert_eq!(snapshot().pending_error, 42, "parent error is unaffected");
         assert_eq!(take_error(), 42, "take_error returns the pending handle");
         assert_eq!(snapshot().pending_error, 0);
+    }
+
+    /// P06: a worker snapshot must be reinstallable on the waiter thread with
+    /// frames, error site and pending error all restored byte-for-byte.
+    #[test]
+    fn install_restores_worker_snapshot_on_waiter_thread() {
+        take_error();
+        let (p, n) = name("worker_frame");
+        nrt_push_frame(p, n, 31, 1);
+        nrt_set_error_site(31, 3);
+        pending_error_set(77);
+        let snap = snapshot();
+        take_error();
+
+        // Simulate the wait thread starting with stale state.
+        let (stale, sn) = name("stale");
+        nrt_push_frame(stale, sn, 1, 1);
+        nrt_set_error_site(1, 1);
+        pending_error_set(999);
+        install(&snap);
+
+        let restored = snapshot();
+        assert_eq!(restored.frames.len(), 1);
+        assert_eq!(restored.frames[0].name, "worker_frame");
+        assert_eq!(restored.frames[0].start, 31);
+        assert_eq!(restored.error_site, Some((31, 3)));
+        assert_eq!(restored.pending_error, 77);
+        assert_eq!(take_error(), 77);
+    }
+
+    #[test]
+    fn traceback_text_matches_format_traceback_for_a_snapshot() {
+        take_error();
+        let snap = snapshot();
+        let message = if snap.pending_error == 0 {
+            "unknown error".to_string()
+        } else {
+            error_message(snap.pending_error)
+        };
+        assert_eq!(traceback_text(&snap), format_traceback(&message, &snap));
+        take_error();
     }
 }

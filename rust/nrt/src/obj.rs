@@ -300,6 +300,27 @@ pub(crate) fn err(msg: &str) -> u64 {
     let leaked: &'static str = Box::leak(msg.to_string().into_boxed_str());
     unsafe { alloc(NObj { tag: 5, a: leaked.as_ptr() as i64, b: leaked.len() as i64 }) }
 }
+/// Normalize a thrown payload into a tag-5 Error object.
+///
+/// `throw("msg")` parks the *payload* (often a Str handle) in the task-local
+/// pending cell; `emit_error_gate` only recognizes tag 5/10 objects. The opt-in
+/// parallel wait bridge calls this before handing a worker error to the
+/// waiter's gate so the error is dispatched exactly like a direct call.
+pub(crate) fn ensure_error_obj(p: u64) -> u64 {
+    if p == 0 {
+        return 0;
+    }
+    // Raw small integers are never object handles (real handles are heap
+    // pointers or entries in the immutable small-int table at high addresses).
+    if p < 16384 {
+        return err(&p.to_string());
+    }
+    match unsafe { obj(p).tag } {
+        5 | 10 => p,
+        _ => err(&display(p)),
+    }
+}
+
 /// Uncatchable panic: like an error but printed without source location/trace.
 pub(crate) fn panic_err(msg: &str) -> u64 {
     let leaked: &'static str = Box::leak(msg.to_string().into_boxed_str());

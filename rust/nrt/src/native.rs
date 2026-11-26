@@ -107,6 +107,11 @@ fn is_type_obj(p: u64) -> bool {
 /// assumption ever breaks the probe returns false and the value falls back to
 /// `"func"` rather than mislabelling a lambda.
 fn go_future_of(p: u64) -> bool {
+    // Additive P06 check: an opt-in parallel future is a real closure handle
+    // registered by `unrt_go`. The deferred probe below is kept verbatim.
+    if crate::parallel::is_parallel_future(p) {
+        return true;
+    }
     unsafe {
         if obj(p).tag != 8 {
             return false;

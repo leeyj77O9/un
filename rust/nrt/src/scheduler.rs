@@ -35,6 +35,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
+use crate::trace::TraceSnapshot;
+
 /// Native task entry point emitted by `natcode` in P06.
 ///
 /// `C-unwind` (rather than the RFC draft's `extern "C"`) is deliberate: it has
@@ -52,23 +54,52 @@ const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FutureId(u64);
 
-/// The native value produced by a task. `tag` follows the RFC convention
-/// (0 = Int, 1 = Float bit pattern, …); P04/P06 assign concrete meaning.
+/// How the `tag` field of [`TaskResult`] is derived from a task's `u64` return.
+///
+/// Legacy scheduler tasks return raw numbers (not object handles), so their
+/// tag stays 0. The P06 `unrt_go` wrapper returns an NRT object handle and asks
+/// for the handle's tag; dereferencing a raw number would be unsound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagMode {
+    Raw,
+    Obj,
+}
+
+/// The native value produced by a task, plus the worker's trace/error state.
+///
+/// `tag` follows the RFC convention (0 = Int, 1 = Float bit pattern, …) for
+/// legacy tasks; for `unrt_go` tasks it is the returned NRT object's tag.
+/// `trace`/`error` are `pub(crate)` because `TraceSnapshot` is a crate-private
+/// type: the wait thread reinstalls them via `trace::install` instead of
+/// exposing them through the C ABI.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskResult {
     pub value: u64,
     pub tag: u64,
+    pub(crate) trace: TraceSnapshot,
+    pub(crate) error: u64,
 }
 
-/// Contents of a task's shared output slot.
+/// Contents of a task's shared output slot. Crate-private because it carries
+/// the crate-private `TraceSnapshot`; `Task.out` is likewise `pub(crate)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TaskSlot {
+pub(crate) enum TaskSlot {
     /// No worker has produced a result yet.
     Pending,
     /// The entry point returned normally; every `join` reuses this value.
     Ready(TaskResult),
-    /// The entry point panicked; `join` turns this into an error.
-    Panicked,
+    /// The entry point panicked; `join` turns this into an error while keeping
+    /// the worker's trace so the waiter can rethrow at its own call site.
+    Panicked { trace: TraceSnapshot, error: u64 },
+}
+
+/// A failed `join` carrying the producing thread's trace/error state, so
+/// `unrt_wait` can reinstall it on the waiter (RFC §3.2 error rethrow).
+#[derive(Debug, Clone)]
+pub(crate) struct JoinFailure {
+    pub(crate) kind: JoinError,
+    pub(crate) trace: TraceSnapshot,
+    pub(crate) error: u64,
 }
 
 /// Failure modes delivered by `join`.
@@ -104,7 +135,8 @@ impl std::error::Error for JoinError {}
 pub struct Task {
     pub entry: EntryFn,
     pub ctx: Arc<dyn Send + Sync + 'static>,
-    pub out: Arc<Mutex<TaskSlot>>,
+    pub(crate) out: Arc<Mutex<TaskSlot>>,
+    pub tag_mode: TagMode,
 }
 
 impl Task {
@@ -114,6 +146,7 @@ impl Task {
             entry,
             ctx,
             out: Arc::new(Mutex::new(TaskSlot::Pending)),
+            tag_mode: TagMode::Raw,
         }
     }
 
@@ -186,11 +219,55 @@ impl Drop for CurrentTaskGuard {
 }
 
 /// Execute a task body, converting a panic into a `Panicked` slot.
+///
+/// The worker's task-local trace/error state is cleared before the body and
+/// captured into the slot afterwards (both on normal return and on unwind), so
+/// the wait thread can reinstall it. Panics are caught here and never cross
+/// the join boundary.
 fn run_task(task: &Task) {
     let ctx_ptr = Arc::as_ptr(&task.ctx) as *mut u8;
+    let _ = crate::trace::take_error();
     let slot = match catch_unwind(AssertUnwindSafe(|| (task.entry)(ctx_ptr))) {
-        Ok(value) => TaskSlot::Ready(TaskResult { value, tag: 0 }),
-        Err(_) => TaskSlot::Panicked,
+        Ok(value) => {
+            let trace = crate::trace::snapshot();
+            let mut error = crate::trace::pending_error_take();
+            // `throw` inside a task returns an Error/Panic *object handle*;
+            // codegen would normally call `unrt_write_error` after the call.
+            // Carry that handle as the error so `unrt_wait` reports failure and
+            // the waiter's `emit_error_gate` sees the original object.
+            if matches!(task.tag_mode, TagMode::Obj) && value != 0 {
+                // SAFETY: in Obj mode `value` is an NRT object handle.
+                let nrt_tag = unsafe { crate::obj::obj(value).tag };
+                if nrt_tag == 5 || nrt_tag == 10 {
+                    error = value;
+                }
+            }
+            // The parallel wait ABI hands codegen *raw bits*, not an NRT boxed
+            // handle. Unbox here so `unrt_wait`'s `out_value` matches the
+            // deferred path's `unrt_call_obj` result (natcode's `raw_value_for_ty`).
+            let (value, tag) = match task.tag_mode {
+                TagMode::Raw => (value, 0),
+                // SAFETY: `Obj` mode is only used by `unrt_go`, whose wrapper
+                // returns the boxed NObj handle from `unrt_call_obj`.
+                TagMode::Obj if value != 0 => {
+                    match unsafe { crate::obj::obj(value).tag } {
+                        0 => (crate::obj::unrt_int_from_obj(value) as u64, 0),
+                        1 => (crate::obj::unrt_float_from_obj(value).to_bits(), 1),
+                        2 => (crate::obj::unrt_bool_from_obj(value) as u64, 2),
+                        // Obj handles (list/str/class/closure/...) keep the
+                        // handle and use the compiler's Obj tag (3).
+                        _ => (value, 3),
+                    }
+                }
+                TagMode::Obj => (0, 0),
+            };
+            TaskSlot::Ready(TaskResult { value, tag, trace, error })
+        }
+        Err(_) => {
+            let trace = crate::trace::snapshot();
+            let error = crate::trace::pending_error_take();
+            TaskSlot::Panicked { trace, error }
+        }
     };
     *task.out.lock().unwrap() = slot;
 }
@@ -199,11 +276,30 @@ fn read_slot(slot: &Arc<Mutex<TaskSlot>>) -> TaskSlot {
     slot.lock().unwrap().clone()
 }
 
-fn finish(slot: TaskSlot) -> Result<TaskResult, JoinError> {
+/// Build a failure that also carries the *waiting* thread's trace snapshot.
+/// For a self-wait that is the running task's own state; for defensive paths
+/// it is simply the caller's (usually empty) state.
+fn failure(kind: JoinError) -> JoinFailure {
+    JoinFailure {
+        kind,
+        trace: crate::trace::snapshot(),
+        error: crate::trace::pending_error_take(),
+    }
+}
+
+fn finish(slot: TaskSlot) -> Result<TaskResult, JoinFailure> {
     match slot {
         TaskSlot::Ready(result) => Ok(result),
-        TaskSlot::Panicked => Err(JoinError::TaskPanicked),
-        TaskSlot::Pending => Err(JoinError::TimedOut), // defensive: never reached
+        TaskSlot::Panicked { trace, error } => Err(JoinFailure {
+            kind: JoinError::TaskPanicked,
+            trace,
+            error,
+        }),
+        TaskSlot::Pending => Err(JoinFailure {
+            kind: JoinError::TimedOut,
+            trace: TraceSnapshot::default(),
+            error: 0,
+        }), // defensive: never reached
     }
 }
 
@@ -250,12 +346,26 @@ impl SchedulerHandle {
 
     /// Wait for a result. Repeated waits return the memoized value.
     pub fn join(&self, id: FutureId) -> Result<TaskResult, JoinError> {
+        self.join_full(id).map_err(|failure| failure.kind)
+    }
+
+    /// Wait with the worker trace attached to failures. P06's `unrt_wait` uses
+    /// this to reinstall the originating task's trace on the waiter thread.
+    pub(crate) fn join_full(&self, id: FutureId) -> Result<TaskResult, JoinFailure> {
         self.join_inner(id, None)
     }
 
     /// Wait with a watchdog; useful to prove a broken wake-up fails instead of
     /// hanging the caller (the spike's `join_timeout` equivalent).
     pub fn join_timeout(&self, id: FutureId, timeout: Duration) -> Result<TaskResult, JoinError> {
+        self.join_timeout_full(id, timeout).map_err(|failure| failure.kind)
+    }
+
+    pub(crate) fn join_timeout_full(
+        &self,
+        id: FutureId,
+        timeout: Duration,
+    ) -> Result<TaskResult, JoinFailure> {
         self.join_inner(id, Some(timeout))
     }
 
@@ -263,7 +373,7 @@ impl SchedulerHandle {
         &self,
         id: FutureId,
         timeout: Option<Duration>,
-    ) -> Result<TaskResult, JoinError> {
+    ) -> Result<TaskResult, JoinFailure> {
         let (lock, cv) = &*self.shared;
         let current_task = CURRENT_TASK.with(|cell| cell.get());
         let current_thread = thread::current().id();
@@ -271,14 +381,14 @@ impl SchedulerHandle {
         // A running task waiting on itself is a true cycle: reject it rather
         // than blocking forever (RFC §3.2).
         if current_task == Some(id.0) {
-            return Err(JoinError::SelfWait);
+            return Err(failure(JoinError::SelfWait));
         }
 
         let slot = {
             let state = lock.lock().unwrap();
             match state.slots.get(&id.0) {
                 Some(slot) => Arc::clone(slot),
-                None => return Err(JoinError::UnknownFuture),
+                None => return Err(failure(JoinError::UnknownFuture)),
             }
         };
 
@@ -286,7 +396,7 @@ impl SchedulerHandle {
         // as-is on every `join`; the task body is never run again.
         match read_slot(&slot) {
             TaskSlot::Ready(result) => return Ok(result),
-            TaskSlot::Panicked => return Err(JoinError::TaskPanicked),
+            ref panicked @ TaskSlot::Panicked { .. } => return finish(panicked.clone()),
             TaskSlot::Pending => {}
         }
 
@@ -326,18 +436,18 @@ impl SchedulerHandle {
         loop {
             match read_slot(&slot) {
                 TaskSlot::Ready(result) => return Ok(result),
-                TaskSlot::Panicked => return Err(JoinError::TaskPanicked),
+                ref panicked @ TaskSlot::Panicked { .. } => return finish(panicked.clone()),
                 TaskSlot::Pending => {}
             }
             state = match deadline {
                 Some(deadline) => {
                     let now = Instant::now();
                     if now >= deadline {
-                        return Err(JoinError::TimedOut);
+                        return Err(failure(JoinError::TimedOut));
                     }
                     let (next, wait) = cv.wait_timeout(state, deadline - now).unwrap();
                     if wait.timed_out() {
-                        return Err(JoinError::TimedOut);
+                        return Err(failure(JoinError::TimedOut));
                     }
                     next
                 }
@@ -453,7 +563,7 @@ impl Scheduler {
             .filter(|slot| {
                 matches!(
                     *slot.lock().unwrap(),
-                    TaskSlot::Ready(_) | TaskSlot::Panicked
+                    TaskSlot::Ready(_) | TaskSlot::Panicked { .. }
                 )
             })
             .count()
@@ -605,6 +715,27 @@ mod tests {
         assert_eq!(scheduler.join(healthy).expect("worker survived").value, 42);
         scheduler.close();
         assert_eq!(scheduler.executed_count(), 2);
+    }
+
+    #[test]
+    fn panic_slot_carries_worker_trace_and_error() {
+        extern "C-unwind" fn panicking_with_trace(_: *mut u8) -> u64 {
+            let name = "panic_frame";
+            crate::trace::nrt_push_frame(name.as_ptr(), name.len(), 77, 1);
+            crate::trace::nrt_set_error_site(77, 2);
+            crate::trace::pending_error_set(555);
+            panic!("boom")
+        }
+        let mut scheduler = Scheduler::new(1);
+        let task = Task::new(panicking_with_trace, Arc::new(()));
+        let id = scheduler.submit_task(task).unwrap();
+        let failure = scheduler.handle().join_full(id).unwrap_err();
+        assert_eq!(failure.kind, JoinError::TaskPanicked);
+        assert_eq!(failure.error, 555, "pending error must survive the unwind");
+        assert_eq!(failure.trace.error_site, Some((77, 2)));
+        assert_eq!(failure.trace.frames.len(), 1);
+        assert_eq!(failure.trace.frames[0].start, 77);
+        scheduler.close();
     }
 
     /// Publish/read a future id so a task body can wait on a future that is
