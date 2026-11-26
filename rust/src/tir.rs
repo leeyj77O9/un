@@ -918,16 +918,29 @@ pub fn nrt_supported(tir: &TirProgram) -> bool {
     // query its dispatch table directly: the denials below are a hand-maintained
     // mirror. Keep in sync with NRT dispatch: nrt/src/native.rs + bytes_native
     // + net_native + list::dispatch + obj::collections_dispatch.
-    // `random` is time-seeded and `flow`/`atomic`/`inspect` have no NRT
-    // implementation at all; the per-module lists cover members that exist on
-    // the VM path but are absent from NRT. Without this gate a plain build emits
-    // an exe that fails at runtime with "native module '<module>.<member>' is
-    // not supported in a no-VM executable" (GAP-01). `bytes.*`,
-    // `fs.read_bytes`/`fs.write_bytes` live in nrt/src/bytes_native.rs and stay
-    // allowed.
+    // `random` is time-seeded and `inspect` has no NRT implementation; the
+    // per-module lists cover members that exist on the VM path but are absent
+    // from NRT. `flow`/`atomic` are now served by the cooperative tag-16 shim in
+    // nrt/src/native.rs (W-2026-11-26-ASYNCflow), reached through the same
+    // `unrt_call_native` bridge — allow their constructors and method-shaped
+    // members only. Without this gate a plain build emits an exe that fails at
+    // runtime with "native module '<module>.<member>' is not supported in a
+    // no-VM executable" (GAP-01). `bytes.*`, `fs.read_bytes`/`fs.write_bytes`
+    // live in nrt/src/bytes_native.rs and stay allowed.
     fn native_call_ok(module: &str, member: &str, _ret: Option<TirTy>) -> bool {
-        if matches!(module, "random" | "flow" | "atomic" | "inspect") {
+        if matches!(module, "random" | "inspect") {
             return false;
+        }
+        // Constructors plus `<kind>.<method>` dispatches that the NRT shim
+        // owns. The receiver is passed as the first argument of a method call.
+        if module == "flow" {
+            return matches!(member, "lock" | "spawn")
+                || member.split_once('.').is_some_and(|(kind, _)| {
+                    matches!(kind, "lock" | "pool" | "future" | "atomic_int" | "atomic_bool")
+                });
+        }
+        if module == "atomic" {
+            return matches!(member, "int" | "bool");
         }
         // `type`/`repr`/`str` builtins lower to `types.<name>` and are served
         // by the existing `unrt_call_native` dispatch (W-NRTTYPE). Allow them
@@ -3093,13 +3106,33 @@ fn native_call_shape<'a>(
     }
     let module = ctx.source.span(head.start, head.length).to_string();
     let member = ctx.source.span(member.start, member.length).to_string();
-    let members = crate::runtime::world::native_members(&module)?;
-    if !members.iter().any(|(k, _)| k == &member) {
-        return None;
-    }
     let args_tuple = node.children.get(1)?;
-    let args = args_tuple.children.iter().collect();
-    Some((module, member, args))
+    if let Some(members) = crate::runtime::world::native_members(&module) {
+        if members.iter().any(|(k, _)| k == &member) {
+            let args = args_tuple.children.iter().collect();
+            return Some((module, member, args));
+        }
+    }
+    // A statement-level method on a cooperative flow handle has no class
+    // registry entry in NRT. Emit it as a native call with the receiver as
+    // argument 0; expression positions take the `lower_call` path instead.
+    if let Some(TirTy::Class(id)) = ctx
+        .slots
+        .get(&module)
+        .and_then(|slot| ctx.locals.get(*slot as usize).copied())
+    {
+        if let Some(kind) = ctx
+            .classes
+            .names
+            .get(id as usize)
+            .and_then(|name| flow_class_kind(name.as_str()))
+        {
+            let mut args = vec![head];
+            args.extend(args_tuple.children.iter());
+            return Some(("flow".into(), format!("{kind}.{member}"), args));
+        }
+    }
+    None
 }
 
 pub(crate) use crate::typeck::native_module_ret_type;
@@ -3199,10 +3232,7 @@ fn lower_stmt(node: &Node, ctx: &mut LowerCtx, out: &mut Vec<TirStmt>) -> Result
                 }
             }
             if let Some((module, member, arg_nodes)) = native_call_shape(node, ctx) {
-                let args = arg_nodes
-                    .into_iter()
-                    .map(|a| lower_expr(a, ctx).map(|(e, _)| e))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let args = lower_args(&arg_nodes, ctx)?;
                 out.push(TirStmt::NativeCall { module, member, args });
                 return Ok(());
             }
@@ -6047,8 +6077,33 @@ fn lower_arg_list(args_tuple: &Node, ctx: &mut LowerCtx) -> Result<Vec<TirExpr>,
     if args_tuple.kind != NodeKind::Tuple {
         return Err("call arguments must be positional in the core".to_string());
     }
-    let mut args = Vec::with_capacity(args_tuple.children.len());
-    for arg in &args_tuple.children {
+    lower_args(&args_tuple.children.iter().collect::<Vec<_>>(), ctx)
+}
+
+fn lower_args(nodes: &[&Node], ctx: &mut LowerCtx) -> Result<Vec<TirExpr>, String> {
+    let mut args = Vec::with_capacity(nodes.len());
+    for arg in nodes {
+        // A native call can take an inline lambda (`pool.map(fn(x) -> x * 2,
+        // ...)`). `lower_expr` has no Lambda arm: synthesize it the same way
+        // assignment and direct lambda calls do.
+        if arg.kind == NodeKind::Lambda {
+            let idx = ctx.lambdas.len() as u32;
+            let captures = synthesize_lambda(arg, ctx, idx)?;
+            let func_index = ctx.lambda_base + idx;
+            let (kinds, ret_kind) = {
+                let f = &ctx.lambdas[idx as usize];
+                let k = f.params.iter().copied().map(abi_kind).collect();
+                let r = f.ret.map_or(3, abi_kind);
+                (k, r)
+            };
+            args.push(TirExpr::MakeClosure {
+                func_index,
+                captures,
+                kinds,
+                ret_kind,
+            });
+            continue;
+        }
         let (expr, _) = lower_expr(arg, ctx)?;
         args.push(expr);
     }
@@ -6208,6 +6263,39 @@ fn expr_is_bytes(expr: &TirExpr, ctx: &LowerCtx<'_>) -> bool {
     }
 }
 
+/// Map a synthetic flow handle class to the NRT `unrt_call_native` prefix.
+fn flow_class_kind(name: &str) -> Option<&'static str> {
+    match name {
+        "lock" => Some("lock"),
+        "pool" => Some("pool"),
+        "future" => Some("future"),
+        "atomic_int" => Some("atomic_int"),
+        "atomic_bool" => Some("atomic_bool"),
+        _ => None,
+    }
+}
+
+/// Return type of a method on a cooperative flow handle. `TirTy::Obj` is the
+/// stand-in for `none`, matching every other native call that returns no value.
+fn flow_method_ret(kind: &str, member: &str, ctx: &LowerCtx<'_>) -> TirTy {
+    let class_id = |name: &str| ctx.classes.id(name).unwrap_or(0);
+    match (kind, member) {
+        ("lock", "acquire" | "release") => TirTy::Class(class_id("lock")),
+        ("lock", "try_acquire") => TirTy::Bool,
+        ("pool", "map") => {
+            // natcode only bridges scalar/Obj results from `NativeCallExpr`;
+            // keep the returned list as an opaque handle. NRT's `io.write`,
+            // `len`, indexing and list methods all accept that handle.
+            TirTy::Obj
+        }
+        ("pool", "submit") => TirTy::Class(class_id("future")),
+        ("atomic_int", "get" | "add" | "inc" | "dec" | "exchange") => TirTy::Int,
+        ("atomic_int", "compare_and_swap") => TirTy::Bool,
+        ("atomic_bool", "get" | "exchange" | "compare_and_swap") => TirTy::Bool,
+        _ => TirTy::Obj,
+    }
+}
+
 fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), String> {
     let callee = node
         .children
@@ -6291,6 +6379,38 @@ fn lower_call(node: &Node, ctx: &mut LowerCtx) -> Result<(TirExpr, CoreTy), Stri
             }
         }
         let (recv, rty) = lower_expr(head, ctx)?;
+        // Cooperative flow handles (NRT tag 16) have no class registry entry
+        // in NRT: route their methods through the existing native bridge as
+        // `("flow", "<kind>.<method>", [receiver, ..])`. This needs no new ABI
+        // symbol and keeps `unrt_method_call` untouched.
+        if let CoreTy::Class(id) = rty {
+            if let Some(kind) = ctx
+                .classes
+                .names
+                .get(id as usize)
+                .and_then(|name| flow_class_kind(name.as_str()))
+            {
+                let args_tuple = node
+                    .children
+                    .get(1)
+                    .ok_or_else(|| "call without arguments".to_string())?;
+                let mut all = vec![recv];
+                all.append(&mut lower_arg_list(args_tuple, ctx)?);
+                let ret = flow_method_ret(kind, &member, ctx);
+                return Ok((
+                    TirExpr::Located {
+                        span: (node.start, node.length),
+                        inner: Box::new(TirExpr::NativeCallExpr {
+                            module: "flow".into(),
+                            member: format!("{kind}.{member}").into_boxed_str(),
+                            args: all,
+                            ret,
+                        }),
+                    },
+                    CoreTy::from(ret),
+                ));
+            }
+        }
         if matches!(rty, CoreTy::ListInt | CoreTy::ListFloat | CoreTy::ListClass(_) | CoreTy::ListGen(_)) {
             if let Some(list_method) = lower_list_method_expr(&member, recv, rty, args_tuple, ctx)? {
                 return Ok(list_method);

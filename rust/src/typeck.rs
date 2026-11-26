@@ -244,6 +244,13 @@ fn native_method(params: &[Ty], names: &[&str], ret: Ty) -> Ty {
     }
 }
 
+/// Synthetic handle classes backed by the cooperative `flow` shim (NRT tag
+/// 16). Their methods are typed here but dispatched through
+/// `("flow", "<kind>.<method>")` at runtime, never through a class registry.
+fn is_flow_class(name: &str) -> bool {
+    matches!(name, "lock" | "pool" | "future" | "atomic_int" | "atomic_bool")
+}
+
 fn native_handle_classes() -> HashMap<String, ClassInfo> {
     let mut out = HashMap::new();
     let str_ = Ty::Str;
@@ -287,6 +294,91 @@ fn native_handle_classes() -> HashMap<String, ClassInfo> {
     ws.methods
         .insert("is_open".into(), native_method(&[], &[], bool_));
     out.insert("web_socket".into(), ws);
+
+    // Cooperative `flow`/`atomic` handles. Only the method return types are
+    // significant: `check_call` keeps flow calls permissive because
+    // `pool.map`/`submit` take rest arguments and these values used to be
+    // typed as `any` before NRT gained the tag-16 shim.
+    let mut lock = ClassInfo::default();
+    lock.methods.insert(
+        "acquire".into(),
+        native_method(&[], &[], Ty::Class(Rc::from("lock"))),
+    );
+    lock.methods
+        .insert("try_acquire".into(), native_method(&[], &[], Ty::Bool));
+    lock.methods.insert(
+        "release".into(),
+        native_method(&[], &[], Ty::Class(Rc::from("lock"))),
+    );
+    lock.methods
+        .insert("dispose".into(), native_method(&[], &[], Ty::None_));
+    out.insert("lock".into(), lock);
+
+    let mut pool = ClassInfo::default();
+    pool.methods.insert(
+        "map".into(),
+        native_method(&[Ty::Any], &["vargs"], Ty::list(Ty::Int)),
+    );
+    pool.methods.insert(
+        "submit".into(),
+        native_method(&[Ty::Any], &["args"], Ty::Class(Rc::from("future"))),
+    );
+    pool.methods
+        .insert("close".into(), native_method(&[], &[], Ty::None_));
+    out.insert("pool".into(), pool);
+
+    let mut future = ClassInfo::default();
+    future.methods
+        .insert("value".into(), native_method(&[], &[], Ty::Any));
+    future.methods
+        .insert("wait".into(), native_method(&[], &[], Ty::Any));
+    out.insert("future".into(), future);
+
+    let mut atomic_int = ClassInfo::default();
+    atomic_int
+        .methods
+        .insert("get".into(), native_method(&[], &[], Ty::Int));
+    atomic_int.methods.insert(
+        "set".into(),
+        native_method(&[Ty::Int], &["value"], Ty::None_),
+    );
+    atomic_int.methods.insert(
+        "add".into(),
+        native_method(&[Ty::Int], &["value"], Ty::Int),
+    );
+    atomic_int
+        .methods
+        .insert("inc".into(), native_method(&[], &[], Ty::Int));
+    atomic_int
+        .methods
+        .insert("dec".into(), native_method(&[], &[], Ty::Int));
+    atomic_int.methods.insert(
+        "exchange".into(),
+        native_method(&[Ty::Int], &["value"], Ty::Int),
+    );
+    atomic_int.methods.insert(
+        "compare_and_swap".into(),
+        native_method(&[Ty::Int, Ty::Int], &["expected", "newValue"], Ty::Bool),
+    );
+    out.insert("atomic_int".into(), atomic_int);
+
+    let mut atomic_bool = ClassInfo::default();
+    atomic_bool
+        .methods
+        .insert("get".into(), native_method(&[], &[], Ty::Bool));
+    atomic_bool.methods.insert(
+        "set".into(),
+        native_method(&[Ty::Bool], &["value"], Ty::None_),
+    );
+    atomic_bool.methods.insert(
+        "exchange".into(),
+        native_method(&[Ty::Bool], &["value"], Ty::Bool),
+    );
+    atomic_bool.methods.insert(
+        "compare_and_swap".into(),
+        native_method(&[Ty::Bool, Ty::Bool], &["expected", "newValue"], Ty::Bool),
+    );
+    out.insert("atomic_bool".into(), atomic_bool);
     out
 }
 
@@ -4521,6 +4613,21 @@ impl<'a> Checker<'a> {
                 match recv_ty {
                     Ty::Class(class) => {
                         let class_name = class.to_string();
+                        // `flow` handles dispatch through the native bridge,
+                        // not the class method registry. Keep argument checks
+                        // permissive (rest args on `map`/`submit`, historically
+                        // `any` typed) while still using the registered return
+                        // type for downstream expressions.
+                        if is_flow_class(&class_name) {
+                            self.check_call_args_any(node.children.get(1), env);
+                            return self
+                                .class_method(&class_name, &member)
+                                .and_then(|ty| match ty {
+                                    Ty::Func { ret, .. } => Some((*ret).clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or(Ty::Any);
+                        }
                         let subst = self.receiver_subst(&class_name, &callee.children[0]);
                         if let Some(field_ty) = self.class_field(&class_name, &member) {
                             let field_ty = substitute_generic(&field_ty, &subst);
@@ -5551,6 +5658,14 @@ pub(crate) fn native_module_ret_type(module: &str, member: &str) -> Option<Ty> {
         ("bytes", "to_list") => Some(Ty::list(int.clone())),
         ("bytes", "len") | ("bytes", "get") => Some(int.clone()),
         ("bytes", "eq") | ("bytes", "is_bytes") => Some(boolean.clone()),
+        // Cooperative `flow`/`atomic` handles (NRT tag 16). The synthetic
+        // classes are registered in `native_handle_classes`; method calls
+        // route through the existing `unrt_call_native` bridge as
+        // `("flow", "<kind>.<method>")`, so no new NativeType or ABI is added.
+        ("flow", "lock") => Some(Ty::Class(Rc::from("lock"))),
+        ("flow", "spawn") => Some(Ty::Class(Rc::from("pool"))),
+        ("atomic", "int") => Some(Ty::Class(Rc::from("atomic_int"))),
+        ("atomic", "bool") => Some(Ty::Class(Rc::from("atomic_bool"))),
         _ => None,
     }
 }

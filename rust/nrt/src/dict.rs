@@ -106,6 +106,11 @@ fn splitmix64(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
+/// P01 A-06 (S2): aliases the boxed dict payload as `&'static mut`, safe only
+/// while the plain exe is single-threaded. Conversion to a lock-backed handle
+/// is deferred with A-04/A-05 (same ownership boundary; no caller outside this
+/// file depends on the exact signature, but a guard would change `find`'s
+/// reentrancy and must be done together with the others).
 unsafe fn data(p: u64) -> &'static mut DictData {
     &mut *(obj(p).b as *mut DictData)
 }

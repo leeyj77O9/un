@@ -44,6 +44,10 @@ static SMALL_INT_OBJS: [NObj; SMALL_INTS as usize] = {
 
 // Objects are intentionally leaked: the process is short-lived, so there is
 // no need to track allocations for deallocation.
+//
+// P01 A-13 / U-02: `PENDING` is atomic (memory-safe) but a single global error
+// cell. Task-local error reporting is P04's scope; P02 leaves this cell
+// untouched (read-only for this Work).
 static PENDING: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) unsafe fn alloc(o: NObj) -> u64 {
@@ -52,6 +56,11 @@ pub(crate) unsafe fn alloc(o: NObj) -> u64 {
 pub(crate) unsafe fn obj(p: u64) -> &'static NObj {
     &*(p as *const NObj)
 }
+// P01 A-04 (S2): `obj_mut` aliases a leaked `NObj` as `&'static mut`. It stays
+// safe only while the plain exe is single-threaded. Converting this to a
+// lock-backed handle requires changing call sites in `native.rs` (W-ASYNCflow
+// owned, read-only for P02) and would add `unused_unsafe` warnings there, so
+// the conversion is deferred to a follow-up Work with those owners.
 pub(crate) unsafe fn obj_mut(p: u64) -> &'static mut NObj {
     &mut *(p as *mut NObj)
 }
@@ -61,6 +70,9 @@ pub(crate) unsafe fn obj_mut(p: u64) -> &'static mut NObj {
 // elements are opaque boxed handles, stored in first-occurrence order.
 
 /// Boxed element vector of a Tuple/Set handle. Callers must check the tag.
+///
+/// P01 A-07 (S2): same single-thread-only `&'static mut` alias as A-04. The
+/// conversion is deferred together with A-04 (see above).
 pub(crate) unsafe fn seq_items(p: u64) -> &'static mut Vec<u64> {
     &mut *(obj(p).a as *mut Vec<u64>)
 }
@@ -357,11 +369,11 @@ pub extern "C" fn unrt_obj_field_at(value: u64, index: i64) -> u64 {
     if p.tag != 9 {
         return 0;
     }
-    let fields = crate::class::instance_fields(value);
-    let Some(field) = fields.get(index as usize) else {
-        return 0;
-    };
-    *field
+    // Borrow the field words under the arena lock; no snapshot allocation on
+    // this pattern-matching hot path. Out-of-range keeps the existing 0.
+    crate::class::with_instance_fields(value, |fields| {
+        fields.get(index as usize).copied().unwrap_or(0)
+    })
 }
 
 /// User `__is__` dispatch for type patterns, mirroring the VM's `obj_is`

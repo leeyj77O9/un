@@ -614,6 +614,36 @@ fn emit_exit_depth<M: Module>(
     builder.switch_to_block(skip_blk);
 }
 
+/// Collect the defer flush sequence appended by `tir::emit_defer_flushes`.
+///
+/// DEFERRING lowers each `defer` into a Bool flag (`Let(slot, Bool(true))`)
+/// and appends `If { cond: Local(slot), then_body }` flushes at every exit, in
+/// reverse registration order. The final flush suffix at the end of `f.body`
+/// is therefore the complete LIFO sequence; exception propagation needs that
+/// same sequence before the error is dumped. Only trailing `If`s whose flag
+/// is set by a top-level `Let(slot, Bool(true))` qualify, so ordinary user
+/// conditionals are left alone.
+fn collect_defer_flushes(f: &TirFn) -> Vec<(u16, Vec<TirStmt>)> {
+    let mut out = Vec::new();
+    for stmt in f.body.iter().rev() {
+        match stmt {
+            TirStmt::If { cond: TirExpr::Local(slot), then_body, else_body }
+                if else_body.is_empty()
+                    && f.locals.get(*slot as usize) == Some(&TirTy::Bool)
+                    && f.body.iter().any(|s| {
+                        matches!(s, TirStmt::Let(s, TirExpr::Bool(true)) if *s == *slot)
+                    }) =>
+            {
+                out.push((*slot, then_body.clone()));
+            }
+            _ => break,
+        }
+    }
+    // Walked the suffix backwards; restore the LIFO drain order.
+    out.reverse();
+    out
+}
+
 struct FnEmit<'a> {
     internal_fids: &'a HashMap<usize, cranelift_module::FuncId>,
     fns: &'a [TirFn],
@@ -622,6 +652,12 @@ struct FnEmit<'a> {
     fid_exit: Option<cranelift_module::FuncId>,
     acquired: Variable,
     bail_blk: Block,
+    /// Shared landing block for errors that propagate out of this function.
+    /// Reached only from no-handler error sites; drains defers before dumping
+    /// the uncaught error, mirroring the VM's `end_call` on `Flow::Propagate`.
+    defer_drain_blk: Block,
+    /// Defer bodies in LIFO order, extracted from the tail of `f.body`.
+    defer_flushes: Vec<(u16, Vec<TirStmt>)>,
     loop_breaks: Vec<Block>,
     loop_skips: Vec<Block>,
     terminated: bool,
@@ -1283,6 +1319,8 @@ fn emit_internal<M: Module>(
     }
 
     let bail_blk = builder.create_block();
+    let defer_drain_blk = builder.create_block();
+    let defer_flushes = collect_defer_flushes(f);
 
     builder.switch_to_block(body_entry);
     let mut emitter = FnEmit {
@@ -1293,6 +1331,8 @@ fn emit_internal<M: Module>(
         fid_exit,
         acquired,
         bail_blk,
+        defer_drain_blk,
+        defer_flushes,
         loop_breaks: Vec::new(),
         loop_skips: Vec::new(),
         terminated: false,
@@ -1401,6 +1441,46 @@ fn emit_internal<M: Module>(
         }
     }
     builder.seal_block(body_entry);
+
+    // Exception propagation out of this function: mirror the VM's
+    // `runtime::function::end_call` drain on `Flow::Propagate`. This block is
+    // reached only from error sites with no active handler; a caught error
+    // jumps straight to its handler and reaches its defers at normal exit.
+    builder.switch_to_block(defer_drain_blk);
+    if emitter.mode == NativeMode::Obj {
+        let drain = emitter.defer_flushes.clone();
+        for (slot, body) in &drain {
+            let flag = builder.use_var(emitter.vars[*slot as usize]);
+            let run_blk = builder.create_block();
+            let skip_blk = builder.create_block();
+            builder.ins().brif(flag, run_blk, &[], skip_blk, &[]);
+            builder.switch_to_block(run_blk);
+            // Clear the flag before running the body so a nested error that
+            // re-enters the drain cannot run this defer twice. The VM's
+            // `pop_defer` likewise removes a defer before executing it.
+            let zero = builder.ins().iconst(types::I8, 0);
+            builder.def_var(emitter.vars[*slot as usize], zero);
+            emitter.terminated = false;
+            let terminated = emit_block(body, &mut emitter, &mut builder, module, f);
+            if !terminated {
+                builder.ins().jump(skip_blk, &[]);
+            }
+            builder.seal_block(run_blk);
+            builder.switch_to_block(skip_blk);
+            builder.seal_block(skip_blk);
+        }
+        emitter.terminated = false;
+        let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
+        let d_ref = module.declare_func_in_func(d_id, builder.func);
+        let _ = builder.ins().call(d_ref, &[]);
+        builder.ins().trap(TrapCode::unwrap_user(3));
+    } else {
+        // Vm mode has no NRT error bridge. Defer execution belongs to the
+        // interpreter, which re-runs a bailed function; draining here would
+        // double-run defers. Bail back to the interpreter instead.
+        builder.ins().jump(bail_blk, &[]);
+    }
+    builder.seal_block(defer_drain_blk);
 
     builder.switch_to_block(bail_blk);
     emit_internal_return(
@@ -1614,10 +1694,8 @@ fn emit_no_match_case<M: Module>(
             builder.ins().jump(handler, &[]);
         }
         None => {
-            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-            let d_ref = module.declare_func_in_func(d_id, builder.func);
-            let _ = builder.ins().call(d_ref, &[]);
-            builder.ins().trap(TrapCode::unwrap_user(3));
+            // Propagating out: the shared drain block runs defers first.
+            builder.ins().jump(emitter.defer_drain_blk, &[]);
         }
     }
     emitter.terminated = true;
@@ -2042,7 +2120,20 @@ fn emit_stmt<M: Module>(
             builder.ins().brif(cond_v, then_blk, &[], else_blk, &[]);
 
             builder.switch_to_block(then_blk);
-            emitter.terminated = false;            let then_terminated = emit_block(then_body, emitter, builder, module, f);
+            emitter.terminated = false;
+            // A TIR defer flush clears its flag before running the body, so
+            // an error inside the defer cannot re-run it via the exception
+            // drain (the VM's `pop_defer` is destructive too).
+            if let TirExpr::Local(slot) = cond {
+                if emitter.mode == NativeMode::Obj
+                    && else_body.is_empty()
+                    && emitter.defer_flushes.iter().any(|(s, _)| s == slot)
+                {
+                    let zero = builder.ins().iconst(types::I8, 0);
+                    builder.def_var(emitter.vars[*slot as usize], zero);
+                }
+            }
+            let then_terminated = emit_block(then_body, emitter, builder, module, f);
             if !then_terminated {
                 builder.ins().jump(merge_blk, &[]);
             }
@@ -2483,10 +2574,8 @@ fn emit_stmt<M: Module>(
                 if let Some(&handler) = emitter.active_handlers.last() {
                     builder.ins().jump(handler, &[]);
                 } else {
-                    let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-                    let d_ref = module.declare_func_in_func(d_id, builder.func);
-                    let _ = builder.ins().call(d_ref, &[]);
-                    builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+                    // Propagating out: drain defers before dumping.
+                    builder.ins().jump(emitter.defer_drain_blk, &[]);
                 }
                 emitter.terminated = true;
                 return true;
@@ -2500,10 +2589,8 @@ fn emit_stmt<M: Module>(
             if let Some(&handler) = emitter.active_handlers.last() {
                 builder.ins().jump(handler, &[]);
             } else {
-                let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-                let d_ref = module.declare_func_in_func(d_id, builder.func);
-                let _ = builder.ins().call(d_ref, &[]);
-                builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+                // Propagating out: drain defers before dumping.
+                builder.ins().jump(emitter.defer_drain_blk, &[]);
             }
             emitter.terminated = true;
             true
@@ -2765,10 +2852,8 @@ fn emit_self_return_gate<M: Module>(
             builder.ins().jump(handler, &[]);
         }
         None => {
-            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-            let d_ref = module.declare_func_in_func(d_id, builder.func);
-            let _ = builder.ins().call(d_ref, &[]);
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+            // Propagating out: drain defers in the shared landing block.
+            builder.ins().jump(emitter.defer_drain_blk, &[]);
         }
     }
     builder.seal_block(err_blk);
@@ -2806,10 +2891,8 @@ fn emit_error_gate_regular<M: Module>(
             builder.ins().jump(handler, &[]);
         }
         None => {
-            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-            let d_ref = module.declare_func_in_func(d_id, builder.func);
-            let _ = builder.ins().call(d_ref, &[]);
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+            // Propagating out: drain defers in the shared landing block.
+            builder.ins().jump(emitter.defer_drain_blk, &[]);
         }
     }
     builder.seal_block(err_blk);
@@ -2837,10 +2920,8 @@ fn emit_error_gate<M: Module>(
             let wref = module.declare_func_in_func(w, builder.func);
             let _ = builder.ins().call(wref, &[obj]);
         }
-        let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-        let d_ref = module.declare_func_in_func(d_id, builder.func);
-        let _ = builder.ins().call(d_ref, &[]);
-        builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+        // Panics bypass catch handlers but still drain defers in the VM.
+        builder.ins().jump(emitter.defer_drain_blk, &[]);
         builder.seal_block(cont_blk);
         builder.switch_to_block(cont_blk);
     }
@@ -2870,10 +2951,8 @@ fn emit_error_gate<M: Module>(
             let wid = emitter.unrt_write_error.expect("unrt import required");
             let wref = module.declare_func_in_func(wid, builder.func);
             let _ = builder.ins().call(wref, &[obj]);
-            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-            let d_ref = module.declare_func_in_func(d_id, builder.func);
-            let _ = builder.ins().call(d_ref, &[]);
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+            // Propagating out: drain defers in the shared landing block.
+            builder.ins().jump(emitter.defer_drain_blk, &[]);
         }
     }
     builder.seal_block(err_blk);
@@ -2905,10 +2984,8 @@ fn emit_int_zero_guard<M: Module>(
         if let Some(&handler) = emitter.active_handlers.last() {
             builder.ins().jump(handler, &[]);
         } else {
-            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-            let d_ref = module.declare_func_in_func(d_id, builder.func);
-            let _ = builder.ins().call(d_ref, &[]);
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+            // Propagating out: drain defers before dumping.
+            builder.ins().jump(emitter.defer_drain_blk, &[]);
         }
         builder.seal_block(fail_blk);
         builder.switch_to_block(ok_blk);
@@ -2942,10 +3019,8 @@ fn emit_mod_zero_guard<M: Module>(
             let wid = emitter.unrt_write_error.expect("unrt import required");
         let wref = module.declare_func_in_func(wid, builder.func);
         let _ = builder.ins().call(wref, &[err]);
-        let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-        let d_ref = module.declare_func_in_func(d_id, builder.func);
-        let _ = builder.ins().call(d_ref, &[]);
-        builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+        // `%` by zero panics; panics bypass catch but still drain defers.
+        builder.ins().jump(emitter.defer_drain_blk, &[]);
         builder.seal_block(fail_blk);
         builder.switch_to_block(ok_blk);
     } else {
@@ -2981,10 +3056,8 @@ fn emit_math_sqrt_guard<M: Module>(
         if let Some(&handler) = emitter.active_handlers.last() {
             builder.ins().jump(handler, &[]);
         } else {
-            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-            let d_ref = module.declare_func_in_func(d_id, builder.func);
-            let _ = builder.ins().call(d_ref, &[]);
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+            // Propagating out: drain defers before dumping.
+            builder.ins().jump(emitter.defer_drain_blk, &[]);
         }
     } else {
         let bail_blk = emitter.bail_blk;
@@ -3019,10 +3092,8 @@ fn emit_math_log_guard<M: Module>(
         if let Some(&handler) = emitter.active_handlers.last() {
             builder.ins().jump(handler, &[]);
         } else {
-            let d_id = emitter.unrt_dump_uncaught.expect("unrt import required");
-            let d_ref = module.declare_func_in_func(d_id, builder.func);
-            let _ = builder.ins().call(d_ref, &[]);
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+            // Propagating out: drain defers before dumping.
+            builder.ins().jump(emitter.defer_drain_blk, &[]);
         }
     } else {
         let bail_blk = emitter.bail_blk;

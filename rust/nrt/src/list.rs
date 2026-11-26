@@ -5,6 +5,10 @@ use crate::obj::{
     unrt_obj_none, NObj,
 };
 
+/// P01 A-05 (S2): aliases the boxed list payload as `&'static mut`, safe only
+/// while the plain exe is single-threaded. Converting it to a lock-backed
+/// handle needs call-site changes in `bytes_native.rs` / `native.rs`, which are
+/// outside P02's file ownership — deferred to a follow-up Work.
 pub(crate) unsafe fn items(p: u64) -> &'static mut Vec<u64> {
     &mut *(obj(p).b as *mut Vec<u64>)
 }
