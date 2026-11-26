@@ -1,0 +1,11 @@
+use io
+
+fn boom() -> int
+    -> 1 // 0
+
+fn main() -> int
+    f = go boom()
+    outcome = wait f
+    -> 0
+
+main()

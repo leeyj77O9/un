@@ -1,0 +1,23 @@
+# gowait-parallel manifest — opt-in `un build --parallel` gate (W-2026-11-27-P08)
+#
+# Row format (5 pipe-separated fields):
+#   path|expected_exit|expected_results|expected_error|mode
+#
+#   path            fixture, relative to test/parallel/
+#   expected_exit   process exit code for mode=run; build exit code for mode=reject
+#   expected_results `case=value` pairs joined by ';' ('-' = no RESULT| lines expected)
+#   expected_error  substring required in stdout+stderr ('-' = no error text expected)
+#   mode            run    : build --parallel <path>, run the produced plain exe
+#                   reject : build --embed --parallel <path>, expect build-time refusal
+#
+# Values are compared as a multiset (sorted), never by stdout order. Blank and
+# '#'-prefixed lines are ignored.
+go_int.un|0|go_int=42|-|run
+go_float.un|0|go_float=4.5|-|run
+go_str.un|0|go_str=hi parallel|-|run
+pool_map_order.un|0|pool_map=[6, 2, 4, 8]|-|run
+submit_set.un|0|submit_a=4;submit_b=9;submit_c=16|-|run
+atomic_cas_inc.un|0|atomic_cas_first=true;atomic_cas_second=false;atomic_value=5;atomic_inc=6|-|run
+wait_throw.un|1|-|error: int division by zero|run
+try_catch.un|0|try_catch=caught|-|run
+go_int.un|2|-|un build: --parallel requires a plain build; drop --embed|reject

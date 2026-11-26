@@ -1,0 +1,14 @@
+use io
+use atomic
+
+fn main() -> int
+    counter = atomic.int(0)
+    first = counter.compare_and_swap(0, 5)
+    second = counter.compare_and_swap(0, 9)
+    io.write(`RESULT|atomic_cas_first|{str(first)}`)
+    io.write(`RESULT|atomic_cas_second|{str(second)}`)
+    io.write(`RESULT|atomic_value|{str(counter.get())}`)
+    io.write(`RESULT|atomic_inc|{str(counter.inc())}`)
+    -> 0
+
+main()

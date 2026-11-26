@@ -1,0 +1,17 @@
+use io
+use flow
+
+fn main() -> int
+    pool = flow.spawn(4)
+    a = pool.submit(fn(x: int) -> x * x, 2)
+    b = pool.submit(fn(x: int) -> x * x, 3)
+    c = pool.submit(fn(x: int) -> x * x, 4)
+    av = a.value()
+    bv = b.value()
+    cv = c.value()
+    io.write(`RESULT|submit_a|{str(av)}`)
+    io.write(`RESULT|submit_b|{str(bv)}`)
+    io.write(`RESULT|submit_c|{str(cv)}`)
+    -> 0
+
+main()

@@ -1,0 +1,11 @@
+use io
+
+fn greet(name: str) -> str
+    -> "hi " + name
+
+fn main() -> int
+    f = go greet("parallel")
+    io.write(`RESULT|go_str|{wait f}`)
+    -> 0
+
+main()

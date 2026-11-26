@@ -1,0 +1,15 @@
+use io
+
+fn boom() -> int
+    -> 1 // 0
+
+fn main() -> int
+    f = go boom()
+    try
+        outcome = wait f
+        io.write(`RESULT|try_catch|no-throw`)
+    catch err
+        io.write(`RESULT|try_catch|caught`)
+    -> 0
+
+main()

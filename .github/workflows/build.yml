@@ -116,3 +116,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "$($f.Path) strict canary exited with $LASTEXITCODE" }
             if ($out -notmatch [regex]::Escape($f.Marker)) { throw "$($f.Path): marker not found (miscomputation)" }
           }
+
+      - name: Test (go/wait opt-in parallel gate)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\gowait-parallel.ps1

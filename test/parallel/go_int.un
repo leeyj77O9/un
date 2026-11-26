@@ -1,0 +1,11 @@
+use io
+
+fn double(n: int) -> int
+    -> n * 2
+
+fn main() -> int
+    f = go double(21)
+    io.write(`RESULT|go_int|{str(wait f)}`)
+    -> 0
+
+main()
